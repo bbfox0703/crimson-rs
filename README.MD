@@ -23,14 +23,14 @@ It is a work in progress and currently supports:
 python scripts\export_for_ce.py
 ```
 
-That single command writes everything `Generate_item_id_list.ps1` needs to `out/`:
+That single command writes everything `Generate_item_id_list.ps1` needs to `out/`. The script auto-discovers every `localizationstring_<lang>.paloc` the game ships (typically 14 languages — eng, jpn, kor, zho-tw, zho-cn, …) and emits one `paloc_<lang>.json` plus one CE dropdown file per language:
 
 | File | Contents | Coverage |
 |---|---|---|
 | `iteminfo.pabgb` | Raw decompressed binary from group 0008 | — |
 | `items.jsonl` | One item per line; `key` + `string_key` always populated, parsed fields when the parser succeeds | 6,236 (100%) |
-| `paloc_eng.json` / `paloc_zho-tw.json` / `paloc_jpn.json` | `{item_key: name}` lookup tables (paloc 0x70) | 6,389 each |
-| `output.txt` / `output_zh-tw.txt` / `output_ja.txt` | CE dropdown lists `idx:name/key` | 6,236 each |
+| `paloc_<lang>.json` (one per language) | `{item_key: name}` lookup tables (paloc 0x70). Filenames use the raw paloc lang code, e.g. `paloc_eng.json`, `paloc_jpn.json`, `paloc_kor.json`, `paloc_zho-tw.json`, `paloc_zho-cn.json`, … | 6,389 each |
+| `output.txt` (eng) + `output_<suffix>.txt` (one per remaining language) | CE dropdown lists `idx:name/key`. eng → `output.txt`; jpn → `output_ja.txt`; kor → `output_ko.txt`; zho-tw → `output_zh-tw.txt`; everything else falls through to its raw lang code | 6,236 each |
 
 The CE dropdown coverage is full because the script falls back to `string_key` for the ~71 dev/QA items the game itself doesn't ship localized names for (in any of 14 languages — see [`scripts/CLAUDE.md`](scripts/CLAUDE.md) for the analysis).
 
