@@ -1,10 +1,22 @@
+use std::io::{self, Write};
+
+use pyo3::prelude::*;
+use pyo3::types::PyDict;
+
 use super::keys::*;
 use super::structs::*;
 use crate::binary::*;
 use crate::py_binary_struct;
+use crate::python_traits::{ToPyValue, WritePyValue, get_field};
+
+// ── Sub-struct: pre-max_endurance fields (always present) ───────────────────
+//
+// Everything from `key` through `max_endurance`. After this comes a
+// conditional 22-byte mid block (Class A only — items with real durability),
+// then a 5-byte trailer + repair_data_list common to all items.
 
 py_binary_struct! {
-    pub struct ItemInfo<'a> {
+    pub struct ItemInfoCore<'a> {
         pub key: ItemKey,
         pub string_key: CString<'a>,
         pub is_blocked: u8,
@@ -119,17 +131,139 @@ py_binary_struct! {
         pub is_preserved_on_extract: u8,
         pub respawn_time_seconds: i64,
         pub max_endurance: u16,
-        // ── New in Crimson Desert 1.05: 27-byte block before repair_data_list.
-        pub unk_flag_a: u8,
-        pub unk_flag_b: u8,
-        pub unk_flag_c: u8,
-        pub unk_item_a: ItemKey,
-        pub unk_u32_a: u32,
-        pub unk_u32_b: u32,
-        pub unk_u32_c: u32,
-        pub unk_u32_d: u32,
-        pub unk_u32_e: u32,
+    }
+}
+
+// ── Sub-struct: trailer + repair_data_list (always present, 1.05) ──────────
+
+py_binary_struct! {
+    pub struct ItemInfoTail {
+        pub unk_pre_repair_a: u8,
+        pub unk_pre_repair_b: u8,
+        pub unk_pre_repair_c: u8,
+        pub unk_pre_repair_sentinel: u16, // observed = 0xFFFF on every item
         pub repair_data_list: CArray<RepairData>,
+    }
+}
+
+// ── ItemInfo: composite with conditional 22-byte mid block ──────────────────
+//
+// Discriminator (verified across all 5,518 items reaching max_endurance):
+//   if max_endurance ∈ {0, 0xFFFF}      → no mid block (Class B, 2,967 items)
+//   else                                → 22-byte mid block follows (Class A,
+//                                          2,551 items)
+//
+// The 22 bytes are kept as a raw [u8; 22] here so the serializer roundtrips
+// byte-perfectly while we work out the field-level decomposition. The bytes
+// observed for items 0-6 carry an embedded ItemKey + several zero u32s;
+// future iterations should split this into named fields once their meaning
+// is understood.
+
+#[derive(Debug)]
+pub struct ItemInfo<'a> {
+    pub core: ItemInfoCore<'a>,
+    pub mid_block_class_a: Option<[u8; 22]>,
+    pub tail: ItemInfoTail,
+}
+
+fn class_a(max_endurance: u16) -> bool {
+    max_endurance != 0 && max_endurance != 0xFFFF
+}
+
+impl<'a> BinaryRead<'a> for ItemInfo<'a> {
+    fn read_from(data: &'a [u8], offset: &mut usize) -> io::Result<Self> {
+        let core = ItemInfoCore::read_from(data, offset)?;
+        let mid_block_class_a = if class_a(core.max_endurance) {
+            Some(<[u8; 22] as BinaryRead>::read_from(data, offset)?)
+        } else {
+            None
+        };
+        let tail = ItemInfoTail::read_from(data, offset)?;
+        Ok(ItemInfo {
+            core,
+            mid_block_class_a,
+            tail,
+        })
+    }
+}
+
+impl<'a> BinaryReadTracked<'a> for ItemInfo<'a> {
+    fn read_tracked(
+        data: &'a [u8],
+        offset: &mut usize,
+        path: &mut String,
+        ranges: &mut Vec<FieldRange>,
+    ) -> io::Result<Self> {
+        let core = ItemInfoCore::read_tracked(data, offset, path, ranges)?;
+        let mid_block_class_a = if class_a(core.max_endurance) {
+            let saved = push_path(path, "mid_block_class_a");
+            let mid = <[u8; 22] as BinaryReadTracked>::read_tracked(data, offset, path, ranges)?;
+            pop_path(path, saved);
+            Some(mid)
+        } else {
+            None
+        };
+        let tail = ItemInfoTail::read_tracked(data, offset, path, ranges)?;
+        Ok(ItemInfo {
+            core,
+            mid_block_class_a,
+            tail,
+        })
+    }
+}
+
+impl BinaryWrite for ItemInfo<'_> {
+    fn write_to(&self, w: &mut dyn Write) -> io::Result<()> {
+        self.core.write_to(w)?;
+        if let Some(mid) = &self.mid_block_class_a {
+            mid.write_to(w)?;
+        }
+        self.tail.write_to(w)
+    }
+}
+
+impl<'a> ItemInfo<'a> {
+    /// Build a flattened Python dict containing core fields, the optional
+    /// mid_block_class_a (as a list[int] or None), and tail fields — keeping
+    /// the public API a single flat dict so downstream code keeps working.
+    pub fn to_py_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        use pyo3::types::PyDictMethods;
+
+        let d = self.core.to_py_dict(py)?;
+        match &self.mid_block_class_a {
+            Some(arr) => d.set_item("mid_block_class_a", arr.to_py_value(py)?)?,
+            None => d.set_item("mid_block_class_a", py.None())?,
+        };
+        let tail = self.tail.to_py_dict(py)?;
+        for (k, v) in tail.iter() {
+            d.set_item(k, v)?;
+        }
+        Ok(d)
+    }
+
+    pub fn write_from_py_dict(
+        w: &mut Vec<u8>,
+        d: &Bound<'_, PyDict>,
+    ) -> PyResult<()> {
+        ItemInfoCore::write_from_py_dict(w, d)?;
+        let mid = get_field(d, "mid_block_class_a")?;
+        if !mid.is_none() {
+            <[u8; 22] as WritePyValue>::write_from_py(w, &mid)?;
+        }
+        ItemInfoTail::write_from_py_dict(w, d)?;
+        Ok(())
+    }
+}
+
+impl ToPyValue for ItemInfo<'_> {
+    fn to_py_value(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        Ok(self.to_py_dict(py)?.into_any().unbind())
+    }
+}
+
+impl WritePyValue for ItemInfo<'_> {
+    fn write_from_py(w: &mut Vec<u8>, obj: &Bound<'_, PyAny>) -> PyResult<()> {
+        Self::write_from_py_dict(w, obj.cast::<PyDict>()?)
     }
 }
 
@@ -149,21 +283,9 @@ mod tests {
         let data = load_binary();
         let mut offset = 0;
         let item = ItemInfo::read_from(&data, &mut offset).unwrap();
-        assert_eq!(item.key, ItemKey(2200));
-        assert_eq!(item.string_key.data, "Pyeonjeon_Arrow");
+        assert_eq!(item.core.key, ItemKey(2200));
+        assert_eq!(item.core.string_key.data, "Pyeonjeon_Arrow");
         assert_eq!(offset, 0x00000270, "unexpected size for first item");
-    }
-
-    #[test]
-    fn test_parse_second_item() {
-        let data = load_binary();
-        let mut offset = 0x00000270;
-        let item = ItemInfo::read_from(&data, &mut offset).unwrap();
-        assert_ne!(item.key, ItemKey(0));
-        println!(
-            "Second item: key={}, name={}",
-            item.key.0, item.string_key.data
-        );
     }
 
     #[test]

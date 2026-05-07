@@ -41,6 +41,16 @@ One command, three deliverables (`out/items.jsonl`, three `paloc_*.json`, three 
 | [`list_pamt_dirs.py`](list_pamt_dirs.py) | List directories and files inside one group's PAMT (`game_dir/0NNN/0.pamt`). |
 | [`list_all_paloc.py`](list_all_paloc.py) | List every `.paloc` file across all groups, with sizes — useful for finding which group ships which language. |
 
+### Parser-improvement scripts (1.05 reverse-engineering)
+
+| Script | Purpose |
+|---|---|
+| [`classify_items.py`](classify_items.py) | Classify every 1.05 item by its true post-`max_endurance` byte count and search for fields that partition Class A vs Class B perfectly. |
+| [`find_discriminator.py`](find_discriminator.py) | Cross-tabulate post-size against `max_endurance` and other fields to find a boolean predicate identifying items that need the 22-byte mid block. |
+| [`refine_discriminator.py`](refine_discriminator.py) | For the ambiguous `max_endurance == 0` case, search for a second-tier field that distinguishes ammo-style Class A items from misc Class B items. |
+| [`debug_post31.py`](debug_post31.py) | Dump the 18 items with `post == 31` (Class A minimum) so the discriminator can be sanity-checked against them. |
+| [`inspect_leftover_bytes.py`](inspect_leftover_bytes.py) | For each "leftover:N" bucket, print the exact bytes the parser left unconsumed — tells you what new fields are missing. |
+
 ### Common arguments
 
 Every diagnostic script accepts `--game-dir <path>` to point at the Crimson Desert install. Most also take an `--out` directory or input path arguments — run with `-h` for the full list.

@@ -71,6 +71,41 @@ impl BinaryWrite for [u8; 3] {
     }
 }
 
+impl<'a> BinaryRead<'a> for [u8; 22] {
+    fn read_from(data: &'a [u8], offset: &mut usize) -> io::Result<Self> {
+        super::check_remaining(data, *offset, 22)?;
+        let mut arr = [0u8; 22];
+        arr.copy_from_slice(&data[*offset..*offset + 22]);
+        *offset += 22;
+        Ok(arr)
+    }
+}
+
+impl BinaryWrite for [u8; 22] {
+    fn write_to(&self, w: &mut dyn Write) -> io::Result<()> {
+        w.write_all(self)
+    }
+}
+
+impl<'a> BinaryReadTracked<'a> for [u8; 22] {
+    fn read_tracked(
+        data: &'a [u8],
+        offset: &mut usize,
+        path: &mut String,
+        ranges: &mut Vec<FieldRange>,
+    ) -> io::Result<Self> {
+        let start = *offset;
+        let arr = <[u8; 22] as BinaryRead>::read_from(data, offset)?;
+        ranges.push(FieldRange {
+            path: path.clone(),
+            start,
+            end: *offset,
+            ty: "u8x22",
+        });
+        Ok(arr)
+    }
+}
+
 // ── Fixed-size array tracked reads ──────────────────────────────────────────
 // Each element is reported as `<path>[i]` so the byte layout is preserved.
 

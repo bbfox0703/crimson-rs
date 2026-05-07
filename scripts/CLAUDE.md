@@ -8,7 +8,8 @@ The 5/2 patch (Crimson Desert 1.05) changed the `ItemInfo` binary layout in ways
 
 - `ItemIconData` grew by 5 bytes per entry: a second `StringInfoKey` (`icon_path_alt`) right after `icon_path`, plus a trailing `unk_flag: u8`.
 - `SubItem` accepts a new tag value `15` (treated as the existing `None` variant — both 14 and 15 carry no payload).
-- A 27-byte block is read between `max_endurance` and `repair_data_list`, currently modelled as `3× u8 + ItemKey + 5× u32`. **This block is correct for some items but not all.** See "what we don't know" below.
+- `ItemInfo` is split into `ItemInfoCore` (everything up to and including `max_endurance`), an *optional* 22-byte raw mid block, and `ItemInfoTail` (3 u8 + u16 sentinel + `repair_data_list`).
+  The mid block is read **only when `max_endurance != 0 && max_endurance != 0xFFFF`** — this gets ~99% of Class A items right (the few it misses are ammo/projectile consumables with `max_endurance == 0`; see "remaining work" below).
 
 With those changes, raw `parse_iteminfo_from_bytes` will throw on most 1.05 items. The two production-side workarounds are:
 
@@ -19,32 +20,44 @@ With those changes, raw `parse_iteminfo_from_bytes` will throw on most 1.05 item
 Empirical 1.05 parser-fit on 6,236 items (`scripts/analyze_per_item.py`):
 
 ```
-SUCCESS perfect : 18 (0.3%)
-SUCCESS leftover: 1,791 (28.7%) — top deltas: +9 (1,695), +14 (57), +13 (36)
-FAIL            : 4,427 (71.0%) — top paths:   unk_u32_a (2,967),
-                                                repair_data_list (742),
-                                                item_bundle_data_list (671)
+SUCCESS perfect : 2,967 (47.6%)   ← was 18 (0.3%) before max_endurance discriminator
+SUCCESS leftover: 1,793 (28.8%)   top deltas: +9 (1,695), +14 (57), +13 (36)
+FAIL            : 1,476 (23.7%)   top paths:    repair_data_list (740),
+                                                 item_bundle_data_list (671)
 ```
 
-## What we don't know about 1.05
+## Iteration log
 
-The post-`max_endurance` block isn't a fixed 27-byte struct for all items. Items split into ~two layout classes:
+### Round 1 — `ItemInfo` split into Core + optional mid block + Tail
 
-- **Class A** (≈1,800 items, mostly arrows/consumables): 31 bytes after `max_endurance` (27-byte block + 4-byte `repair_data_list` count).
-- **Class B** (≈4,400 items, equipment/etc.): only 9 bytes after `max_endurance` (5-byte trailer `00 00 00 FF FF` + 4-byte `repair_data_list` count).
+Layout class distribution (from `scripts/classify_items.py` ground truth):
 
-Both classes share the same 9-byte `00 00 00 FF FF 00 00 00 00` *suffix* immediately before the next item's key. Class A has 22 extra bytes between `max_endurance` and that suffix; Class B doesn't.
+```
+post_size : count : meaning
+---------:-------:--------------
+   9      : 2967 : Class B  (no mid block)
+  31      :   18 : Class A minimum (22 mid + 5 trailer + 4 repair=0)
+  34      :  525 : Class A + 3 extra
+  36      :  181 : Class A + 5 extra
+  40      : 1695 : Class A + 9 extra ← suspected new RepairData entry size
+  44      :   36 : Class A + 13
+  45      :   57 : Class A + 14
+  53      :   31 : Class A + 22
+  63/94/102/124/137 : 1+ : long-tail outliers
+```
 
-The 22 extra bytes encode an `ItemKey + several u32`, all zero in Class B and (for some items) non-zero in Class A. The discriminator — what flag/field controls whether those 22 bytes are present — has not been identified. Hypotheses tried and rejected:
+Discriminator search (`scripts/find_discriminator.py`, `refine_discriminator.py`):
+`max_endurance != 0 && max_endurance != 0xFFFF` → Class A. Currently in production. Misses 18 ammo/projectile items (arrows, cannonballs, bullets) which have `max_endurance == 0` *and* a 22-byte mid block — those still fall into the leftover/fail buckets.
 
-- Item type, category, equip type, knowledge type, drop_type — none correlate.
-- A leading `COptional` tag — tag would be the first byte (`0x00` in both classes), not Some/None.
-- A leading `CArray<X>` count — first 4 bytes don't decode as a sensible small count.
-- Inside an existing field (`item_bundle_data_list`, `prefab_data_list`, etc.) — counts are identical between Class A and B representatives.
+## Remaining work (in order of payoff)
 
-Likely next move: a brute-force search for a single byte/bit elsewhere in the struct that perfectly partitions items into A/B based on which post-`max_endurance` length they need. Once that flag is found, model the 22-byte block as conditional and the parser should hit ≥99%.
+1. **`+9` leftover cluster (1,695 items)** — `scripts/inspect_leftover_bytes.py` shows the trailing 9 bytes are exactly `00 00 00 FF FF 00 00 00 00` = the standard trailer + `repair_data_list count = 0`. This means `repair_data_list` *entries* moved earlier in the struct: the 1.04 RepairData was 15 bytes (`u32 + u16 + u8 + u64`); 1.05 looks like a 9-byte struct (probably `u64` shrunk to `u16`, lopping 6 bytes). Implementing RepairData_1_05 with a 9-byte size should take this cluster perfect and probably solve `+13`/`+14` too (different entry counts).
 
-Until then, the anchor pipeline carries the user.
+2. **18 ammo items mis-discriminated** — they have `max_endurance == 0` but DO have the 22-byte mid block. Need a secondary predicate. `apply_max_stack_cap == 0` + `item_use_info_list count == 3` is a plausible heuristic (per `scripts/refine_discriminator.py` output). `consumable_type_list` count or `item_use_info_list[0]` value range (close to INT32_MAX) might also work.
+
+3. **~700 items fail before reaching `max_endurance`** — these break at `item_bundle_data_list` or `pattern_description_data_list` count. Pre-`max_endurance` layout is mostly unchanged from 1.04 but probably has its own conditional somewhere (likely in one of the variable-size sub-structs).
+
+4. **Long-tail outliers (post=63, 94, 102, 124, 137)** — 5 items. Don't fit any clean rule yet; likely items with multiple new entries in some new array.
 
 ## Why 71 items have no paloc translation
 
