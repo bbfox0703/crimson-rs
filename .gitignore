@@ -21,3 +21,7 @@ python/**/*.so
 # Locally installed historical parser wheel (e.g. commit 56a57da's 1.04 build)
 # used by RE scripts for cross-version field-offset comparisons.
 /.crimson_rs_104/
+
+# Per-developer Claude Code settings (plugins, hooks, slash commands).
+# Personal preferences — not project content.
+/.claude/
