@@ -112,6 +112,49 @@ ItemInfoTail (unchanged):
 
 6. **7 leftover items**: +88 (3), +54 (3), +93 (1). Likely additional new fields after `icon_unk_zeros` for specific item categories (e.g. AbyssGear "Special" variants — see `scripts/probe_new_layout.py` output for the `cd_icon_common_AbyssGear_00` case, where the parser overshoots before the real trailer).
 
+## Starting the next session — recommended workflow
+
+The 671 / 93 / 18 failure clusters above won't yield to more guess-and-rebuild from inside the 1.05 binary alone. The fastest unlock is a **side-by-side byte diff against the 1.04 binary**.
+
+### What to ask the user for
+
+A decompressed 1.04 `iteminfo.pabgb` (raw bytes, like `out/iteminfo.pabgb` in this repo). The CLAUDE.md hardcoded test path `/mnt/e/OpensourceGame/CrimsonDesert/Godmod/backups/iteminfo_1.0.4.1.pabgb` (Linux/WSL) suggests this exists somewhere — on Windows the equivalent might be `E:\OpensourceGame\...`. One file is enough; paloc is only a bonus.
+
+`out/baselines/1.04/items.jsonl` (29.9 MB, in-tree but gitignored) already has the *parsed field values* for every 1.04 item — useful for "what did `item_bundle_data_list` contain in 1.04?" But it does NOT carry the raw 1.04 bytes, which is what's needed to locate the changed field.
+
+### Once you have the 1.04 binary
+
+```python
+# 1. Anchor every key from data/keys.txt in the 1.04 binary (same trick as 1.05).
+# 2. For a small set of representative failing items
+#    (Item_gimmick_resourcestorage_0001, High_Meat, Boss_Reward_SuperWeapon,
+#    Item_Skill_AbyssGear_..._PlateArmor_LV1), pull the 1.04 chunk and the
+#    1.05 chunk side by side.
+# 3. Use the 1.04 ItemInfo struct (still in `git show 56a57da:src/item_info/item.rs`)
+#    to know the exact 1.04 byte layout — every field's offset is deterministic.
+# 4. Walk both chunks field-by-field; the first divergence is the 1.05 change.
+```
+
+### Specific questions a 1.04 diff would settle in one pass
+
+- **Did `item_bundle_data_list` entries grow** (from 12 bytes to ~28-30 bytes with a name CString), and are they still inline at the old offset? — diff bytes 549+ in `Item_gimmick_resourcestorage_0001` between the two versions.
+- **Or did the entries move to the end** (past `repair_data_list`)? — check if the 1.04 entries' values (e.g. `count_mb=10`, `key=0x7007`) appear in the 1.05 chunk's trailing 88 bytes for the AbyssGear "Special" items.
+- **Did `emoji_texture_id` change format** (e.g. become a length-prefixed u32 instead of a CString)? — diff that field in any `Boss_Reward_*Map` item (the 18-item cluster).
+- **What's the 22-byte block in the 93 `ammo_mid_block` failures** — does 1.04 have anything similar at that position, or is it brand new?
+
+### Concrete numbers as of this session
+
+```
+parse-fit  : 5,417 / 6,236 (86.9%) perfect
+leftover   :     7         (+88 ×3, +54 ×3, +93 ×1)
+fail       :   812         (671 item_bundle_data_list, 93 ammo_mid_block,
+                            18 emoji_texture_id, 15 pattern_description_data_list,
+                            8 occupied_equip_slot_data_list, 7 misc)
+roundtrip  : byte-perfect on every parsed item via serialize_iteminfo
+pipeline   : `python scripts/export_for_ce.py` runs end-to-end clean
+last commit on dev: dd78f7a (investigation log) on top of 0effb89 (variant tail)
+```
+
 ## Why 71 items have no paloc translation
 
 Confirmed across 14 language paloc files (kor, eng, jpn, zho-tw, zho-cn, deu, fre, ger, ita, pol, por-br, rus, spa-es, spa-mx, tur — see `list_all_paloc.py` output). All 71 are dev/QA items with `is_editor_usable = 0`; even Korean (the source language) has no `0x70` entry for them. The community `item_names.json` "names" them by mechanically replacing `_` with space in `internalName` — i.e. they didn't find a hidden source either. `scripts/export_for_ce.py` does the same fallback (uses `string_key` directly, with underscores) so these items still appear in the CE dropdown.
