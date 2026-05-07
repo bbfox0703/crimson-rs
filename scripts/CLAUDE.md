@@ -94,6 +94,14 @@ ItemInfoTail (unchanged):
 
 1. **671 items fail at `item_bundle_data_list`** — top remaining failure path. The parser fails *before* reaching the variant tail, so these are blocked by an unrelated 1.05 change in core. Likely a new field inside `item_bundle_data_list` entries or a sibling array. Examples: `Item_gimmick_resourcestorage_0001`, `Item_gimmick_collectionstorage_0001`.
 
+   **Investigation log (failed hypotheses)**:
+   - The bogus "count" values cluster: 442 items at `0xAE434F00`, 133 at `0xA4D9E100`, 34 at `0x00002871`, plus a long tail of single values. **Not** a single-magic discriminator.
+   - **Hypothesis A**: bytes 549-557 are two NEW u32 fields and the real count starts at byte 557. Tested against `Item_gimmick_resourcestorage_0001` — bytes 557-561 read `10 00 00 00` = 16, way too many entries to fit. **Wrong**.
+   - **Hypothesis B**: `item_bundle_data_list` was demoted to a single `u32` field (the entries moved elsewhere — e.g., to the end of the chunk for the +88 leftover items). Tested by replacing `CArray<ItemBundleData>` with `u32` in `src/item_info/item.rs` and rebuilding. Result: failures shifted to `emoji_texture_id` (495 items) and `money_type_define.unit_data_list_map` (194 items). Total perfect parses unchanged at 5,417, so this u32 only consumes 4 bytes of a structure that's actually wider. **Wrong**.
+   - **Hypothesis C** (untested): each new `ItemBundleData` entry is an `u32 + u32 + CString + 2-byte flag` shape (= 14 + N bytes). For storage items, two consecutive entries `[10353, 1004335, "4311386955982961", 02 07]` and `[10354, 1004335, "4311386955982962", ...]` line up cleanly with 28-30 byte sub-blocks but the leading "count" byte 549 is still wrong (10353 ≠ 2). Either the count moved, or these aren't entries at all.
+   - The +88 leftover bytes for 3 AbyssGear "Special" items look like exactly one such entry (`u32 + CString(len=66) + u8 + u64 + u32 + u8`). That suggests the entries genuinely *moved*: the field at byte 549 is something else, the actual entries trail repair_data_list.
+   - **Next step**: dump 1.04 baseline bytes for the same items and `git diff` the 1.04 vs 1.05 layouts at this exact field offset. Without a 1.04 binary to compare against, hypothesising in the dark.
+
 2. **93 items fail at `ammo_mid_block`** — these have `new_icon_path.length == 0` but the trailer pattern `xx xx xx FF FF` is at neither offset 0 nor offset 22 from the end of `max_endurance`. Suggests another conditional shape we haven't classified yet. Examples: `Boss_Reward_SuperWeapon`, `Gas_Mask_Helm_I`.
 
 3. **18 items fail at `emoji_texture_id`** — Boss_Reward_*Map and similar. Failure is in a `CString` length field, suggesting upstream misalignment (a different field somewhere earlier got a length change in 1.05).
