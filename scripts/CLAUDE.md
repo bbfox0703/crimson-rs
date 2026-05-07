@@ -4,155 +4,109 @@ This file documents the *current state* of the 1.05 work for any future AI assis
 
 ## Status of the 1.05 parser
 
-The 5/2 patch (Crimson Desert 1.05) changed the `ItemInfo` binary layout in ways that aren't fully understood yet. The current Rust parser handles the changes that are known:
+The 5/2 patch (Crimson Desert 1.05) changed the `ItemInfo` binary layout in two places relative to 1.04:
 
-- `ItemIconData` grew by 5 bytes per entry: a second `StringInfoKey` (`icon_path_alt`) right after `icon_path`, plus a trailing `unk_flag: u8`.
-- `SubItem` accepts a new tag value `15` (treated as the existing `None` variant — both 14 and 15 carry no payload).
-- The four 1.04 bool fields `is_blocked_store_sell..is_preserved_on_extract` were *replaced* by a u32 length prefix of a new CString `new_icon_path` (e.g. `cd_icon_common_camp_donation_00`). The trailing layout becomes a discriminated union:
-  - **`new_icon_path == ""` (legacy branch):** the original `respawn_time_seconds: i64` + `max_endurance: u16` follow. For the 18 ammo / projectile items only, an additional 22-byte `ammo_mid_block` sits between `max_endurance` and the trailer; we detect it by peeking the trailer sentinel `FF FF` and consuming 22 bytes if it isn't present yet.
-  - **`new_icon_path != ""` (icon-path branch):** no respawn / max_endurance pair; instead one byte `icon_flag` (observed `01`) + 9 unknown zero bytes precede the trailer.
-- `ItemInfoTail` (3 u8 + u16 sentinel `0xFFFF` + `repair_data_list`) is unchanged.
+1. **`ItemIconData` grew by 5 bytes per entry** — a new `icon_path_alt: StringInfoKey` between `icon_path` and `check_exist_sealed_data`, plus a trailing `unk_flag: u8` after `gimmick_state_list`.
+2. **A new 5-byte field** (`unk_pre_pattern_key: u32 + unk_pre_pattern_flag: u8`) was inserted between `convert_item_info_by_drop_npc` and `pattern_description_data_list`. The u32 is always 0 in observed data; the u8 is `1` only for the 48 fish-food items (`Food_Salmon`, `Food_Trout`, `Food_Carp`, …) and `0` otherwise — looks like a recipe / cookable-flag pair added with the 1.05 cooking expansion.
+3. **`SubItem` accepts a new tag value `15`** (treated as the existing `None` variant — both 14 and 15 carry no payload).
+
+Apart from those, `ItemInfo` is byte-identical to the 1.04 layout. The "variant tail" in earlier iterations (`new_icon_path` CString + branched body + `ammo_mid_block` + `unk_pre_repair_*` sentinel) was a misinterpretation: it happened to round-trip on items where the misread bytes coincidentally satisfied later parser checks (e.g. ammo items where `max_endurance == 0xFFFF` provided the bogus "trailer sentinel"), but on the 800+ items that didn't coincide it broke parsing entirely. It has been deleted from `src/item_info/item.rs`.
 
 Empirical 1.05 parse-fit on 6,236 items (`scripts/analyze_per_item.py`):
 
 ```
-SUCCESS perfect : 5,417 (86.9%)   ← was 2,967 (47.6%) before the variant tail
+SUCCESS perfect : 6,215 (99.7%)   ← was 5,417 (86.9%) before the 1.04-anchored fix
 SUCCESS leftover:     7 (0.1%)    +88 (3), +54 (3), +93 (1)
-FAIL            :   812 (13.0%)   top paths: item_bundle_data_list (671),
-                                              ammo_mid_block        (93),
-                                              emoji_texture_id      (18)
+FAIL            :    14 (0.2%)    occupied_equip_slot_data_list (8),
+                                  item_name.default            (6)
 ```
 
-The `serialize_iteminfo` writer produces byte-identical output on every one of the 5,417 perfectly-parsed items.
+`serialize_iteminfo` produces byte-identical output on every one of the 6,215 perfectly-parsed items.
 
-With those changes, raw `parse_iteminfo_from_bytes` will throw on the remaining ~13% of 1.05 items. The two production-side workarounds are:
+The two production-side workarounds are still in place for the remaining 21 stragglers:
 
 1. **`parse_iteminfo_lossy(bytes)`** — added in `src/python.rs`. Walks the binary, falls back to a byte-pattern scan (`u32 key + u32 small length + ASCII string_key + NUL`) on each parser error, jumps to the next plausible item start, and continues. Returns `{items, spans, errors}`.
+2. **Anchor-based pipeline (`scripts/export_for_ce.py`)** — uses the CE-dumped `data/keys.txt` (in-game-ordered list of all 6,236 itemKeys) to locate every item by its key value in the binary, then parses each chunk independently. Items the parser can't consume cleanly fall back to a minimal record `{key, string_key, _index, _anchor_off, _anchor_size, _status}` so downstream tools (the CE dropdown generator) still get every item.
 
-2. **Anchor-based pipeline (`scripts/export_for_ce.py`)** — uses the CE-dumped `data/keys.txt` (in-game-ordered list of all 6,236 itemKeys) to locate every item by its key value in the binary, then parses each chunk independently. Items the parser can't consume cleanly fall back to a minimal record `{key, string_key, _index, _anchor_off, _anchor_size, _status}` so downstream tools (the CE dropdown generator) still get every item. **This is what makes the user-facing pipeline give 100% coverage even though the parser doesn't.**
+## How the fix was found (1.04-anchored cross-version diff)
 
-## Iteration log
+The 1.05-only iteration (Round 1 + Round 2) reached 86.9% by guessing field shapes inside the 1.05 binary alone. The remaining 13% only yielded after adding a 1.04 binary as a reference. Concretely:
 
-### Round 1 — `ItemInfo` split into Core + optional mid block + Tail
-
-Initial cluster classification under the (now-superseded) interpretation that the post-`max_endurance` bytes were a single `[u8; 22]` mid block:
-
-```
-post_size : count : meaning (Round-1 reading; see Round 2 for the real model)
----------:-------:--------------
-   9      : 2967 : Class B  (no mid block)
-  31      :   18 : "Class A minimum" — these turned out to be the 18 ammo
-  34      :  525 : "Class A + 3 extra"
-  36      :  181 : "Class A + 5 extra"
-  40      : 1695 : "Class A + 9 extra"   ← length=31 icon path
-  44      :   36 : "Class A + 13"        ← length=35
-  45      :   57 : "Class A + 14"        ← length=36
-  53      :   31 : "Class A + 22"        ← length=44
-```
-
-Round-1 discriminator: `max_endurance != 0 && max_endurance != 0xFFFF` → read 22-byte mid block. This appeared to fit because for items with the new `cd_icon_*` icon path the parser was reading two bytes of ASCII string content as `max_endurance` (e.g. `co` = `0x6F63`), which happens to be non-zero / non-`0xFFFF`. So the predicate accidentally matched the right items, but the 22 bytes consumed were the *wrong* 22 bytes (the middle of the icon path string, not a separate field).
-
-### Round 2 — variant tail driven by `new_icon_path` length
-
-`scripts/dump_post_bytes.py` showed the supposed "mid block" was the **continuation of an ASCII string** for everything but the 18 ammo items: post=34 mid started with `mmon_housing_00`, post=40 with `mmon_camp_donation_00`, post=44 with `mmon_faction_coin_Hern`, etc. Walking 14 bytes back from the parser's `max_endurance` end revealed a u32 whose value matched the visible string length exactly:
-
-| post | length value | string content |
-|------|---|---|
-|  31  | 0  (ammo)   | (none)                                    |
-|  34  | 25          | `cd_icon_common_housing_00`               |
-|  36  | 27          | `cd_icon_common_AbyssGear_00`             |
-|  40  | 31          | `cd_icon_common_camp_donation_00`         |
-|  44  | 35          | `cd_icon_common_faction_coin_Hernand`     |
-|  45  | 36          | `cd_icon_common_auction_balance_scale`    |
-|  53  | 44          | `...auction_balance_scale_package`        |
-
-That u32 sits exactly where 1.04 had four contiguous bool fields (`is_blocked_store_sell..is_preserved_on_extract`). For Class B items the length is genuinely `0` because all four bools were false in 1.04, which is why the Round-1 parser parsed Class B correctly even with a wrong mental model.
-
-The full 1.05 model:
-
-```
-ItemInfoCore (unchanged) ... enable_equip_in_clone_actor: u8
-new_icon_path: CString                 // u32 len + len bytes (no NUL)
-
-if new_icon_path.length == 0:          // ~3,005 items (Class B + 18 ammo)
-    respawn_time_seconds: i64
-    max_endurance: u16
-    if !trailer_at(off):               // 18 ammo items only
-        ammo_mid_block: [u8; 22]
-else:                                  // ~3,231 items
-    icon_flag: u8                      // observed = 0x01
-    icon_unk_zeros: [u8; 9]            // observed all zero
-
-ItemInfoTail (unchanged):
-    3 × u8 + u16 sentinel = 0xFFFF
-    repair_data_list: CArray<RepairData>
-```
-
-`scripts/probe_new_layout.py` validates the model end-to-end: 5,403 / 6,236 items reach the trailer cleanly, and `serialize_iteminfo` then roundtrips byte-perfect on every one of the 5,417 items the Rust parser accepts. The 1.04 `RepairData` size hypothesis from Round 1 turned out to be wrong; the 9 trailing bytes were `icon_unk_zeros`, not shrunk repair entries.
+1. **Extracted `out/baselines/1.04/iteminfo.pabgb`** from the user-supplied 1.04.01 game install via `crimson_rs.extract_file(..., "0008", "gamedata/binary__/client/bin", "iteminfo.pabgb")`.
+2. **Built the historical 1.04 parser** by `git worktree add ../crimson-rs-104 56a57da` and `maturin build --release` in that worktree, then `pip install --target=.crimson_rs_104` (sibling install path so it can be `sys.path`-loaded without colliding with the in-tree 1.05 wheel).
+3. **Dumped `parse_iteminfo_tracked` spans** for representative items via `scripts/dump_104_spans.py`, writing every named 1.04 field's start/end offset to `out/baselines/1.04/spans.json`. The 1.04 parser is correct on its own data, so its tracked spans are ground truth.
+4. **Cross-aligned 1.04 spans against 1.05 chunks** via `scripts/align_104_105.py`. For each 1.04 field, search for the same byte sequence in the 1.05 chunk; the offset delta is the cumulative shift. The shift goes 0 → +5 across `item_icon_list[0]` (the known ItemIconData growth) and +5 → +10 right after `convert_item_info_by_drop_npc` for items where the next field (`pattern_description_data_list`) is non-empty enough to disambiguate (e.g. `Item_gimmick_resourcestorage_0001` with one PatternDescriptionData entry of two PatternParamStrings).
+5. **The 5-byte block at the +5 → +10 transition** is `00 00 00 00 00` for 4,257 items and `00 00 00 00 01` for the 48 fish-food items. Confirmed by `scripts/probe_new_5b_field.py`. Modelled as `unk_pre_pattern_key: u32 + unk_pre_pattern_flag: u8`.
+6. **Removed the (wrong) variant-tail / `ammo_mid_block` / `ItemInfoTail`-prefix model** and restored the 1.04 trailing fields verbatim (`is_blocked_store_sell..is_preserved_on_extract`, `respawn_time_seconds`, `max_endurance`, `repair_data_list`). With both fixes in place, parser status jumps from 5,417 ok / 812 fail to 6,215 ok / 14 fail.
 
 ## Remaining work (in order of payoff)
 
-1. **671 items fail at `item_bundle_data_list`** — top remaining failure path. The parser fails *before* reaching the variant tail, so these are blocked by an unrelated 1.05 change in core. Likely a new field inside `item_bundle_data_list` entries or a sibling array. Examples: `Item_gimmick_resourcestorage_0001`, `Item_gimmick_collectionstorage_0001`.
+1. **8 items fail at `occupied_equip_slot_data_list`** — these are items with numeric string_keys (e.g. `4296796952068208`, `4311107783098480`) and no entry in `out/baselines/1.04/items.jsonl`, so they look brand-new in 1.05. Likely a new item category whose `OccupiedEquipSlotData` shape differs. Inspect with `python scripts/analyze_per_item.py` then dump the failing chunk's bytes around the parser error to figure out what changed.
 
-   **Investigation log (failed hypotheses)**:
-   - The bogus "count" values cluster: 442 items at `0xAE434F00`, 133 at `0xA4D9E100`, 34 at `0x00002871`, plus a long tail of single values. **Not** a single-magic discriminator.
-   - **Hypothesis A**: bytes 549-557 are two NEW u32 fields and the real count starts at byte 557. Tested against `Item_gimmick_resourcestorage_0001` — bytes 557-561 read `10 00 00 00` = 16, way too many entries to fit. **Wrong**.
-   - **Hypothesis B**: `item_bundle_data_list` was demoted to a single `u32` field (the entries moved elsewhere — e.g., to the end of the chunk for the +88 leftover items). Tested by replacing `CArray<ItemBundleData>` with `u32` in `src/item_info/item.rs` and rebuilding. Result: failures shifted to `emoji_texture_id` (495 items) and `money_type_define.unit_data_list_map` (194 items). Total perfect parses unchanged at 5,417, so this u32 only consumes 4 bytes of a structure that's actually wider. **Wrong**.
-   - **Hypothesis C** (untested): each new `ItemBundleData` entry is an `u32 + u32 + CString + 2-byte flag` shape (= 14 + N bytes). For storage items, two consecutive entries `[10353, 1004335, "4311386955982961", 02 07]` and `[10354, 1004335, "4311386955982962", ...]` line up cleanly with 28-30 byte sub-blocks but the leading "count" byte 549 is still wrong (10353 ≠ 2). Either the count moved, or these aren't entries at all.
-   - The +88 leftover bytes for 3 AbyssGear "Special" items look like exactly one such entry (`u32 + CString(len=66) + u8 + u64 + u32 + u8`). That suggests the entries genuinely *moved*: the field at byte 549 is something else, the actual entries trail repair_data_list.
-   - **Next step**: dump 1.04 baseline bytes for the same items and `git diff` the 1.04 vs 1.05 layouts at this exact field offset. Without a 1.04 binary to compare against, hypothesising in the dark.
+2. **6 items fail at `item_name.default`** — same numeric-string_key pattern (`4311124962967664`, etc.). Failure is in the `LocalizableString` length field, suggesting an upstream field grew. Probably the same root cause as cluster (1) — both are new item families.
 
-2. **93 items fail at `ammo_mid_block`** — these have `new_icon_path.length == 0` but the trailer pattern `xx xx xx FF FF` is at neither offset 0 nor offset 22 from the end of `max_endurance`. Suggests another conditional shape we haven't classified yet. Examples: `Boss_Reward_SuperWeapon`, `Gas_Mask_Helm_I`.
+3. **7 leftover items**: 3 with 88 trailing bytes (`Item_Skill_AbyssGear_AddCriticalRateByMaterialKey_PlateArmor_LV{1,2,3}`), 3 with 54 trailing bytes (the "Fabric_Armor" cluster), 1 with 93 trailing bytes (`Recipe_Item_Skill_AbyssGear_Creature_AdditionalDamage_LV1`). Parser parses the chunk cleanly *up to* its known fields but doesn't consume the trailing bytes. Probably category-specific extension blocks.
 
-3. **18 items fail at `emoji_texture_id`** — Boss_Reward_*Map and similar. Failure is in a `CString` length field, suggesting upstream misalignment (a different field somewhere earlier got a length change in 1.05).
+   `scripts/inspect_leftover_bytes.py --leftover 88` dumps the unconsumed bytes; the AbyssGear "Special" 88-byte block looks like one `u32 + CString(len=66) + u8 + u64 + u32 + u8` shape (= 88 bytes), suggesting a moved / extended `item_bundle_data_list`-like extension at the end.
 
-4. **15 items fail at `pattern_description_data_list`** — all `*_Armor_I` entries (Katunan, Vennebis, etc.). Likely a new field inside `PatternParamString` or `PatternDescriptionData`.
+## Tooling added in this iteration
 
-5. **8 items fail at `occupied_equip_slot_data_list`** — `Recipe_Item_Skill_AbyssGear_*`, very early in core. Probably a knock-on from item 3 / 4.
+| Script | Purpose |
+|---|---|
+| [`diff_104_105.py`](diff_104_105.py) | Side-by-side hex dump of one item's 1.04 vs 1.05 chunks with a first-diff marker. |
+| [`diff_104_105_full.py`](diff_104_105_full.py) | Full `difflib.SequenceMatcher` diff; emits every insert / replace span and labels each by the 1.05 parser-tracked field at that offset. |
+| [`probe_new_5b_field.py`](probe_new_5b_field.py) | Tallies the second 5-byte insert across every paired item. |
+| [`dump_104_spans.py`](dump_104_spans.py) | Loads the historical 1.04 parser wheel from `.crimson_rs_104/` and writes every named field's offsets for selected (or all) items to `out/baselines/1.04/spans.json`. |
+| [`align_104_105.py`](align_104_105.py) | Walks 1.04 spans against the 1.05 chunk for one item and reports where the cumulative byte-shift transitions — pinpoints exactly which 1.04 field the new 1.05 bytes are inserted after. |
 
-6. **7 leftover items**: +88 (3), +54 (3), +93 (1). Likely additional new fields after `icon_unk_zeros` for specific item categories (e.g. AbyssGear "Special" variants — see `scripts/probe_new_layout.py` output for the `cd_icon_common_AbyssGear_00` case, where the parser overshoots before the real trailer).
+## Set-up the 1.04 parser locally (one-time)
+
+```powershell
+git worktree add ../crimson-rs-104 56a57da
+cd ../crimson-rs-104
+maturin build --release
+cd ../crimson-rs
+pip install --target=.crimson_rs_104 --force-reinstall --no-deps `
+    ../crimson-rs-104/target/wheels/crimson_rs-0.1.0-cp312-abi3-win_amd64.whl
+```
+
+`.crimson_rs_104/` is gitignored. `dump_104_spans.py` does the `sys.path.insert(0, '.crimson_rs_104')` itself so the in-tree (1.05) wheel keeps working in the same Python process.
 
 ## Starting the next session — recommended workflow
 
-The 671 / 93 / 18 failure clusters above won't yield to more guess-and-rebuild from inside the 1.05 binary alone. The fastest unlock is a **side-by-side byte diff against the 1.04 binary**.
+The parser is at **99.7% perfect** (6,215 / 6,236 items) with 7 leftovers + 14 fails remaining. Both clusters look like brand-new 1.05 item families that never existed in 1.04, so the 1.04-anchored diff approach won't directly apply. Instead:
 
-### What to ask the user for
+### What to do first
+```powershell
+# 1. Sanity-check the current state.
+python scripts\export_for_ce.py            # should show ok=6,215 leftover=7 fail=14
+python scripts\analyze_per_item.py          # per-cluster breakdown of the 21 stragglers
 
-A decompressed 1.04 `iteminfo.pabgb` (raw bytes, like `out/iteminfo.pabgb` in this repo). The CLAUDE.md hardcoded test path `/mnt/e/OpensourceGame/CrimsonDesert/Godmod/backups/iteminfo_1.0.4.1.pabgb` (Linux/WSL) suggests this exists somewhere — on Windows the equivalent might be `E:\OpensourceGame\...`. One file is enough; paloc is only a bonus.
-
-`out/baselines/1.04/items.jsonl` (29.9 MB, in-tree but gitignored) already has the *parsed field values* for every 1.04 item — useful for "what did `item_bundle_data_list` contain in 1.04?" But it does NOT carry the raw 1.04 bytes, which is what's needed to locate the changed field.
-
-### Once you have the 1.04 binary
-
-```python
-# 1. Anchor every key from data/keys.txt in the 1.04 binary (same trick as 1.05).
-# 2. For a small set of representative failing items
-#    (Item_gimmick_resourcestorage_0001, High_Meat, Boss_Reward_SuperWeapon,
-#    Item_Skill_AbyssGear_..._PlateArmor_LV1), pull the 1.04 chunk and the
-#    1.05 chunk side by side.
-# 3. Use the 1.04 ItemInfo struct (still in `git show 56a57da:src/item_info/item.rs`)
-#    to know the exact 1.04 byte layout — every field's offset is deterministic.
-# 4. Walk both chunks field-by-field; the first divergence is the 1.05 change.
+# 2. For each fail cluster, dump bytes around the parser error to see what differs.
+python scripts\inspect_leftover_bytes.py --leftover 88   # AbyssGear "Special" cluster
+python scripts\inspect_leftover_bytes.py --leftover 54   # Fabric_Armor cluster
+python scripts\inspect_leftover_bytes.py --leftover 93   # AdditionalDamage_LV1
 ```
 
-### Specific questions a 1.04 diff would settle in one pass
+### Investigation strategy by cluster
+- **`fail:occupied_equip_slot_data_list` (8) and `fail:item_name.default` (6)** — items with numeric string_keys (e.g. `4296796952068208`). Check `out/baselines/1.04/items.jsonl` for matching keys; if absent, these are new in 1.05 and the 1.04-anchored diff won't apply. Compare instead against a *similar* item (same numeric pattern in `out/items.jsonl`) that does parse, looking for what shape difference triggers the failure. Both clusters likely share a root cause since `item_name.default` is the very first variable-length field after the early failure point.
+- **`leftover:88` (3 AbyssGear PlateArmor)** — parser reaches end-of-known-schema with 88 trailing bytes. The dump in [scripts/CLAUDE.md](#remaining-work-in-order-of-payoff) suggests one `u32 + CString(len=66) + u8 + u64 + u32 + u8` extension. Try modelling as a trailing `COptional<X>` or `CArray<X>` after `repair_data_list` (only present for AbyssGear "Special" tier).
+- **`leftover:54` (3 Fabric_Armor)** — smaller trailing block; probably a different extension. Inspect first.
+- **`leftover:93` (1 Recipe item)** — single-item edge case; lowest priority.
 
-- **Did `item_bundle_data_list` entries grow** (from 12 bytes to ~28-30 bytes with a name CString), and are they still inline at the old offset? — diff bytes 549+ in `Item_gimmick_resourcestorage_0001` between the two versions.
-- **Or did the entries move to the end** (past `repair_data_list`)? — check if the 1.04 entries' values (e.g. `count_mb=10`, `key=0x7007`) appear in the 1.05 chunk's trailing 88 bytes for the AbyssGear "Special" items.
-- **Did `emoji_texture_id` change format** (e.g. become a length-prefixed u32 instead of a CString)? — diff that field in any `Boss_Reward_*Map` item (the 18-item cluster).
-- **What's the 22-byte block in the 93 `ammo_mid_block` failures** — does 1.04 have anything similar at that position, or is it brand new?
+### Don't repeat
+- Don't reintroduce the `new_icon_path` / `ammo_mid_block` / `ItemInfoTail` (3u8 + sentinel) variant-tail model. It coincidentally round-trips on a subset of items but is fundamentally wrong; see "How the fix was found" above.
+- Don't add new schema fields without first running [`scripts/align_104_105.py`](align_104_105.py) on the affected item — eyeballing `difflib` output is unreliable when fields are zero-padded.
+- For brand-new 1.05 items (no 1.04 baseline), `align_104_105.py` won't help. Use [`scripts/diff_104_105_full.py`](diff_104_105_full.py) to compare a *failing* 1.05 item against an *OK* 1.05 item with similar structure instead.
 
 ### Concrete numbers as of this session
-
 ```
-parse-fit  : 5,417 / 6,236 (86.9%) perfect
+parse-fit  : 6,215 / 6,236 (99.7%) perfect
 leftover   :     7         (+88 ×3, +54 ×3, +93 ×1)
-fail       :   812         (671 item_bundle_data_list, 93 ammo_mid_block,
-                            18 emoji_texture_id, 15 pattern_description_data_list,
-                            8 occupied_equip_slot_data_list, 7 misc)
+fail       :    14         (8 occupied_equip_slot_data_list, 6 item_name.default)
 roundtrip  : byte-perfect on every parsed item via serialize_iteminfo
 pipeline   : `python scripts/export_for_ce.py` runs end-to-end clean
-last commit on dev: dd78f7a (investigation log) on top of 0effb89 (variant tail)
+last commit on dev: <this commit> (1.04-anchored 99.7% parser)
 ```
 
 ## Why 71 items have no paloc translation
@@ -178,6 +132,5 @@ The investigation scripts that established this:
 
 ## Avoid
 
-- Trying to "fix" the 27-byte block by guessing field types — the current decomposition is already best-effort and won't get better without identifying the A/B discriminator.
-- Removing `parse_iteminfo_lossy` or the anchor pipeline — they're the user-facing safety net while the parser is incomplete.
-- Committing anything under `out/`, `references/samples/`, or `data/baselines/` — those contain extracted Pearl Abyss content. The `.gitignore` already excludes them; double-check after edits.
+- Removing `parse_iteminfo_lossy` or the anchor pipeline — they're the user-facing safety net for the 21 remaining stragglers.
+- Committing anything under `out/`, `references/samples/`, `data/baselines/`, or `.crimson_rs_104/` — those contain extracted Pearl Abyss content and a locally-built historical wheel. The `.gitignore` already excludes them; double-check after edits.

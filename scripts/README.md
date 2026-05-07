@@ -43,13 +43,27 @@ One command, three deliverables (`out/items.jsonl`, three `paloc_*.json`, three 
 
 ### Parser-improvement scripts (1.05 reverse-engineering)
 
+#### Current (1.04-anchored) — these power the active model
+
 | Script | Purpose |
 |---|---|
-| [`probe_new_layout.py`](probe_new_layout.py) | Validate the 1.05 ItemInfo variant tail (CString `new_icon_path` + branched body) against every anchor. Reports per-cluster pass/fail counts and the u32 length distribution. |
-| [`dump_post_bytes.py`](dump_post_bytes.py) | Hex-dump bytes between end-of-`max_endurance` and end-of-chunk for items in given post-size clusters. Useful for inspecting items that don't fit the new layout (`+88 / +54 / +93` leftover, ammo_mid_block fail cases). Note: only works for items in the `new_icon_path.length == 0` branch. |
-| [`refine_discriminator.py`](refine_discriminator.py) | Within the length==0 branch, search for a static field-value predicate that distinguishes the 18 ammo / projectile items (which carry an extra 22-byte `ammo_mid_block`) from misc Class B items. The runtime parser instead peeks the `FF FF` trailer sentinel. |
-| [`debug_post31.py`](debug_post31.py) | List the 18 items with `post == 31` (length==0 + 22-byte ammo_mid_block + trailer + count) and confirm the runtime ammo detector finds each one. |
 | [`inspect_leftover_bytes.py`](inspect_leftover_bytes.py) | For each "leftover:N" bucket, print the exact bytes the parser left unconsumed — tells you what new fields are missing. |
+| [`diff_104_105.py`](diff_104_105.py) | Side-by-side hex dump of one item's 1.04 vs 1.05 chunks, with first-diff marker. Anchors both binaries by key. Inputs default to `out/baselines/1.04/iteminfo.pabgb` / `out/iteminfo.pabgb` and the 1.04 baseline jsonl / 1.05 keys.txt. |
+| [`diff_104_105_full.py`](diff_104_105_full.py) | Full `difflib.SequenceMatcher` diff between paired 1.04 / 1.05 chunks; emits every insert / replace span and labels each by the 1.05 parser-tracked field at that offset. Filter by `--item` or `--status fail:item_bundle_data_list`. |
+| [`probe_new_5b_field.py`](probe_new_5b_field.py) | Tallies the second 5-byte insert across every paired item (skipping the known `icon_path_alt` one). Quick way to see whether a hypothesised new field is constant or varies. |
+| [`dump_104_spans.py`](dump_104_spans.py) | Loads the historical 1.04 parser wheel from `.crimson_rs_104/` (built from commit 56a57da via `git worktree`) and writes every named field's offsets to `out/baselines/1.04/spans.json`. Pass `--all` to dump every item, or `--items SK1,SK2` for a subset. |
+| [`align_104_105.py`](align_104_105.py) | Walks the dumped 1.04 spans against the 1.05 chunk for one item and reports every shift transition — pinpoints exactly which 1.04 field the new 1.05 bytes were inserted after. The "shift +5 → +10 transition" is the key signal that drove the 99.7% parser fix. |
+
+#### Historical (validated the now-superseded "variant tail" model)
+
+These scripts validated the iterated model where 1.05 introduced a `new_icon_path` CString + branched body + `ammo_mid_block` + `unk_pre_repair_*` sentinel. That model turned out to be a misinterpretation that just happened to round-trip on items where the wrong bytes coincidentally matched a sentinel; the current parser uses a flat schema (1.04 + ItemIconData growth + a single new 5-byte block), see `scripts/CLAUDE.md` for the details. The scripts are kept as iteration history.
+
+| Script | Purpose |
+|---|---|
+| [`probe_new_layout.py`](probe_new_layout.py) | Validated the 1.05 variant tail (CString `new_icon_path` + branched body) against every anchor. |
+| [`dump_post_bytes.py`](dump_post_bytes.py) | Hex-dump bytes between end-of-`max_endurance` (per the old model) and end-of-chunk for items in given post-size clusters. |
+| [`refine_discriminator.py`](refine_discriminator.py) | Searched for a static predicate distinguishing the 18 ammo items from misc Class B items in the old `new_icon_path == ""` branch. |
+| [`debug_post31.py`](debug_post31.py) | Listed the 18 items the old runtime ammo detector matched. |
 
 ### Common arguments
 

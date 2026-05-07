@@ -367,7 +367,7 @@ Each item is a dict with 105 fields. All fields are required for serialization.
 | `equip_passive_skill_list` | `list[dict]` | See [PassiveSkillLevel](#passiveskilllevel) |
 | `enchant_data_list` | `list[dict]` | See [EnchantData](#enchantdata) |
 | `sharpness_data` | `dict` | See [ItemInfoSharpnessData](#iteminfoSharpnessdata) |
-| `max_endurance` | `int \| None` | Maximum durability (u16). 1.05: present only when `new_icon_path` is empty. |
+| `max_endurance` | `int` | Maximum durability (u16). |
 | `repair_data_list` | `list[dict]` | See [RepairData](#repairdata) |
 | `is_shield_item` | `int` | (u8) |
 | `is_tower_shield_item` | `int` | (u8) |
@@ -442,24 +442,22 @@ Each item is a dict with 105 fields. All fields are required for serialization.
 | `enable_alert_system_to_ui` | `int` | (u8) |
 | `usable_alert` | `int` | (u8) |
 | `discard_offset_y` | `float` | (f32) |
-| `respawn_time_seconds` | `int \| None` | (i64). 1.05: present only when `new_icon_path` is empty. |
+| `respawn_time_seconds` | `int` | (i64). |
 
-### 1.05 variant tail
+### 1.05 schema delta
 
-In Crimson Desert 1.05 the bytes that 1.04 used for the four bool flags
-`is_blocked_store_sell..is_preserved_on_extract` (`u8 × 4`) plus
-`respawn_time_seconds` (`i64`) plus `max_endurance` (`u16`) plus an optional
-22-byte mid block were repurposed as a discriminated union driven by a new
-`new_icon_path` CString.
+Crimson Desert 1.05 changed the `ItemInfo` layout in two places relative to 1.04:
+
+1. **`ItemIconData` grew by 5 bytes per entry** — a new `icon_path_alt: StringInfoKey` between `icon_path` and `check_exist_sealed_data`, plus a trailing `unk_flag: u8` after `gimmick_state_list`.
+2. **A new 5-byte block** (`unk_pre_pattern_key: u32` + `unk_pre_pattern_flag: u8`) was inserted between `convert_item_info_by_drop_npc` and `pattern_description_data_list`. The u32 is always 0 in observed data; the u8 is `1` only for the 48 fish-food items (`Food_Salmon`, `Food_Trout`, `Food_Carp`, …) and `0` otherwise.
+3. **`SubItem` accepts a new tag value `15`** — treated as the existing `None` variant (both 14 and 15 carry no payload).
+
+Apart from those, `ItemInfo` is byte-identical to 1.04. The fields named `is_blocked_store_sell`, `is_preorder_item`, `is_has_item_use_data_inventory_buff`, `is_preserved_on_extract`, `respawn_time_seconds`, `max_endurance`, and `repair_data_list` are still present unchanged at the end of the struct.
 
 | Field | Type | Description |
 |---|---|---|
-| `new_icon_path` | `str` | CString. Empty for ~half of items, otherwise an icon path like `cd_icon_common_camp_donation_00`. |
-| `respawn_time_seconds` | `int \| None` | Present iff `new_icon_path == ""` (legacy branch). |
-| `max_endurance` | `int \| None` | Present iff `new_icon_path == ""` (legacy branch). |
-| `ammo_mid_block` | `list[int] \| None` | 22 raw bytes. Present only on the 18 ammo / projectile items. |
-| `icon_flag` | `int \| None` | u8 (observed `01`). Present iff `new_icon_path != ""`. |
-| `icon_unk_zeros` | `list[int] \| None` | 9 raw bytes (observed all-zero). Present iff `new_icon_path != ""`. |
+| `unk_pre_pattern_key` | `int` | u32 (always 0 in observed data) — new in 1.05. |
+| `unk_pre_pattern_flag` | `int` | u8 (1 for fish-food items, else 0) — new in 1.05. |
 
 ### Related Items
 
