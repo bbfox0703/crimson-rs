@@ -10,12 +10,14 @@ Produces, in a single run, everything `Generate_item_id_list.ps1` needs:
     │                              # 1.05 parser succeeds)
     ├── items_skipped.json        # offsets where the lossy parser re-synced
     │                              # (only written in lossy mode)
-    ├── paloc_eng.json            # {item_key: en_name}
-    ├── paloc_zho-tw.json         # {item_key: zh-tw_name}
-    ├── paloc_jpn.json            # {item_key: jp_name}
+    ├── paloc_<lang>.json         # one per discovered language
+    │                              # ({item_key: localized_name}); typical
+    │                              # set: eng, jpn, kor, zho-tw, zho-cn, ...
     ├── output.txt                # CE dropdown list (en)   "<idx>:<name>/<key>"
     ├── output_zh-tw.txt          # CE dropdown list (zh-tw)
-    └── output_ja.txt             # CE dropdown list (ja)
+    ├── output_ja.txt             # CE dropdown list (ja)
+    ├── output_ko.txt             # CE dropdown list (ko)
+    └── output_<lang>.txt         # ...one per remaining language
 
 Usage:
     python scripts/export_for_ce.py [--game-dir PATH] [--out PATH]
@@ -49,15 +51,25 @@ GAME_DIR_CANDIDATES = [
 
 
 # Localization groups that may host the paloc files. Patches occasionally
-# move them between groups, so we try each in order until we find one.
-PALOC_GROUPS = [f"{n:04d}" for n in range(20, 36)]
+# move them between groups, so we scan a generous range. Korean lives in
+# 0019 (hence the lower bound), and the upper bound is intentionally loose
+# to survive future shuffles.
+PALOC_GROUPS = [f"{n:04d}" for n in range(19, 50)]
 PALOC_DIR = "gamedata/stringtable/binary__"
 
-PALOC_TARGETS = [
-    ("eng", "paloc_eng.json"),
-    ("zho-tw", "paloc_zho-tw.json"),
-    ("jpn", "paloc_jpn.json"),
-]
+# Output filename suffix for the CE dropdown lists. Keep the historical
+# names for the three languages the CE table already references; everything
+# else falls through to its raw lang code (e.g. kor -> output_ko.txt is
+# preferred over output_kor.txt for symmetry with ja / zh-tw).
+OUTPUT_LANG_SUFFIX = {
+    "eng":    "",        # output.txt
+    "zho-tw": "zh-tw",   # output_zh-tw.txt
+    "jpn":    "ja",      # output_ja.txt
+    "kor":    "ko",      # output_ko.txt
+    "zho-cn": "zh-cn",
+    "cht":    "zh-tw",
+    "chs":    "zh-cn",
+}
 
 
 def find_game_dir(explicit: str | None) -> str:
@@ -250,26 +262,61 @@ def export_iteminfo_lossy(game_dir: str, out_dir: Path) -> list[dict]:
     return items
 
 
-def export_paloc(game_dir: str, out_dir: Path) -> dict[str, dict[int, str]]:
-    """Extract + parse the requested paloc files. Returns {lang: {item_key: name}}."""
-    print("-" * 60)
-    print("Step 2: paloc files")
-    out: dict[str, dict[int, str]] = {}
-    for lang, out_name in PALOC_TARGETS:
-        fname = f"localizationstring_{lang}.paloc"
-        raw: bytes | None = None
-        hit_group: str | None = None
-        for g in PALOC_GROUPS:
-            try:
-                raw = bytes(
-                    crimson_rs.extract_file(game_dir, g, PALOC_DIR, fname)
-                )
-                hit_group = g
-                break
-            except Exception:
+def discover_paloc_targets(game_dir: str) -> list[tuple[str, str, str]]:
+    """Scan PAMT directories across PALOC_GROUPS for every
+    localizationstring_<lang>.paloc file. Returns a list of
+    (lang, group, filename) tuples, deduped by lang (first hit wins).
+    """
+    found: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
+    prefix = "localizationstring_"
+    suffix = ".paloc"
+    for g in PALOC_GROUPS:
+        pamt_path = Path(game_dir) / g / "0.pamt"
+        if not pamt_path.is_file():
+            continue
+        try:
+            pamt = crimson_rs.parse_pamt_bytes(pamt_path.read_bytes())
+        except Exception:
+            continue
+        for d in pamt["directories"]:
+            dpath = d.get("path") or d.get("name") or ""
+            if "stringtable" not in dpath:
                 continue
-        if raw is None:
-            print(f"  [{lang:<6}] not found in groups 0020-0035, skipped")
+            for f in d.get("files", []):
+                fname = f["name"]
+                if not (fname.startswith(prefix) and fname.endswith(suffix)):
+                    continue
+                lang = fname[len(prefix):-len(suffix)]
+                if lang in seen:
+                    continue
+                seen.add(lang)
+                found.append((lang, g, fname))
+    return found
+
+
+def export_paloc(game_dir: str, out_dir: Path) -> dict[str, dict[int, str]]:
+    """Discover + extract + parse every paloc language file the game ships.
+    Returns {lang: {item_key: name}}.
+    """
+    print("-" * 60)
+    print("Step 2: paloc files (auto-discover all languages)")
+    targets = discover_paloc_targets(game_dir)
+    if not targets:
+        print(f"  no localizationstring_*.paloc found in groups "
+              f"{PALOC_GROUPS[0]}-{PALOC_GROUPS[-1]}")
+        return {}
+    print(f"  discovered {len(targets)} language(s): "
+          + ", ".join(lang for lang, _, _ in targets))
+
+    out: dict[str, dict[int, str]] = {}
+    for lang, group, fname in targets:
+        try:
+            raw = bytes(
+                crimson_rs.extract_file(game_dir, group, PALOC_DIR, fname)
+            )
+        except Exception as exc:
+            print(f"  [{lang:<6}] extract failed from group {group}: {exc}")
             continue
         entries = crimson_rs.parse_paloc_bytes(raw)
         item_names: dict[int, str] = {}
@@ -283,6 +330,7 @@ def export_paloc(game_dir: str, out_dir: Path) -> dict[str, dict[int, str]]:
             item_key = sid >> 32
             item_names[item_key] = e["string_value"]
         out[lang] = item_names
+        out_name = f"paloc_{lang}.json"
         out_path = out_dir / out_name
         with out_path.open("w", encoding="utf-8") as fh:
             json.dump(
@@ -293,7 +341,7 @@ def export_paloc(game_dir: str, out_dir: Path) -> dict[str, dict[int, str]]:
                 sort_keys=True,
             )
         print(
-            f"  [{lang:<6}] group {hit_group}, {len(entries):,} entries, "
+            f"  [{lang:<6}] group {group}, {len(entries):,} entries, "
             f"{len(item_names):,} item names -> {out_name}"
         )
     return out
@@ -315,80 +363,73 @@ def load_keys_file(keys_path: Path) -> list[int]:
     return keys
 
 
+def _output_filename(lang: str) -> str:
+    """Map a paloc lang code to its CE dropdown filename. eng -> output.txt;
+    everything else -> output_<suffix>.txt where suffix is the OUTPUT_LANG_SUFFIX
+    override (e.g. jpn -> ja, kor -> ko) or the raw lang code."""
+    suffix = OUTPUT_LANG_SUFFIX.get(lang, lang)
+    return "output.txt" if suffix == "" else f"output_{suffix}.txt"
+
+
 def write_ce_lists(
     out_dir: Path,
     keys: list[int],
     paloc: dict[str, dict[int, str]],
     string_keys: dict[int, str] | None = None,
 ) -> None:
-    """Write the three CE dropdown lists.
+    """Write one CE dropdown list per discovered language.
 
-    For each item, the English name comes from paloc 0x70 first, and
+    For each item, the localized name comes from paloc 0x70 first, and
     falls back to the item's `string_key` (the internal id used by the
     game itself when no localized name exists — e.g. "TestShield",
-    "LightSaber_TwoHandSword"). zh-tw and ja fall back the same way so
-    every line is non-empty across all three files.
+    "LightSaber_TwoHandSword"). English additionally falls back to
+    "Unknown" so output.txt always has one line per key. Other languages
+    skip a row only when both paloc and string_key are missing.
     """
     print("-" * 60)
     print("Step 3: CE dropdown lists")
-    en_map = paloc.get("eng", {})
-    zh_map = paloc.get("zho-tw", {})
-    ja_map = paloc.get("jpn", {})
     string_keys = string_keys or {}
 
-    en_lines: list[str] = []
-    zh_lines: list[str] = []
-    ja_lines: list[str] = []
-    en_from_paloc = 0
-    en_from_string_key = 0
-    en_unknown = 0
-    zh_from_paloc = 0
-    ja_from_paloc = 0
-    for idx, key in enumerate(keys):
-        sk = string_keys.get(key)
-        if key in en_map:
-            en_name = en_map[key]
-            en_from_paloc += 1
-        elif sk:
-            en_name = sk
-            en_from_string_key += 1
-        else:
-            en_name = "Unknown"
-            en_unknown += 1
-        en_lines.append(f"{idx}:{en_name}/{key}")
+    if not paloc:
+        print("  no paloc data -> nothing to write")
+        return
 
-        if key in zh_map:
-            zh_lines.append(f"{idx}:{zh_map[key]}/{key}")
-            zh_from_paloc += 1
-        elif sk:
-            zh_lines.append(f"{idx}:{sk}/{key}")
+    # Always emit English first if present, so output.txt is the anchor.
+    lang_order = (["eng"] if "eng" in paloc else []) + sorted(
+        l for l in paloc if l != "eng"
+    )
 
-        if key in ja_map:
-            ja_lines.append(f"{idx}:{ja_map[key]}/{key}")
-            ja_from_paloc += 1
-        elif sk:
-            ja_lines.append(f"{idx}:{sk}/{key}")
+    for lang in lang_order:
+        lang_map = paloc[lang]
+        is_eng = (lang == "eng")
+        out_name = _output_filename(lang)
 
-    (out_dir / "output.txt").write_text("\n".join(en_lines), encoding="utf-8")
-    (out_dir / "output_zh-tw.txt").write_text(
-        "\n".join(zh_lines), encoding="utf-8"
-    )
-    (out_dir / "output_ja.txt").write_text(
-        "\n".join(ja_lines), encoding="utf-8"
-    )
-    print(
-        f"  output.txt        {len(en_lines):>6} lines  "
-        f"(paloc: {en_from_paloc}, string_key: {en_from_string_key}, "
-        f"Unknown: {en_unknown})"
-    )
-    print(
-        f"  output_zh-tw.txt  {len(zh_lines):>6} lines  "
-        f"(paloc: {zh_from_paloc}, string_key: {len(zh_lines)-zh_from_paloc})"
-    )
-    print(
-        f"  output_ja.txt     {len(ja_lines):>6} lines  "
-        f"(paloc: {ja_from_paloc}, string_key: {len(ja_lines)-ja_from_paloc})"
-    )
+        lines: list[str] = []
+        from_paloc = 0
+        from_string_key = 0
+        unknown = 0
+        for idx, key in enumerate(keys):
+            sk = string_keys.get(key)
+            if key in lang_map:
+                name = lang_map[key]
+                from_paloc += 1
+            elif sk:
+                name = sk
+                from_string_key += 1
+            elif is_eng:
+                name = "Unknown"
+                unknown += 1
+            else:
+                continue
+            lines.append(f"{idx}:{name}/{key}")
+
+        (out_dir / out_name).write_text("\n".join(lines), encoding="utf-8")
+
+        bits = [f"paloc: {from_paloc}", f"string_key: {from_string_key}"]
+        if is_eng:
+            bits.append(f"Unknown: {unknown}")
+        print(f"  [{lang:<6}] {out_name:<22} {len(lines):>6} lines  "
+              f"({', '.join(bits)})")
 
 
 def main() -> None:
