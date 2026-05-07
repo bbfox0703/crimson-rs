@@ -119,6 +119,16 @@ py_binary_struct! {
         pub is_preserved_on_extract: u8,
         pub respawn_time_seconds: i64,
         pub max_endurance: u16,
+        // ── New in Crimson Desert 1.05: 27-byte block before repair_data_list.
+        pub unk_flag_a: u8,
+        pub unk_flag_b: u8,
+        pub unk_flag_c: u8,
+        pub unk_item_a: ItemKey,
+        pub unk_u32_a: u32,
+        pub unk_u32_b: u32,
+        pub unk_u32_c: u32,
+        pub unk_u32_d: u32,
+        pub unk_u32_e: u32,
         pub repair_data_list: CArray<RepairData>,
     }
 }

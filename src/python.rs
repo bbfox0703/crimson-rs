@@ -59,6 +59,98 @@ pub fn parse_iteminfo_from_bytes_inner(py: Python<'_>, data: &[u8]) -> PyResult<
     Ok(PyList::new(py, items)?.into_any().unbind())
 }
 
+/// Try to find the next plausible item start at or after `from_offset`.
+///
+/// An item begins with `u32 key` then `u32 len` then `len` bytes of an ASCII
+/// `string_key`. We scan byte-by-byte for a position where these three checks
+/// hold:
+///   - `key` is a 32-bit value with the high byte zero (game item keys are
+///     comfortably below 2^24);
+///   - `len` is between 2 and 64 (string keys are short identifiers);
+///   - the next `len` bytes are printable ASCII followed by a NUL byte.
+fn scan_next_item_start(data: &[u8], from_offset: usize) -> Option<usize> {
+    let n = data.len();
+    let mut o = from_offset;
+    while o + 12 < n {
+        let key = u32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]);
+        if key != 0 && (key >> 24) == 0 {
+            let slen = u32::from_le_bytes([
+                data[o + 4],
+                data[o + 5],
+                data[o + 6],
+                data[o + 7],
+            ]) as usize;
+            if (2..=64).contains(&slen) && o + 8 + slen < n {
+                let bytes = &data[o + 8..o + 8 + slen];
+                let mut all_ident = true;
+                for &b in bytes {
+                    let ok = b.is_ascii_alphanumeric() || b == b'_' || b == b' ';
+                    if !ok {
+                        all_ident = false;
+                        break;
+                    }
+                }
+                if all_ident && data[o + 8 + slen] == 0 {
+                    return Some(o);
+                }
+            }
+        }
+        o += 1;
+    }
+    None
+}
+
+/// Lossy parser: like `parse_iteminfo_tracked`, but on error scans forward to
+/// the next plausible item start and continues. Returns a dict with `items`,
+/// `spans`, `errors` (list of `{item_start, fail_offset, recovered_at, ...}`).
+#[pyfunction]
+pub fn parse_iteminfo_lossy(py: Python<'_>, data: &[u8]) -> PyResult<Py<PyAny>> {
+    use crate::binary::{BinaryReadTracked, FieldRange};
+
+    let mut offset = 0;
+    let mut py_items = Vec::new();
+    let mut py_spans = Vec::new();
+    let py_errors = PyList::empty(py);
+
+    while offset + 12 < data.len() {
+        let start = offset;
+        let mut path_buf = String::new();
+        let mut ranges: Vec<FieldRange> = Vec::new();
+
+        match ItemInfo::read_tracked(data, &mut offset, &mut path_buf, &mut ranges) {
+            Ok(item) => {
+                py_items.push(to_py_item(py, &item)?);
+                let span = PyDict::new(py);
+                span.set_item("start", start)?;
+                span.set_item("end", offset)?;
+                span.set_item("size", offset - start)?;
+                py_spans.push(span.into_any().unbind());
+            }
+            Err(e) => {
+                let err = PyDict::new(py);
+                err.set_item("item_start", start)?;
+                err.set_item("fail_offset", offset)?;
+                err.set_item("path", path_buf.clone())?;
+                err.set_item("message", e.to_string())?;
+                let next = scan_next_item_start(data, start + 1).unwrap_or(data.len());
+                err.set_item("recovered_at", next)?;
+                err.set_item("skipped_bytes", next - start)?;
+                py_errors.append(err)?;
+                offset = next;
+                if offset >= data.len() {
+                    break;
+                }
+            }
+        }
+    }
+
+    let result = PyDict::new(py);
+    result.set_item("items", PyList::new(py, py_items)?)?;
+    result.set_item("spans", PyList::new(py, py_spans)?)?;
+    result.set_item("errors", py_errors)?;
+    Ok(result.into_any().unbind())
+}
+
 #[pyfunction]
 pub fn parse_iteminfo_tracked(py: Python<'_>, data: &[u8]) -> PyResult<Py<PyAny>> {
     use crate::binary::{BinaryReadTracked, FieldRange};
@@ -66,6 +158,9 @@ pub fn parse_iteminfo_tracked(py: Python<'_>, data: &[u8]) -> PyResult<Py<PyAny>
     let mut offset = 0;
     let mut py_items = Vec::new();
     let mut py_spans = Vec::new();
+
+    let mut error_msg: Option<String> = None;
+    let mut error_span: Option<Py<PyAny>> = None;
 
     while offset + 8 < data.len() {
         let start = offset;
@@ -85,21 +180,47 @@ pub fn parse_iteminfo_tracked(py: Python<'_>, data: &[u8]) -> PyResult<Py<PyAny>
                 for r in &ranges {
                     let rd = PyDict::new(py);
                     rd.set_item("path", &r.path)?;
-                    rd.set_item("start", r.start + start)?;
-                    rd.set_item("end", r.end + start)?;
+                    rd.set_item("start", r.start)?;
+                    rd.set_item("end", r.end)?;
                     rd.set_item("ty", r.ty)?;
                     py_ranges.append(rd)?;
                 }
                 span.set_item("ranges", py_ranges)?;
                 py_spans.push(span.into_any().unbind());
             }
-            Err(_) => break,
+            Err(e) => {
+                // Capture partial ranges to help diagnose where parsing broke.
+                let span = PyDict::new(py);
+                span.set_item("start", start)?;
+                span.set_item("end", offset)?;
+                span.set_item("size", offset - start)?;
+                span.set_item("path", path_buf.clone())?;
+                let py_ranges = PyList::empty(py);
+                for r in &ranges {
+                    let rd = PyDict::new(py);
+                    rd.set_item("path", &r.path)?;
+                    rd.set_item("start", r.start)?;
+                    rd.set_item("end", r.end)?;
+                    rd.set_item("ty", r.ty)?;
+                    py_ranges.append(rd)?;
+                }
+                span.set_item("ranges", py_ranges)?;
+                error_msg = Some(format!("at offset 0x{:08X} (path={}): {}", offset, path_buf, e));
+                error_span = Some(span.into_any().unbind());
+                break;
+            }
         }
     }
 
     let result = PyDict::new(py);
     result.set_item("items", PyList::new(py, py_items)?)?;
     result.set_item("spans", PyList::new(py, py_spans)?)?;
+    if let Some(msg) = error_msg {
+        result.set_item("error", msg)?;
+    }
+    if let Some(sp) = error_span {
+        result.set_item("error_span", sp)?;
+    }
     Ok(result.into_any().unbind())
 }
 
@@ -741,6 +862,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_iteminfo_from_file, m)?)?;
     m.add_function(wrap_pyfunction!(parse_iteminfo_from_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(parse_iteminfo_tracked, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_iteminfo_lossy, m)?)?;
     m.add_function(wrap_pyfunction!(write_iteminfo_to_file, m)?)?;
     m.add_function(wrap_pyfunction!(serialize_iteminfo, m)?)?;
     m.add_function(wrap_pyfunction!(parse_papgt_file, m)?)?;

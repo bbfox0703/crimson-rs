@@ -2,3 +2,18 @@
 __pycache__
 tmp
 python/**/*.so
+
+# ── Generated output (contains extracted game data — do NOT commit) ──
+# All files in out/ are derived from the user's local Crimson Desert install:
+#   iteminfo.pabgb       raw decompressed binary from group 0008
+#   items.jsonl          parsed view of the same binary
+#   items_skipped.json   diagnostic, lossy-mode only
+#   anchors.json         per-item file offset table
+#   unknown_items.json   diagnostic
+#   paloc_*.json         translation tables extracted from groups 0019-0035
+#   output*.txt          CE dropdown lists derived from the above
+# These are copyrighted Pearl Abyss content; keep them local.
+/out/
+
+# Game-data samples kept locally for parser work (e.g. iteminfo_1.05.pabgb)
+/references/samples/

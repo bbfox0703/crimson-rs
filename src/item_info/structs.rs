@@ -21,8 +21,13 @@ py_binary_struct! {
 py_binary_struct! {
     pub struct ItemIconData {
         pub icon_path: StringInfoKey,
+        // Added in Crimson Desert 1.05: a second StringInfoKey paired with
+        // icon_path (often holds the same texture hash as map_icon_path).
+        pub icon_path_alt: StringInfoKey,
         pub check_exist_sealed_data: u8,
         pub gimmick_state_list: CArray<u32>,
+        // Added in Crimson Desert 1.05: trailing flag byte.
+        pub unk_flag: u8,
     }
 }
 
@@ -295,7 +300,9 @@ impl<'a> BinaryRead<'a> for SubItem {
             0 => SubItemValue::Item(ItemKey::read_from(data, offset)?),
             3 => SubItemValue::Character(CharacterKey::read_from(data, offset)?),
             9 => SubItemValue::Gimmick(GimmickInfoKey::read_from(data, offset)?),
-            14 => SubItemValue::None,
+            // Crimson Desert 1.05: tag 15 is a new "None"-style variant
+            // (no payload), seen alongside the existing tag 14.
+            14 | 15 => SubItemValue::None,
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -323,7 +330,7 @@ impl<'a> BinaryReadTracked<'a> for SubItem {
             0 => SubItemValue::Item(ItemKey::read_tracked(data, offset, path, ranges)?),
             3 => SubItemValue::Character(CharacterKey::read_tracked(data, offset, path, ranges)?),
             9 => SubItemValue::Gimmick(GimmickInfoKey::read_tracked(data, offset, path, ranges)?),
-            14 => SubItemValue::None,
+            14 | 15 => SubItemValue::None,
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -372,7 +379,7 @@ impl WritePyValue for SubItem {
                 let v: u32 = get_field(d, "value")?.extract()?;
                 w.extend_from_slice(&v.to_le_bytes());
             }
-            14 => {}
+            14 | 15 => {}
             _ => {
                 return Err(PyValueError::new_err(format!(
                     "invalid SubItem type_id: {}",
