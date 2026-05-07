@@ -10,12 +10,16 @@ Rust library with Python bindings (via PyO3/maturin) for reading, writing, and m
 # Documentation
 - `docs/archive-format.md` — Binary format specs (PAPGT, PAMT, PAZ, trie), mod loading overlay approach
 - `docs/api.md` — Full Python API reference (enums, pack_mod, PAPGT/PAMT/PAZ, ItemInfo)
+- `docs/1.05-parser-history.md` — Long-form RE history of the 1.05 ItemInfo parser (read first when picking up next-session work)
+- `docs/historical-parser-setup.md` — Recipe for building a previous-version parser as a sibling install (cross-version diff workflow)
+- `docs/paloc-71-dev-items.md` — Why 71 items have no paloc translation in any of 14 languages
+- `scripts/CLAUDE.md` — Engineering notes for next-session pickup (sanity-check workflow, layout invariants, don'ts)
 - Update docs when adding new features or changing binary format understanding
 
 # Rules
 - Ask before adding new dependencies to Cargo.toml
 - Binary format must roundtrip (read and write back identically)
-- Custom types for binary serialization: BString (u32 len + [u8; len] + null byte), optional<T> (u8 flag + T if nonzero), array<T> (u32 count + count × T), Variant (u8 tag + match on tag)
+- Custom types for binary serialization: `CString` (u32 len + len bytes — NO trailing NUL in this codebase), `BString` (u32 len + len bytes + null byte), `optional<T>` (u8 flag + T if nonzero), `array<T>` (u32 count + count × T), `Variant` (u8 tag + match on tag)
 
 # Binary Exploration
 - Use `plcli` + `.hexpat` pattern files for binary format exploration, NOT Python scripts
@@ -24,10 +28,8 @@ Rust library with Python bindings (via PyO3/maturin) for reading, writing, and m
 - Pattern files go in `references/`
 
 # Reference Files
-- `/mnt/e/OpensourceGame/CrimsonDesert/Crimson Browser/iteminfo_decompressed.pabgb` (5993 items)
-- `/mnt/e/OpensourceGame/CrimsonDesert/Crimson Browser/Original/0.pamt` — Original PAMT
-- `/mnt/e/OpensourceGame/CrimsonDesert/Crimson Browser/Original/0.papgt` — Original PAPGT
-- `/mnt/f/Program/Steam/steamapps/common/Crimson Desert` — Game installation folder
+- `D:\SteamLibrary\steamapps\common\Crimson Desert` — Game installation folder (hardcoded in tests; tests skip cleanly when not present)
+- `out/baselines/1.05/items.jsonl` — Per-version reference data (gitignored — keep local)
 
 # Rust Module Structure
 ```

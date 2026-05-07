@@ -158,12 +158,14 @@ py_binary_struct! {
 mod tests {
     use super::*;
 
-    // 1.04 baseline binary used by the legacy parse / roundtrip tests below.
-    // The path points at a WSL mount that doesn't exist on most CI runners
-    // and on Windows checkouts — `try_load_binary` returns `None` in that
-    // case so the tests skip cleanly instead of failing.
-    const BINARY_PATH: &str =
-        "/mnt/e/OpensourceGame/CrimsonDesert/Godmod/backups/iteminfo_1.0.4.1.pabgb";
+    // The parser targets Crimson Desert 1.05. The test reads the 1.05
+    // binary that `scripts\export_for_ce.py` extracts to `out\iteminfo.pabgb`.
+    // Both files are gitignored (they ship Pearl Abyss content) and the
+    // test skips cleanly when they aren't present.
+    const BINARY_PATH: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        r"\out\iteminfo.pabgb"
+    );
 
     fn try_load_binary() -> Option<Vec<u8>> {
         std::fs::read(BINARY_PATH).ok()

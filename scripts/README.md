@@ -8,12 +8,12 @@ Driver and diagnostic Python scripts for working with Crimson Desert game data.
 python scripts\export_for_ce.py
 ```
 
-One command, three deliverables (`out/items.jsonl`, three `paloc_*.json`, three `output*.txt`). See the project [`README.md`](../README.md#crimson-desert-105--one-shot-ce-table-data-export) for the full description.
+One command, three deliverables (`out\items.jsonl`, three `paloc_*.json`, three `output*.txt`). See the project [`README.md`](../README.MD) for the full description.
 
-**Prerequisites**:
-1. Crimson Desert installed (the script auto-detects D:/F:/E:/C: SteamLibrary paths; override with `--game-dir`)
-2. `crimson_rs` Python wheel installed (`maturin build --release && pip install target/wheels/crimson_rs-*.whl` from the repo root)
-3. `data/keys.txt` (bundled — 6,236 itemKey list dumped from game memory; see [`../data/README.md`](../data/README.md))
+**Prerequisites:**
+1. Crimson Desert installed (the script auto-detects D:/F:/E:/C: SteamLibrary paths; override with `--game-dir`).
+2. `crimson_rs` Python wheel installed (`maturin build --release && pip install target/wheels/crimson_rs-*.whl` from the repo root).
+3. `data/keys.txt` (bundled — 6,236 itemKey list dumped from game memory; see [`../data/README.md`](../data/README.md)).
 
 ## Index
 
@@ -21,51 +21,42 @@ One command, three deliverables (`out/items.jsonl`, three `paloc_*.json`, three 
 
 | Script | Purpose | Inputs | Outputs |
 |---|---|---|---|
-| [`export_for_ce.py`](export_for_ce.py) | **Main one-shot pipeline.** Extracts iteminfo + paloc, builds items.jsonl + paloc JSONs + CE dropdown lists. | game install + `data/keys.txt` | `out/iteminfo.pabgb`, `out/items.jsonl`, `out/paloc_*.json`, `out/output*.txt` |
+| [`export_for_ce.py`](export_for_ce.py) | **Main one-shot pipeline.** Extracts iteminfo + paloc, builds items.jsonl + paloc JSONs + CE dropdown lists. | game install + `data\keys.txt` | `out\iteminfo.pabgb`, `out\items.jsonl`, `out\paloc_*.json`, `out\output*.txt` |
 | [`build_items_jsonl.py`](build_items_jsonl.py) | Standalone anchor-based items.jsonl builder (subset of `export_for_ce.py`). | `keys.txt` + raw `iteminfo.pabgb` | `items.jsonl` |
 
 ### Diagnostic / analysis scripts
 
 | Script | Purpose |
 |---|---|
-| [`anchor_diff.py`](anchor_diff.py) | Locate every item from `keys.txt` in a 1.05 binary and cross-reference with a 1.04 baseline. Reports added/removed/renamed items + anchor-derived per-item byte sizes. |
+| [`anchor_diff.py`](anchor_diff.py) | Locate every item from `keys.txt` in the current binary and cross-reference with a baseline `items.jsonl` (any version). Reports added/removed/renamed items + per-item byte sizes. |
 | [`analyze_per_item.py`](analyze_per_item.py) | For each anchored item chunk, run the parser independently and classify the result as `ok` / `leftover:N` / `fail:<path>`. Used to drive parser improvements. |
+| [`inspect_leftover_bytes.py`](inspect_leftover_bytes.py) | For each `leftover:N` bucket, print the exact bytes the parser left unconsumed — tells you what new fields are missing. |
+
+### Localization / paloc scripts
+
+| Script | Purpose |
+|---|---|
 | [`find_unknown_items.py`](find_unknown_items.py) | List items missing a paloc 0x70 name. |
-| [`compare_community_paloc.py`](compare_community_paloc.py) | Diff the community `item_names.json` against paloc 0x70 to spot 1.05 renames and items the community handled but paloc didn't. |
+| [`compare_community_paloc.py`](compare_community_paloc.py) | Diff the community `item_names.json` against paloc 0x70 to spot renames and items the community handled but paloc didn't. |
 | [`probe_paloc_for_keys.py`](probe_paloc_for_keys.py) | For a given key list, dump every paloc entry on those keys (any type byte). |
 | [`probe_paloc_types.py`](probe_paloc_types.py) | Tally the lower-byte type distribution across all paloc entries. |
 | [`probe_all_paloc_groups.py`](probe_all_paloc_groups.py) | Search every group `0NNN/0.paz` for `localizationstring_<lang>.paloc` to spot patch overlays. |
-| [`probe_kor_fallback.py`](probe_kor_fallback.py) | Check kor / chs / rus / deu / fra paloc files for 0x70 entries on a given key list (used to confirm dev items have no localization in any language). |
-| [`probe_iteminfo_names.py`](probe_iteminfo_names.py) | Inspect `item_name.default` field for given keys in a 1.04 baseline. |
-| [`check_fallback_names.py`](check_fallback_names.py) | Sanity-check whether type-byte 0x30 is a usable fallback for missing 0x70 entries (it isn't — see [`CLAUDE.md`](CLAUDE.md)). |
+| [`probe_kor_fallback.py`](probe_kor_fallback.py) | Check kor / chs / rus / deu / fra paloc files for 0x70 entries on a given key list. |
+| [`probe_iteminfo_names.py`](probe_iteminfo_names.py) | Inspect `item_name.default` field for given keys in a baseline. |
+| [`check_fallback_names.py`](check_fallback_names.py) | Sanity-check whether type-byte 0x30 is a usable fallback for missing 0x70 entries (it isn't — see [`../docs/paloc-71-dev-items.md`](../docs/paloc-71-dev-items.md)). |
+
+### Listing utilities
+
+| Script | Purpose |
+|---|---|
 | [`list_pamt_dirs.py`](list_pamt_dirs.py) | List directories and files inside one group's PAMT (`game_dir/0NNN/0.pamt`). |
-| [`list_all_paloc.py`](list_all_paloc.py) | List every `.paloc` file across all groups, with sizes — useful for finding which group ships which language. |
+| [`list_all_paloc.py`](list_all_paloc.py) | List every `.paloc` file across all groups, with sizes. |
 
-### Parser-improvement scripts (1.05 reverse-engineering)
+### Archived scripts
 
-#### Current (1.04-anchored) — these power the active model
+[`archive/`](archive/) holds (a) cross-version diff *templates* tied to the 1.04 → 1.05 transition and (b) scripts that validated and then dis-proved the wrong "variant tail" hypothesis during 1.05 RE. They're kept on disk as reference but **not** wired into any active workflow. See [`archive/README.md`](archive/README.md) for the per-script index and [`../docs/1.05-parser-history.md`](../docs/1.05-parser-history.md) for the full story.
 
-| Script | Purpose |
-|---|---|
-| [`inspect_leftover_bytes.py`](inspect_leftover_bytes.py) | For each "leftover:N" bucket, print the exact bytes the parser left unconsumed — tells you what new fields are missing. |
-| [`diff_104_105.py`](diff_104_105.py) | Side-by-side hex dump of one item's 1.04 vs 1.05 chunks, with first-diff marker. Anchors both binaries by key. Inputs default to `out/baselines/1.04/iteminfo.pabgb` / `out/iteminfo.pabgb` and the 1.04 baseline jsonl / 1.05 keys.txt. |
-| [`diff_104_105_full.py`](diff_104_105_full.py) | Full `difflib.SequenceMatcher` diff between paired 1.04 / 1.05 chunks; emits every insert / replace span and labels each by the 1.05 parser-tracked field at that offset. Filter by `--item` or `--status fail:item_bundle_data_list`. |
-| [`probe_new_5b_field.py`](probe_new_5b_field.py) | Tallies the second 5-byte insert across every paired item (skipping the known `icon_path_alt` one). Quick way to see whether a hypothesised new field is constant or varies. |
-| [`dump_104_spans.py`](dump_104_spans.py) | Loads the historical 1.04 parser wheel from `.crimson_rs_104/` (built from commit 56a57da via `git worktree`) and writes every named field's offsets to `out/baselines/1.04/spans.json`. Pass `--all` to dump every item, or `--items SK1,SK2` for a subset. |
-| [`align_104_105.py`](align_104_105.py) | Walks the dumped 1.04 spans against the 1.05 chunk for one item and reports every shift transition — pinpoints exactly which 1.04 field the new 1.05 bytes were inserted after. The "shift +5 → +10 transition" is the key signal that drove the 99.7% parser fix. |
-
-#### Historical (validated the now-superseded "variant tail" model)
-
-These scripts validated the iterated model where 1.05 introduced a `new_icon_path` CString + branched body + `ammo_mid_block` + `unk_pre_repair_*` sentinel. That model turned out to be a misinterpretation that just happened to round-trip on items where the wrong bytes coincidentally matched a sentinel; the current parser uses a flat schema (1.04 + ItemIconData growth + a single new 5-byte block), see `scripts/CLAUDE.md` for the details. The scripts are kept as iteration history.
-
-| Script | Purpose |
-|---|---|
-| [`probe_new_layout.py`](probe_new_layout.py) | Validated the 1.05 variant tail (CString `new_icon_path` + branched body) against every anchor. |
-| [`dump_post_bytes.py`](dump_post_bytes.py) | Hex-dump bytes between end-of-`max_endurance` (per the old model) and end-of-chunk for items in given post-size clusters. |
-| [`refine_discriminator.py`](refine_discriminator.py) | Searched for a static predicate distinguishing the 18 ammo items from misc Class B items in the old `new_icon_path == ""` branch. |
-| [`debug_post31.py`](debug_post31.py) | Listed the 18 items the old runtime ammo detector matched. |
-
-### Common arguments
+## Common arguments
 
 Every diagnostic script accepts `--game-dir <path>` to point at the Crimson Desert install. Most also take an `--out` directory or input path arguments — run with `-h` for the full list.
 
@@ -74,49 +65,36 @@ Every diagnostic script accepts `--game-dir <path>` to point at the Crimson Dese
 ### Refresh CE dropdown after a game patch
 
 ```powershell
-# 1. Re-dump itemKey order from the running game (in CE — see Mydev-Cheat-Engine-Tables/dump_item_keys.CEA)
-# 2. Replace data/keys.txt with the new dump (or pass --keys path/to/new/keys.txt)
-# 3. Run the exporter
+# 1. Re-dump itemKey order from the running game (CE — see Mydev-Cheat-Engine-Tables/dump_item_keys.CEA).
+# 2. Replace data\keys.txt with the new dump (or pass --keys path/to/new/keys.txt).
+# 3. Run the exporter.
 python scripts\export_for_ce.py
 ```
 
 ### Investigate parser failures after a game patch
 
 ```powershell
-# Compare item layout between the previous and the new patch
+# 1. Anchor every key in the new binary, cross-reference with the previous baseline.
 python scripts\anchor_diff.py `
     --keys data\keys.txt `
     --pabgb out\iteminfo.pabgb `
     --baseline out\baselines\1.05\items.jsonl `
     --out out\anchors.json
 
-# Per-item analysis to see how often the parser fits cleanly vs leaves
-# trailing bytes vs fails mid-item — guides what fields to add/remove.
+# 2. Per-item analysis — how often the parser fits cleanly vs leaves trailing
+#    bytes vs fails mid-item. Guides what fields to add/remove.
 python scripts\analyze_per_item.py `
     --anchors out\anchors.json `
     --pabgb out\iteminfo.pabgb
 
-# After hypothesising a new tail layout, validate it across every item
-# end-to-end before touching Rust:
-python scripts\probe_new_layout.py `
-    --anchors out\anchors.json `
-    --pabgb out\iteminfo.pabgb
-
-# Hex-dump the bytes around the trailer for items that don't fit the new
-# layout (e.g. the +88 / +54 / +93 leftover clusters) to figure out what
-# extra fields are present:
+# 3. If anything has leftover, dump the unconsumed bytes to figure out what fields are missing.
 python scripts\inspect_leftover_bytes.py `
     --anchors out\anchors.json `
     --pabgb out\iteminfo.pabgb `
     --leftover 88
 ```
 
-Per-version reference data (extracted iteminfo + paloc names per game
-version) lives under [`../out/baselines/`](../out/baselines/). Each
-sub-directory (`1.04/`, `1.05/`, …) holds the `items.jsonl` snapshot for
-that patch — useful as `--baseline` input to `anchor_diff.py`. These
-files are gitignored (they ship Pearl Abyss content) and should NOT be
-deleted; they are how `anchor_diff.py` correlates items across patches.
+For a fail-mode check: **start with the anchor scanner**, not the schema. The 1.05 RE wasted significant effort on phantom schema drift before realizing the issue was in `looks_like_item_start`. See [`../docs/1.05-parser-history.md`](../docs/1.05-parser-history.md) Phase 3.
 
 ### Find a string the game displays — which paloc holds it?
 
@@ -126,3 +104,7 @@ python scripts\probe_paloc_for_keys.py `
     --unknown out\unknown_items.json `
     --lang eng
 ```
+
+## Per-version reference data
+
+`out/baselines/<version>/items.jsonl` snapshots are gitignored (they ship Pearl Abyss content) but should NOT be deleted locally — `anchor_diff.py` correlates items across patches by reading them. Each sub-directory (`1.04/`, `1.05/`, …) holds the canonical `items.jsonl` snapshot for that patch.

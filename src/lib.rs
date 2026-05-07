@@ -20,15 +20,46 @@ mod tests {
     use crate::binary::papgt::PackGroupTreeMeta;
     use crate::item_info::ItemInfo;
 
-    const BINARY_PATH: &str =
-        "/mnt/e/OpensourceGame/CrimsonDesert/Godmod/backups/iteminfo_1.0.4.1.pabgb";
-    const PAPGT_PATH: &str = "/mnt/e/OpensourceGame/CrimsonDesert/Crimson Browser/Original/0.papgt";
-    const PAMT_PATH: &str = "/mnt/e/OpensourceGame/CrimsonDesert/Crimson Browser/Original/0.pamt";
-    const GAME_DIR: &str = "/mnt/f/Program/Steam/steamapps/common/Crimson Desert";
+    // Hardcoded to the maintainer's local install. Tests skip gracefully
+    // if the files aren't present (CI / fresh machines) — they don't fail.
+    const GAME_DIR: &str = r"D:\SteamLibrary\steamapps\common\Crimson Desert";
+    // The parser targets Crimson Desert 1.05. The roundtrip test reads the
+    // current 1.05 binary that `scripts\export_for_ce.py` extracts to
+    // `out\iteminfo.pabgb`. Test skips if the file isn't present (e.g. a
+    // fresh checkout that hasn't run the export pipeline).
+    const BINARY_PATH: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        r"\out\iteminfo.pabgb"
+    );
+    // PAPGT / PAMT in the live game install (used by the parse / roundtrip
+    // tests below). meta/0.papgt is the global descriptor; any group's
+    // 0.pamt works for the parse path — 0019 ships in every region.
+    const PAPGT_PATH: &str = concat!(
+        r"D:\SteamLibrary\steamapps\common\Crimson Desert",
+        r"\meta\0.papgt"
+    );
+    const PAMT_PATH: &str = concat!(
+        r"D:\SteamLibrary\steamapps\common\Crimson Desert",
+        r"\0019\0.pamt"
+    );
+
+    /// Read a file, or print a skip notice and return `None` so tests can
+    /// `let Some(data) = ... else { return };` instead of panicking.
+    fn try_read(path: &str, label: &str) -> Option<Vec<u8>> {
+        match std::fs::read(path) {
+            Ok(data) => Some(data),
+            Err(e) => {
+                eprintln!("skipping: {label} not found at {path}: {e}");
+                None
+            }
+        }
+    }
 
     #[test]
     fn test_full_roundtrip() {
-        let data = std::fs::read(BINARY_PATH).expect("binary file not found");
+        let Some(data) = try_read(BINARY_PATH, "1.04 baseline binary") else {
+            return;
+        };
         let mut offset = 0;
         let mut items = Vec::new();
         while offset < data.len() {
@@ -46,7 +77,9 @@ mod tests {
 
     #[test]
     fn test_papgt_parse() {
-        let data = std::fs::read(PAPGT_PATH).expect("papgt file not found");
+        let Some(data) = try_read(PAPGT_PATH, "papgt") else {
+            return;
+        };
         let papgt = PackGroupTreeMeta::parse(&data).unwrap();
         println!("PAPGT: {} entries", papgt.entries.len());
         for entry in &papgt.entries {
@@ -63,7 +96,9 @@ mod tests {
 
     #[test]
     fn test_papgt_roundtrip() {
-        let data = std::fs::read(PAPGT_PATH).expect("papgt file not found");
+        let Some(data) = try_read(PAPGT_PATH, "papgt") else {
+            return;
+        };
         let papgt = PackGroupTreeMeta::parse(&data).unwrap();
         println!("PAPGT: {} entries", papgt.entries.len());
         let written = papgt.to_bytes().unwrap();
@@ -73,7 +108,9 @@ mod tests {
 
     #[test]
     fn test_pamt_parse() {
-        let data = std::fs::read(PAMT_PATH).expect("pamt file not found");
+        let Some(data) = try_read(PAMT_PATH, "pamt") else {
+            return;
+        };
         let pamt = PackMeta::parse(&data, None).unwrap();
         println!(
             "PAMT: {} chunks, {} directories",
@@ -94,24 +131,34 @@ mod tests {
 
     #[test]
     fn test_pamt_roundtrip() {
-        let data = std::fs::read(PAMT_PATH).expect("pamt file not found");
+        let Some(data) = try_read(PAMT_PATH, "pamt") else {
+            return;
+        };
         let pamt = PackMeta::parse(&data, None).unwrap();
         let written = pamt.to_bytes().unwrap();
         assert_eq!(written.len(), data.len(), "pamt roundtrip size mismatch");
         assert_eq!(written, data, "pamt roundtrip bytes mismatch");
     }
 
-    fn extract_paloc_data() -> Vec<u8> {
+    fn extract_paloc_data() -> Option<Vec<u8>> {
         extract_paloc_from_archive("0020", "localizationstring_eng.paloc")
     }
 
-    fn extract_paloc_from_archive(group: &str, file_name: &str) -> Vec<u8> {
+    /// Returns `None` (with a skip notice on stderr) if the game install
+    /// isn't present so tests can fall through gracefully.
+    fn extract_paloc_from_archive(group: &str, file_name: &str) -> Option<Vec<u8>> {
         use crate::binary::paz;
         use std::path::Path;
 
         let group_dir = Path::new(GAME_DIR).join(group);
-        let pamt_data = std::fs::read(group_dir.join("0.pamt"))
-            .unwrap_or_else(|e| panic!("{}/0.pamt: {}", group, e));
+        let pamt_path = group_dir.join("0.pamt");
+        let pamt_data = match std::fs::read(&pamt_path) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("skipping: {}: {}", pamt_path.display(), e);
+                return None;
+            }
+        };
         let pamt = PackMeta::parse(&pamt_data, None).unwrap();
 
         let dir = pamt
@@ -125,18 +172,22 @@ mod tests {
             .find(|f| f.name == file_name)
             .unwrap_or_else(|| panic!("{} not found", file_name));
 
-        paz::extract_file(
-            &group_dir,
-            file,
-            "gamedata/stringtable/binary__",
-            &pamt.header.encrypt_info.encrypt_info,
+        Some(
+            paz::extract_file(
+                &group_dir,
+                file,
+                "gamedata/stringtable/binary__",
+                &pamt.header.encrypt_info.encrypt_info,
+            )
+            .unwrap(),
         )
-        .unwrap()
     }
 
     #[test]
     fn test_paloc_parse() {
-        let data = extract_paloc_data();
+        let Some(data) = extract_paloc_data() else {
+            return;
+        };
         let paloc = LocalizationFile::parse(&data).unwrap();
         println!("PALOC: {} entries", paloc.entries.len());
         for entry in paloc.entries.iter().take(5) {
@@ -152,7 +203,9 @@ mod tests {
 
     #[test]
     fn test_paloc_roundtrip() {
-        let data = extract_paloc_data();
+        let Some(data) = extract_paloc_data() else {
+            return;
+        };
         let paloc = LocalizationFile::parse(&data).unwrap();
         let written = paloc.to_bytes().unwrap();
         assert_eq!(written.len(), data.len(), "paloc roundtrip size mismatch");
@@ -161,7 +214,10 @@ mod tests {
 
     #[test]
     fn test_paloc_kor_parse() {
-        let data = extract_paloc_from_archive("0019", "localizationstring_kor.paloc");
+        let Some(data) = extract_paloc_from_archive("0019", "localizationstring_kor.paloc")
+        else {
+            return;
+        };
         let paloc = LocalizationFile::parse(&data).unwrap();
         println!("PALOC KOR: {} entries", paloc.entries.len());
         for entry in paloc.entries.iter().take(5) {
@@ -176,7 +232,10 @@ mod tests {
 
     #[test]
     fn test_paloc_kor_roundtrip() {
-        let data = extract_paloc_from_archive("0019", "localizationstring_kor.paloc");
+        let Some(data) = extract_paloc_from_archive("0019", "localizationstring_kor.paloc")
+        else {
+            return;
+        };
         let paloc = LocalizationFile::parse(&data).unwrap();
         let written = paloc.to_bytes().unwrap();
         assert_eq!(
@@ -193,8 +252,13 @@ mod tests {
         use std::path::Path;
 
         let papgt_path = Path::new(GAME_DIR).join("meta/0.papgt");
-        let papgt_data = std::fs::read(&papgt_path)
-            .unwrap_or_else(|e| panic!("cannot read {}: {}", papgt_path.display(), e));
+        let papgt_data = match std::fs::read(&papgt_path) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("skipping: cannot read {}: {}", papgt_path.display(), e);
+                return;
+            }
+        };
         let papgt = PackGroupTreeMeta::parse(&papgt_data).unwrap();
 
         println!(

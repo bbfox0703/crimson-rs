@@ -37,6 +37,7 @@ def _is_ident_byte(b: int) -> bool:
         or 48 <= b <= 57
         or 65 <= b <= 90
         or 97 <= b <= 122
+        or b >= 0x80  # accept UTF-8 multi-byte
     )
 
 
@@ -46,7 +47,7 @@ def _looks_like_item_start(data: bytes, off: int, expected_key: int) -> bool:
     key, slen = struct.unpack_from("<II", data, off)
     if key != expected_key:
         return False
-    if not (2 <= slen <= 64):
+    if not (2 <= slen <= 128):
         return False
     if off + 8 + slen + 1 > len(data):
         return False

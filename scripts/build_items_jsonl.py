@@ -54,12 +54,16 @@ def load_keys(path: Path) -> list[int]:
 
 
 def is_ident_byte(b: int) -> bool:
+    # ASCII alphanumeric / underscore / space, OR any UTF-8 high byte.
+    # Some 1.05 string_keys contain Roman numerals (Ⅲ/Ⅳ/Ⅵ) encoded as
+    # multi-byte UTF-8, e.g. Goblin_Merchant_Fabric_Armor_Ⅲ.
     return (
         b == ord("_")
         or b == ord(" ")
         or 48 <= b <= 57
         or 65 <= b <= 90
         or 97 <= b <= 122
+        or b >= 0x80
     )
 
 
@@ -69,7 +73,10 @@ def looks_like_item_start(data: bytes, off: int, expected_key: int) -> bool:
     key, slen = struct.unpack_from("<II", data, off)
     if key != expected_key:
         return False
-    if not (2 <= slen <= 64):
+    # 1.05 introduced names up to 71 bytes (Recipe_Item_Skill_AbyssGear_…_LV1).
+    # Bound is generous — real item keys are 2..~80 bytes; 128 is comfortably
+    # past anything observed.
+    if not (2 <= slen <= 128):
         return False
     if off + 8 + slen + 1 > len(data):
         return False

@@ -75,12 +75,14 @@ def find_game_dir(explicit: str | None) -> str:
 
 
 def _is_ident_byte(b: int) -> bool:
+    # ASCII alphanumeric / underscore / space, OR any UTF-8 high byte.
     return (
         b == ord("_")
         or b == ord(" ")
         or 48 <= b <= 57
         or 65 <= b <= 90
         or 97 <= b <= 122
+        or b >= 0x80
     )
 
 
@@ -92,7 +94,7 @@ def _looks_like_item_start(data: bytes, off: int, expected_key: int) -> bool:
     key, slen = struct.unpack_from("<II", data, off)
     if key != expected_key:
         return False
-    if not (2 <= slen <= 64):
+    if not (2 <= slen <= 128):
         return False
     if off + 8 + slen + 1 > len(data):
         return False

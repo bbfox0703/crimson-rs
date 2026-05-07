@@ -21,6 +21,7 @@ def _is_ident(b):
         or 48 <= b <= 57
         or 65 <= b <= 90
         or 97 <= b <= 122
+        or b >= 0x80  # accept UTF-8 multi-byte
     )
 
 
@@ -28,7 +29,7 @@ def _looks(data, off, key):
     if off + 12 > len(data):
         return False
     k, slen = struct.unpack_from("<II", data, off)
-    if k != key or not (2 <= slen <= 64) or off + 8 + slen + 1 > len(data):
+    if k != key or not (2 <= slen <= 128) or off + 8 + slen + 1 > len(data):
         return False
     sk = data[off + 8 : off + 8 + slen]
     return all(_is_ident(b) for b in sk) and data[off + 8 + slen] == 0

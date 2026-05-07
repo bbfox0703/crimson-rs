@@ -12,7 +12,7 @@ This library is a poor man attempts and assembling various tools to explore and 
 It is a work in progress and currently supports:
 - Extracting and parsing .paz files (game archives)
 - Parsing and editing iteminfo binary data via Python
-- **Crimson Desert 1.05** (5/2 patch): partial parser + anchor-based recovery so 100% of items still produce a usable record (see [`scripts/CLAUDE.md`](scripts/CLAUDE.md))
+- **Crimson Desert 1.05** (5/2 patch): 100% perfect parse on all 6,236 items; byte-perfect roundtrip via `serialize_iteminfo`. See [`docs/1.05-parser-history.md`](docs/1.05-parser-history.md) for the RE story and [`scripts/CLAUDE.md`](scripts/CLAUDE.md) for the next-session pickup notes.
 - Generating Cheat Engine dropdown lists (item id → name) covering all 6,236 in-game item keys
 
 ## Crimson Desert 1.05 — One-shot CE table data export
@@ -42,12 +42,13 @@ Override the game install path or `keys.txt` location with `--game-dir` and `--k
 crimson-rs/
 ├─ src/                    Rust library (PyO3 bindings → crimson_rs.pyd)
 ├─ python/crimson_rs/      Python wrapper package
-├─ docs/                   Format references (archive-format.md, api.md)
+├─ docs/                   Format references + RE history (api.md, archive-format.md, 1.05-parser-history.md, …)
 ├─ examples/               Standalone Python examples
 ├─ scripts/                Driver + diagnostic scripts (this is what most users run)
 │   ├─ export_for_ce.py        ← one-shot exporter (the main entry point)
-│   ├─ anchor_diff.py          ← key-by-key 1.04 vs 1.05 anchor analysis
+│   ├─ anchor_diff.py          ← key-by-key cross-version anchor analysis
 │   ├─ analyze_per_item.py     ← per-item parser-fit diagnostic
+│   ├─ archive/                ← retired scripts kept as cross-version diff templates
 │   └─ ...                     (see scripts/README.md for the full index)
 ├─ data/                   Bundled inputs (keys.txt, lookup tables)
 ├─ references/             Hex-pattern files (and locally-kept iteminfo samples)
@@ -136,21 +137,23 @@ with open("items.csv", "w", newline="") as f:
         w.writerow([item["key"], item["string_key"], item["item_type"], item["item_tier"]])
 ```
 
-### 1.05 parser — partial + lossy + anchor-based recovery
+### 1.05 parser
 
-`parse_iteminfo_from_bytes` understands the 1.0.4.x layout fully. The 1.05 patch (5/2) added new fields whose exact layout is still being reverse-engineered, so for 1.05 binaries:
+`parse_iteminfo_from_bytes` parses 1.05 binaries to 100% (6,236 / 6,236 items, byte-perfect roundtrip via `serialize_iteminfo`). Two helper modes are also available for diagnostic / recovery work:
 
 ```python
-# Lossy mode — best-effort, skips items the parser cannot consume cleanly
+# Tracked mode — returns byte-range metadata for each parsed field; used by
+# the diagnostic scripts in scripts/.
+res = crimson_rs.parse_iteminfo_tracked(data)
+
+# Lossy mode — best-effort. Skips items the parser cannot consume cleanly
+# and continues from the next plausible item start. Useful if a future game
+# patch breaks parsing on a subset of items.
 res = crimson_rs.parse_iteminfo_lossy(data)
 print(f"parsed {len(res['items'])}, skipped {len(res['errors'])}")
-
-# Tracked mode — also returns byte-range metadata + partial trace on error,
-# used by the diagnostic scripts in scripts/
-res = crimson_rs.parse_iteminfo_tracked(data)
 ```
 
-For a robust pipeline that doesn't depend on 100% parser coverage, use [`scripts/export_for_ce.py`](scripts/export_for_ce.py) — it pairs the parser with the CE-dumped key list (`data/keys.txt`) to anchor every item in the binary by its key.
+For a robust pipeline that anchors items by the in-game item-key dump rather than purely by parsing, use [`scripts/export_for_ce.py`](scripts/export_for_ce.py).
 
 ### API Reference
 

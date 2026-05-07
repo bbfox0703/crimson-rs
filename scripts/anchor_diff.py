@@ -58,13 +58,15 @@ def looks_like_item_start(data: bytes, off: int, expected_key: int) -> bool:
     key, slen = struct.unpack_from("<II", data, off)
     if key != expected_key:
         return False
-    if not (2 <= slen <= 64):
+    if not (2 <= slen <= 128):
         return False
     if off + 8 + slen + 1 > len(data):
         return False
     sk = data[off + 8 : off + 8 + slen]
     for b in sk:
-        if not (b == ord("_") or b == ord(" ") or 48 <= b <= 57 or 65 <= b <= 90 or 97 <= b <= 122):
+        # Allow ASCII word chars + space, plus UTF-8 high bytes (>=0x80) so
+        # 1.05 string_keys with Roman numerals (Ⅲ/Ⅳ/Ⅵ) are accepted.
+        if not (b == ord("_") or b == ord(" ") or 48 <= b <= 57 or 65 <= b <= 90 or 97 <= b <= 122 or b >= 0x80):
             return False
     if data[off + 8 + slen] != 0:
         return False

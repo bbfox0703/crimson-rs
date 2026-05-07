@@ -80,11 +80,13 @@ fn scan_next_item_start(data: &[u8], from_offset: usize) -> Option<usize> {
                 data[o + 6],
                 data[o + 7],
             ]) as usize;
-            if (2..=64).contains(&slen) && o + 8 + slen < n {
+            if (2..=128).contains(&slen) && o + 8 + slen < n {
                 let bytes = &data[o + 8..o + 8 + slen];
                 let mut all_ident = true;
                 for &b in bytes {
-                    let ok = b.is_ascii_alphanumeric() || b == b'_' || b == b' ';
+                    // ASCII word chars / space, OR any UTF-8 high byte
+                    // (1.05 string_keys can contain Ⅲ/Ⅳ/Ⅵ etc.).
+                    let ok = b.is_ascii_alphanumeric() || b == b'_' || b == b' ' || b >= 0x80;
                     if !ok {
                         all_ident = false;
                         break;
