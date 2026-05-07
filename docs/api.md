@@ -359,7 +359,6 @@ Each item is a dict with 105 fields. All fields are required for serialization.
 |---|---|---|
 | `price_list` | `list[dict]` | See [ItemPriceInfo](#itempriceinfo) |
 | `is_register_trade_market` | `int` | Tradeable flag (u8) |
-| `is_blocked_store_sell` | `int` | (u8) |
 
 ### Combat & Equipment Stats
 
@@ -368,7 +367,7 @@ Each item is a dict with 105 fields. All fields are required for serialization.
 | `equip_passive_skill_list` | `list[dict]` | See [PassiveSkillLevel](#passiveskilllevel) |
 | `enchant_data_list` | `list[dict]` | See [EnchantData](#enchantdata) |
 | `sharpness_data` | `dict` | See [ItemInfoSharpnessData](#iteminfoSharpnessdata) |
-| `max_endurance` | `int` | Maximum durability (u16) |
+| `max_endurance` | `int \| None` | Maximum durability (u16). 1.05: present only when `new_icon_path` is empty. |
 | `repair_data_list` | `list[dict]` | See [RepairData](#repairdata) |
 | `is_shield_item` | `int` | (u8) |
 | `is_tower_shield_item` | `int` | (u8) |
@@ -438,13 +437,29 @@ Each item is a dict with 105 fields. All fields are required for serialization.
 | `is_destroy_when_broken` | `int` | (u8) |
 | `is_important_item` | `int` | (u8) |
 | `is_wild` | `int` | (u8) |
-| `is_preorder_item` | `int` | (u8) |
 | `enable_equip_in_clone_actor` | `int` | (u8) |
 | `hide_from_inventory_on_pop_item` | `int` | (u8) |
 | `enable_alert_system_to_ui` | `int` | (u8) |
 | `usable_alert` | `int` | (u8) |
 | `discard_offset_y` | `float` | (f32) |
-| `respawn_time_seconds` | `int` | (i64) |
+| `respawn_time_seconds` | `int \| None` | (i64). 1.05: present only when `new_icon_path` is empty. |
+
+### 1.05 variant tail
+
+In Crimson Desert 1.05 the bytes that 1.04 used for the four bool flags
+`is_blocked_store_sell..is_preserved_on_extract` (`u8 × 4`) plus
+`respawn_time_seconds` (`i64`) plus `max_endurance` (`u16`) plus an optional
+22-byte mid block were repurposed as a discriminated union driven by a new
+`new_icon_path` CString.
+
+| Field | Type | Description |
+|---|---|---|
+| `new_icon_path` | `str` | CString. Empty for ~half of items, otherwise an icon path like `cd_icon_common_camp_donation_00`. |
+| `respawn_time_seconds` | `int \| None` | Present iff `new_icon_path == ""` (legacy branch). |
+| `max_endurance` | `int \| None` | Present iff `new_icon_path == ""` (legacy branch). |
+| `ammo_mid_block` | `list[int] \| None` | 22 raw bytes. Present only on the 18 ammo / projectile items. |
+| `icon_flag` | `int \| None` | u8 (observed `01`). Present iff `new_icon_path != ""`. |
+| `icon_unk_zeros` | `list[int] \| None` | 9 raw bytes (observed all-zero). Present iff `new_icon_path != ""`. |
 
 ### Related Items
 

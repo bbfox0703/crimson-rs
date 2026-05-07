@@ -147,6 +147,33 @@ impl WritePyValue for [u8; 22] {
     }
 }
 
+// 9-byte raw block — Crimson Desert 1.05 ItemInfo `icon_unk_zeros` pad.
+impl ToPyValue for [u8; 9] {
+    fn to_py_value(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let list = PyList::empty(py);
+        for &b in self.iter() {
+            list.append(b)?;
+        }
+        Ok(list.into_any().unbind())
+    }
+}
+
+impl WritePyValue for [u8; 9] {
+    fn write_from_py(w: &mut Vec<u8>, obj: &Bound<'_, PyAny>) -> PyResult<()> {
+        let list = obj.cast::<PyList>()?;
+        if list.len() != 9 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                format!("expected 9 bytes, got {}", list.len()),
+            ));
+        }
+        for item in list.iter() {
+            let v: u8 = item.extract()?;
+            w.push(v);
+        }
+        Ok(())
+    }
+}
+
 // ── CString ───────────────────────────────────────────────────────────────────
 
 impl ToPyValue for CString<'_> {

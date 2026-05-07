@@ -45,10 +45,10 @@ One command, three deliverables (`out/items.jsonl`, three `paloc_*.json`, three 
 
 | Script | Purpose |
 |---|---|
-| [`classify_items.py`](classify_items.py) | Classify every 1.05 item by its true post-`max_endurance` byte count and search for fields that partition Class A vs Class B perfectly. |
-| [`find_discriminator.py`](find_discriminator.py) | Cross-tabulate post-size against `max_endurance` and other fields to find a boolean predicate identifying items that need the 22-byte mid block. |
-| [`refine_discriminator.py`](refine_discriminator.py) | For the ambiguous `max_endurance == 0` case, search for a second-tier field that distinguishes ammo-style Class A items from misc Class B items. |
-| [`debug_post31.py`](debug_post31.py) | Dump the 18 items with `post == 31` (Class A minimum) so the discriminator can be sanity-checked against them. |
+| [`probe_new_layout.py`](probe_new_layout.py) | Validate the 1.05 ItemInfo variant tail (CString `new_icon_path` + branched body) against every anchor. Reports per-cluster pass/fail counts and the u32 length distribution. |
+| [`dump_post_bytes.py`](dump_post_bytes.py) | Hex-dump bytes between end-of-`max_endurance` and end-of-chunk for items in given post-size clusters. Useful for inspecting items that don't fit the new layout (`+88 / +54 / +93` leftover, ammo_mid_block fail cases). Note: only works for items in the `new_icon_path.length == 0` branch. |
+| [`refine_discriminator.py`](refine_discriminator.py) | Within the length==0 branch, search for a static field-value predicate that distinguishes the 18 ammo / projectile items (which carry an extra 22-byte `ammo_mid_block`) from misc Class B items. The runtime parser instead peeks the `FF FF` trailer sentinel. |
+| [`debug_post31.py`](debug_post31.py) | List the 18 items with `post == 31` (length==0 + 22-byte ammo_mid_block + trailer + count) and confirm the runtime ammo detector finds each one. |
 | [`inspect_leftover_bytes.py`](inspect_leftover_bytes.py) | For each "leftover:N" bucket, print the exact bytes the parser left unconsumed — tells you what new fields are missing. |
 
 ### Common arguments
@@ -81,7 +81,28 @@ python scripts\anchor_diff.py `
 python scripts\analyze_per_item.py `
     --anchors out\anchors.json `
     --pabgb out\iteminfo.pabgb
+
+# After hypothesising a new tail layout, validate it across every item
+# end-to-end before touching Rust:
+python scripts\probe_new_layout.py `
+    --anchors out\anchors.json `
+    --pabgb out\iteminfo.pabgb
+
+# Hex-dump the bytes around the trailer for items that don't fit the new
+# layout (e.g. the +88 / +54 / +93 leftover clusters) to figure out what
+# extra fields are present:
+python scripts\inspect_leftover_bytes.py `
+    --anchors out\anchors.json `
+    --pabgb out\iteminfo.pabgb `
+    --leftover 88
 ```
+
+Per-version reference data (extracted iteminfo + paloc names per game
+version) lives under [`../out/baselines/`](../out/baselines/). Each
+sub-directory (`1.04/`, `1.05/`, …) holds the `items.jsonl` snapshot for
+that patch — useful as `--baseline` input to `anchor_diff.py`. These
+files are gitignored (they ship Pearl Abyss content) and should NOT be
+deleted; they are how `anchor_diff.py` correlates items across patches.
 
 ### Find a string the game displays — which paloc holds it?
 

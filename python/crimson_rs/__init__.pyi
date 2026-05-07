@@ -543,18 +543,23 @@ class ItemInfo(TypedDict):
     emoji_texture_id: str
     enable_equip_in_clone_actor: int
     """u8"""
-    is_blocked_store_sell: int
-    """u8"""
-    is_preorder_item: int
-    """u8"""
-    is_has_item_use_data_inventory_buff: int
-    """u8"""
-    is_preserved_on_extract: int
-    """u8"""
-    respawn_time_seconds: int
-    """i64"""
-    max_endurance: int
-    """u16"""
+    new_icon_path: str
+    """1.05: CString that replaced the four 1.04 bool fields
+    is_blocked_store_sell..is_preserved_on_extract. Empty for items
+    without a custom icon (most Class B items, all ammo)."""
+    respawn_time_seconds: int | None
+    """1.05: i64. Present only when `new_icon_path` is empty."""
+    max_endurance: int | None
+    """1.05: u16. Present only when `new_icon_path` is empty."""
+    ammo_mid_block: list[int] | None
+    """1.05: 22 raw bytes. Present only on the 18 ammo / projectile
+    items (max_endurance == 0 with a real binary mid block)."""
+    icon_flag: int | None
+    """1.05: u8 (observed `01`). Present only when `new_icon_path` is
+    non-empty."""
+    icon_unk_zeros: list[int] | None
+    """1.05: 9 raw bytes (observed all-zero). Present only when
+    `new_icon_path` is non-empty."""
     repair_data_list: list[RepairData]
 
 

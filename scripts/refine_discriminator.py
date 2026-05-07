@@ -1,6 +1,25 @@
-"""For items where max_endurance == 0 (ambiguous), find what other field
-distinguishes those that have a mid block (Class A: 18 ammo/projectile
-items) from those that don't (Class B: 2,669 misc items)."""
+"""Find what distinguishes ammo / projectile items from misc Class B items.
+
+In the 1.05 ItemInfo layout the parser branches on `new_icon_path.length`:
+
+    length == 0    → respawn_time_seconds (i64) + max_endurance (u16)
+                     [+ optional 22-byte ammo_mid_block]
+                     + trailer + repair_data_list
+
+    length  > 0    → icon_flag + 9 zero bytes + trailer + ...
+
+Within the length==0 branch, two sub-shapes coexist:
+
+    "ammo-like" (18 items): the 22-byte `ammo_mid_block` is present,
+    so chunk size minus end-of-`max_endurance` (`post`) is ≥ 20.
+
+    Class B (≈2,967 items): no `ammo_mid_block`, post < 20.
+
+The Rust parser detects ammo at runtime by peeking the `FF FF` trailer
+sentinel. This script tries instead to find a clean, *static* predicate
+on the parsed fields that picks out the 18 ammo items — useful if we
+ever want a non-peeking discriminator.
+"""
 from __future__ import annotations
 import argparse
 import json
