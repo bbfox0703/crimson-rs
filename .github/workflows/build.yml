@@ -50,10 +50,12 @@ jobs:
       - name: Update develop release
         uses: ncipollo/release-action@v1
         with:
-          tag: v1.0.4.x
+          # Tag tracks the in-game patch series this fork's parser targets.
+          # Bump the minor when Pearl Abyss ships a new minor patch.
+          tag: v1.0.5.x
           name: Development Build
           body: |
-            Latest development wheels built from `main`.
+            Latest development wheels built from `main` (targets Crimson Desert 1.05.x).
             Updated on each push.
           artifacts: dist/*.whl
           allowUpdates: true

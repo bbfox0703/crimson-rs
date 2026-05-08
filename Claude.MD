@@ -6,7 +6,7 @@ Rust library with Python bindings (via PyO3/maturin) for reading, writing, and m
 - Build and install: `maturin develop` (in a venv; the project uses `.venv/`)
 - Run tests: `cargo test --lib`
 - Lint: `cargo clippy --all-targets --lib -- -D warnings` (must pass clean — enforced by CI on every PR and push to main/dev, see `.github/workflows/ci.yml`; `main` is branch-protected on this check)
-- Workflow: develop on `dev` → PR to `main` → CI green → merge → `build.yml` rebuilds the rolling-release Windows wheel attached to the `v1.0.4.x` "Development Build" GitHub release
+- Workflow: develop on `dev` → PR to `main` → CI green → merge → `build.yml` rebuilds the rolling-release Windows wheel attached to the `v1.0.<minor>.x` "Development Build" GitHub release (currently `v1.0.5.x`; bump the minor in `build.yml` when Pearl Abyss ships a new patch series)
 
 # Documentation
 - `docs/archive-format.md` — Binary format specs (PAPGT, PAMT, PAZ, trie), mod loading overlay approach
