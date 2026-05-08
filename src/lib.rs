@@ -2,6 +2,7 @@ mod binary;
 mod crypto;
 mod item_info;
 mod python;
+mod skill_info;
 pub(crate) mod python_traits;
 
 use pyo3::prelude::*;
@@ -228,6 +229,97 @@ mod tests {
             );
         }
         assert!(!paloc.entries.is_empty(), "should have entries");
+    }
+
+    #[test]
+    fn test_skill_roundtrip_1_05() {
+        let Some(pabgh) = extract_skill_from_archive(GAME_DIR, "skill.pabgh") else {
+            return;
+        };
+        let Some(pabgb) = extract_skill_from_archive(GAME_DIR, "skill.pabgb") else {
+            return;
+        };
+        run_skill_roundtrip("1.05 (live game install)", &pabgh, &pabgb);
+    }
+
+    /// Cross-version skill roundtrip: validates the parser also handles
+    /// the 1.03 (NoField58) and 1.04 (WithField58, smaller type_id table)
+    /// formats. Reads from a hard-coded path on the maintainer's machine
+    /// and skips on absence.
+    #[test]
+    fn test_skill_roundtrip_cross_version() {
+        const VERSIONED_ROOT: &str = r"G:\我的雲端硬碟\temp\Crimson Desert";
+        for version in ["1.03.01", "1.04.01", "1.05.01"] {
+            let game_dir = format!(r"{}\{}", VERSIONED_ROOT, version);
+            let Some(pabgh) = extract_skill_from_archive(&game_dir, "skill.pabgh") else {
+                eprintln!("skipping {}: install not found", version);
+                continue;
+            };
+            let Some(pabgb) = extract_skill_from_archive(&game_dir, "skill.pabgb") else {
+                continue;
+            };
+            run_skill_roundtrip(version, &pabgh, &pabgb);
+        }
+    }
+
+    fn run_skill_roundtrip(label: &str, pabgh: &[u8], pabgb: &[u8]) {
+        use crate::skill_info::SkillData;
+        let parsed = SkillData::parse(pabgh, pabgb)
+            .unwrap_or_else(|e| panic!("{}: parse failed: {}", label, e));
+        let raw_fallback_count = parsed
+            .entries
+            .iter()
+            .filter(|e| e.buff_raw_fallback.is_some())
+            .count();
+        println!(
+            "skill {}: {} entries (raw fallback={}), format={:?}",
+            label,
+            parsed.entries.len(),
+            raw_fallback_count,
+            parsed.format
+        );
+        let (h, b) = parsed
+            .write()
+            .unwrap_or_else(|e| panic!("{}: write failed: {}", label, e));
+        assert_eq!(h.len(), pabgh.len(), "{}: pabgh size mismatch", label);
+        assert_eq!(b.len(), pabgb.len(), "{}: pabgb size mismatch", label);
+        assert_eq!(h, pabgh, "{}: pabgh bytes mismatch", label);
+        assert_eq!(b, pabgb, "{}: pabgb bytes mismatch", label);
+    }
+
+    fn extract_skill_from_archive(game_dir: &str, file_name: &str) -> Option<Vec<u8>> {
+        use crate::binary::paz;
+        use std::path::Path;
+
+        let group_dir = Path::new(game_dir).join("0008");
+        let pamt_path = group_dir.join("0.pamt");
+        let pamt_data = match std::fs::read(&pamt_path) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("skipping: {}: {}", pamt_path.display(), e);
+                return None;
+            }
+        };
+        let pamt = PackMeta::parse(&pamt_data, None).unwrap();
+        let dir = pamt
+            .directories
+            .iter()
+            .find(|d| d.path == "gamedata/binary__/client/bin")
+            .expect("dir not found");
+        let file = dir
+            .files
+            .iter()
+            .find(|f| f.name == file_name)
+            .unwrap_or_else(|| panic!("{} not found", file_name));
+        Some(
+            paz::extract_file(
+                &group_dir,
+                file,
+                "gamedata/binary__/client/bin",
+                &pamt.header.encrypt_info.encrypt_info,
+            )
+            .unwrap(),
+        )
     }
 
     #[test]

@@ -43,19 +43,32 @@ GameMods call sites that were `hasattr`-guarded against the bundled `.pyd`:
 
 Both now resolve to a real binding.
 
-### 2. `parse_skillinfo_from_bytes(skill_pabgb: bytes, skill_pabgh: bytes) -> list[SkillInfo]`
+### 2. `parse_skillinfo_from_bytes(skill_pabgb: bytes, skill_pabgh: bytes) -> dict` — **DONE**
 
-Parse the skill table the same way GameMods parses iteminfo — using both the
-`.pabgb` payload and the matching `.pabgh` index.
+Implemented in `src/skill_info/` as a Rust port of GameMods' 35 KB
+`skillinfo_parser.py`, with the same brute-force subclass-tail probing and
+raw-fallback preservation. Validated byte-identically against three baseline
+versions (1.03 / 1.04 / 1.05) plus the live 1.05 install:
 
-- GameMods call site: `gui/tabs/buffs_v319.py:6359`.
-- Use case: BuffsV319 reads `skill.pabgb` + `skill.pabgh` from group `0008`
-  and walks `buff_level_list` per skill. GameMods currently has a 34 KB pure
-  Python `skillinfo_parser.py` to substitute when this binding is missing.
-- Note: this is a new binary parser, not a rebinding of an existing one.
-  Scope it carefully — defer if format coverage isn't yet RE'd to the same
-  level as iteminfo. The PABGH-bounded per-entry pattern from `iteminfo`
-  applies (each entry parsed against an index-supplied range).
+| Version | Entries | Format          | Raw fallback | Roundtrip |
+|---------|---------|-----------------|--------------|-----------|
+| 1.03.01 | 1924    | `no_field_58`   | 547          | ✓         |
+| 1.04.01 | 1952    | `with_field_58` | 191          | ✓         |
+| 1.05.01 | 1963    | `with_field_58` | 190          | ✓         |
+| 1.05 live | 1963  | `with_field_58` | 190          | ✓         |
+
+Raw-fallback counts and format-flag values match the Python parser exactly.
+
+The companion `serialize_skillinfo(data) -> (pabgh, pabgb)` reverses the
+parse for byte-identical roundtrip.
+
+Cross-version probe note: 11 `type_id` tail sizes drift between the three
+versions (e.g. `type_id=0` is 116 bytes in 1.03/1.04 but 117 in 1.05), so
+the brute-force probe is essential — hard-coding the size table would
+silently break older or future versions. Cache is rebuilt per parse.
+
+GameMods call site `gui/tabs/buffs_v319.py:6359` can now drop the 34 KB
+Python parser fallback.
 
 ### 3. `inspect_legacy_patches(vanilla_bytes, [{entry, rel_offset, length}, ...])` — **DONE**
 

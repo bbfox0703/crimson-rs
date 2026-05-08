@@ -6,6 +6,10 @@ use crate::binary::pamt::PackMeta;
 use crate::binary::papgt::PackGroupTreeMeta;
 use crate::binary::*;
 use crate::item_info::ItemInfo;
+use crate::skill_info::{
+    BuffData, BuffDataBody, Graph, PostBuff, ResourceItem, ResourceStat, SkillData, SkillEntry,
+    SkillFormat, SkillIndexEntry,
+};
 
 // ── Dict helpers ───────────────────────────────────────────────────────────
 
@@ -1023,6 +1027,423 @@ pub fn extract_file_from_paz(
     Ok(PyBytes::new(py, &raw).into_any().unbind())
 }
 
+// ── SkillInfo (skill.pabgb + skill.pabgh) ─────────────────────────────────
+
+fn skill_format_to_str(f: SkillFormat) -> &'static str {
+    match f {
+        SkillFormat::WithField58 => "with_field_58",
+        SkillFormat::NoField58 => "no_field_58",
+    }
+}
+
+fn skill_format_from_str(s: &str) -> PyResult<SkillFormat> {
+    match s {
+        "with_field_58" => Ok(SkillFormat::WithField58),
+        "no_field_58" => Ok(SkillFormat::NoField58),
+        other => Err(PyValueError::new_err(format!(
+            "unknown skill format '{}': expected 'with_field_58' or 'no_field_58'",
+            other
+        ))),
+    }
+}
+
+fn graph_to_py<'py>(py: Python<'py>, g: &Graph) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("val0", g.val0)?;
+    d.set_item("val1", g.val1)?;
+    d.set_item("val2", g.val2)?;
+    d.set_item("val3", g.val3)?;
+    Ok(d)
+}
+
+fn graph_from_py(d: &Bound<'_, PyDict>) -> PyResult<Graph> {
+    Ok(Graph {
+        val0: get(d, "val0")?,
+        val1: get(d, "val1")?,
+        val2: get(d, "val2")?,
+        val3: get(d, "val3")?,
+    })
+}
+
+fn resource_stat_to_py<'py>(
+    py: Python<'py>,
+    rs: &ResourceStat,
+) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("stat_type", rs.stat_type)?;
+    d.set_item("stat_hash", rs.stat_hash)?;
+    d.set_item("flag", rs.flag)?;
+    d.set_item("value", rs.value)?;
+    d.set_item("hash2", rs.hash2)?;
+    d.set_item("hash3", rs.hash3)?;
+    Ok(d)
+}
+
+fn resource_stat_from_py(d: &Bound<'_, PyDict>) -> PyResult<ResourceStat> {
+    Ok(ResourceStat {
+        stat_type: get(d, "stat_type")?,
+        stat_hash: get(d, "stat_hash")?,
+        flag: get(d, "flag")?,
+        value: get(d, "value")?,
+        hash2: get(d, "hash2")?,
+        hash3: get(d, "hash3")?,
+    })
+}
+
+fn resource_item_to_py<'py>(
+    py: Python<'py>,
+    ri: &ResourceItem,
+) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("item_hash", ri.item_hash)?;
+    d.set_item("count", ri.count)?;
+    Ok(d)
+}
+
+fn resource_item_from_py(d: &Bound<'_, PyDict>) -> PyResult<ResourceItem> {
+    Ok(ResourceItem {
+        item_hash: get(d, "item_hash")?,
+        count: get(d, "count")?,
+    })
+}
+
+fn post_buff_to_py<'py>(py: Python<'py>, p: &PostBuff) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("skill_group_key", p.skill_group_key)?;
+    d.set_item("parent_skill", p.parent_skill)?;
+    d.set_item("learn_level", p.learn_level)?;
+    d.set_item("apply_type", p.apply_type)?;
+    d.set_item("icon_path", p.icon_path)?;
+    d.set_item("need_upgrade_item_info", p.need_upgrade_item_info)?;
+    d.set_item("need_upgrade_item_count_graph", graph_to_py(py, &p.need_upgrade_item_count_graph)?)?;
+    d.set_item("need_upgrade_experience_graph", graph_to_py(py, &p.need_upgrade_experience_graph)?)?;
+    d.set_item("usable_character_info_list", p.usable_character_info_list.clone())?;
+    d.set_item("usable_condition", p.usable_condition.clone())?;
+    d.set_item("learn_knowledge_info", p.learn_knowledge_info)?;
+    d.set_item("faction_info", p.faction_info)?;
+    let rsl = PyList::empty(py);
+    for rs in &p.use_resource_stat_list {
+        rsl.append(resource_stat_to_py(py, rs)?)?;
+    }
+    d.set_item("use_resource_stat_list", rsl)?;
+    let ril = PyList::empty(py);
+    for ri in &p.use_resource_item_list {
+        ril.append(resource_item_to_py(py, ri)?)?;
+    }
+    d.set_item("use_resource_item_list", ril)?;
+    let drsl = PyList::empty(py);
+    for rs in &p.use_driver_resource_stat_list {
+        drsl.append(resource_stat_to_py(py, rs)?)?;
+    }
+    d.set_item("use_driver_resource_stat_list", drsl)?;
+    d.set_item("use_battery_stat", p.use_battery_stat)?;
+    d.set_item("is_ui_use_allowed", p.is_ui_use_allowed)?;
+    d.set_item("is_learn_use_artifact", p.is_learn_use_artifact)?;
+    d.set_item("allow_skill_with_low_resource", p.allow_skill_with_low_resource)?;
+    d.set_item(
+        "is_use_child_pattern_description_buff_data",
+        p.is_use_child_pattern_description_buff_data,
+    )?;
+    d.set_item("damage_type", p.damage_type)?;
+    d.set_item("ui_type", p.ui_type)?;
+    d.set_item("reserve_slot_info_list", p.reserve_slot_info_list.clone())?;
+    d.set_item("max_level", p.max_level)?;
+    d.set_item("skill_group_key_list", p.skill_group_key_list.clone())?;
+    d.set_item("buff_sustain_flag", p.buff_sustain_flag)?;
+    d.set_item("dev_skill_name", PyBytes::new(py, &p.dev_skill_name))?;
+    d.set_item("dev_skill_desc", PyBytes::new(py, &p.dev_skill_desc))?;
+    d.set_item("video_path", p.video_path)?;
+    Ok(d)
+}
+
+fn post_buff_from_py(d: &Bound<'_, PyDict>) -> PyResult<PostBuff> {
+    let mut rsl = Vec::new();
+    for it in get_obj(d, "use_resource_stat_list")?.cast::<PyList>()?.iter() {
+        rsl.push(resource_stat_from_py(it.cast::<PyDict>()?)?);
+    }
+    let mut ril = Vec::new();
+    for it in get_obj(d, "use_resource_item_list")?.cast::<PyList>()?.iter() {
+        ril.push(resource_item_from_py(it.cast::<PyDict>()?)?);
+    }
+    let mut drsl = Vec::new();
+    for it in get_obj(d, "use_driver_resource_stat_list")?.cast::<PyList>()?.iter() {
+        drsl.push(resource_stat_from_py(it.cast::<PyDict>()?)?);
+    }
+    Ok(PostBuff {
+        skill_group_key: get(d, "skill_group_key")?,
+        parent_skill: get(d, "parent_skill")?,
+        learn_level: get(d, "learn_level")?,
+        apply_type: get(d, "apply_type")?,
+        icon_path: get(d, "icon_path")?,
+        need_upgrade_item_info: get(d, "need_upgrade_item_info")?,
+        need_upgrade_item_count_graph: graph_from_py(
+            get_obj(d, "need_upgrade_item_count_graph")?.cast::<PyDict>()?,
+        )?,
+        need_upgrade_experience_graph: graph_from_py(
+            get_obj(d, "need_upgrade_experience_graph")?.cast::<PyDict>()?,
+        )?,
+        usable_character_info_list: get(d, "usable_character_info_list")?,
+        usable_condition: get(d, "usable_condition")?,
+        learn_knowledge_info: get(d, "learn_knowledge_info")?,
+        faction_info: get(d, "faction_info")?,
+        use_resource_stat_list: rsl,
+        use_resource_item_list: ril,
+        use_driver_resource_stat_list: drsl,
+        use_battery_stat: get(d, "use_battery_stat")?,
+        is_ui_use_allowed: get(d, "is_ui_use_allowed")?,
+        is_learn_use_artifact: get(d, "is_learn_use_artifact")?,
+        allow_skill_with_low_resource: get(d, "allow_skill_with_low_resource")?,
+        is_use_child_pattern_description_buff_data: get(
+            d,
+            "is_use_child_pattern_description_buff_data",
+        )?,
+        damage_type: get(d, "damage_type")?,
+        ui_type: get(d, "ui_type")?,
+        reserve_slot_info_list: get(d, "reserve_slot_info_list")?,
+        max_level: get(d, "max_level")?,
+        skill_group_key_list: get(d, "skill_group_key_list")?,
+        buff_sustain_flag: get(d, "buff_sustain_flag")?,
+        dev_skill_name: get(d, "dev_skill_name")?,
+        dev_skill_desc: get(d, "dev_skill_desc")?,
+        video_path: get(d, "video_path")?,
+    })
+}
+
+fn buff_data_body_to_py<'py>(
+    py: Python<'py>,
+    body: &BuffDataBody,
+) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("type_id", body.type_id)?;
+    d.set_item("field_12", body.field_12)?;
+    d.set_item("field_16", body.field_16)?;
+    d.set_item("field_20", body.field_20)?;
+    d.set_item("field_21", body.field_21)?;
+    d.set_item("field_24", body.field_24)?;
+    d.set_item("field_32", body.field_32)?;
+    d.set_item("field_40", body.field_40)?;
+    d.set_item("field_48", PyBytes::new(py, &body.field_48))?;
+    d.set_item("field_56", body.field_56)?;
+    d.set_item("field_58", body.field_58)?;
+    d.set_item("field_60", body.field_60)?;
+    d.set_item("field_62", body.field_62)?;
+    d.set_item("field_64", body.field_64)?;
+    d.set_item("field_66", body.field_66)?;
+    d.set_item("field_68", body.field_68)?;
+    d.set_item("field_69", body.field_69)?;
+    d.set_item("field_88", body.field_88)?;
+    d.set_item("field_90", body.field_90)?;
+    d.set_item("field_96_list", body.field_96_list.clone())?;
+    d.set_item("field_128", body.field_128)?;
+    d.set_item("field_72", body.field_72)?;
+    d.set_item("field_76", body.field_76)?;
+    d.set_item("field_80", body.field_80)?;
+    d.set_item("field_84", body.field_84)?;
+    d.set_item("field_112_list", body.field_112_list.clone())?;
+    d.set_item("field_132", body.field_132)?;
+    d.set_item("field_136", body.field_136)?;
+    d.set_item("subclass_tail", PyBytes::new(py, &body.subclass_tail))?;
+    Ok(d)
+}
+
+fn buff_data_body_from_py(d: &Bound<'_, PyDict>) -> PyResult<BuffDataBody> {
+    Ok(BuffDataBody {
+        type_id: get(d, "type_id")?,
+        field_12: get(d, "field_12")?,
+        field_16: get(d, "field_16")?,
+        field_20: get(d, "field_20")?,
+        field_21: get(d, "field_21")?,
+        field_24: get(d, "field_24")?,
+        field_32: get(d, "field_32")?,
+        field_40: get(d, "field_40")?,
+        field_48: get(d, "field_48")?,
+        field_56: get(d, "field_56")?,
+        field_58: match d.get_item("field_58")? {
+            Some(v) if !v.is_none() => Some(v.extract()?),
+            _ => None,
+        },
+        field_60: get(d, "field_60")?,
+        field_62: get(d, "field_62")?,
+        field_64: get(d, "field_64")?,
+        field_66: get(d, "field_66")?,
+        field_68: get(d, "field_68")?,
+        field_69: get(d, "field_69")?,
+        field_88: get(d, "field_88")?,
+        field_90: get(d, "field_90")?,
+        field_96_list: get(d, "field_96_list")?,
+        field_128: get(d, "field_128")?,
+        field_72: get(d, "field_72")?,
+        field_76: get(d, "field_76")?,
+        field_80: get(d, "field_80")?,
+        field_84: get(d, "field_84")?,
+        field_112_list: get(d, "field_112_list")?,
+        field_132: get(d, "field_132")?,
+        field_136: get(d, "field_136")?,
+        subclass_tail: get(d, "subclass_tail")?,
+    })
+}
+
+fn buff_data_to_py<'py>(py: Python<'py>, bd: &BuffData) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("flag", bd.flag)?;
+    match &bd.body {
+        Some(b) => d.set_item("body", buff_data_body_to_py(py, b)?)?,
+        None => d.set_item("body", py.None())?,
+    }
+    Ok(d)
+}
+
+fn buff_data_from_py(d: &Bound<'_, PyDict>) -> PyResult<BuffData> {
+    let flag: u8 = get(d, "flag")?;
+    let body = match d.get_item("body")? {
+        Some(v) if !v.is_none() => Some(buff_data_body_from_py(v.cast::<PyDict>()?)?),
+        _ => None,
+    };
+    Ok(BuffData { flag, body })
+}
+
+fn skill_entry_to_py<'py>(py: Python<'py>, e: &SkillEntry) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("key", e.key)?;
+    d.set_item("name_bytes", PyBytes::new(py, &e.name_bytes))?;
+    d.set_item("name", String::from_utf8_lossy(&e.name_bytes).into_owned())?;
+    d.set_item("is_blocked", e.is_blocked)?;
+    d.set_item("pad_01", PyBytes::new(py, &e.pad_01))?;
+    match &e.buff_level_list {
+        Some(levels) => {
+            let py_levels = PyList::empty(py);
+            for level in levels {
+                let py_level = PyList::empty(py);
+                for bd in level {
+                    py_level.append(buff_data_to_py(py, bd)?)?;
+                }
+                py_levels.append(py_level)?;
+            }
+            d.set_item("buff_level_list", py_levels)?;
+        }
+        None => d.set_item("buff_level_list", py.None())?,
+    }
+    match &e.buff_raw_fallback {
+        Some(b) => d.set_item("buff_raw_fallback", PyBytes::new(py, b))?,
+        None => d.set_item("buff_raw_fallback", py.None())?,
+    }
+    d.set_item("post_buff", post_buff_to_py(py, &e.post_buff)?)?;
+    Ok(d)
+}
+
+fn skill_entry_from_py(d: &Bound<'_, PyDict>) -> PyResult<SkillEntry> {
+    let pad_bytes: Vec<u8> = get(d, "pad_01")?;
+    if pad_bytes.len() != 3 {
+        return Err(PyValueError::new_err(format!(
+            "pad_01 must be 3 bytes, got {}",
+            pad_bytes.len()
+        )));
+    }
+    let pad_01 = [pad_bytes[0], pad_bytes[1], pad_bytes[2]];
+
+    let buff_level_list = match d.get_item("buff_level_list")? {
+        Some(v) if !v.is_none() => {
+            let mut levels = Vec::new();
+            for level_obj in v.cast::<PyList>()?.iter() {
+                let mut level = Vec::new();
+                for bd_obj in level_obj.cast::<PyList>()?.iter() {
+                    level.push(buff_data_from_py(bd_obj.cast::<PyDict>()?)?);
+                }
+                levels.push(level);
+            }
+            Some(levels)
+        }
+        _ => None,
+    };
+    let buff_raw_fallback = match d.get_item("buff_raw_fallback")? {
+        Some(v) if !v.is_none() => Some(v.extract::<Vec<u8>>()?),
+        _ => None,
+    };
+
+    Ok(SkillEntry {
+        key: get(d, "key")?,
+        name_bytes: get(d, "name_bytes")?,
+        is_blocked: get(d, "is_blocked")?,
+        pad_01,
+        buff_level_list,
+        buff_raw_fallback,
+        post_buff: post_buff_from_py(get_obj(d, "post_buff")?.cast::<PyDict>()?)?,
+    })
+}
+
+/// Parse `skill.pabgb` + `skill.pabgh` into a list of skill entries plus
+/// the detected format flag and on-disk index order. The dict shape is
+/// stable for `serialize_skillinfo`: pass it back unmodified for a
+/// byte-identical roundtrip.
+#[pyfunction]
+pub fn parse_skillinfo_from_bytes(
+    py: Python<'_>,
+    skill_pabgb: &[u8],
+    skill_pabgh: &[u8],
+) -> PyResult<Py<PyAny>> {
+    let parsed = SkillData::parse(skill_pabgh, skill_pabgb)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+    let entries = PyList::empty(py);
+    for e in &parsed.entries {
+        entries.append(skill_entry_to_py(py, e)?)?;
+    }
+
+    let index_order = PyList::empty(py);
+    for ie in &parsed.index_order {
+        let id = PyDict::new(py);
+        id.set_item("key", ie.key)?;
+        id.set_item("offset", ie.offset)?;
+        index_order.append(id)?;
+    }
+
+    let result = PyDict::new(py);
+    result.set_item("entries", entries)?;
+    result.set_item("format", skill_format_to_str(parsed.format))?;
+    result.set_item("index_order", index_order)?;
+    Ok(result.into_any().unbind())
+}
+
+/// Serialise a parsed dict back to `(pabgh_bytes, pabgb_bytes)`. Pass the
+/// dict returned by `parse_skillinfo_from_bytes` (optionally with edits)
+/// — the on-disk PABGH order is taken from `index_order`.
+#[pyfunction]
+pub fn serialize_skillinfo(
+    py: Python<'_>,
+    data: &Bound<'_, PyDict>,
+) -> PyResult<Py<PyAny>> {
+    let format = skill_format_from_str(&get::<String>(data, "format")?)?;
+    let entries_list = get_obj(data, "entries")?.cast::<PyList>()?.clone();
+    let index_list = get_obj(data, "index_order")?.cast::<PyList>()?.clone();
+
+    let mut entries = Vec::with_capacity(entries_list.len());
+    for it in entries_list.iter() {
+        entries.push(skill_entry_from_py(it.cast::<PyDict>()?)?);
+    }
+    let mut index_order = Vec::with_capacity(index_list.len());
+    for it in index_list.iter() {
+        let d = it.cast::<PyDict>()?;
+        index_order.push(SkillIndexEntry {
+            key: get(d, "key")?,
+            offset: get(d, "offset")?,
+        });
+    }
+    let sd = SkillData {
+        entries,
+        format,
+        index_order,
+    };
+    let (pabgh, pabgb) = sd.write().map_err(|e| PyIOError::new_err(e.to_string()))?;
+    let tup = pyo3::types::PyTuple::new(
+        py,
+        [
+            PyBytes::new(py, &pabgh).into_any(),
+            PyBytes::new(py, &pabgb).into_any(),
+        ],
+    )?;
+    Ok(tup.into_any().unbind())
+}
+
 // ── Registration ───────────────────────────────────────────────────────────
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -1048,6 +1469,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(add_papgt_entry, m)?)?;
     m.add_function(wrap_pyfunction!(extract_file, m)?)?;
     m.add_function(wrap_pyfunction!(extract_file_from_paz, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_skillinfo_from_bytes, m)?)?;
+    m.add_function(wrap_pyfunction!(serialize_skillinfo, m)?)?;
     m.add_function(wrap_pyfunction!(parse_paloc_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(serialize_paloc, m)?)?;
     Ok(())

@@ -208,6 +208,52 @@ data = crimson_rs.extract_file_from_paz(
 
 ## ItemInfo (pabgb)
 
+### `parse_skillinfo_from_bytes(skill_pabgb: bytes, skill_pabgh: bytes) -> dict`
+
+Parse `skill.pabgb` + `skill.pabgh` into structured entries. Returns:
+
+- `entries: list[dict]` — one per skill, in on-disk PABGH order (which is offset-sorted in vanilla files). Each entry has `key`, `name`, `name_bytes`, `is_blocked`, `pad_01`, `buff_level_list` (nested list-of-lists of buff dicts; `None` when raw fallback is used), `buff_raw_fallback` (`bytes | None`), and `post_buff` (~25 fields).
+- `format: str` — `"with_field_58"` (1.04+) or `"no_field_58"` (1.03), auto-detected.
+- `index_order: list[dict]` — on-disk PABGH order, kept for byte-identical roundtrip.
+
+```python
+pabgh = crimson_rs.extract_file_from_paz(
+    "/path/to/0008/0.paz", "gamedata/binary__/client/bin/skill.pabgh"
+)
+pabgb = crimson_rs.extract_file_from_paz(
+    "/path/to/0008/0.paz", "gamedata/binary__/client/bin/skill.pabgb"
+)
+skills = crimson_rs.parse_skillinfo_from_bytes(pabgb, pabgh)
+print(f"{len(skills['entries'])} skills, format={skills['format']}")
+for entry in skills["entries"]:
+    if entry["buff_level_list"] is None:
+        continue  # raw-fallback entry — opaque
+    for level in entry["buff_level_list"]:
+        for buff in level:
+            if buff["body"] is not None:
+                print(buff["body"]["type_id"])
+```
+
+The `BuffData` subclass tail size depends on `type_id` (0..119) and is **not statically known** — the loader brute-forces sizes 0..500 per unique `type_id` and caches the discovery. For ~10% of entries (cross-version probing showed 547/1924 in 1.03, ~190/1963 in 1.04+) the probe cannot resolve, and the raw bytes are preserved in `buff_raw_fallback` for byte-identical roundtrip via `serialize_skillinfo`.
+
+**Raises:** `ValueError` on parse errors (truncated input, malformed index).
+
+---
+
+### `serialize_skillinfo(data: dict) -> tuple[bytes, bytes]`
+
+Inverse of `parse_skillinfo_from_bytes`. Pass the parsed dict (optionally with edits) to get back `(pabgh_bytes, pabgb_bytes)` that roundtrips byte-identically when nothing is changed.
+
+```python
+new_pabgh, new_pabgb = crimson_rs.serialize_skillinfo(skills)
+assert new_pabgh == pabgh
+assert new_pabgb == pabgb
+```
+
+**Raises:** `IOError` on write failure, `ValueError`/`KeyError` on malformed input dict.
+
+---
+
 ### `inspect_legacy_patches(vanilla_bytes: bytes, patches: list[dict]) -> list[dict | None]`
 
 Resolve JSON v2 byte patches to field-path attributions on a vanilla `iteminfo.pabgb`. Parses the bytes once with byte-level tracking, then for each input patch finds the field whose `[start, end)` covers `entry.start + rel_offset`. Useful for translating legacy byte-patch mods to a semantic / field-keyed format without having to apply the patch first and reparse.

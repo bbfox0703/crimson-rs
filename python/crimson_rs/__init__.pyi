@@ -1023,6 +1023,243 @@ def extract_file(
     ...
 
 
+class Graph(TypedDict):
+    val0: int
+    """i64"""
+    val1: int
+    """i64"""
+    val2: int
+    """i64"""
+    val3: int
+    """u32"""
+
+
+class ResourceStat(TypedDict):
+    stat_type: int
+    """u8"""
+    stat_hash: int
+    """u32"""
+    flag: int
+    """u8"""
+    value: int
+    """i64"""
+    hash2: int
+    """u32"""
+    hash3: int
+    """u32"""
+
+
+class ResourceItem(TypedDict):
+    item_hash: int
+    """u32"""
+    count: int
+    """i64"""
+
+
+class PostBuff(TypedDict):
+    skill_group_key: int
+    """u32"""
+    parent_skill: int
+    """u32"""
+    learn_level: int
+    """u32"""
+    apply_type: int
+    """u8"""
+    icon_path: int
+    """StringInfoKey (u32)."""
+    need_upgrade_item_info: int
+    """ItemKey (u32)."""
+    need_upgrade_item_count_graph: Graph
+    need_upgrade_experience_graph: Graph
+    usable_character_info_list: list[int]
+    """u32 list."""
+    usable_condition: list[int]
+    """ConditionKey list (u32)."""
+    learn_knowledge_info: int
+    """KnowledgeKey (u32)."""
+    faction_info: int
+    """FactionKey (u32)."""
+    use_resource_stat_list: list[ResourceStat]
+    use_resource_item_list: list[ResourceItem]
+    use_driver_resource_stat_list: list[ResourceStat]
+    use_battery_stat: int
+    """i64"""
+    is_ui_use_allowed: int
+    """u8"""
+    is_learn_use_artifact: int
+    """u8"""
+    allow_skill_with_low_resource: int
+    """u8"""
+    is_use_child_pattern_description_buff_data: int
+    """u8"""
+    damage_type: int
+    """u8"""
+    ui_type: int
+    """u8"""
+    reserve_slot_info_list: list[int]
+    """ReserveSlotKey list (u32)."""
+    max_level: int
+    """u32"""
+    skill_group_key_list: list[int]
+    """u16 list."""
+    buff_sustain_flag: int
+    """u32"""
+    dev_skill_name: bytes
+    """Korean UTF-8 in vanilla."""
+    dev_skill_desc: bytes
+    """Korean UTF-8 in vanilla."""
+    video_path: int
+    """StringInfoKey (u32)."""
+
+
+class BuffDataBody(TypedDict):
+    """Common-base fields of a non-null BuffData. Field names mirror the
+    IDA-decomp / GameMods Python parser names."""
+    type_id: int
+    """u8 — selects subclass tail shape (0..119)."""
+    field_12: int
+    """u32"""
+    field_16: int
+    """u32"""
+    field_20: int
+    """u8"""
+    field_21: int
+    """u8"""
+    field_24: int
+    """i64"""
+    field_32: int
+    """i64"""
+    field_40: int
+    """i64"""
+    field_48: bytes
+    """``u32 len + len bytes`` (no NUL terminator)."""
+    field_56: int
+    """u32"""
+    field_58: int | None
+    """u8 in 1.04+ format; None in 1.03."""
+    field_60: int
+    """u32"""
+    field_62: int
+    """u32"""
+    field_64: int
+    """u32"""
+    field_66: int
+    """u32"""
+    field_68: int
+    """u8"""
+    field_69: int
+    """u8"""
+    field_88: int
+    """u32"""
+    field_90: int
+    """u32"""
+    field_96_list: list[int]
+    """u32 list."""
+    field_128: int
+    """u32"""
+    field_72: int
+    """u32"""
+    field_76: int
+    """u32"""
+    field_80: int
+    """u32"""
+    field_84: int
+    """u32"""
+    field_112_list: list[int]
+    """u32 list."""
+    field_132: int
+    """u8"""
+    field_136: int
+    """u32"""
+    subclass_tail: bytes
+    """Variable-length tail bytes — size depends on ``type_id``, found
+    by brute-force probing (cached per parse). Empty for type_ids whose
+    tail size is 0."""
+
+
+class BuffData(TypedDict):
+    flag: int
+    """u8 — 0 means a real buff (``body`` is set); non-zero is a null
+    entry (``body`` is None)."""
+    body: BuffDataBody | None
+
+
+class SkillEntry(TypedDict):
+    key: int
+    """u32 — skill key."""
+    name: str
+    """UTF-8 lossy decode of ``name_bytes`` for convenience."""
+    name_bytes: bytes
+    """Raw name bytes (without trailing NUL). Source of truth for
+    serialisation; ``name`` may differ on non-UTF-8 input."""
+    is_blocked: int
+    """u8"""
+    pad_01: bytes
+    """3 bytes of padding."""
+    buff_level_list: list[list[BuffData]] | None
+    """Decoded `[level][buff]` matrix. ``None`` when the entry's buff
+    section could not be fully decoded (mutually exclusive with
+    ``buff_raw_fallback``)."""
+    buff_raw_fallback: bytes | None
+    """Opaque buff blob preserved for entries the probe could not
+    resolve. Mutually exclusive with ``buff_level_list``."""
+    post_buff: PostBuff
+
+
+class SkillIndexEntry(TypedDict):
+    key: int
+    """u32"""
+    offset: int
+    """u32 — byte offset into pabgb."""
+
+
+class SkillData(TypedDict):
+    entries: list[SkillEntry]
+    """In on-disk PABGH order (which is offset-sorted in vanilla)."""
+    format: str
+    """``"with_field_58"`` (1.04+) or ``"no_field_58"`` (1.03)."""
+    index_order: list[SkillIndexEntry]
+    """On-disk PABGH order, preserved for byte-identical roundtrip."""
+
+
+def parse_skillinfo_from_bytes(skill_pabgb: bytes, skill_pabgh: bytes) -> SkillData:
+    """Parse skill.pabgb + skill.pabgh into structured entries.
+
+    The parser handles the 1.03 (no field_58) and 1.04+ (with field_58)
+    formats, brute-forces unknown BuffData subclass-tail sizes, and falls
+    back to a raw blob path for entries it cannot fully decode (the blob
+    is preserved for byte-identical roundtrip via ``serialize_skillinfo``).
+
+    Args:
+        skill_pabgb: Decompressed ``skill.pabgb`` bytes.
+        skill_pabgh: Decompressed ``skill.pabgh`` bytes (the index).
+
+    Returns:
+        Dict with ``entries``, ``format``, ``index_order``.
+
+    Raises:
+        ValueError: On parse errors (truncated input, malformed index, ...).
+    """
+    ...
+
+
+def serialize_skillinfo(data: SkillData) -> tuple[bytes, bytes]:
+    """Serialise back to ``(pabgh_bytes, pabgb_bytes)``.
+
+    Pass the dict returned by ``parse_skillinfo_from_bytes`` (optionally
+    with edits) — the on-disk PABGH order is taken from ``index_order``
+    so the result roundtrips byte-identically when no fields are changed.
+
+    Returns:
+        Tuple of ``(pabgh_bytes, pabgb_bytes)``.
+
+    Raises:
+        IOError: On write failure.
+        ValueError, KeyError: On malformed input dict.
+    """
+    ...
+
+
 def extract_file_from_paz(paz_path: str, vfs_path: str) -> bytes:
     """Extract a single file by pointing at any ``.paz`` in the group directory.
 
