@@ -3,9 +3,10 @@
 Rust library with Python bindings (via PyO3/maturin) for reading, writing, and modding Crimson Desert game archives.
 
 # Development
-- Build and install: `maturin develop`
-- Run tests: `cargo test`
-- Lint: `cargo clippy` (must pass with zero warnings)
+- Build and install: `maturin develop` (in a venv; the project uses `.venv/`)
+- Run tests: `cargo test --lib`
+- Lint: `cargo clippy --all-targets --lib -- -D warnings` (must pass clean — enforced by CI on every PR and push to main/dev, see `.github/workflows/ci.yml`; `main` is branch-protected on this check)
+- Workflow: develop on `dev` → PR to `main` → CI green → merge → `build.yml` rebuilds the rolling-release Windows wheel attached to the `v1.0.4.x` "Development Build" GitHub release
 
 # Documentation
 - `docs/archive-format.md` — Binary format specs (PAPGT, PAMT, PAZ, trie), mod loading overlay approach
@@ -14,8 +15,11 @@ Rust library with Python bindings (via PyO3/maturin) for reading, writing, and m
 - `docs/historical-parser-setup.md` — Recipe for building a previous-version parser as a sibling install (cross-version diff workflow)
 - `docs/paloc-71-dev-items.md` — Why 71 items have no paloc translation in any of 14 languages
 - `docs/downstream-api-gaps.md` — Status of the Python bindings the CrimsonGameMods app needs (all three items DONE as of 2026-05; doc kept for the cross-version notes); out-of-scope items recorded explicitly
-- `scripts/CLAUDE.md` — Engineering notes for next-session pickup (sanity-check workflow, layout invariants, don'ts)
+- `scripts/CLAUDE.md` — Engineering notes for next-session pickup (sanity-check workflow, layout invariants, don'ts, **the "On a new game patch" runbook**)
 - Update docs when adding new features or changing binary format understanding
+
+# When picking up the next session
+The codebase is in a settled state — both core parsers (iteminfo + skill) are byte-perfect across every version probed, all three downstream binding gaps are closed, and CI gates the lint+test invariants. The most likely thing to bring you back is a **new game patch breaking parsing**. Start at `scripts/CLAUDE.md` ("On a new game patch") for the diagnostic flow.
 
 # Rules
 - Ask before adding new dependencies to Cargo.toml
