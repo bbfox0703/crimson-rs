@@ -246,7 +246,7 @@ impl<T: ToPyValue> ToPyValue for COptional<T> {
     fn to_py_value(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         match &self.value {
             Some(v) => v.to_py_value(py),
-            None => Ok(py.None().into()),
+            None => Ok(py.None()),
         }
     }
 }

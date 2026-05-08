@@ -154,9 +154,9 @@ impl<'a> BinaryReadTracked<'a> for [f32; 3] {
         ranges: &mut Vec<FieldRange>,
     ) -> io::Result<Self> {
         let mut out = [0f32; 3];
-        for i in 0..3 {
+        for (i, slot) in out.iter_mut().enumerate() {
             let saved = push_index(path, i);
-            out[i] = f32::read_tracked(data, offset, path, ranges)?;
+            *slot = f32::read_tracked(data, offset, path, ranges)?;
             pop_path(path, saved);
         }
         Ok(out)
@@ -171,9 +171,9 @@ impl<'a> BinaryReadTracked<'a> for [u32; 4] {
         ranges: &mut Vec<FieldRange>,
     ) -> io::Result<Self> {
         let mut out = [0u32; 4];
-        for i in 0..4 {
+        for (i, slot) in out.iter_mut().enumerate() {
             let saved = push_index(path, i);
-            out[i] = u32::read_tracked(data, offset, path, ranges)?;
+            *slot = u32::read_tracked(data, offset, path, ranges)?;
             pop_path(path, saved);
         }
         Ok(out)
@@ -188,9 +188,9 @@ impl<'a> BinaryReadTracked<'a> for [u32; 2] {
         ranges: &mut Vec<FieldRange>,
     ) -> io::Result<Self> {
         let mut out = [0u32; 2];
-        for i in 0..2 {
+        for (i, slot) in out.iter_mut().enumerate() {
             let saved = push_index(path, i);
-            out[i] = u32::read_tracked(data, offset, path, ranges)?;
+            *slot = u32::read_tracked(data, offset, path, ranges)?;
             pop_path(path, saved);
         }
         Ok(out)
@@ -205,9 +205,9 @@ impl<'a> BinaryReadTracked<'a> for [u8; 3] {
         ranges: &mut Vec<FieldRange>,
     ) -> io::Result<Self> {
         let mut out = [0u8; 3];
-        for i in 0..3 {
+        for (i, slot) in out.iter_mut().enumerate() {
             let saved = push_index(path, i);
-            out[i] = u8::read_tracked(data, offset, path, ranges)?;
+            *slot = u8::read_tracked(data, offset, path, ranges)?;
             pop_path(path, saved);
         }
         Ok(out)
