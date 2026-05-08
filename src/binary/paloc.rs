@@ -61,6 +61,11 @@ impl<'a> LocalizationFile<'a> {
         Ok(LocalizationFile { entries })
     }
 
+    /// Inverse of [`parse`](Self::parse). Currently exercised only by the
+    /// roundtrip tests in `lib.rs`; the Python wrapper inlines its own
+    /// serialiser in `python.rs::serialize_paloc_impl` because it works
+    /// from a `PyList` of dicts rather than a borrowed `LocalizationFile`.
+    #[allow(dead_code)]
     pub fn to_bytes(&self) -> io::Result<Vec<u8>> {
         let mut buf = Vec::new();
         for entry in &self.entries {
