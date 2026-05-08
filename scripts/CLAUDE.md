@@ -4,7 +4,19 @@ Engineering notes for the next session. User-facing docs live in [`README.md`](R
 
 ## Status
 
-Crimson Desert 1.05 ItemInfo parser: **6,236 / 6,236 (100.0%) perfect parse**. `serialize_iteminfo` is byte-perfect on every parsed item. The pipeline (`scripts\export_for_ce.py`) runs end-to-end clean.
+- **1.05 ItemInfo parser**: **6,236 / 6,236 (100.0%) perfect parse**. `serialize_iteminfo` is byte-perfect on every parsed item. The pipeline (`scripts\export_for_ce.py`) runs end-to-end clean.
+- **Skill parser** (`src/skill_info/`): byte-perfect roundtrip on 1.03 / 1.04 / 1.05 (raw-fallback counts and format flag match the GameMods Python parser exactly). The brute-force BuffData subclass-tail probe is essential — cross-version probing in May 2026 showed 11 `type_id` sizes drift between the three versions, so the size table cannot be hardcoded.
+- **CI gate** (`.github/workflows/ci.yml`): every push to `main`/`dev` and every PR runs `cargo clippy --all-targets --lib -- -D warnings` + `cargo test --lib` on Ubuntu. Branch protection on `main` requires the check before merge.
+
+The most likely trigger for the next session of work is a new game patch — see "On a new game patch" below.
+
+## On a new game patch
+
+The fastest "did Pearl Abyss break anything?" loop:
+
+1. Update the live game install. Run `cargo test --lib`. If `test_full_roundtrip` (iteminfo) and `test_skill_roundtrip_1_05` (skill) still pass, no schema drift — you're done.
+2. If iteminfo regressed, follow "Investigation order" below.
+3. If skill regressed, drop a copy of the new `0008/` archive next to the previous baselines (under `BASELINES_ROOT`) and run [`archive/probe_skill_versions.py`](archive/probe_skill_versions.py) with the new version added to its `VERSIONS` list. The drift table at the bottom shows exactly which `type_id` tail sizes changed (and whether the format flag flipped). Update `src/skill_info/` accordingly — usually nothing needs changing because the brute-force probe absorbs size drift, but a new format-flag flip would need parser logic changes.
 
 ## Sanity-check on a fresh checkout / new patch
 
@@ -45,6 +57,8 @@ python scripts\analyze_per_item.py --anchors out\anchors.json --pabgb out\itemin
 
 - Active diagnostic / production scripts → this directory ([`README.md`](README.md) has the index)
 - 1.04 → 1.05 cross-version diff templates → [`archive/`](archive/)
-- Full RE history → [`../docs/1.05-parser-history.md`](../docs/1.05-parser-history.md)
+- Skill cross-version drift probe (run on new game patches) → [`archive/probe_skill_versions.py`](archive/probe_skill_versions.py)
+- Full iteminfo RE history → [`../docs/1.05-parser-history.md`](../docs/1.05-parser-history.md)
 - Historical parser setup → [`../docs/historical-parser-setup.md`](../docs/historical-parser-setup.md)
 - 71 dev/QA items investigation → [`../docs/paloc-71-dev-items.md`](../docs/paloc-71-dev-items.md)
+- Status of downstream Python bindings (all done as of 2026-05) → [`../docs/downstream-api-gaps.md`](../docs/downstream-api-gaps.md)
