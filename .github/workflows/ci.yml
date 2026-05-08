@@ -1,0 +1,46 @@
+name: CI
+
+# Lint + test gate. Runs on PRs to any branch and on pushes to main / dev.
+# build.yml is the *publish* pipeline (rolling-release wheel on push to main);
+# this file is the *correctness* gate. Keep them separate so a broken lint
+# doesn't block wheel rebuilds, and a wheel-build failure doesn't read as a
+# code-quality failure.
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+# Cancel any superseded run on the same ref so a fast-followup push doesn't
+# leave the previous one chewing CPU.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-test:
+    name: clippy + cargo test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain (stable + clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo target
+        uses: Swatinem/rust-cache@v2
+
+      # Mirror the local invariant: zero warnings.
+      # Tests-and-examples are included so probe macros, doc tests, etc.
+      # are also linted.
+      - name: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --lib -- -D warnings
+
+      # The game-data-dependent tests skip cleanly when the install
+      # paths (D:\..., G:\...) aren't present, so this exercises the
+      # synthetic / pure-logic tests (PAZ compression, PABGH roundtrip,
+      # trie, etc.) — exactly the layer that should be CI-verified.
+      - name: cargo test --lib
+        run: cargo test --lib
