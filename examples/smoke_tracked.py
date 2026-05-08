@@ -14,15 +14,39 @@ import time
 
 import crimson_rs
 
-PATH = r"C:\Users\Coding\CrimsonDesertModding\CrimsonGameMods\_iteminfo_0058_extracted.pabgb"
+# Source priority:
+#   1) explicit path on argv ($1)
+#   2) ITEMINFO_PABGB env var
+#   3) extract from <CRIMSON_DESERT_DIR>/0008/0.paz on the fly
+DEFAULT_GAME_DIR = os.environ.get(
+    "CRIMSON_DESERT_DIR",
+    r"D:\SteamLibrary\steamapps\common\Crimson Desert",
+)
+INTERNAL = "gamedata/binary__/client/bin/iteminfo.pabgb"
+
+
+def load_iteminfo() -> bytes:
+    if len(sys.argv) > 1:
+        with open(sys.argv[1], "rb") as f:
+            return f.read()
+    env_path = os.environ.get("ITEMINFO_PABGB")
+    if env_path and os.path.isfile(env_path):
+        with open(env_path, "rb") as f:
+            return f.read()
+    paz = os.path.join(DEFAULT_GAME_DIR, "0008", "0.paz")
+    if not os.path.isfile(paz):
+        print(
+            f"no iteminfo source found.\n"
+            f"  pass a path as argv[1], set ITEMINFO_PABGB, or install the\n"
+            f"  game at {DEFAULT_GAME_DIR} (or set CRIMSON_DESERT_DIR).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return bytes(crimson_rs.extract_file_from_paz(paz, INTERNAL))
 
 
 def main() -> int:
-    if not os.path.isfile(PATH):
-        print(f"vanilla iteminfo not found at {PATH}", file=sys.stderr)
-        return 1
-    with open(PATH, "rb") as f:
-        data = f.read()
+    data = load_iteminfo()
     print(f"loaded {len(data):,} bytes")
 
     t0 = time.perf_counter()
@@ -36,8 +60,10 @@ def main() -> int:
     print(f"tracked parse: {t_tracked:.2f}s, overhead {t_tracked/t_plain:.1f}x")
 
     items_tracked = tracked["items"]
-    ranges_per_item = tracked["ranges"]
     spans = tracked["spans"]
+    # Each span carries its own per-item ranges list — flatten to keep the
+    # downstream zip(ranges_per_item, spans) loop intact.
+    ranges_per_item = [span["ranges"] for span in spans]
     assert len(items_tracked) == len(items_plain) == len(ranges_per_item) == len(spans)
 
     # 1. items identical
