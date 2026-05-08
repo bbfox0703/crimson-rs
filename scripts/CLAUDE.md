@@ -17,6 +17,7 @@ The fastest "did Pearl Abyss break anything?" loop:
 1. Update the live game install. Run `cargo test --lib`. If `test_full_roundtrip` (iteminfo) and `test_skill_roundtrip_1_05` (skill) still pass, no schema drift — you're done.
 2. If iteminfo regressed, follow "Investigation order" below.
 3. If skill regressed, drop a copy of the new `0008/` archive next to the previous baselines (under `BASELINES_ROOT`) and run [`archive/probe_skill_versions.py`](archive/probe_skill_versions.py) with the new version added to its `VERSIONS` list. The drift table at the bottom shows exactly which `type_id` tail sizes changed (and whether the format flag flipped). Update `src/skill_info/` accordingly — usually nothing needs changing because the brute-force probe absorbs size drift, but a new format-flag flip would need parser logic changes.
+4. When the parsers are happy on the new version, **bump the rolling-release tag** in [`../.github/workflows/build.yml`](../.github/workflows/build.yml) (`tag: v1.0.<minor>.x`) so downstream sees the new wheel under the right minor. Optionally `gh release delete v1.0.<old>.x --yes` to retire the previous rolling release.
 
 ## Sanity-check on a fresh checkout / new patch
 
