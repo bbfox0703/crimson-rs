@@ -13,6 +13,7 @@ Rust library with Python bindings (via PyO3/maturin) for reading, writing, and m
 - `docs/1.05-parser-history.md` — Long-form RE history of the 1.05 ItemInfo parser (read first when picking up next-session work)
 - `docs/historical-parser-setup.md` — Recipe for building a previous-version parser as a sibling install (cross-version diff workflow)
 - `docs/paloc-71-dev-items.md` — Why 71 items have no paloc translation in any of 14 languages
+- `docs/downstream-api-gaps.md` — TODO list of Python bindings the CrimsonGameMods app needs; out-of-scope items recorded explicitly
 - `scripts/CLAUDE.md` — Engineering notes for next-session pickup (sanity-check workflow, layout invariants, don'ts)
 - Update docs when adding new features or changing binary format understanding
 
