@@ -208,6 +208,42 @@ data = crimson_rs.extract_file_from_paz(
 
 ## ItemInfo (pabgb)
 
+### `inspect_legacy_patches(vanilla_bytes: bytes, patches: list[dict]) -> list[dict | None]`
+
+Resolve JSON v2 byte patches to field-path attributions on a vanilla `iteminfo.pabgb`. Parses the bytes once with byte-level tracking, then for each input patch finds the field whose `[start, end)` covers `entry.start + rel_offset`. Useful for translating legacy byte-patch mods to a semantic / field-keyed format without having to apply the patch first and reparse.
+
+```python
+hits = crimson_rs.inspect_legacy_patches(
+    vanilla_bytes,
+    [
+        {"entry": "Pyeonjeon_Arrow", "rel_offset": 0, "length": 4},
+        {"entry": "Pyeonjeon_Arrow", "rel_offset": 460, "length": 8},
+        {"entry": "does_not_exist", "rel_offset": 0},
+    ],
+)
+# [{'path': 'key', 'ty': 'u32', 'abs_start': 0, 'abs_end': 4,
+#   'hit_offset': 0, 'hit_length': 4},
+#  {'path': 'cooltime', 'ty': 'i64', 'abs_start': 460, 'abs_end': 468,
+#   'hit_offset': 0, 'hit_length': 8},
+#  None]
+```
+
+**Patch dict (input):**
+- `entry` *(str)* — `string_key` of the target item.
+- `rel_offset` *(int)* — Byte offset relative to the item's span start.
+- `length` *(int, optional)* — Echoed back as `hit_length`. Defaults to 0.
+
+**Hit dict (output, when not `None`):**
+- `path` — Dotted field path (e.g. `"enchant_data_list.2.level"`).
+- `ty` — Rust type name of the field.
+- `abs_start`, `abs_end` — Absolute byte range of the field.
+- `hit_offset` — Offset of the patch within the field.
+- `hit_length` — Echo of input `length`.
+
+Returns `None` for an entry when the `string_key` is not present in `vanilla_bytes`, or when the offset falls outside the target item's span. The function only attributes the *start* of the patch — multi-byte patches that cross field boundaries still report a single field at the start position.
+
+---
+
 ### `parse_iteminfo_from_file(path: str) -> list[dict]`
 
 Parse all items from a binary file.

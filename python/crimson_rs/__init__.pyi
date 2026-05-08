@@ -633,6 +633,56 @@ def parse_iteminfo_tracked(data: bytes) -> TrackedItemInfo:
     ...
 
 
+class LegacyPatch(TypedDict, total=False):
+    entry: str
+    """``string_key`` of the target item (e.g. ``"Pyeonjeon_Arrow"``)."""
+    rel_offset: int
+    """Byte offset within the item, relative to its span start."""
+    length: int
+    """Optional patch length, echoed back as ``hit_length``. Defaults to 0."""
+
+
+class LegacyPatchHit(TypedDict):
+    path: str
+    """Dotted field path the patch lands on."""
+    ty: str
+    """Rust type name of the field."""
+    abs_start: int
+    """Absolute byte start of the field in the source bytes."""
+    abs_end: int
+    """Absolute byte end of the field (exclusive)."""
+    hit_offset: int
+    """Offset of the patch *within* the field (``abs_pos - abs_start``)."""
+    hit_length: int
+    """Echo of input ``length`` (0 if not provided)."""
+
+
+def inspect_legacy_patches(
+    vanilla_bytes: bytes,
+    patches: list[LegacyPatch],
+) -> list[LegacyPatchHit | None]:
+    """Resolve JSON v2 byte patches to field-path attributions.
+
+    Parses ``vanilla_bytes`` once with byte-level tracking, then for each
+    patch finds the field whose ``[start, end)`` covers
+    ``entry.start + rel_offset``. Useful for translating legacy byte-patch
+    mods to a semantic / field-keyed format without having to apply the
+    patch first and reparse.
+
+    Args:
+        vanilla_bytes: A vanilla ``iteminfo.pabgb`` blob.
+        patches: List of dicts with ``entry``, ``rel_offset``, optional
+            ``length``.
+
+    Returns:
+        Same-length list. Entry is ``None`` when the entry name is not
+        found, or when the offset falls outside any tracked field of the
+        target entry. Otherwise a dict with the field attribution and a
+        ``hit_length`` echo.
+    """
+    ...
+
+
 def write_iteminfo_to_file(items: list[ItemInfo], path: str) -> None:
     """Serialize items and write to a file.
 

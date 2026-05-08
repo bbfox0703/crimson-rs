@@ -57,29 +57,24 @@ Parse the skill table the same way GameMods parses iteminfo — using both the
   level as iteminfo. The PABGH-bounded per-entry pattern from `iteminfo`
   applies (each entry parsed against an index-supplied range).
 
-### 3. `inspect_legacy_patches(vanilla_bytes, [{entry, rel_offset, length}, ...])`
+### 3. `inspect_legacy_patches(vanilla_bytes, [{entry, rel_offset, length}, ...])` — **DONE**
 
-Resolve `(entry-name, rel_offset, length)` JSON v2 byte patches to
-field-path attributions on a vanilla `iteminfo.pabgb`.
+Implemented as a free function. Internally parses `vanilla_bytes` once with
+the existing tracked reader (so the per-item field ranges already produced by
+`parse_iteminfo_tracked` are reused), builds a `string_key → item_index`
+HashMap, and for each patch binary-searches the target item's ranges for the
+field whose `[start, end)` covers `entry.start + rel_offset`. Returns a
+same-length list with `None` for missing entries / out-of-range offsets and
+`{path, ty, abs_start, abs_end, hit_offset, hit_length}` for hits.
 
-- Already referenced by `examples/smoke_tracked.py` in this repo; **not**
-  exported by `src/python.rs`.
-- GameMods context: see
-  `D:\Github\CRIMSON-DESERT-SAVE-EDITOR-AND-GAME-MODS\CrimsonGameMods\JSON_V2_TO_SEMANTIC_FORMAT3_PLAN.md`
-  — this is the binding the JSON v2 → semantic translator wants. Without it
-  the translator falls back to a `reparse-diff` approach (apply byte patches,
-  re-parse, dict-diff) which only works when the patched bytes still parse.
-- Implementation sketch: reuse the per-item `ItemSpan.ranges` produced by
-  `parse_iteminfo_tracked` — for each `(entry_key, rel_offset, length)`,
-  resolve `entry_key → ItemSpan`, walk `ranges` to find the field whose
-  `[start, end)` covers `entry.start + rel_offset`, return
-  `[{path, ty, abs_start, abs_end, hit_offset, hit_length}]`.
-- Expected Python signature shape (per the GameMods plan doc):
-  ```python
-  crimson_rs.inspect_legacy_patches(vanilla_bytes, [
-      {"entry": "Item_X", "rel_offset": 56, "length": 4},
-  ])
-  ```
+GameMods consumer:
+`D:\Github\CRIMSON-DESERT-SAVE-EDITOR-AND-GAME-MODS\CrimsonGameMods\JSON_V2_TO_SEMANTIC_FORMAT3_PLAN.md`
+— the JSON v2 → semantic translator no longer needs the reparse-diff
+fallback for the typical case.
+
+Note: the function only attributes the *start* of each patch. Multi-byte
+patches that cross field boundaries still report a single field at the start
+position; the caller decides whether that's an error.
 
 ## Out of scope — what GameMods builds *on top of* crimson_rs
 

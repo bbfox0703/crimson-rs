@@ -226,6 +226,109 @@ pub fn parse_iteminfo_tracked(py: Python<'_>, data: &[u8]) -> PyResult<Py<PyAny>
     Ok(result.into_any().unbind())
 }
 
+/// Resolve `(entry_name, rel_offset, length)` byte patches to field-path
+/// attributions on a vanilla iteminfo blob.
+///
+/// `vanilla_bytes` is a vanilla `iteminfo.pabgb`. `patches` is a list of
+/// dicts shaped `{"entry": str, "rel_offset": int, "length": int?}`. For
+/// each patch this returns a dict with the field whose `[start, end)`
+/// covers `entry.start + rel_offset`, or `None` if the entry is missing
+/// or the offset falls outside any tracked field. `length` is optional
+/// and is echoed back as `hit_length` for the caller's bookkeeping —
+/// this function only attributes the *start* of the patch, not the span.
+///
+/// Returned dict shape (per non-None entry):
+///   - path: dotted field path (e.g. `"enchant_data_list.2.level"`)
+///   - ty: Rust type name of the field
+///   - abs_start, abs_end: absolute byte range of the field
+///   - hit_offset: `abs_pos - abs_start` (offset into the field)
+///   - hit_length: echo of input `length` (default 0 if not provided)
+#[pyfunction]
+pub fn inspect_legacy_patches(
+    py: Python<'_>,
+    vanilla_bytes: &[u8],
+    patches: &Bound<'_, PyList>,
+) -> PyResult<Py<PyAny>> {
+    use crate::binary::{BinaryReadTracked, FieldRange};
+    use std::collections::HashMap;
+
+    // Parse vanilla once, recording (string_key, span_start, span_end, ranges)
+    // per item. First occurrence wins on duplicate string_keys (none expected
+    // in 1.05 but cheaper than panicking).
+    let mut offset = 0;
+    let mut entries: Vec<(String, usize, usize, Vec<FieldRange>)> = Vec::new();
+    let mut index: HashMap<String, usize> = HashMap::new();
+
+    while offset + 12 < vanilla_bytes.len() {
+        let span_start = offset;
+        let mut path_buf = String::new();
+        let mut ranges: Vec<FieldRange> = Vec::new();
+        let item = ItemInfo::read_tracked(vanilla_bytes, &mut offset, &mut path_buf, &mut ranges)
+            .map_err(|e| {
+                PyValueError::new_err(format!(
+                    "parse error at offset 0x{:08X}: {}",
+                    offset, e
+                ))
+            })?;
+        let key = item.string_key.data.to_string();
+        let i = entries.len();
+        index.entry(key.clone()).or_insert(i);
+        entries.push((key, span_start, offset, ranges));
+    }
+
+    // Resolve each patch
+    let result = PyList::empty(py);
+    for patch in patches.iter() {
+        let d = patch.cast::<PyDict>()?;
+        let entry_name: String = get(d, "entry")?;
+        let rel_offset: usize = get(d, "rel_offset")?;
+        let length: usize = match d.get_item("length")? {
+            Some(v) => v.extract()?,
+            None => 0,
+        };
+
+        let Some(&item_idx) = index.get(&entry_name) else {
+            result.append(py.None())?;
+            continue;
+        };
+        let (_, span_start, span_end, ranges) = &entries[item_idx];
+        let abs_pos = span_start.saturating_add(rel_offset);
+        if abs_pos >= *span_end {
+            result.append(py.None())?;
+            continue;
+        }
+
+        // Ranges are sorted-by-start, contiguous, and disjoint (covering
+        // every byte of the entry), so binary-search by `[start, end)`.
+        let hit = ranges.binary_search_by(|r| {
+            if abs_pos < r.start {
+                std::cmp::Ordering::Greater
+            } else if abs_pos >= r.end {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        });
+
+        match hit {
+            Ok(i) => {
+                let r = &ranges[i];
+                let dd = PyDict::new(py);
+                dd.set_item("path", &r.path)?;
+                dd.set_item("ty", r.ty)?;
+                dd.set_item("abs_start", r.start)?;
+                dd.set_item("abs_end", r.end)?;
+                dd.set_item("hit_offset", abs_pos - r.start)?;
+                dd.set_item("hit_length", length)?;
+                result.append(dd)?;
+            }
+            Err(_) => result.append(py.None())?,
+        }
+    }
+
+    Ok(result.into_any().unbind())
+}
+
 #[pyfunction]
 pub fn write_iteminfo_to_file(items: &Bound<'_, PyList>, path: &str) -> PyResult<()> {
     let data = serialize_iteminfo_impl(items)?;
@@ -927,6 +1030,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_iteminfo_from_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(parse_iteminfo_tracked, m)?)?;
     m.add_function(wrap_pyfunction!(parse_iteminfo_lossy, m)?)?;
+    m.add_function(wrap_pyfunction!(inspect_legacy_patches, m)?)?;
     m.add_function(wrap_pyfunction!(write_iteminfo_to_file, m)?)?;
     m.add_function(wrap_pyfunction!(serialize_iteminfo, m)?)?;
     m.add_function(wrap_pyfunction!(parse_papgt_file, m)?)?;
