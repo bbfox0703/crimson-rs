@@ -187,6 +187,25 @@ data = crimson_rs.extract_file(
 
 ---
 
+### `extract_file_from_paz(paz_path: str, vfs_path: str) -> bytes`
+
+Extract a single file by pointing at any `.paz` in the group directory. Locates the sibling `0.pamt` next to `paz_path`, looks up the file by VFS path, and routes the read to whichever chunk PAMT indicates. Useful for mod-loader pipelines that bundle a self-contained snapshot directory and do not want to assume the standard `<game_dir>/<group>/0.paz` layout.
+
+```python
+data = crimson_rs.extract_file_from_paz(
+    "/path/to/snapshot/0.paz",
+    "gamedata/binary__/client/bin/iteminfo.pabgb",
+)
+```
+
+**Parameters:**
+- `paz_path` - Path to a `.paz` file. Only its parent directory is used (to locate `0.pamt` and the chunk file PAMT routes to).
+- `vfs_path` - VFS path inside the archive, split on the last `/` into a directory and file name. Root files can be passed as a bare filename.
+
+**Raises:** `IOError` if the PAMT or PAZ file cannot be read, `ValueError` if the directory or file is not found in the PAMT.
+
+---
+
 ## ItemInfo (pabgb)
 
 ### `parse_iteminfo_from_file(path: str) -> list[dict]`

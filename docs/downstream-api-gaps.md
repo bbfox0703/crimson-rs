@@ -28,22 +28,20 @@ that GameMods runs on top.
 
 ## TODO — bindings to add
 
-### 1. `extract_file_from_paz(paz_path: str, vfs_path: str) -> bytes`
+### 1. `extract_file_from_paz(paz_path: str, vfs_path: str) -> bytes` — **DONE**
 
-Extract a single file from one specific `.paz` path, instead of the
-`(game_dir, group_name, dir, file_name)` tuple required by today's
-`extract_file`.
+Implemented as a sibling entry point to `extract_file`. The function uses the
+parent directory of `paz_path` to locate `0.pamt`, splits `vfs_path` on the
+last `/` for directory + file name, and routes the read through the existing
+`paz::extract_file` path. PAMT decides which chunk file is actually opened, so
+any `.paz` in the group directory is a valid pointer.
 
-- GameMods call sites:
-  - `gui/tabs/mod_loader.py:677` (`hasattr` guarded)
-  - `overlay_coordinator.py:252` (`hasattr` guarded)
-- Use case: mod-loader pipelines that already know the exact `.paz` they want
-  to read out of (e.g. a vanilla snapshot bundled with a mod) and do not want
-  to assume the standard `<game_dir>/<group>/0.paz` layout.
-- Implementation sketch: factor the existing `extract_file` so the
-  PAMT-locate + decrypt + decompress path takes a `&Path` to the `.paz`
-  directly; the existing public function becomes a thin wrapper that builds
-  the path from `(game_dir, group_name)`.
+GameMods call sites that were `hasattr`-guarded against the bundled `.pyd`:
+
+- `gui/tabs/mod_loader.py:677`
+- `overlay_coordinator.py:252`
+
+Both now resolve to a real binding.
 
 ### 2. `parse_skillinfo_from_bytes(skill_pabgb: bytes, skill_pabgh: bytes) -> list[SkillInfo]`
 

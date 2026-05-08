@@ -971,3 +971,29 @@ def extract_file(
         ValueError: If the directory or file is not found in the PAMT.
     """
     ...
+
+
+def extract_file_from_paz(paz_path: str, vfs_path: str) -> bytes:
+    """Extract a single file by pointing at any ``.paz`` in the group directory.
+
+    Locates the sibling ``0.pamt`` next to ``paz_path`` and routes the read to
+    whichever chunk PAMT indicates (so any ``.paz`` in the directory is a valid
+    pointer; the input is just used for path resolution). Useful for mod-loader
+    pipelines that bundle a self-contained snapshot directory and do not want to
+    assume the standard ``<game_dir>/<group>/0.paz`` layout.
+
+    Args:
+        paz_path: Path to a ``.paz`` file. Its parent directory must contain
+            the matching ``0.pamt``.
+        vfs_path: VFS path inside the archive, split on the last ``/``
+            (e.g. ``"gamedata/binary__/client/bin/iteminfo.pabgb"``). Files in
+            the archive root may be passed as a bare filename.
+
+    Returns:
+        Raw decompressed file data as bytes.
+
+    Raises:
+        IOError: If the PAMT or PAZ file cannot be read.
+        ValueError: If the directory or file is not found in the PAMT.
+    """
+    ...

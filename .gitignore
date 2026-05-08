@@ -2,6 +2,9 @@
 __pycache__
 tmp
 python/**/*.so
+python/**/*.pyd
+python/**/*.pdb
+/.venv/
 
 # ── Generated output (contains extracted game data — do NOT commit) ──
 # All files in out/ are derived from the user's local Crimson Desert install:

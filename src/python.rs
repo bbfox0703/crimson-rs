@@ -858,6 +858,68 @@ pub fn extract_file(
     Ok(PyBytes::new(py, &raw).into_any().unbind())
 }
 
+/// Extract a single file by pointing at any `.paz` file in the group dir.
+///
+/// `paz_path` may name any `.paz` in the group directory (typically `0.paz`);
+/// only its parent directory is used, to locate the sibling `0.pamt` and the
+/// chunk file the PAMT routes to. `vfs_path` is the full VFS path inside the
+/// archive (e.g. `gamedata/binary__/client/bin/iteminfo.pabgb`); it is split
+/// on the last `/` into a directory and file name, and root files are accepted.
+#[pyfunction]
+pub fn extract_file_from_paz(
+    py: Python<'_>,
+    paz_path: &str,
+    vfs_path: &str,
+) -> PyResult<Py<PyAny>> {
+    use crate::binary::paz;
+    use std::path::Path;
+
+    let paz = Path::new(paz_path);
+    let group_dir = paz.parent().ok_or_else(|| {
+        PyValueError::new_err(format!("paz_path has no parent directory: {}", paz_path))
+    })?;
+    let pamt_path = group_dir.join("0.pamt");
+
+    let pamt_data = std::fs::read(&pamt_path)
+        .map_err(|e| PyIOError::new_err(format!("{}: {}", pamt_path.display(), e)))?;
+    let pamt =
+        PackMeta::parse(&pamt_data, None).map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+    let (dir_path, file_name) = match vfs_path.rsplit_once('/') {
+        Some((d, f)) => (d, f),
+        None => ("", vfs_path),
+    };
+
+    let dir = pamt
+        .directories
+        .iter()
+        .find(|d| d.path == dir_path)
+        .ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "directory '{}' not found in {}",
+                dir_path,
+                pamt_path.display()
+            ))
+        })?;
+
+    let file = dir
+        .files
+        .iter()
+        .find(|f| f.name == file_name)
+        .ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "file '{}' not found in directory '{}'",
+                file_name, dir_path
+            ))
+        })?;
+
+    let encrypt_info = pamt.header.encrypt_info.encrypt_info;
+    let raw = paz::extract_file(group_dir, file, dir_path, &encrypt_info)
+        .map_err(|e| PyIOError::new_err(e.to_string()))?;
+
+    Ok(PyBytes::new(py, &raw).into_any().unbind())
+}
+
 // ── Registration ───────────────────────────────────────────────────────────
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -881,6 +943,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPackGroupBuilder>()?;
     m.add_function(wrap_pyfunction!(add_papgt_entry, m)?)?;
     m.add_function(wrap_pyfunction!(extract_file, m)?)?;
+    m.add_function(wrap_pyfunction!(extract_file_from_paz, m)?)?;
     m.add_function(wrap_pyfunction!(parse_paloc_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(serialize_paloc, m)?)?;
     Ok(())
