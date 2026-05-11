@@ -122,16 +122,24 @@ def _read_string_key(data: bytes, off: int) -> str:
     return data[off + 8 : off + 8 + slen].decode("utf-8", errors="replace")
 
 
-def _find_anchors(data: bytes, keys: list[int]) -> list[int]:
+def _find_anchors(data: bytes, keys: list[int]) -> list[int | None]:
+    """Locate each key's item-start offset in the binary.
+
+    Returns one entry per input key. ``None`` means the key has no
+    corresponding item in iteminfo.pabgb (CE dropdown sometimes carries
+    extra trailer keys that aren't backed by an iteminfo entry — the
+    caller emits a fallback record so dropdown indices stay aligned).
+    """
     import struct
 
     if not keys:
         return []
     if not _looks_like_item_start(data, 0, keys[0]):
         sys.exit("First key does not appear at file offset 0")
-    anchors = [0]
+    anchors: list[int | None] = [0]
+    last_known_off = 0
     for i in range(1, len(keys)):
-        cursor = anchors[-1] + 60
+        cursor = last_known_off + 60
         target = struct.pack("<I", keys[i])
         found = -1
         while cursor + 12 <= len(data):
@@ -143,8 +151,10 @@ def _find_anchors(data: bytes, keys: list[int]) -> list[int]:
                 break
             cursor = idx + 1
         if found < 0:
-            sys.exit(f"Anchor scan failed at i={i} key={keys[i]}")
-        anchors.append(found)
+            anchors.append(None)
+        else:
+            anchors.append(found)
+            last_known_off = found
     return anchors
 
 
@@ -167,16 +177,37 @@ def export_iteminfo_anchored(
     print(f"  raw: {len(raw):,}B -> {raw_path.name}")
 
     anchors = _find_anchors(raw, keys)
-    print(f"  anchors resolved: {len(anchors):,} / {len(keys):,}")
+    resolved = sum(1 for a in anchors if a is not None)
+    print(f"  anchors resolved: {resolved:,} / {len(keys):,}")
 
     items: list[dict] = []
-    status_hist: dict[str, int] = {"ok": 0, "leftover": 0, "fail": 0}
+    status_hist: dict[str, int] = {
+        "ok": 0, "leftover": 0, "fail": 0, "no_anchor": 0,
+    }
 
     jsonl_path = out_dir / "items.jsonl"
     with jsonl_path.open("w", encoding="utf-8") as fh:
         for i, key in enumerate(keys):
             off = anchors[i]
-            end = anchors[i + 1] if i + 1 < len(anchors) else len(raw)
+            if off is None:
+                rec = {"key": key}
+                status = "no_anchor"
+                status_hist["no_anchor"] += 1
+                rec["_index"] = i
+                rec["_anchor_off"] = None
+                rec["_anchor_size"] = 0
+                rec["_status"] = status
+                fh.write(json.dumps(rec, ensure_ascii=False, separators=(",", ":")))
+                fh.write("\n")
+                items.append(rec)
+                continue
+
+            next_off: int | None = None
+            for j in range(i + 1, len(anchors)):
+                if anchors[j] is not None:
+                    next_off = anchors[j]
+                    break
+            end = next_off if next_off is not None else len(raw)
             chunk = raw[off:end]
             string_key = _read_string_key(raw, off)
 
@@ -209,7 +240,8 @@ def export_iteminfo_anchored(
     print(
         f"  parser status: ok={status_hist['ok']:,}  "
         f"leftover={status_hist['leftover']:,}  "
-        f"fail={status_hist['fail']:,}"
+        f"fail={status_hist['fail']:,}  "
+        f"no_anchor={status_hist['no_anchor']:,}"
     )
     return items
 

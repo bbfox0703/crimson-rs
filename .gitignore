@@ -28,3 +28,8 @@ python/**/*.pdb
 # Per-developer Claude Code settings (plugins, hooks, slash commands).
 # Personal preferences — not project content.
 /.claude/
+
+# Raw process-memory dumps used for RE diagnostics (e.g. CE "Save Memory Region"
+# of the in-game itemKey array). Keep them on disk for current-session use,
+# but never commit — they reveal game-side memory layout.
+*.CEM
