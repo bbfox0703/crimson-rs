@@ -3,7 +3,7 @@
 [![Platform](https://img.shields.io/badge/Platform-Windows%20x64-0078D4)](https://www.microsoft.com/windows)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Built with Claude Code](https://img.shields.io/badge/Built%20with-Claude%20Code-CC785C?logo=claude)](https://claude.ai/code)
-[![Game Version](https://img.shields.io/badge/Game-Crimson%20Desert%201.05-D63B3B)](https://www.playcrimsondesert.com/)
+[![Game Version](https://img.shields.io/badge/Game-Crimson%20Desert%201.05%20%2F%201.06-D63B3B)](https://www.playcrimsondesert.com/)
 
 ## Overview
 
@@ -12,25 +12,25 @@ This library is a poor man attempts and assembling various tools to explore and 
 It is a work in progress and currently supports:
 - Extracting and parsing .paz files (game archives)
 - Parsing and editing iteminfo binary data via Python
-- **Crimson Desert 1.05** (5/2 patch): 100% perfect parse on all 6,236 items; byte-perfect roundtrip via `serialize_iteminfo`. See [`docs/1.05-parser-history.md`](docs/1.05-parser-history.md) for the RE story and [`scripts/CLAUDE.md`](scripts/CLAUDE.md) for the next-session pickup notes.
-- Generating Cheat Engine dropdown lists (item id → name) covering all 6,236 in-game item keys
+- **Crimson Desert 1.05 / 1.06**: byte-perfect parse on the live game iteminfo binary — 6,236 items in 1.05, 6,253 items in 1.06 (no schema drift between the two; same parser handles both). `serialize_iteminfo` roundtrips every item. See [`docs/1.05-parser-history.md`](docs/1.05-parser-history.md) for the RE story and [`scripts/CLAUDE.md`](scripts/CLAUDE.md) for the next-session pickup notes (including the cross-patch validation table).
+- Generating Cheat Engine dropdown lists (item id → name) covering every in-game item key
 
-## Crimson Desert 1.05 — One-shot CE table data export
+## One-shot CE table data export
 
-**Prerequisites:** Crimson Desert installed locally + this repo + the bundled [`data/keys.txt`](data/keys.txt) (already included; see [`data/README.md`](data/README.md) for how to refresh it).
+**Prerequisites:** Crimson Desert installed locally + this repo + the bundled [`data/keys.txt`](data/keys.txt) (already included; see [`data/README.md`](data/README.md) for how to refresh it after a game patch).
 
 ```powershell
 python scripts\export_for_ce.py
 ```
 
-That single command writes everything `Generate_item_id_list.ps1` needs to `out/`. The script auto-discovers every `localizationstring_<lang>.paloc` the game ships (typically 14 languages — eng, jpn, kor, zho-tw, zho-cn, …) and emits one `paloc_<lang>.json` plus one CE dropdown file per language:
+That single command writes everything `Generate_item_id_list.ps1` needs to `out/`. The script auto-discovers every `localizationstring_<lang>.paloc` the game ships (typically 14 languages — eng, jpn, kor, zho-tw, zho-cn, …) and emits one `paloc_<lang>.json` plus one CE dropdown file per language. Counts below are for **1.06** (1.05 was 6,236 / 6,389 — see [`scripts/CLAUDE.md`](scripts/CLAUDE.md) for the cross-patch table):
 
-| File | Contents | Coverage |
+| File | Contents | 1.06 coverage |
 |---|---|---|
 | `iteminfo.pabgb` | Raw decompressed binary from group 0008 | — |
-| `items.jsonl` | One item per line; `key` + `string_key` always populated, parsed fields when the parser succeeds | 6,236 (100%) |
-| `paloc_<lang>.json` (one per language) | `{item_key: name}` lookup tables (paloc 0x70). Filenames use the raw paloc lang code, e.g. `paloc_eng.json`, `paloc_jpn.json`, `paloc_kor.json`, `paloc_zho-tw.json`, `paloc_zho-cn.json`, … | 6,389 each |
-| `output.txt` (eng) + `output_<suffix>.txt` (one per remaining language) | CE dropdown lists `idx:name/key`. eng → `output.txt`; jpn → `output_ja.txt`; kor → `output_ko.txt`; zho-tw → `output_zh-tw.txt`; everything else falls through to its raw lang code | 6,236 each |
+| `items.jsonl` | One item per line; `key` + `string_key` always populated, parsed fields when the parser succeeds | 6,253 (100%) |
+| `paloc_<lang>.json` (one per language) | `{item_key: name}` lookup tables (paloc 0x70). Filenames use the raw paloc lang code, e.g. `paloc_eng.json`, `paloc_jpn.json`, `paloc_kor.json`, `paloc_zho-tw.json`, `paloc_zho-cn.json`, … | 6,405 each |
+| `output.txt` (eng) + `output_<suffix>.txt` (one per remaining language) | CE dropdown lists `idx:name/key`. eng → `output.txt`; jpn → `output_ja.txt`; kor → `output_ko.txt`; zho-tw → `output_zh-tw.txt`; everything else falls through to its raw lang code | 6,253 each |
 
 The CE dropdown coverage is full because the script falls back to `string_key` for the ~71 dev/QA items the game itself doesn't ship localized names for (in any of 14 languages — see [`scripts/CLAUDE.md`](scripts/CLAUDE.md) for the analysis).
 
@@ -137,9 +137,9 @@ with open("items.csv", "w", newline="") as f:
         w.writerow([item["key"], item["string_key"], item["item_type"], item["item_tier"]])
 ```
 
-### 1.05 parser
+### 1.05 / 1.06 parser
 
-`parse_iteminfo_from_bytes` parses 1.05 binaries to 100% (6,236 / 6,236 items, byte-perfect roundtrip via `serialize_iteminfo`). Two helper modes are also available for diagnostic / recovery work:
+`parse_iteminfo_from_bytes` parses 1.05 and 1.06 binaries to 100% (6,236 / 6,236 items in 1.05 and 6,253 / 6,253 items in 1.06, byte-perfect roundtrip via `serialize_iteminfo` on both). The same parser handles both versions — no schema drift was introduced in 1.06. Two helper modes are also available for diagnostic / recovery work:
 
 ```python
 # Tracked mode — returns byte-range metadata for each parsed field; used by
