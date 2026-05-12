@@ -270,14 +270,12 @@ fn compute_undecoded_ranges(
     region_end: usize,
     fields: &[DecodedField],
 ) -> Vec<(usize, usize)> {
+    let mut decoded: Vec<(usize, usize)> = Vec::new();
+    collect_decoded_ranges(fields, &mut decoded);
+    decoded.sort_by_key(|r| r.0);
+
     let mut spans = Vec::new();
     let mut cursor = region_start;
-    let mut decoded: Vec<(usize, usize)> = fields
-        .iter()
-        .filter(|f| f.start < f.end)
-        .map(|f| (f.start, f.end))
-        .collect();
-    decoded.sort_by_key(|r| r.0);
     for (s, e) in decoded {
         if cursor < s {
             spans.push((cursor, s));
@@ -290,6 +288,38 @@ fn compute_undecoded_ranges(
         spans.push((cursor, region_end));
     }
     spans
+}
+
+/// Collect every byte range that some decoder claimed — top-level field
+/// ranges plus the byte ranges of any nested child / list-element blocks.
+/// Used to account for non-inline locator payloads that sit elsewhere in
+/// the block and whose bytes wouldn't otherwise be covered by the
+/// top-level field walk.
+fn collect_decoded_ranges(fields: &[DecodedField], out: &mut Vec<(usize, usize)>) {
+    for f in fields {
+        if f.start < f.end {
+            out.push((f.start, f.end));
+        }
+        match &f.value {
+            FieldValue::Locator { child: Some(c), .. } => {
+                out.push((
+                    c.data_offset as usize,
+                    (c.data_offset + c.data_size) as usize,
+                ));
+                collect_decoded_ranges(&c.fields, out);
+            }
+            FieldValue::ObjectList { elements, .. } => {
+                for el in elements {
+                    out.push((
+                        el.data_offset as usize,
+                        (el.data_offset + el.data_size) as usize,
+                    ));
+                    collect_decoded_ranges(&el.fields, out);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 // ── Field decoders ─────────────────────────────────────────────────────────
@@ -471,30 +501,48 @@ fn decode_inline_object_locator(
     let mut end = wrapper_end;
     let mut child_block: Option<Box<ObjectBlock>> = None;
 
-    // The child payload sits immediately after the wrapper iff the locator
-    // pointed there. Otherwise the payload lives elsewhere in the body and
-    // we leave it for the next pass to pick up via another TOC entry.
-    if (child_payload_offset as usize) == wrapper_end
-        && let Some(td) = child_type_def {
-            let child_mask = &raw[body_cursor + 2..body_cursor + 2 + mbc];
-            if let Ok((child_end, _reserved, _size, child_fields)) =
-                decode_inline_object_payload(raw, td, child_mask, wrapper_end, tail_cursor, by_index)
-            {
-                end = child_end;
-                child_block = Some(Box::new(ObjectBlock {
-                    class_index: child_type_index as u32,
-                    class_name: td.name.clone(),
-                    data_offset: child_payload_offset,
-                    data_size: (child_end - wrapper_end) as u32,
-                    mask_byte_count: mbc as u16,
-                    mask_bytes: child_mask.to_vec(),
-                    reserved_u32: 0,
-                    fields: child_fields,
-                    trailing_pad: None,
-                    undecoded_ranges: Vec::new(),
-                }));
+    if let Some(td) = child_type_def {
+        let child_mask_owned = raw[body_cursor + 2..body_cursor + 2 + mbc].to_vec();
+
+        // The wrapper's `child_payload_offset` is informational: most of
+        // the time it equals `wrapper_end` (truly inline), but in some
+        // blocks the engine writes a different value while the actual
+        // payload still sits at wrapper_end (observed in FactionSaveData
+        // list elements). So we always try inline first, then fall back
+        // to the stated offset.
+        let try_payload = |start: usize, tail: usize| {
+            if start + 8 > tail {
+                return None;
             }
+            decode_inline_object_payload(raw, td, &child_mask_owned, start, tail, by_index)
+                .ok()
+                .map(|(child_end, _, _, fields)| (start, child_end, fields))
+        };
+
+        let mut decoded = try_payload(wrapper_end, tail_cursor);
+        if decoded.is_none() && (child_payload_offset as usize) != wrapper_end {
+            decoded = try_payload(child_payload_offset as usize, raw.len());
         }
+
+        if let Some((payload_start, child_end, fields)) = decoded {
+            if payload_start == wrapper_end {
+                // Inline: outer forward cursor advances past wrapper + child.
+                end = child_end;
+            }
+            child_block = Some(Box::new(ObjectBlock {
+                class_index: child_type_index as u32,
+                class_name: td.name.clone(),
+                data_offset: payload_start as u32,
+                data_size: (child_end - payload_start) as u32,
+                mask_byte_count: mbc as u16,
+                mask_bytes: child_mask_owned,
+                reserved_u32: 0,
+                fields,
+                trailing_pad: None,
+                undecoded_ranges: Vec::new(),
+            }));
+        }
+    }
 
     let value = FieldValue::Locator {
         child_type_index,
@@ -546,6 +594,13 @@ fn decode_inline_object_payload(
         })
         .collect();
 
+    // Field walk is best-effort: if a field's decode fails, we break out
+    // of the loop and leave the remaining fields as `Unknown`. The
+    // trailing-size probe below then locates the payload's true end from
+    // wherever `cursor` got stuck. This is the only way to recover from
+    // unfamiliar sub-format variants (e.g. an unknown dynamic_array
+    // header in one of FactionNodeElementSaveData's quest lists) without
+    // abandoning the rest of the block.
     for (index, field) in type_def.fields.iter().enumerate() {
         if !fields[index].present {
             continue;
@@ -554,7 +609,7 @@ fn decode_inline_object_payload(
             0 | 2 if field.meta_size > 0 => {
                 let size = field.meta_size as usize;
                 if cursor + size > tail_cursor {
-                    return overrun("inline payload scalar");
+                    break;
                 }
                 fields[index].kind = FieldKind::FixedPrefix;
                 fields[index].value =
@@ -564,39 +619,60 @@ fn decode_inline_object_payload(
                 cursor += size;
             }
             1 if field.meta_size > 0 => {
-                let (end, value) = decode_inline_bytes(raw, cursor, field, tail_cursor)?;
-                fields[index].kind = FieldKind::InlineBytes;
-                fields[index].value = value;
-                fields[index].start = cursor;
-                fields[index].end = end;
-                cursor = end;
+                match decode_inline_bytes(raw, cursor, field, tail_cursor) {
+                    Ok((end, value)) => {
+                        fields[index].kind = FieldKind::InlineBytes;
+                        fields[index].value = value;
+                        fields[index].start = cursor;
+                        fields[index].end = end;
+                        cursor = end;
+                    }
+                    Err(_) => break,
+                }
             }
             3 if field.meta_size > 0 => {
-                let (end, value, hv) = decode_dynamic_array(raw, cursor, field, tail_cursor)?;
-                fields[index].kind = FieldKind::DynamicArray;
-                fields[index].value = value;
-                fields[index].start = cursor;
-                fields[index].end = end;
-                fields[index].note = hv.into();
-                cursor = end;
+                match decode_dynamic_array(raw, cursor, field, tail_cursor) {
+                    Ok((end, value, hv)) => {
+                        fields[index].kind = FieldKind::DynamicArray;
+                        fields[index].value = value;
+                        fields[index].start = cursor;
+                        fields[index].end = end;
+                        fields[index].note = hv.into();
+                        cursor = end;
+                    }
+                    Err(_) => break,
+                }
             }
             4 | 5 => {
-                let (end, value) =
-                    decode_inline_object_locator(raw, cursor, tail_cursor, by_index, field.meta_kind)?;
-                fields[index].kind = FieldKind::ObjectLocator;
-                fields[index].value = value;
-                fields[index].start = cursor;
-                fields[index].end = end;
-                cursor = end;
+                match decode_inline_object_locator(
+                    raw,
+                    cursor,
+                    tail_cursor,
+                    by_index,
+                    field.meta_kind,
+                ) {
+                    Ok((end, value)) => {
+                        fields[index].kind = FieldKind::ObjectLocator;
+                        fields[index].value = value;
+                        fields[index].start = cursor;
+                        fields[index].end = end;
+                        cursor = end;
+                    }
+                    Err(_) => break,
+                }
             }
             6 | 7 => {
-                let (end, value, hv) = decode_object_list(raw, cursor, tail_cursor, by_index)?;
-                fields[index].kind = FieldKind::ObjectList;
-                fields[index].value = value;
-                fields[index].start = cursor;
-                fields[index].end = end;
-                fields[index].note = hv.into();
-                cursor = end;
+                match decode_object_list(raw, cursor, tail_cursor, by_index) {
+                    Ok((end, value, hv)) => {
+                        fields[index].kind = FieldKind::ObjectList;
+                        fields[index].value = value;
+                        fields[index].start = cursor;
+                        fields[index].end = end;
+                        fields[index].note = hv.into();
+                        cursor = end;
+                    }
+                    Err(_) => break,
+                }
             }
             _ => {
                 return Err(io::Error::new(
@@ -759,16 +835,47 @@ fn decode_object_list_element(
     tail_cursor: usize,
     by_index: &HashMap<u32, &TypeDef>,
 ) -> io::Result<(usize, ObjectBlock)> {
-    // Python falls back to a "compact list element" form when the inline
-    // locator decode fails. Our test save reaches a clean decode through
-    // the locator path alone for all 1,112 entries; if a future patch
-    // introduces the compact form we'll see decode errors and revisit.
     let (end, value) = decode_inline_object_locator(raw, cursor, tail_cursor, by_index, 4)?;
     match value {
-        FieldValue::Locator { child, .. } => {
-            let mut block = child.map(|b| *b).unwrap_or_else(|| ObjectBlock {
-                class_index: 0,
-                class_name: "<unresolved>".into(),
+        FieldValue::Locator {
+            child: Some(b),
+            child_type_index,
+            child_type_name,
+            ..
+        } => {
+            let mut block = *b;
+            // Inline iff the child's bytes end exactly where the locator
+            // call ended — meaning wrapper and child are contiguous. We
+            // expand the element block to cover wrapper + child so a
+            // single range describes the whole element's bytes.
+            //
+            // Non-inline: the child sits elsewhere in the body. Keep the
+            // block's data range pointing at the payload only; the wrapper
+            // bytes are claimed by the outer object_list field's
+            // start..end range.
+            let _ = (child_type_index, child_type_name);
+            let inline = (block.data_offset as usize + block.data_size as usize) == end;
+            if inline {
+                block.data_offset = cursor as u32;
+                block.data_size = (end - cursor) as u32;
+            }
+            Ok((end, block))
+        }
+        FieldValue::Locator {
+            child: None,
+            child_type_index,
+            child_type_name,
+            ..
+        } => {
+            // The wrapper was structurally valid but the child payload
+            // decode failed (e.g. an unfamiliar dynamic_array header
+            // variant inside the child). Return a placeholder block
+            // covering just the wrapper bytes so the outer list loop
+            // can continue with the next element rather than abandoning
+            // the rest of the list.
+            let block = ObjectBlock {
+                class_index: child_type_index as u32,
+                class_name: child_type_name,
                 data_offset: cursor as u32,
                 data_size: (end - cursor) as u32,
                 mask_byte_count: 0,
@@ -777,9 +884,7 @@ fn decode_object_list_element(
                 fields: Vec::new(),
                 trailing_pad: None,
                 undecoded_ranges: Vec::new(),
-            });
-            block.data_offset = cursor as u32;
-            block.data_size = (end - cursor) as u32;
+            };
             Ok((end, block))
         }
         _ => Err(io::Error::new(
