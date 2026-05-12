@@ -42,6 +42,16 @@ pub mod error {
     pub const BODY_PARSE: i32 = -9;
     pub const OUT_OF_RANGE: i32 = -10;
     pub const BUFFER_TOO_SMALL: i32 = -11;
+    /// Field is not a fixed-size scalar (`fixed_prefix` / `fixed_suffix`).
+    /// Returned by `crimson_save_set_scalar_field` when the caller targets
+    /// a list / inline-bytes / locator / absent field.
+    pub const NOT_SCALAR: i32 = -12;
+    /// `bytes_len` doesn't match the field's recorded byte range.
+    /// Length-changing edits are not supported by `set_scalar_field`.
+    pub const LENGTH_MISMATCH: i32 = -13;
+    /// `crimson_save_write_to_file` failed downstream of a successful
+    /// re-serialize (filesystem error, permissions, etc.).
+    pub const WRITE_FAILED: i32 = -14;
     pub const PANIC: i32 = -99;
 }
 
@@ -359,6 +369,111 @@ pub unsafe extern "C" fn crimson_save_get_block_json(
             *buf.add(bytes.len()) = 0;
         }
         error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+// ── Mutation ───────────────────────────────────────────────────────────────
+
+/// Overwrite the bytes of a fixed-size scalar field with `bytes`.
+///
+/// Constraints:
+/// - `(block_idx, field_idx)` must resolve to a field whose
+///   [`FieldKind`] is `FixedPrefix` or `FixedSuffix` — list, inline-byte,
+///   locator, and absent fields are rejected with `NOT_SCALAR`. The
+///   set is a same-size byte-level replacement.
+/// - `bytes_len` must equal the field's recorded byte range
+///   (`field.end - field.start`); otherwise `LENGTH_MISMATCH`.
+///
+/// On success the cached body bytes are patched in place and **every**
+/// block is re-decoded so subsequent
+/// [`crimson_save_get_block_json`] / `_info` calls see the new value.
+/// The re-decode is O(toc_count) but completes in milliseconds on the
+/// 1112-block save.
+///
+/// # Safety
+/// `handle` must be a live, exclusive handle. `bytes` must be a valid
+/// pointer to `bytes_len` readable bytes for the duration of the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_set_scalar_field(
+    handle: *mut CrimsonSaveHandle,
+    block_idx: u32,
+    field_idx: u32,
+    bytes: *const u8,
+    bytes_len: usize,
+) -> i32 {
+    if handle.is_null() {
+        return error::NULL_ARG;
+    }
+    if bytes.is_null() && bytes_len != 0 {
+        return error::NULL_ARG;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &mut *handle };
+        let Some(block) = h.blocks.get(block_idx as usize) else {
+            return error::OUT_OF_RANGE;
+        };
+        let Some(field) = block.fields.get(field_idx as usize) else {
+            return error::OUT_OF_RANGE;
+        };
+        if !matches!(field.kind, FieldKind::FixedPrefix | FieldKind::FixedSuffix) {
+            return error::NOT_SCALAR;
+        }
+        let expected = field.end.saturating_sub(field.start);
+        if bytes_len != expected {
+            return error::LENGTH_MISMATCH;
+        }
+        let dst_start = field.start;
+        let dst_end = field.end;
+        if dst_end > h.save.body.len() {
+            // Shouldn't happen — decoder produced offsets, body is the
+            // same buffer it parsed. Defensive guard for the unsafe write.
+            return error::OUT_OF_RANGE;
+        }
+        let src = unsafe { std::slice::from_raw_parts(bytes, bytes_len) };
+        h.save.body[dst_start..dst_end].copy_from_slice(src);
+        // Refresh decoded blocks so consumers see the new value on the
+        // next get_block_json. Re-parsing the body is cheap (schema/TOC
+        // unchanged); decode_blocks is the only meaningful work.
+        h.blocks = h.body.decode_blocks(&h.save.body);
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Serialize the in-memory save back to `path` using the original nonce.
+///
+/// Uses `Save::write_with_nonce` so the on-disk layout matches what the
+/// game produced — HMAC re-computed, ChaCha20 re-applied. The header's
+/// `uncompressed_size` and `payload_size` get patched to match the
+/// current body / freshly-compressed payload.
+///
+/// # Safety
+/// `handle` must be a live handle. `path` must be a NUL-terminated
+/// UTF-8 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_write_to_file(
+    handle: *const CrimsonSaveHandle,
+    path: *const c_char,
+) -> i32 {
+    if handle.is_null() || path.is_null() {
+        return error::NULL_ARG;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
+            Ok(s) => s,
+            Err(_) => return error::INVALID_PATH,
+        };
+        let nonce = h.save.header.nonce();
+        let bytes = match h.save.write_with_nonce(nonce) {
+            Ok(b) => b,
+            Err(e) => return save_error_code(&e),
+        };
+        match std::fs::write(path_str, &bytes) {
+            Ok(()) => error::OK,
+            Err(_) => error::WRITE_FAILED,
+        }
     }))
     .unwrap_or(error::PANIC)
 }
@@ -723,5 +838,148 @@ mod tests {
         assert_eq!(rc, error::NULL_ARG);
 
         unsafe { crimson_save_free(handle) };
+    }
+
+    /// Drives the new mutation API end-to-end against a live save:
+    /// mutate block 0 field 0 (a fixed_suffix u32 in
+    /// CharacterStatusSaveData), assert the in-memory JSON reflects the
+    /// new value, write to a tempfile, reload that tempfile, and assert
+    /// the value survived the encrypt → LZ4 → HMAC → decrypt round-trip.
+    /// Then exercises every error path on the same handle.
+    #[test]
+    fn c_abi_mutate_and_write_roundtrip() {
+        let Some(path) = find_save() else {
+            eprintln!("skipping c_abi_mutate_and_write_roundtrip: no live save");
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+
+        let mut handle: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle) },
+            error::OK
+        );
+
+        // Confirm block 0 field 0 is the fixed_suffix u32 (_characterKey)
+        // we're about to overwrite. If the schema ever drifts this assert
+        // will tell us we picked the wrong target.
+        let json = read_block_json(handle, 0);
+        assert!(
+            json.contains("\"field_index\":0") && json.contains("\"kind\":\"fixed_suffix\""),
+            "expected block 0 field 0 to be fixed_suffix; got: {json:.200}…"
+        );
+
+        // 0x01EFCDAB = 32_492_971. Specific enough to be distinguishable
+        // from any plausible original value.
+        let sentinel: [u8; 4] = [0xAB, 0xCD, 0xEF, 0x01];
+        assert_eq!(
+            unsafe {
+                crimson_save_set_scalar_field(handle, 0, 0, sentinel.as_ptr(), sentinel.len())
+            },
+            error::OK
+        );
+        // After the set, get_block_json must reflect the new decoded value.
+        let after = read_block_json(handle, 0);
+        assert!(
+            after.contains("\"value\":\"32492971 <u32>\""),
+            "expected sentinel value in JSON after set; got: {after:.300}…"
+        );
+
+        // Write the modified handle to a temp file and reload it. The
+        // tempfile crate's NamedTempFile deletes the file on drop, so we
+        // keep `_tmp` alive until the reload completes.
+        let _tmp = tempfile::NamedTempFile::new().unwrap();
+        let tmp_path_str = _tmp.path().to_str().unwrap().to_owned();
+        let tmp_path = CString::new(tmp_path_str.clone()).unwrap();
+        assert_eq!(
+            unsafe { crimson_save_write_to_file(handle, tmp_path.as_ptr()) },
+            error::OK
+        );
+
+        unsafe { crimson_save_free(handle) };
+
+        let mut reloaded: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(tmp_path.as_ptr(), &mut reloaded) },
+            error::OK
+        );
+        let mut hmac: i32 = 0;
+        assert_eq!(
+            unsafe { crimson_save_get_hmac_ok(reloaded, &mut hmac) },
+            error::OK
+        );
+        assert_eq!(hmac, 1, "HMAC must verify on reload of a write_to_file output");
+
+        let reloaded_json = read_block_json(reloaded, 0);
+        assert!(
+            reloaded_json.contains("\"value\":\"32492971 <u32>\""),
+            "mutation must persist across write+reload; got: {reloaded_json:.300}…"
+        );
+        unsafe { crimson_save_free(reloaded) };
+
+        // ── Error paths ────────────────────────────────────────────────
+        let mut h2: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut h2) },
+            error::OK
+        );
+        let dummy = [0u8; 4];
+
+        // NOT_SCALAR: target an absent field. Block 0 field 3 (_experience)
+        // is absent in any low-level character.
+        assert_eq!(
+            unsafe { crimson_save_set_scalar_field(h2, 0, 3, dummy.as_ptr(), 0) },
+            error::NOT_SCALAR
+        );
+
+        // LENGTH_MISMATCH: field 0 is 4 bytes; send 5.
+        let dummy5 = [0u8; 5];
+        assert_eq!(
+            unsafe { crimson_save_set_scalar_field(h2, 0, 0, dummy5.as_ptr(), 5) },
+            error::LENGTH_MISMATCH
+        );
+
+        // OUT_OF_RANGE on both axes.
+        assert_eq!(
+            unsafe { crimson_save_set_scalar_field(h2, 0, u32::MAX, dummy.as_ptr(), 4) },
+            error::OUT_OF_RANGE
+        );
+        assert_eq!(
+            unsafe { crimson_save_set_scalar_field(h2, u32::MAX, 0, dummy.as_ptr(), 4) },
+            error::OUT_OF_RANGE
+        );
+
+        // NULL_ARG on handle and on bytes.
+        assert_eq!(
+            unsafe {
+                crimson_save_set_scalar_field(ptr::null_mut(), 0, 0, dummy.as_ptr(), 4)
+            },
+            error::NULL_ARG
+        );
+        assert_eq!(
+            unsafe { crimson_save_set_scalar_field(h2, 0, 0, ptr::null(), 4) },
+            error::NULL_ARG
+        );
+
+        // write_to_file with a NULL path is also NULL_ARG.
+        assert_eq!(
+            unsafe { crimson_save_write_to_file(h2, ptr::null()) },
+            error::NULL_ARG
+        );
+
+        unsafe { crimson_save_free(h2) };
+    }
+
+    fn read_block_json(handle: *mut CrimsonSaveHandle, idx: u32) -> String {
+        let mut needed: usize = 0;
+        let _ = unsafe {
+            crimson_save_get_block_json(handle, idx, ptr::null_mut(), 0, &mut needed)
+        };
+        let mut buf = vec![0u8; needed];
+        let rc = unsafe {
+            crimson_save_get_block_json(handle, idx, buf.as_mut_ptr(), buf.len(), ptr::null_mut())
+        };
+        assert_eq!(rc, error::OK);
+        String::from_utf8(buf[..needed - 1].to_vec()).unwrap()
     }
 }
