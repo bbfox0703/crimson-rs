@@ -1541,6 +1541,183 @@ pub fn parse_save_body_from_bytes(py: Python<'_>, body: &[u8]) -> PyResult<Py<Py
     body_to_py_dict(py, &parsed)
 }
 
+/// Decode every TOC entry of a save body into typed [`ObjectBlock`]s.
+///
+/// Input `body` is the bytes produced by `parse_save_*`'s `body` field.
+/// Returns:
+///   - `blocks`: list of dicts, one per decoded TOC entry. Each dict:
+///     `class_index, class_name, data_offset, data_size, mask_byte_count,
+///      mask_bytes, reserved_u32, fields[], undecoded_ranges[]`.
+///   - `stats`: dict with `block_count, present_fields, decoded_fields,
+///      total_block_bytes, undecoded_bytes`.
+///
+/// Each field dict carries `field_index, name, type_name, meta_kind,
+/// meta_size, meta_aux, present, kind, start, end, note` plus
+/// kind-specific keys:
+///   - kind `fixed_prefix` / `fixed_suffix` → `value` (typed int/float/bool/None),
+///     `value_type` (e.g. `"u32"`, `"f32"`, `"bool"`, `"bytes"`)
+///   - kind `inline_bytes` / `dynamic_array` → `count`, `bytes` (raw),
+///     plus `header_variant` for dynamic_array
+///   - kind `object_locator` → `child_type_index`, `child_type_name`,
+///     `child_payload_offset`, optional `child` (nested block dict)
+///   - kind `object_list` → `count`, `header_variant`,
+///     `elements` (list of nested block dicts)
+#[pyfunction]
+pub fn decode_save_body_blocks(py: Python<'_>, body: &[u8]) -> PyResult<Py<PyAny>> {
+    let parsed = crate::save::Body::parse(body)
+        .map_err(|e| PyValueError::new_err(format!("decode_save_body_blocks: {e}")))?;
+    let blocks = parsed.decode_blocks(body);
+
+    let out = PyDict::new(py);
+    let block_list = PyList::empty(py);
+
+    let mut total_block_bytes: usize = 0;
+    let mut total_undecoded: usize = 0;
+    let mut present_fields: usize = 0;
+    let mut decoded_fields: usize = 0;
+
+    for block in &blocks {
+        total_block_bytes += block.data_size as usize;
+        for (s, e) in &block.undecoded_ranges {
+            total_undecoded += e - s;
+        }
+        for f in &block.fields {
+            if f.present {
+                present_fields += 1;
+                match f.kind {
+                    crate::save::FieldKind::Unknown | crate::save::FieldKind::Absent => {}
+                    _ => decoded_fields += 1,
+                }
+            }
+        }
+        block_list.append(block_to_py(py, block)?)?;
+    }
+    out.set_item("blocks", block_list)?;
+
+    let stats = PyDict::new(py);
+    stats.set_item("block_count", blocks.len())?;
+    stats.set_item("present_fields", present_fields)?;
+    stats.set_item("decoded_fields", decoded_fields)?;
+    stats.set_item("total_block_bytes", total_block_bytes)?;
+    stats.set_item("undecoded_bytes", total_undecoded)?;
+    out.set_item("stats", stats)?;
+
+    Ok(out.into_any().unbind())
+}
+
+fn block_to_py<'py>(py: Python<'py>, block: &crate::save::ObjectBlock) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("class_index", block.class_index)?;
+    d.set_item("class_name", &block.class_name)?;
+    d.set_item("data_offset", block.data_offset)?;
+    d.set_item("data_size", block.data_size)?;
+    d.set_item("mask_byte_count", block.mask_byte_count)?;
+    d.set_item("mask_bytes", PyBytes::new(py, &block.mask_bytes))?;
+    d.set_item("reserved_u32", block.reserved_u32)?;
+
+    let fields = PyList::empty(py);
+    for f in &block.fields {
+        fields.append(field_to_py(py, f)?)?;
+    }
+    d.set_item("fields", fields)?;
+
+    let undec = PyList::empty(py);
+    for (s, e) in &block.undecoded_ranges {
+        undec.append(pyo3::types::PyTuple::new(py, [*s, *e])?)?;
+    }
+    d.set_item("undecoded_ranges", undec)?;
+    Ok(d)
+}
+
+fn field_to_py<'py>(py: Python<'py>, field: &crate::save::DecodedField) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("field_index", field.field_index)?;
+    d.set_item("name", &field.name)?;
+    d.set_item("type_name", &field.type_name)?;
+    d.set_item("meta_kind", field.meta_kind)?;
+    d.set_item("meta_size", field.meta_size)?;
+    d.set_item("meta_aux", field.meta_aux)?;
+    d.set_item("present", field.present)?;
+    d.set_item("kind", field.kind.as_str())?;
+    d.set_item("start", field.start)?;
+    d.set_item("end", field.end)?;
+    if !field.note.is_empty() {
+        d.set_item("note", &field.note)?;
+    }
+    fill_field_value(py, &d, &field.value)?;
+    Ok(d)
+}
+
+fn fill_field_value<'py>(
+    py: Python<'py>,
+    d: &Bound<'py, PyDict>,
+    value: &crate::save::FieldValue,
+) -> PyResult<()> {
+    use crate::save::{FieldValue, ScalarValue};
+    match value {
+        FieldValue::None => Ok(()),
+        FieldValue::Scalar(s) => {
+            let (val_obj, val_type): (Py<PyAny>, &'static str) = match s {
+                ScalarValue::Bool(b) => (
+                    // `bool::into_pyobject` returns a `Borrowed` (PyBool is a
+                    // singleton); take ownership before chaining `into_any`.
+                    b.into_pyobject(py)?.to_owned().into_any().unbind(),
+                    "bool",
+                ),
+                ScalarValue::U8(x) => (x.into_pyobject(py)?.into_any().unbind(), "u8"),
+                ScalarValue::U16(x) => (x.into_pyobject(py)?.into_any().unbind(), "u16"),
+                ScalarValue::U32(x) => (x.into_pyobject(py)?.into_any().unbind(), "u32"),
+                ScalarValue::U64(x) => (x.into_pyobject(py)?.into_any().unbind(), "u64"),
+                ScalarValue::I8(x) => (x.into_pyobject(py)?.into_any().unbind(), "i8"),
+                ScalarValue::I16(x) => (x.into_pyobject(py)?.into_any().unbind(), "i16"),
+                ScalarValue::I32(x) => (x.into_pyobject(py)?.into_any().unbind(), "i32"),
+                ScalarValue::I64(x) => (x.into_pyobject(py)?.into_any().unbind(), "i64"),
+                ScalarValue::F32(x) => (x.into_pyobject(py)?.into_any().unbind(), "f32"),
+                ScalarValue::F64(x) => (x.into_pyobject(py)?.into_any().unbind(), "f64"),
+                ScalarValue::Bytes(b) => (PyBytes::new(py, b).into_any().unbind(), "bytes"),
+            };
+            d.set_item("value", val_obj)?;
+            d.set_item("value_type", val_type)?;
+            Ok(())
+        }
+        FieldValue::InlineBytes { count, bytes } => {
+            d.set_item("count", *count)?;
+            d.set_item("bytes", PyBytes::new(py, bytes))?;
+            Ok(())
+        }
+        FieldValue::DynamicArray { count, bytes, header_variant } => {
+            d.set_item("count", *count)?;
+            d.set_item("bytes", PyBytes::new(py, bytes))?;
+            d.set_item("header_variant", *header_variant)?;
+            Ok(())
+        }
+        FieldValue::Locator {
+            child_type_index,
+            child_type_name,
+            child_payload_offset,
+            child,
+        } => {
+            d.set_item("child_type_index", *child_type_index)?;
+            d.set_item("child_type_name", child_type_name)?;
+            d.set_item("child_payload_offset", *child_payload_offset)?;
+            if let Some(c) = child {
+                d.set_item("child", block_to_py(py, c)?)?;
+            }
+            Ok(())
+        }
+        FieldValue::ObjectList { count, header_variant, elements } => {
+            d.set_item("count", *count)?;
+            d.set_item("header_variant", *header_variant)?;
+            let list = PyList::empty(py);
+            for el in elements {
+                list.append(block_to_py(py, el)?)?;
+            }
+            d.set_item("elements", list)?;
+            Ok(())
+        }
+    }
+}
+
 fn body_to_py_dict<'py>(py: Python<'py>, body: &crate::save::Body) -> PyResult<Py<PyAny>> {
     let d = PyDict::new(py);
     d.set_item("prefix", PyBytes::new(py, &body.prefix))?;
@@ -1652,5 +1829,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_save_from_file, m)?)?;
     m.add_function(wrap_pyfunction!(write_save_with_nonce, m)?)?;
     m.add_function(wrap_pyfunction!(parse_save_body_from_bytes, m)?)?;
+    m.add_function(wrap_pyfunction!(decode_save_body_blocks, m)?)?;
     Ok(())
 }

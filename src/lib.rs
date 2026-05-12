@@ -568,4 +568,76 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_save_body_decode_all_blocks() {
+        // Run the per-object field decoder against every TOC entry in a
+        // live save. Asserts shape sanity (>90% of the TOC entries
+        // produce a decoded block) and prints a brief decode-quality
+        // summary — bytes decoded vs bytes left in undecoded_ranges.
+        use crate::save::{Body, FieldKind, Save};
+        let Some((path, data)) = try_find_save() else {
+            return;
+        };
+        let save = Save::parse(&data).unwrap();
+        let body = Body::parse(&save.body).unwrap();
+        let blocks = body.decode_blocks(&save.body);
+
+        assert!(
+            blocks.len() as f64 / body.toc.entries.len() as f64 > 0.9,
+            "expected >90% of TOC entries to decode into blocks; got {} of {}",
+            blocks.len(),
+            body.toc.entries.len(),
+        );
+
+        // Aggregate decode quality.
+        let mut total_block_bytes: usize = 0;
+        let mut total_undecoded: usize = 0;
+        let mut total_present_fields: usize = 0;
+        let mut total_decoded_fields: usize = 0;
+        let mut classes_with_undecoded: std::collections::BTreeMap<&str, usize> =
+            std::collections::BTreeMap::new();
+        for block in &blocks {
+            total_block_bytes += block.data_size as usize;
+            for (s, e) in &block.undecoded_ranges {
+                total_undecoded += e - s;
+            }
+            if !block.undecoded_ranges.is_empty() {
+                *classes_with_undecoded.entry(block.class_name.as_str()).or_default() += 1;
+            }
+            for f in &block.fields {
+                if f.present {
+                    total_present_fields += 1;
+                    if f.kind != FieldKind::Unknown && f.kind != FieldKind::Absent {
+                        total_decoded_fields += 1;
+                    }
+                }
+            }
+        }
+        let decode_ratio = total_decoded_fields as f64 / total_present_fields as f64;
+        let undecoded_ratio = total_undecoded as f64 / total_block_bytes as f64;
+        println!(
+            "decode_all: {} blocks | fields: {}/{} decoded ({:.1}%) | undecoded bytes: {}/{} ({:.2}%)",
+            blocks.len(),
+            total_decoded_fields,
+            total_present_fields,
+            decode_ratio * 100.0,
+            total_undecoded,
+            total_block_bytes,
+            undecoded_ratio * 100.0,
+        );
+        if !classes_with_undecoded.is_empty() {
+            let mut by_count: Vec<_> = classes_with_undecoded.iter().collect();
+            by_count.sort_by(|a, b| b.1.cmp(a.1));
+            println!("classes with any undecoded bytes (top 10):");
+            for (name, n) in by_count.iter().take(10) {
+                println!("  {n:>5}  {name}");
+            }
+        }
+
+        // No assertion on field-level decode ratio — the Python parser
+        // does best-effort decode too. The shape check (>90% of TOC
+        // entries produce a block) is the load-bearing invariant.
+        let _ = path;
+    }
 }
