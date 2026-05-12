@@ -19,10 +19,11 @@
 //! panic surfaces as [`error::PANIC`] instead of unwinding into C.
 
 use std::ffi::CStr;
+use std::fmt::Write;
 use std::os::raw::c_char;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use crate::save::{Body, FieldKind, ObjectBlock, Save, SaveError};
+use crate::save::{Body, DecodedField, FieldKind, FieldValue, ObjectBlock, Save, SaveError, ScalarValue};
 
 /// Stable error codes returned by every fallible C entry point.
 ///
@@ -294,6 +295,74 @@ pub unsafe extern "C" fn crimson_save_get_block_class_name(
     .unwrap_or(error::PANIC)
 }
 
+/// Serialize the full per-field decode of the block at TOC `index` as a
+/// JSON document. Used by the UI to populate the field-detail pane.
+///
+/// Shape:
+/// ```json
+/// {
+///   "class_index": u32,
+///   "data_offset": u32,
+///   "data_size":   u32,
+///   "mask_bytes_hex":    "hex",   // empty when mask is empty
+///   "trailing_pad_hex":  "hex",   // empty when no trailing pad
+///   "fields": [
+///     { "field_index", "name", "type_name",
+///       "meta_kind", "meta_size", "meta_aux",
+///       "present", "kind", "value", "start", "end", "note" }
+///   ],
+///   "undecoded_ranges": [[start, end], ...]
+/// }
+/// ```
+///
+/// `value` is a pre-formatted human string mirroring
+/// `tools/inspect/inspect_save_section.py --pretty`. Empty for fields
+/// whose `present` is false (or `kind` is `absent`).
+///
+/// Uses the standard two-call pattern: pass `buf=NULL, buf_len=0` to
+/// learn the required size (including NUL), then allocate and call
+/// again. `out_required` is always populated when non-NULL.
+///
+/// # Safety
+/// `handle` must be a live handle. If `buf` is non-NULL it must be
+/// writable for at least `buf_len` bytes. If `out_required` is non-NULL
+/// it must be a writable `*mut usize`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_get_block_json(
+    handle: *const CrimsonSaveHandle,
+    index: u32,
+    buf: *mut u8,
+    buf_len: usize,
+    out_required: *mut usize,
+) -> i32 {
+    if handle.is_null() {
+        return error::NULL_ARG;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let Some(block) = h.blocks.get(index as usize) else {
+            return error::OUT_OF_RANGE;
+        };
+        let json = format_block_json(block);
+        let bytes = json.as_bytes();
+        let required = bytes.len() + 1;
+        if !out_required.is_null() {
+            unsafe {
+                *out_required = required;
+            }
+        }
+        if buf.is_null() || buf_len < required {
+            return error::BUFFER_TOO_SMALL;
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, bytes.len());
+            *buf.add(bytes.len()) = 0;
+        }
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
 // ── Internal helpers ───────────────────────────────────────────────────────
 
 fn with_handle<T, F>(handle: *const CrimsonSaveHandle, out: *mut T, body: F) -> i32
@@ -333,6 +402,160 @@ fn save_error_code(e: &SaveError) -> i32 {
         SaveError::UnsupportedVersion(_) => error::UNSUPPORTED_VERSION,
         SaveError::DecompressSizeMismatch { .. } | SaveError::Lz4(_) => error::DECOMPRESS,
     }
+}
+
+// ── JSON serialization ─────────────────────────────────────────────────────
+//
+// Hand-rolled to avoid pulling serde + serde_json into the cdylib. The
+// shape is small and stable; if it grows past a few dozen lines, swap to
+// serde_json under a feature.
+
+fn format_block_json(b: &ObjectBlock) -> String {
+    let mut s = String::with_capacity(256 + b.fields.len() * 96);
+    s.push('{');
+    write!(s, "\"class_index\":{},", b.class_index).unwrap();
+    write!(s, "\"data_offset\":{},", b.data_offset).unwrap();
+    write!(s, "\"data_size\":{},", b.data_size).unwrap();
+
+    s.push_str("\"mask_bytes_hex\":");
+    write_json_hex(&mut s, &b.mask_bytes);
+    s.push(',');
+
+    s.push_str("\"trailing_pad_hex\":");
+    write_json_hex(&mut s, &b.trailing_pad);
+    s.push(',');
+
+    s.push_str("\"fields\":[");
+    for (i, f) in b.fields.iter().enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        write_field_json(&mut s, f);
+    }
+    s.push_str("],");
+
+    s.push_str("\"undecoded_ranges\":[");
+    for (i, (start, end)) in b.undecoded_ranges.iter().enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        write!(s, "[{start},{end}]").unwrap();
+    }
+    s.push(']');
+
+    s.push('}');
+    s
+}
+
+fn write_field_json(s: &mut String, f: &DecodedField) {
+    s.push('{');
+    write!(s, "\"field_index\":{},", f.field_index).unwrap();
+
+    s.push_str("\"name\":");
+    write_json_string(s, &f.name);
+    s.push(',');
+
+    s.push_str("\"type_name\":");
+    write_json_string(s, &f.type_name);
+    s.push(',');
+
+    write!(s, "\"meta_kind\":{},", f.meta_kind).unwrap();
+    write!(s, "\"meta_size\":{},", f.meta_size).unwrap();
+    write!(s, "\"meta_aux\":{},", f.meta_aux).unwrap();
+    write!(s, "\"present\":{},", f.present).unwrap();
+
+    s.push_str("\"kind\":");
+    write_json_string(s, f.kind.as_str());
+    s.push(',');
+
+    s.push_str("\"value\":");
+    let formatted = format_field_value(f);
+    write_json_string(s, &formatted);
+    s.push(',');
+
+    write!(s, "\"start\":{},", f.start).unwrap();
+    write!(s, "\"end\":{},", f.end).unwrap();
+
+    s.push_str("\"note\":");
+    write_json_string(s, &f.note);
+
+    s.push('}');
+}
+
+/// Pre-formatted, human-readable value mirroring Python's
+/// `format_field_value` in `inspect_save_section.py`. Empty when the
+/// field is absent / unknown.
+fn format_field_value(f: &DecodedField) -> String {
+    match (&f.kind, &f.value) {
+        (FieldKind::FixedPrefix | FieldKind::FixedSuffix, FieldValue::Scalar(v)) => {
+            let (val, ty) = format_scalar(v);
+            format!("{val} <{ty}>")
+        }
+        (FieldKind::InlineBytes, FieldValue::InlineBytes { count, bytes }) => {
+            format!("<{count} items, {} bytes>", bytes.len())
+        }
+        (FieldKind::DynamicArray, FieldValue::DynamicArray { count, bytes, header_variant }) => {
+            format!("<{count} items, {} bytes, {header_variant}>", bytes.len())
+        }
+        (FieldKind::ObjectLocator, FieldValue::Locator { child_type_name, child_payload_offset, child, .. }) => {
+            match child {
+                Some(c) => format!(
+                    "-> {child_type_name} (offset {child_payload_offset}) inline -> {} fields",
+                    c.fields.len()
+                ),
+                None => format!("-> {child_type_name} (offset {child_payload_offset})"),
+            }
+        }
+        (FieldKind::ObjectList, FieldValue::ObjectList { count, header_variant, .. }) => {
+            format!("[{count} elements, variant={header_variant}]")
+        }
+        (FieldKind::Absent, _) => "(absent)".to_string(),
+        (FieldKind::Unknown, _) => "<unknown>".to_string(),
+        _ => String::new(),
+    }
+}
+
+fn format_scalar(v: &ScalarValue) -> (String, &'static str) {
+    match v {
+        ScalarValue::Bool(b) => (b.to_string(), "bool"),
+        ScalarValue::U8(n)   => (n.to_string(), "u8"),
+        ScalarValue::U16(n)  => (n.to_string(), "u16"),
+        ScalarValue::U32(n)  => (n.to_string(), "u32"),
+        ScalarValue::U64(n)  => (n.to_string(), "u64"),
+        ScalarValue::I8(n)   => (n.to_string(), "i8"),
+        ScalarValue::I16(n)  => (n.to_string(), "i16"),
+        ScalarValue::I32(n)  => (n.to_string(), "i32"),
+        ScalarValue::I64(n)  => (n.to_string(), "i64"),
+        ScalarValue::F32(n)  => (format!("{n}"), "f32"),
+        ScalarValue::F64(n)  => (format!("{n}"), "f64"),
+        ScalarValue::Bytes(b) => (format!("{} bytes", b.len()), "bytes"),
+    }
+}
+
+fn write_json_string(out: &mut String, s: &str) {
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"'  => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                write!(out, "\\u{:04x}", c as u32).unwrap();
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
+fn write_json_hex(out: &mut String, bytes: &[u8]) {
+    out.push('"');
+    for b in bytes {
+        write!(out, "{b:02x}").unwrap();
+    }
+    out.push('"');
 }
 
 #[cfg(test)]
@@ -418,7 +641,45 @@ mod tests {
         let name = std::str::from_utf8(&buf[..needed - 1]).unwrap();
         assert!(!name.is_empty());
 
-        // Out-of-range index returns the right code.
+        // Block JSON: query size, then read, sanity-check content.
+        let mut needed: usize = 0;
+        let rc = unsafe {
+            crimson_save_get_block_json(handle, 0, ptr::null_mut(), 0, &mut needed)
+        };
+        assert_eq!(rc, error::BUFFER_TOO_SMALL);
+        assert!(needed > 16, "expected non-trivial JSON, got {needed} bytes");
+        let mut json_buf = vec![0u8; needed];
+        let rc = unsafe {
+            crimson_save_get_block_json(
+                handle,
+                0,
+                json_buf.as_mut_ptr(),
+                json_buf.len(),
+                ptr::null_mut(),
+            )
+        };
+        assert_eq!(rc, error::OK);
+        assert_eq!(*json_buf.last().unwrap(), 0);
+        let json = std::str::from_utf8(&json_buf[..needed - 1]).unwrap();
+        assert!(json.starts_with('{') && json.ends_with('}'), "json shape: {json:.120}…");
+        for needle in [
+            "\"class_index\":",
+            "\"data_offset\":",
+            "\"mask_bytes_hex\":",
+            "\"trailing_pad_hex\":",
+            "\"fields\":[",
+            "\"undecoded_ranges\":[",
+        ] {
+            assert!(json.contains(needle), "missing {needle:?} in {json:.200}…");
+        }
+
+        // Block JSON out-of-range -> proper error code.
+        let rc = unsafe {
+            crimson_save_get_block_json(handle, u32::MAX, ptr::null_mut(), 0, &mut needed)
+        };
+        assert_eq!(rc, error::OUT_OF_RANGE);
+
+        // Out-of-range index on block_info returns the right code.
         let rc = unsafe { crimson_save_get_block_info(handle, u32::MAX, &mut info) };
         assert_eq!(rc, error::OUT_OF_RANGE);
 
