@@ -2,6 +2,7 @@ mod binary;
 mod crypto;
 mod item_info;
 mod python;
+mod save;
 mod skill_info;
 pub(crate) mod python_traits;
 
@@ -399,6 +400,110 @@ mod tests {
         assert!(
             validated > 0,
             "should have validated at least one pamt file"
+        );
+    }
+
+    // ── Save file tests ────────────────────────────────────────────────────
+    //
+    // Save tests dynamically discover a save.save under
+    // %LOCALAPPDATA%\Pearl Abyss\CD\save\<UserID>\slot0\, because the user
+    // ID varies per machine. Tests skip cleanly if no save is found.
+
+    fn try_find_save() -> Option<(std::path::PathBuf, Vec<u8>)> {
+        use std::path::PathBuf;
+        let local = std::env::var_os("LOCALAPPDATA").or_else(|| {
+            eprintln!("skipping save tests: LOCALAPPDATA not set");
+            None
+        })?;
+        let save_root = PathBuf::from(local).join("Pearl Abyss/CD/save");
+        let users = match std::fs::read_dir(&save_root) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!(
+                    "skipping save tests: cannot read {}: {}",
+                    save_root.display(),
+                    e
+                );
+                return None;
+            }
+        };
+        for user in users.flatten() {
+            let user_path = user.path();
+            if !user_path.is_dir() {
+                continue;
+            }
+            // Try slot0 first, then any slot directory.
+            for slot in ["slot0", "slot1", "slot2"] {
+                let path = user_path.join(slot).join("save.save");
+                if let Ok(data) = std::fs::read(&path) {
+                    return Some((path, data));
+                }
+            }
+        }
+        eprintln!(
+            "skipping save tests: no save.save found under {}",
+            save_root.display()
+        );
+        None
+    }
+
+    #[test]
+    fn test_save_parse() {
+        use crate::save::Save;
+        let Some((path, data)) = try_find_save() else {
+            return;
+        };
+        let save = Save::parse(&data).unwrap_or_else(|e| {
+            panic!("parse failed for {}: {}", path.display(), e);
+        });
+        println!(
+            "save: {} | version={} flags={:#06x} payload={} uncompressed={} hmac_ok={}",
+            path.display(),
+            save.header.version(),
+            save.header.flags(),
+            save.header.payload_size(),
+            save.header.uncompressed_size(),
+            save.hmac_ok,
+        );
+        assert_eq!(save.header.as_bytes().len(), 0x80);
+        assert!(save.hmac_ok, "HMAC verification failed");
+        assert_eq!(
+            save.body.len() as u32,
+            save.header.uncompressed_size(),
+            "decompressed body size must match header field"
+        );
+    }
+
+    #[test]
+    fn test_save_write_parse_roundtrip() {
+        // Decode-roundtrip: parse a save, write it back with the original
+        // nonce, parse the result, and check that the *bodies* match.
+        //
+        // We can't guarantee byte-identical output bytes for the on-disk
+        // file because lz4_flex uses the standard LZ4 algorithm and the
+        // game-shipped saves were written with LZ4 high-compression mode;
+        // the compressed lengths will differ. But the format is correct iff
+        // we can decode our own output back to the same body.
+        use crate::save::Save;
+        let Some((_, data)) = try_find_save() else {
+            return;
+        };
+        let original = Save::parse(&data).unwrap();
+        let nonce = original.header.nonce();
+        let written = original.write_with_nonce(nonce).unwrap();
+
+        let round = Save::parse(&written).unwrap();
+        assert!(round.hmac_ok, "roundtripped save fails HMAC");
+        assert_eq!(round.body, original.body, "body changed across roundtrip");
+        assert_eq!(
+            round.header.version(),
+            original.header.version(),
+            "version drift"
+        );
+        assert_eq!(
+            round.header.uncompressed_size(),
+            original.header.uncompressed_size(),
+            "uncomp_size drift"
         );
     }
 }

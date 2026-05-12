@@ -1444,6 +1444,98 @@ pub fn serialize_skillinfo(
     Ok(tup.into_any().unbind())
 }
 
+// ── Save file ──────────────────────────────────────────────────────────────
+
+/// Parse a save file from its raw bytes.
+///
+/// Returns a dict with:
+///   - `header`         : bytes (128)
+///   - `version`        : int
+///   - `flags`          : int
+///   - `payload_size`   : int (compressed+encrypted body length on disk)
+///   - `uncompressed_size`: int (decompressed body length)
+///   - `nonce`          : bytes (16)
+///   - `hmac`           : bytes (32, the stored tag from the header)
+///   - `hmac_ok`        : bool (True iff the stored tag verifies)
+///   - `body`           : bytes (the decompressed payload)
+#[pyfunction]
+pub fn parse_save_from_bytes(py: Python<'_>, data: &[u8]) -> PyResult<Py<PyAny>> {
+    let save = crate::save::Save::parse(data)
+        .map_err(|e| PyValueError::new_err(format!("parse_save: {e}")))?;
+    save_to_py_dict(py, &save)
+}
+
+/// Parse a save file from a filesystem path.
+#[pyfunction]
+pub fn parse_save_from_file(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
+    let data = std::fs::read(path).map_err(|e| PyIOError::new_err(e.to_string()))?;
+    parse_save_from_bytes(py, &data)
+}
+
+/// Serialize a save with a caller-supplied nonce.
+///
+/// Inputs:
+///   - `header`: 128-byte header bytes (typically the dict's `header` from a
+///     prior `parse_save_*` call — preserves magic/version/flags/padding)
+///   - `body`  : decompressed payload bytes (possibly edited)
+///   - `nonce` : 16-byte ChaCha20 nonce. Pass the original nonce for a
+///     decode-stable round trip; pass random bytes for a fresh write.
+///
+/// Returns the encoded file bytes.
+#[pyfunction]
+pub fn write_save_with_nonce(
+    py: Python<'_>,
+    header: &[u8],
+    body: &[u8],
+    nonce: &[u8],
+) -> PyResult<Py<PyAny>> {
+    use crate::save::{HEADER_SIZE, Save, SaveHeader};
+
+    if header.len() != HEADER_SIZE {
+        return Err(PyValueError::new_err(format!(
+            "header must be {HEADER_SIZE} bytes, got {}",
+            header.len()
+        )));
+    }
+    if nonce.len() != 16 {
+        return Err(PyValueError::new_err(format!(
+            "nonce must be 16 bytes, got {}",
+            nonce.len()
+        )));
+    }
+    let mut hdr_arr = [0u8; HEADER_SIZE];
+    hdr_arr.copy_from_slice(header);
+    let parsed_header = SaveHeader::from_bytes(hdr_arr).map_err(|e| {
+        PyValueError::new_err(format!("invalid header: {e}"))
+    })?;
+    let mut nonce_arr = [0u8; 16];
+    nonce_arr.copy_from_slice(nonce);
+
+    let save = Save {
+        header: parsed_header,
+        body: body.to_vec(),
+        hmac_ok: true,
+    };
+    let bytes = save
+        .write_with_nonce(nonce_arr)
+        .map_err(|e| PyValueError::new_err(format!("write_save: {e}")))?;
+    Ok(PyBytes::new(py, &bytes).into_any().unbind())
+}
+
+fn save_to_py_dict<'py>(py: Python<'py>, save: &crate::save::Save) -> PyResult<Py<PyAny>> {
+    let d = PyDict::new(py);
+    d.set_item("header", PyBytes::new(py, save.header.as_bytes()))?;
+    d.set_item("version", save.header.version())?;
+    d.set_item("flags", save.header.flags())?;
+    d.set_item("payload_size", save.header.payload_size())?;
+    d.set_item("uncompressed_size", save.header.uncompressed_size())?;
+    d.set_item("nonce", PyBytes::new(py, &save.header.nonce()))?;
+    d.set_item("hmac", PyBytes::new(py, &save.header.hmac()))?;
+    d.set_item("hmac_ok", save.hmac_ok)?;
+    d.set_item("body", PyBytes::new(py, &save.body))?;
+    Ok(d.into_any().unbind())
+}
+
 // ── Registration ───────────────────────────────────────────────────────────
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -1473,5 +1565,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(serialize_skillinfo, m)?)?;
     m.add_function(wrap_pyfunction!(parse_paloc_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(serialize_paloc, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_save_from_bytes, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_save_from_file, m)?)?;
+    m.add_function(wrap_pyfunction!(write_save_with_nonce, m)?)?;
     Ok(())
 }
