@@ -35,9 +35,11 @@
 //! part of the dynamic fields. With the **same nonce** an unmodified save
 //! round-trips byte-for-byte (subject to LZ4 determinism for identical input).
 
+mod body;
 mod crypto;
 mod header;
 mod io;
 
+pub use body::Body;
 pub use header::{HEADER_SIZE, SaveHeader};
 pub use io::Save;

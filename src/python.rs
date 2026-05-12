@@ -1522,6 +1522,89 @@ pub fn write_save_with_nonce(
     Ok(PyBytes::new(py, &bytes).into_any().unbind())
 }
 
+/// Parse the decompressed save body and return its schema + TOC as a dict.
+///
+/// Input `body` is the bytes produced by `parse_save_*`'s `body` field.
+/// Returns:
+///   - `prefix`: bytes (14, magic + 10 unknown header bytes)
+///   - `schema`: dict with `header_tag, header_zero, type_count, root_type,
+///     schema_end, types[]` where each type has
+///     `index, name, start_offset, end_offset, fields[]`.
+///   - `toc`: dict with `prefix_zero, toc_count, stream_size, entries[]`.
+///
+/// Per-object decoding (turning a TOC entry's data slice into items, stats,
+/// quests, etc.) is the next layer and is not done here.
+#[pyfunction]
+pub fn parse_save_body_from_bytes(py: Python<'_>, body: &[u8]) -> PyResult<Py<PyAny>> {
+    let parsed = crate::save::Body::parse(body)
+        .map_err(|e| PyValueError::new_err(format!("parse_save_body: {e}")))?;
+    body_to_py_dict(py, &parsed)
+}
+
+fn body_to_py_dict<'py>(py: Python<'py>, body: &crate::save::Body) -> PyResult<Py<PyAny>> {
+    let d = PyDict::new(py);
+    d.set_item("prefix", PyBytes::new(py, &body.prefix))?;
+
+    let schema = PyDict::new(py);
+    schema.set_item("header_tag", body.schema.header_tag)?;
+    schema.set_item("header_zero", body.schema.header_zero)?;
+    schema.set_item("type_count", body.schema.type_count)?;
+    schema.set_item("root_type", &body.schema.root_type)?;
+    schema.set_item("schema_end", body.schema.schema_end)?;
+    let types_list = PyList::empty(py);
+    for t in &body.schema.types {
+        let td = PyDict::new(py);
+        td.set_item("index", t.index)?;
+        td.set_item("name", &t.name)?;
+        td.set_item("start_offset", t.start_offset)?;
+        td.set_item("end_offset", t.end_offset)?;
+        let fields_list = PyList::empty(py);
+        for f in &t.fields {
+            let fd = PyDict::new(py);
+            fd.set_item("name", &f.name)?;
+            fd.set_item("type_name", &f.type_name)?;
+            fd.set_item("meta_kind", f.meta_kind)?;
+            fd.set_item("meta_size", f.meta_size)?;
+            fd.set_item("meta_aux", f.meta_aux)?;
+            fd.set_item("start_offset", f.start_offset)?;
+            fd.set_item("end_offset", f.end_offset)?;
+            fields_list.append(fd)?;
+        }
+        td.set_item("fields", fields_list)?;
+        types_list.append(td)?;
+    }
+    schema.set_item("types", types_list)?;
+    d.set_item("schema", schema)?;
+
+    let toc = PyDict::new(py);
+    toc.set_item("prefix_zero", body.toc.prefix_zero)?;
+    toc.set_item("toc_count", body.toc.toc_count)?;
+    toc.set_item("stream_size", body.toc.stream_size)?;
+    let entries_list = PyList::empty(py);
+    for e in &body.toc.entries {
+        let ed = PyDict::new(py);
+        ed.set_item("index", e.index)?;
+        ed.set_item("class_index", e.class_index)?;
+        let class_name = body
+            .schema
+            .types
+            .get(e.class_index as usize)
+            .map(|t| t.name.clone())
+            .unwrap_or_else(|| format!("<class_{}>", e.class_index));
+        ed.set_item("class_name", class_name)?;
+        ed.set_item("sentinel1", e.sentinel1)?;
+        ed.set_item("sentinel2", e.sentinel2)?;
+        ed.set_item("data_offset", e.data_offset)?;
+        ed.set_item("data_size", e.data_size)?;
+        ed.set_item("entry_offset", e.entry_offset)?;
+        entries_list.append(ed)?;
+    }
+    toc.set_item("entries", entries_list)?;
+    d.set_item("toc", toc)?;
+
+    Ok(d.into_any().unbind())
+}
+
 fn save_to_py_dict<'py>(py: Python<'py>, save: &crate::save::Save) -> PyResult<Py<PyAny>> {
     let d = PyDict::new(py);
     d.set_item("header", PyBytes::new(py, save.header.as_bytes()))?;
@@ -1568,5 +1651,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_save_from_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(parse_save_from_file, m)?)?;
     m.add_function(wrap_pyfunction!(write_save_with_nonce, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_save_body_from_bytes, m)?)?;
     Ok(())
 }

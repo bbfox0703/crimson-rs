@@ -506,4 +506,66 @@ mod tests {
             "uncomp_size drift"
         );
     }
+
+    #[test]
+    fn test_save_body_parse() {
+        // Parse the decompressed body's schema + TOC and sanity-check shape.
+        use crate::save::{Body, Save};
+        let Some((path, data)) = try_find_save() else {
+            return;
+        };
+        let save = Save::parse(&data).unwrap();
+        let body = Body::parse(&save.body).unwrap_or_else(|e| {
+            panic!("body parse failed for {}: {}", path.display(), e);
+        });
+
+        println!(
+            "body: {} | types={} root='{}' schema_end={} toc_count={} stream_size={}",
+            path.display(),
+            body.schema.type_count,
+            body.schema.root_type,
+            body.schema.schema_end,
+            body.toc.toc_count,
+            body.toc.stream_size,
+        );
+
+        assert!(body.schema.type_count > 0, "schema should have types");
+        assert_eq!(
+            body.schema.types.len(),
+            body.schema.type_count as usize,
+            "schema type_count and types.len disagree"
+        );
+        assert!(body.toc.toc_count > 0, "TOC should have entries");
+
+        // Spot-check class index validity — TOC entries should mostly
+        // (allow a few out-of-range stragglers per Python's tolerance).
+        let in_range = body
+            .toc
+            .entries
+            .iter()
+            .filter(|e| (e.class_index as usize) < body.schema.types.len())
+            .count();
+        assert!(
+            in_range as f64 / body.toc.entries.len() as f64 > 0.9,
+            "expected >90% of TOC entries to point at valid class indices"
+        );
+
+        // Print the first few types + entries so a regression in layout
+        // surfaces visually when this runs with --nocapture.
+        for t in body.schema.types.iter().take(5) {
+            println!("  type[{}] {} ({} fields)", t.index, t.name, t.fields.len());
+        }
+        for e in body.toc.entries.iter().take(5) {
+            let class_name = body
+                .schema
+                .types
+                .get(e.class_index as usize)
+                .map(|t| t.name.as_str())
+                .unwrap_or("<unknown>");
+            println!(
+                "  toc[{:3}] class={} '{}' offset={} size={}",
+                e.index, e.class_index, class_name, e.data_offset, e.data_size,
+            );
+        }
+    }
 }
