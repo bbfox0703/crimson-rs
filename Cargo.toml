@@ -7,6 +7,12 @@ edition = "2024"
 name = "crimson_rs"
 crate-type = ["cdylib"]
 
+[features]
+# Additive C ABI for native consumers (Avalonia / C# / etc).
+# When enabled, the cdylib exports a `crimson_save_*` extern "C"
+# surface alongside the existing PyO3 entry point.
+c_abi = []
+
 [dependencies]
 pyo3 = { version = "0.27.2", features = ["abi3-py312"] }
 chacha20_crate = { package = "chacha20", version = "0.10.0" }

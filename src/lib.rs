@@ -6,6 +6,9 @@ mod save;
 mod skill_info;
 pub(crate) mod python_traits;
 
+#[cfg(feature = "c_abi")]
+mod c_abi;
+
 use pyo3::prelude::*;
 
 #[pymodule]

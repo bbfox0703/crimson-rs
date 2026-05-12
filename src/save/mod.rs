@@ -42,4 +42,4 @@ mod io;
 
 pub use body::{Body, DecodedField, FieldKind, FieldValue, ObjectBlock, ScalarValue};
 pub use header::{HEADER_SIZE, SaveHeader};
-pub use io::Save;
+pub use io::{Save, SaveError};
