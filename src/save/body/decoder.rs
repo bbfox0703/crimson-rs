@@ -355,8 +355,19 @@ fn decode_dynamic_array(
         return overrun("dynamic array");
     }
 
-    // Variant 1: prefix `00 00 06 01 00`, count u32, data, trailing `01 01 01 01 01`.
-    if offset + 14 <= tail_cursor && &raw[offset..offset + 5] == b"\x00\x00\x06\x01\x00" {
+    // Variant 1: prefix `00 00 XX 01 00`, count u32, data, trailing
+    // `01 01 01 01 01`. The 3rd byte (XX) is a flag whose meaning we
+    // don't yet know — observed values include 0x06 (most arrays) and
+    // 0x01 (e.g. FactionNodeElementSaveData._reviveQuestList). The
+    // surrounding constraints (fixed bytes at 0,1,3,4 + count < 0x10000
+    // + 5-byte trailing pattern) are strict enough that allowing any
+    // byte at position 2 doesn't risk false matches on real data.
+    if offset + 14 <= tail_cursor
+        && raw[offset] == 0
+        && raw[offset + 1] == 0
+        && raw[offset + 3] == 1
+        && raw[offset + 4] == 0
+    {
         let count = read_u32(raw, offset + 5);
         let total = 9 + (count as usize) * (field.meta_size as usize) + 5;
         let end = offset + total;
@@ -369,9 +380,9 @@ fn decode_dynamic_array(
                 FieldValue::DynamicArray {
                     count,
                     bytes,
-                    header_variant: "prefix_0000060100",
+                    header_variant: "prefix_00xx0100",
                 },
-                "prefix_0000060100",
+                "prefix_00xx0100",
             ));
         }
     }
