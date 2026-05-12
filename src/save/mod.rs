@@ -42,4 +42,6 @@ mod io;
 
 pub use body::{Body, DecodedField, FieldKind, FieldValue, ObjectBlock, ScalarValue};
 pub use header::{HEADER_SIZE, SaveHeader};
-pub use io::{Save, SaveError};
+pub use io::Save;
+#[cfg(feature = "c_abi")]
+pub use io::SaveError;
