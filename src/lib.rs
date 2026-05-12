@@ -595,12 +595,16 @@ mod tests {
         let mut total_undecoded: usize = 0;
         let mut total_present_fields: usize = 0;
         let mut total_decoded_fields: usize = 0;
+        let mut trailing_pad_blocks: usize = 0;
         let mut classes_with_undecoded: std::collections::BTreeMap<&str, usize> =
             std::collections::BTreeMap::new();
         for block in &blocks {
             total_block_bytes += block.data_size as usize;
             for (s, e) in &block.undecoded_ranges {
                 total_undecoded += e - s;
+            }
+            if block.trailing_pad.is_some() {
+                trailing_pad_blocks += 1;
             }
             if !block.undecoded_ranges.is_empty() {
                 *classes_with_undecoded.entry(block.class_name.as_str()).or_default() += 1;
@@ -617,7 +621,7 @@ mod tests {
         let decode_ratio = total_decoded_fields as f64 / total_present_fields as f64;
         let undecoded_ratio = total_undecoded as f64 / total_block_bytes as f64;
         println!(
-            "decode_all: {} blocks | fields: {}/{} decoded ({:.1}%) | undecoded bytes: {}/{} ({:.2}%)",
+            "decode_all: {} blocks | fields: {}/{} decoded ({:.1}%) | undecoded bytes: {}/{} ({:.2}%) | trailing_pad on {} blocks",
             blocks.len(),
             total_decoded_fields,
             total_present_fields,
@@ -625,6 +629,7 @@ mod tests {
             total_undecoded,
             total_block_bytes,
             undecoded_ratio * 100.0,
+            trailing_pad_blocks,
         );
         if !classes_with_undecoded.is_empty() {
             let mut by_count: Vec<_> = classes_with_undecoded.iter().collect();
