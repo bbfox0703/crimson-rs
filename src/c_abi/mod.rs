@@ -412,17 +412,25 @@ fn save_error_code(e: &SaveError) -> i32 {
 
 fn format_block_json(b: &ObjectBlock) -> String {
     let mut s = String::with_capacity(256 + b.fields.len() * 96);
+    write_block_json(&mut s, b);
+    s
+}
+
+fn write_block_json(s: &mut String, b: &ObjectBlock) {
     s.push('{');
     write!(s, "\"class_index\":{},", b.class_index).unwrap();
+    s.push_str("\"class_name\":");
+    write_json_string(s, &b.class_name);
+    s.push(',');
     write!(s, "\"data_offset\":{},", b.data_offset).unwrap();
     write!(s, "\"data_size\":{},", b.data_size).unwrap();
 
     s.push_str("\"mask_bytes_hex\":");
-    write_json_hex(&mut s, &b.mask_bytes);
+    write_json_hex(s, &b.mask_bytes);
     s.push(',');
 
     s.push_str("\"trailing_pad_hex\":");
-    write_json_hex(&mut s, &b.trailing_pad);
+    write_json_hex(s, &b.trailing_pad);
     s.push(',');
 
     s.push_str("\"fields\":[");
@@ -430,7 +438,7 @@ fn format_block_json(b: &ObjectBlock) -> String {
         if i > 0 {
             s.push(',');
         }
-        write_field_json(&mut s, f);
+        write_field_json(s, f);
     }
     s.push_str("],");
 
@@ -444,7 +452,6 @@ fn format_block_json(b: &ObjectBlock) -> String {
     s.push(']');
 
     s.push('}');
-    s
 }
 
 fn write_field_json(s: &mut String, f: &DecodedField) {
@@ -478,6 +485,31 @@ fn write_field_json(s: &mut String, f: &DecodedField) {
 
     s.push_str("\"note\":");
     write_json_string(s, &f.note);
+
+    // Nested-block payload. `child` is populated when the field is an
+    // inline object_locator with a resolvable inline child; `elements`
+    // is populated for object_list fields (possibly empty). Both are
+    // `null` otherwise so the C# side can rely on a stable shape.
+    s.push_str(",\"child\":");
+    match &f.value {
+        FieldValue::Locator { child: Some(c), .. } => write_block_json(s, c),
+        _ => s.push_str("null"),
+    }
+
+    s.push_str(",\"elements\":");
+    match &f.value {
+        FieldValue::ObjectList { elements, .. } => {
+            s.push('[');
+            for (i, el) in elements.iter().enumerate() {
+                if i > 0 {
+                    s.push(',');
+                }
+                write_block_json(s, el);
+            }
+            s.push(']');
+        }
+        _ => s.push_str("null"),
+    }
 
     s.push('}');
 }
@@ -664,11 +696,14 @@ mod tests {
         assert!(json.starts_with('{') && json.ends_with('}'), "json shape: {json:.120}…");
         for needle in [
             "\"class_index\":",
+            "\"class_name\":",
             "\"data_offset\":",
             "\"mask_bytes_hex\":",
             "\"trailing_pad_hex\":",
             "\"fields\":[",
             "\"undecoded_ranges\":[",
+            "\"child\":",
+            "\"elements\":",
         ] {
             assert!(json.contains(needle), "missing {needle:?} in {json:.200}…");
         }
