@@ -137,16 +137,20 @@ pub struct ObjectBlock {
     pub mask_bytes: Vec<u8>,
     pub reserved_u32: u32,
     pub fields: Vec<DecodedField>,
-    /// A single trailer byte between the end of the forward walk and the
-    /// start of the reverse-peeled tail (or the end of the block, when no
-    /// reverse pass ran). The schema doesn't describe this byte — it is
-    /// observed empirically in ~230 blocks across multiple classes and
-    /// the original Python parser leaves it as undecoded too. We capture
-    /// the value here so a future writer can round-trip it byte-for-byte.
+    /// Trailer bytes between the end of the forward walk and the start
+    /// of the reverse-peeled tail (or the end of the block, when no
+    /// reverse pass ran). The schema doesn't describe this region; the
+    /// engine writes 1..N bytes there in some blocks and the original
+    /// Python parser leaves them as undecoded too. We capture the bytes
+    /// here so a future writer can round-trip them.
     ///
-    /// `None` when no such trailer exists for this block. See
+    /// Observed shapes:
+    ///   - 232 blocks have exactly 1 byte (FieldNPCSaveData + 6 other classes).
+    ///   - 1 block (MercenaryClanSaveData) has 3 bytes of `01 01 01`.
+    ///
+    /// Empty `Vec` when no such trailer exists for this block. See
     /// `docs/save-body-format.md` for the empirical analysis.
-    pub trailing_pad: Option<u8>,
+    pub trailing_pad: Vec<u8>,
     /// Byte ranges inside the block that no decoder placed (start, end).
     pub undecoded_ranges: Vec<(usize, usize)>,
 }

@@ -1614,8 +1614,8 @@ fn block_to_py<'py>(py: Python<'py>, block: &crate::save::ObjectBlock) -> PyResu
     d.set_item("mask_byte_count", block.mask_byte_count)?;
     d.set_item("mask_bytes", PyBytes::new(py, &block.mask_bytes))?;
     d.set_item("reserved_u32", block.reserved_u32)?;
-    if let Some(pad) = block.trailing_pad {
-        d.set_item("trailing_pad", pad)?;
+    if !block.trailing_pad.is_empty() {
+        d.set_item("trailing_pad", PyBytes::new(py, &block.trailing_pad))?;
     }
 
     let fields = PyList::empty(py);

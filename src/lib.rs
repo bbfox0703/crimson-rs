@@ -603,7 +603,7 @@ mod tests {
             for (s, e) in &block.undecoded_ranges {
                 total_undecoded += e - s;
             }
-            if block.trailing_pad.is_some() {
+            if !block.trailing_pad.is_empty() {
                 trailing_pad_blocks += 1;
             }
             if !block.undecoded_ranges.is_empty() {
@@ -640,9 +640,19 @@ mod tests {
             }
         }
 
-        // No assertion on field-level decode ratio — the Python parser
-        // does best-effort decode too. The shape check (>90% of TOC
-        // entries produce a block) is the load-bearing invariant.
+        // Hard invariant: against the live 1.06 save, every byte of
+        // every block must be accounted for — either decoded into a
+        // typed field or captured as a `trailing_pad`. A regression
+        // here means a format detail has drifted.
+        assert_eq!(
+            total_undecoded, 0,
+            "expected zero undecoded bytes against the live save"
+        );
+        // And every present field must end up with a concrete kind.
+        assert_eq!(
+            total_decoded_fields, total_present_fields,
+            "expected every present field to decode (no Unknown)"
+        );
         let _ = path;
     }
 }

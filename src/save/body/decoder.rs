@@ -80,22 +80,29 @@ fn decode_one_block(
     let (fields, mut undecoded) =
         decode_fields_in_region(raw, type_def, &mask_bytes, header_end, block_end, by_index);
 
-    // Absorb the well-known 1-byte trailer between the forward-walk end
-    // and the reverse-peel start (or, when no reverse pass ran, between
-    // the forward end and `block_end`). Both this Rust decoder and the
-    // original Python parser leave this byte unconsumed otherwise. The
-    // value varies per block (it's data, not a constant marker), so we
-    // capture it on the block for round-trip rather than dropping it.
-    // See docs/save-body-format.md.
-    let trailing_pad = if undecoded.len() == 1 && undecoded[0].1 - undecoded[0].0 == 1 {
-        let (s, _) = undecoded[0];
-        let byte = raw.get(s).copied();
-        if byte.is_some() {
+    // Absorb a small trailer region between the forward-walk end and
+    // the reverse-peel start (or, when no reverse pass ran, between
+    // the forward end and `block_end`). The engine writes a varying
+    // number of bytes there in some blocks; the original Python parser
+    // leaves them as undecoded too. We capture the bytes on the block
+    // for round-trip rather than dropping them.
+    //
+    // Cap at 16 bytes so a real decode failure (which produces much
+    // larger residuals) is still surfaced via `undecoded_ranges`. See
+    // docs/save-body-format.md for the empirical analysis.
+    const TRAILING_PAD_MAX: usize = 16;
+    let trailing_pad: Vec<u8> = if undecoded.len() == 1 {
+        let (s, e) = undecoded[0];
+        let len = e - s;
+        if (1..=TRAILING_PAD_MAX).contains(&len) && e <= raw.len() {
+            let pad = raw[s..e].to_vec();
             undecoded.clear();
+            pad
+        } else {
+            Vec::new()
         }
-        byte
     } else {
-        None
+        Vec::new()
     };
 
     Some(ObjectBlock {
@@ -549,7 +556,7 @@ fn decode_inline_object_locator(
                 mask_bytes: child_mask_owned,
                 reserved_u32: 0,
                 fields,
-                trailing_pad: None,
+                trailing_pad: Vec::new(),
                 undecoded_ranges: Vec::new(),
             }));
         }
@@ -893,7 +900,7 @@ fn decode_object_list_element(
                 mask_bytes: Vec::new(),
                 reserved_u32: 0,
                 fields: Vec::new(),
-                trailing_pad: None,
+                trailing_pad: Vec::new(),
                 undecoded_ranges: Vec::new(),
             };
             Ok((end, block))
