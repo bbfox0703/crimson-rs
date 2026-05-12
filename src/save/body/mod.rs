@@ -16,19 +16,21 @@
 //!    into the schema's types array plus a `(data_offset, data_size)`
 //!    region inside the body. See [`toc`].
 //!
-//! The full per-entry decoder (turning a `(class_index, data_offset)` pair
-//! into structured records like inventory items or character stats) is the
-//! next layer and isn't in this module yet — it sits in `body/object.rs`
-//! when it lands. For now, schema + TOC are enough to enumerate what's in
-//! a save and to plan the per-section work.
+//! The per-entry field decoder (turning a `(class_index, data_offset)` pair
+//! into structured records like inventory items or character stats) lives
+//! in [`decoder`] and the typed output in [`object`]. Use
+//! [`Body::decode_blocks`] to run it.
 
+mod decoder;
+mod object;
 mod schema;
 mod toc;
 
 use std::io;
 
-use schema::Schema;
-use toc::Toc;
+pub use object::{DecodedField, FieldKind, FieldValue, ObjectBlock, ScalarValue};
+pub(crate) use schema::Schema;
+pub(crate) use toc::Toc;
 
 /// Bytes 0..4 of a decompressed save body.
 pub const BODY_MAGIC: [u8; 4] = [0xFF, 0xFF, 0x04, 0x00];
@@ -74,5 +76,13 @@ impl Body {
         let toc = Toc::parse(raw, schema.schema_end)?;
 
         Ok(Body { prefix, schema, toc })
+    }
+
+    /// Decode every TOC entry whose `class_index` resolves to a schema
+    /// type. The returned blocks are independent of `self` — they own
+    /// their decoded data. `raw` must be the same bytes [`Body::parse`]
+    /// was called with.
+    pub fn decode_blocks(&self, raw: &[u8]) -> Vec<ObjectBlock> {
+        decoder::decode_blocks(raw, &self.schema, &self.toc)
     }
 }
