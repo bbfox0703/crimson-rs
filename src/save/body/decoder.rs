@@ -77,8 +77,26 @@ fn decode_one_block(
             .ok()?,
     );
 
-    let (fields, undecoded) =
+    let (fields, mut undecoded) =
         decode_fields_in_region(raw, type_def, &mask_bytes, header_end, block_end, by_index);
+
+    // Absorb the well-known 1-byte trailer between the forward-walk end
+    // and the reverse-peel start (or, when no reverse pass ran, between
+    // the forward end and `block_end`). Both this Rust decoder and the
+    // original Python parser leave this byte unconsumed otherwise. The
+    // value varies per block (it's data, not a constant marker), so we
+    // capture it on the block for round-trip rather than dropping it.
+    // See docs/save-body-format.md.
+    let trailing_pad = if undecoded.len() == 1 && undecoded[0].1 - undecoded[0].0 == 1 {
+        let (s, _) = undecoded[0];
+        let byte = raw.get(s).copied();
+        if byte.is_some() {
+            undecoded.clear();
+        }
+        byte
+    } else {
+        None
+    };
 
     Some(ObjectBlock {
         class_index: entry.class_index,
@@ -89,6 +107,7 @@ fn decode_one_block(
         mask_bytes,
         reserved_u32,
         fields,
+        trailing_pad,
         undecoded_ranges: undecoded,
     })
 }
@@ -471,6 +490,7 @@ fn decode_inline_object_locator(
                     mask_bytes: child_mask.to_vec(),
                     reserved_u32: 0,
                     fields: child_fields,
+                    trailing_pad: None,
                     undecoded_ranges: Vec::new(),
                 }));
             }
@@ -755,6 +775,7 @@ fn decode_object_list_element(
                 mask_bytes: Vec::new(),
                 reserved_u32: 0,
                 fields: Vec::new(),
+                trailing_pad: None,
                 undecoded_ranges: Vec::new(),
             });
             block.data_offset = cursor as u32;
