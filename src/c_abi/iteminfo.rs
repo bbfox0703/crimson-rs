@@ -23,10 +23,14 @@ use super::error;
 use crate::binary::BinaryRead;
 use crate::item_info::ItemInfo;
 
-/// Opaque handle exposing a lean `u32 → string_key` lookup table.
+/// Opaque handle exposing lean per-item lookups against the loaded
+/// iteminfo: the `string_key` (internal id) and the `max_stack_count`
+/// (stack cap). The full ItemInfo parse runs once; only the bits the
+/// downstream editor needs are retained.
 #[repr(C)]
 pub struct CrimsonItemInfoHandle {
     by_key: HashMap<u32, String>,
+    max_stack_by_key: HashMap<u32, u64>,
     /// `(key, string_key)` in file order so the caller can enumerate
     /// via [`crimson_iteminfo_get_entry`].
     entries: Vec<(u32, String)>,
@@ -39,9 +43,11 @@ impl CrimsonItemInfoHandle {
         // going until the buffer is consumed.
         let mut offset = 0usize;
         let mut entries: Vec<(u32, String)> = Vec::new();
+        let mut max_stack_by_key: HashMap<u32, u64> = HashMap::new();
         while offset < data.len() {
             let item = ItemInfo::read_from(data, &mut offset)?;
             entries.push((item.key.0, item.string_key.data.to_owned()));
+            max_stack_by_key.insert(item.key.0, item.max_stack_count);
         }
         if offset != data.len() {
             return Err(io::Error::new(
@@ -54,7 +60,7 @@ impl CrimsonItemInfoHandle {
             ));
         }
         let by_key = entries.iter().cloned().collect();
-        Ok(CrimsonItemInfoHandle { by_key, entries })
+        Ok(CrimsonItemInfoHandle { by_key, max_stack_by_key, entries })
     }
 }
 
@@ -218,6 +224,37 @@ pub unsafe extern "C" fn crimson_iteminfo_lookup_string_key(
             std::ptr::copy_nonoverlapping(name.as_ptr(), buf, name.len());
             *buf.add(name.len()) = 0;
         }
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Look up the `max_stack_count` for a given `ItemKey (u32)` and write
+/// it into `*out_max_stack`. Returns `NOT_FOUND` when the key isn't
+/// in the loaded table, `OK` otherwise. The downstream editor uses
+/// this to drive a "Set to max stack" action that fills a save's
+/// item-count field with the game's own per-item cap (so the user
+/// gets a maxed stack without exceeding what the game considers
+/// valid).
+///
+/// # Safety
+/// `handle` and `out_max_stack` must be non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_iteminfo_lookup_max_stack(
+    handle: *const CrimsonItemInfoHandle,
+    item_key: u32,
+    out_max_stack: *mut u64,
+) -> i32 {
+    if handle.is_null() || out_max_stack.is_null() {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_max_stack = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let Some(max) = h.max_stack_by_key.get(&item_key) else {
+            return error::NOT_FOUND;
+        };
+        unsafe { *out_max_stack = *max };
         error::OK
     }))
     .unwrap_or(error::PANIC)
@@ -433,6 +470,19 @@ mod tests {
             )
         };
         assert_eq!(rc, error::NOT_FOUND);
+
+        // ── max_stack lookup: round-trip against entry 0's key, then
+        // assert u32::MAX is NOT_FOUND. Don't pin the value of any
+        // specific item — the schema is the contract, not "Camp Funds
+        // caps at 999999".
+        let mut max_stack: u64 = 999;
+        let rc = unsafe { crimson_iteminfo_lookup_max_stack(handle, out_key, &mut max_stack) };
+        assert_eq!(rc, error::OK);
+
+        let mut bogus: u64 = 0;
+        let rc = unsafe { crimson_iteminfo_lookup_max_stack(handle, u32::MAX, &mut bogus) };
+        assert_eq!(rc, error::NOT_FOUND);
+        assert_eq!(bogus, 0, "out_max_stack should be reset on NOT_FOUND");
 
         // OUT_OF_RANGE on get_entry past the end.
         let rc = unsafe {
