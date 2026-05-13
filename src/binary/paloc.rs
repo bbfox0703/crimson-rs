@@ -42,6 +42,26 @@ impl<'a> LocalizationFile<'a> {
         let count_offset = data.len() - 4;
         let entry_count = u32::from_le_bytes(data[count_offset..].try_into().unwrap()) as usize;
 
+        // A `LocalizationEntry` is at minimum 16 bytes: u64 unk_id +
+        // u32 string_key len + u32 string_value len (both strings can be
+        // empty, but the length headers always appear). If the trailing
+        // count claims more entries than could possibly fit in the
+        // remaining body, the file is malformed — refuse rather than
+        // allocate gigabytes of `Vec::with_capacity`. The raw
+        // `gamedata/*.paloc` files in a Steam install fail this check
+        // because they're still wrapped (encrypted + compressed) by the
+        // PAZ pipeline; callers must extract first.
+        let max_plausible = count_offset / 16;
+        if entry_count > max_plausible {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "PALOC entry_count {entry_count} exceeds plausible max {max_plausible} \
+                     for {count_offset} body bytes — file may be wrapped/encrypted"
+                ),
+            ));
+        }
+
         let mut offset = 0;
         let mut entries = Vec::with_capacity(entry_count);
         for _ in 0..entry_count {
