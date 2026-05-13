@@ -48,6 +48,327 @@ pub fn decompress(
     }
 }
 
+/// Partial-compression scheme used by Pearl Abyss PAZ archives when
+/// `raw_compression == 1`. The on-disk payload is one of:
+///
+/// 1. **Identity** — when LZ4 yielded no gain, the engine stores the file
+///    verbatim and sets `compressed_size == uncompressed_size`. The
+///    bytes ARE the file; no decoder needed.
+/// 2. **Header + LZ4(prefix dict)** — the first `PARTIAL_HEADER_BYTES`
+///    (128) bytes are stored verbatim, then the remainder is one LZ4
+///    block. The decoder uses those 128 bytes as a prefix dictionary
+///    so back-references can reach into the header. Covers every file
+///    under `0012/ui/texture/icon/` in 1.06 (every item icon).
+/// 3. **DDS per-mip table** — for DDS textures the engine can encode
+///    each mip level independently. The on-disk size of mip *i* is
+///    stored as a u32 in the DDS reserved area at `0x20 + 4*i` (11
+///    slots, mips 0..10). A non-zero slot smaller than that mip's raw
+///    size means LZ4-compressed; equal means raw; `0` means "all
+///    remaining mips are stored raw, sequentially". Covers the
+///    worldmap SDF tiles and large diffuse textures the simpler rule
+///    misses. Strategy + offsets reverse-engineered by NattKh in the
+///    CrimsonForge modding tool — see `core/compression_engine.py`
+///    `_decompress_type1_dds_per_mip_sizes`.
+///
+/// **Not yet handled**: the PAR-container layout used by `.pam` /
+/// `.pamlod` / `.pac` mesh assets in 0009/0015 (per-section LZ4 blocks
+/// indexed by an 8-slot table at offset 0x10). Those return an
+/// `InvalidData` error here so the caller can distinguish them from
+/// outright PAZ corruption.
+const PARTIAL_HEADER_BYTES: usize = 128;
+
+pub(crate) fn decompress_partial(
+    decrypted: &[u8],
+    uncompressed_size: usize,
+) -> io::Result<Vec<u8>> {
+    if decrypted.len() == uncompressed_size {
+        // Identity case — the engine declined LZ4 because the file
+        // doesn't compress (already-block-compressed BC formats, etc.).
+        return Ok(decrypted.to_vec());
+    }
+    if decrypted.len() <= PARTIAL_HEADER_BYTES
+        || uncompressed_size <= PARTIAL_HEADER_BYTES
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "partial PAZ entry too short for header({})+lz4: decrypted={} u_size={}",
+                PARTIAL_HEADER_BYTES,
+                decrypted.len(),
+                uncompressed_size,
+            ),
+        ));
+    }
+
+    // Strategy 2 — header(128) + LZ4(rest) with the header as a prefix
+    // dictionary. Cheap to try first because no DDS parsing is required.
+    if let Some(out) = try_partial_header_lz4(decrypted, uncompressed_size) {
+        return Ok(out);
+    }
+    // Strategy 3 — DDS-only per-mip layout.
+    if let Some(out) = try_partial_dds_per_mip(decrypted, uncompressed_size) {
+        return Ok(out);
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "partial PAZ entry uses an unrecognised layout (decrypted={}, u_size={})",
+            decrypted.len(),
+            uncompressed_size
+        ),
+    ))
+}
+
+fn try_partial_header_lz4(decrypted: &[u8], uncompressed_size: usize) -> Option<Vec<u8>> {
+    let dict = &decrypted[..PARTIAL_HEADER_BYTES];
+    let body = lz4_flex::block::decompress_with_dict(
+        &decrypted[PARTIAL_HEADER_BYTES..],
+        uncompressed_size - PARTIAL_HEADER_BYTES,
+        dict,
+    )
+    .ok()?;
+    if body.len() + PARTIAL_HEADER_BYTES != uncompressed_size {
+        return None;
+    }
+    let mut out = Vec::with_capacity(uncompressed_size);
+    out.extend_from_slice(dict);
+    out.extend_from_slice(&body);
+    Some(out)
+}
+
+/// Per-mip DDS layout: the DDS reserved area carries up to 11 u32 slots
+/// giving each mip's on-disk byte length. A non-zero slot smaller than
+/// the mip's raw size means that mip is LZ4-compressed; equal means
+/// raw; zero means "the remaining mips are stored raw, sequentially".
+fn try_partial_dds_per_mip(decrypted: &[u8], uncompressed_size: usize) -> Option<Vec<u8>> {
+    let info = DdsInfo::parse(decrypted)?;
+    if info.expected_total_size()? != uncompressed_size {
+        return None;
+    }
+    if info.mip_count == 0 {
+        return None;
+    }
+    let raw_mip_sizes: Vec<usize> = (0..info.mip_count)
+        .map(|lvl| {
+            let mw = (info.width >> lvl).max(1);
+            let mh = (info.height >> lvl).max(1);
+            info.mip_payload_size(mw, mh)
+        })
+        .collect::<Option<Vec<_>>>()?;
+
+    // Up to 11 slots at offset 0x20.
+    let max_explicit = info.mip_count.min(11);
+    let mut reserved = [0u32; 11];
+    for (i, slot) in reserved.iter_mut().enumerate().take(max_explicit) {
+        let off = 0x20 + i * 4;
+        *slot = u32::from_le_bytes(decrypted[off..off + 4].try_into().ok()?);
+    }
+    // Sanity: every explicit value must fit its expected raw size (LZ4
+    // never produces larger output in this pipeline). Bail if not, so
+    // we don't munge non-per-mip layouts.
+    for (i, &value) in reserved.iter().enumerate().take(max_explicit) {
+        if value == 0 {
+            continue;
+        }
+        if value as usize > raw_mip_sizes[i] + 16 {
+            return None;
+        }
+    }
+
+    let body = &decrypted[info.data_offset..];
+    let mut pos = 0usize;
+    let mut out = Vec::with_capacity(uncompressed_size);
+    out.extend_from_slice(&decrypted[..info.data_offset]);
+
+    for lvl in 0..info.mip_count {
+        let on_disk = if lvl < max_explicit { reserved[lvl] as usize } else { 0 };
+        if on_disk == 0 {
+            // Trailing raw mips — the body holds the remaining mip
+            // levels stored sequentially without further compression.
+            for r in raw_mip_sizes.iter().take(info.mip_count).skip(lvl) {
+                if pos + r > body.len() {
+                    return None;
+                }
+                out.extend_from_slice(&body[pos..pos + r]);
+                pos += r;
+            }
+            break;
+        }
+
+        if pos + on_disk > body.len() {
+            return None;
+        }
+        let chunk = &body[pos..pos + on_disk];
+        pos += on_disk;
+        let expected_raw = raw_mip_sizes[lvl];
+        if on_disk == expected_raw {
+            out.extend_from_slice(chunk);
+        } else {
+            let decoded = lz4_flex::block::decompress(chunk, expected_raw).ok()?;
+            if decoded.len() != expected_raw {
+                return None;
+            }
+            out.extend_from_slice(&decoded);
+        }
+    }
+
+    if pos != body.len() {
+        // Leftover body bytes mean we picked the wrong strategy.
+        return None;
+    }
+    if out.len() != uncompressed_size {
+        return None;
+    }
+    Some(out)
+}
+
+/// Minimal DDS header reader, just enough for the per-mip partial
+/// decompressor: width, height, mip count, header length, and per-mip
+/// raw byte size given (width, height). Covers every format observed
+/// in Crimson Desert 1.06's PAZ archives (DXT1/3/5, DX10-wrapped
+/// BC1..BC7, packed RGB(A), single-channel luminance, DX10 RGBA8 /
+/// R8 / R16F / etc).
+#[derive(Debug, Clone, Copy)]
+struct DdsInfo {
+    width: usize,
+    height: usize,
+    mip_count: usize,
+    data_offset: usize,
+    /// Distinguishes between block-compressed (BC*/DXT*), packed BPP,
+    /// or DX10 DXGI codes.
+    body: DdsBody,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DdsBody {
+    /// 8-byte 4×4 blocks: BC1 / DXT1 / BC4.
+    Block8,
+    /// 16-byte 4×4 blocks: BC2/3/5/6/7 / DXT3 / DXT5.
+    Block16,
+    /// Plain pixels at N bits each.
+    PixelsBpp(usize),
+}
+
+impl DdsInfo {
+    fn parse(data: &[u8]) -> Option<Self> {
+        if data.len() < 128 || &data[..4] != b"DDS " {
+            return None;
+        }
+        // The standard header is 124 bytes after the 4-byte magic;
+        // dwSize at offset 4 should be 124.
+        let flags = u32::from_le_bytes(data[8..12].try_into().ok()?);
+        let height = u32::from_le_bytes(data[12..16].try_into().ok()?) as usize;
+        let width = u32::from_le_bytes(data[16..20].try_into().ok()?) as usize;
+        let mip_count = if flags & 0x00020000 != 0 {
+            u32::from_le_bytes(data[28..32].try_into().ok()?) as usize
+        } else {
+            1
+        };
+        // Pixel format at offset 0x4C.
+        let pf_flags = u32::from_le_bytes(data[80..84].try_into().ok()?);
+        let fourcc = &data[84..88];
+        let bpp = u32::from_le_bytes(data[88..92].try_into().ok()?) as usize;
+
+        const DDPF_ALPHAPIXELS: u32 = 0x1;
+        const DDPF_FOURCC: u32 = 0x4;
+        const DDPF_RGB: u32 = 0x40;
+        const DDPF_LUMINANCE: u32 = 0x20000;
+        let _ = DDPF_ALPHAPIXELS;
+
+        let mut data_offset = 128usize;
+        let body = if pf_flags & DDPF_FOURCC != 0 {
+            match fourcc {
+                b"DXT1" => DdsBody::Block8,
+                b"DXT3" | b"DXT5" | b"BC5U" | b"ATI2" => DdsBody::Block16,
+                b"BC4U" | b"ATI1" => DdsBody::Block8,
+                b"DX10" => {
+                    if data.len() < 148 {
+                        return None;
+                    }
+                    data_offset = 148;
+                    let dxgi = u32::from_le_bytes(data[128..132].try_into().ok()?);
+                    dxgi_body(dxgi)?
+                }
+                _ => return None,
+            }
+        } else if pf_flags & (DDPF_RGB | DDPF_LUMINANCE) != 0 {
+            DdsBody::PixelsBpp(bpp)
+        } else {
+            return None;
+        };
+        Some(DdsInfo {
+            width,
+            height,
+            mip_count,
+            data_offset,
+            body,
+        })
+    }
+
+    fn mip_payload_size(self, width: usize, height: usize) -> Option<usize> {
+        match self.body {
+            DdsBody::Block8 => {
+                let bw = width.div_ceil(4).max(1);
+                let bh = height.div_ceil(4).max(1);
+                Some(bw * bh * 8)
+            }
+            DdsBody::Block16 => {
+                let bw = width.div_ceil(4).max(1);
+                let bh = height.div_ceil(4).max(1);
+                Some(bw * bh * 16)
+            }
+            DdsBody::PixelsBpp(bpp) => {
+                if bpp == 0 || bpp % 8 != 0 {
+                    return None;
+                }
+                Some(width * height * (bpp / 8))
+            }
+        }
+    }
+
+    fn expected_total_size(self) -> Option<usize> {
+        let mut total = self.data_offset;
+        let (mut w, mut h) = (self.width.max(1), self.height.max(1));
+        let mips = self.mip_count.max(1);
+        for _ in 0..mips {
+            total += self.mip_payload_size(w, h)?;
+            w = (w / 2).max(1);
+            h = (h / 2).max(1);
+        }
+        Some(total)
+    }
+}
+
+/// DX10 DXGI_FORMAT → DdsBody. Codes per
+/// https://learn.microsoft.com/en-us/windows/win32/api/dxgiformat/ne-dxgiformat-dxgi_format
+/// trimmed to what Pearl Abyss actually ships in 1.06.
+fn dxgi_body(dxgi: u32) -> Option<DdsBody> {
+    Some(match dxgi {
+        // RGBA8 / BGRA8 32-bit
+        28..=31 | 87..=91 => DdsBody::PixelsBpp(32),
+        // R10G10B10A2
+        24 | 25 => DdsBody::PixelsBpp(32),
+        // R16G16B16A16_FLOAT
+        10 => DdsBody::PixelsBpp(64),
+        // R32G32B32A32_FLOAT
+        2 => DdsBody::PixelsBpp(128),
+        // R16_FLOAT
+        54 | 55 => DdsBody::PixelsBpp(16),
+        // R32_FLOAT
+        41 | 43 => DdsBody::PixelsBpp(32),
+        // R8_UNORM / R8_UINT
+        61 | 62 => DdsBody::PixelsBpp(8),
+        // Block-compressed
+        70..=72 => DdsBody::Block8,   // BC1
+        73..=78 => DdsBody::Block16,  // BC2 + BC3
+        79..=81 => DdsBody::Block8,   // BC4
+        82..=84 => DdsBody::Block16,  // BC5
+        94..=96 => DdsBody::Block16,  // BC6H
+        97..=99 => DdsBody::Block16,  // BC7
+        _ => return None,
+    })
+}
+
 // ── File processing ───────────────────────────────────────────────────────
 
 /// Process a single file: compress then optionally encrypt.
@@ -390,12 +711,8 @@ pub fn extract_file(
         }
     };
 
-    // Decompress (partial-compression files not yet supported)
     if file.file.is_partial {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "partial compression extraction not yet implemented",
-        ));
+        return decompress_partial(&decrypted, file.file.uncompressed_size as usize);
     }
     decompress(
         &decrypted,
@@ -421,6 +738,254 @@ mod tests {
         let decompressed = decompress(&compressed, Compression::None, data.len()).unwrap();
         assert_eq!(decompressed, data);
     }
+
+    // ── Partial-compression decoder ───────────────────────────────────
+
+    #[test]
+    fn partial_identity_roundtrips() {
+        // When compressed_size == uncompressed_size, the engine stored
+        // the file verbatim. The decoder must return exactly those
+        // bytes, untouched.
+        let mut payload = Vec::with_capacity(256);
+        payload.extend_from_slice(b"DDS ");
+        payload.extend(std::iter::repeat_n(0u8, 124));
+        payload.extend((0..128u8).cycle().take(128));
+        let out = decompress_partial(&payload, payload.len()).unwrap();
+        assert_eq!(out, payload);
+    }
+
+    #[test]
+    fn partial_header_plus_lz4_roundtrips() {
+        // Build a synthetic partial-compressed payload: a 128-byte
+        // verbatim header followed by an LZ4 block that, when decoded
+        // with the header as a prefix dictionary, reproduces the
+        // original tail. Validates that decompress_partial uses
+        // decompress_with_dict the right way.
+        let mut header = vec![0u8; 128];
+        for (i, b) in header.iter_mut().enumerate() {
+            *b = i as u8;
+        }
+        // Tail that repeats the header twice + a fresh literal block.
+        let mut tail = Vec::new();
+        tail.extend_from_slice(&header);
+        tail.extend_from_slice(&header);
+        tail.extend_from_slice(b"hello partial PAZ\0");
+        let uncompressed_size = header.len() + tail.len();
+
+        let encoded_tail = lz4_flex::block::compress_with_dict(&tail, &header);
+        let mut on_disk = header.clone();
+        on_disk.extend_from_slice(&encoded_tail);
+
+        let decoded = decompress_partial(&on_disk, uncompressed_size).unwrap();
+        let mut expected = header.clone();
+        expected.extend_from_slice(&tail);
+        assert_eq!(decoded, expected);
+    }
+
+    #[test]
+    fn partial_too_short_returns_error() {
+        // Decrypted payload shorter than the 128-byte header carve-out
+        // is malformed.
+        let err = decompress_partial(&[1, 2, 3, 4], 4096).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn partial_per_mip_synthetic_roundtrips() {
+        // Build a synthetic 8×8 BC1 (DXT1) DDS with two mip levels and
+        // pack it as a per-mip partial entry:
+        //   - mip 0 (8×8 BC1 = 32 bytes) → LZ4-compressed
+        //   - mip 1 (4×4 BC1 = 8 bytes)  → raw (slot == raw size)
+        //   - mip 2+ (none — mip_count = 2)
+        let mut header = [0u8; 128];
+        header[..4].copy_from_slice(b"DDS ");
+        header[4..8].copy_from_slice(&124u32.to_le_bytes()); // dwSize
+        header[8..12].copy_from_slice(&0x00021007u32.to_le_bytes()); // caps + h + w + pf + mipcount
+        header[12..16].copy_from_slice(&8u32.to_le_bytes()); // height
+        header[16..20].copy_from_slice(&8u32.to_le_bytes()); // width
+        header[28..32].copy_from_slice(&2u32.to_le_bytes()); // mip count
+        header[76..80].copy_from_slice(&32u32.to_le_bytes()); // pf dwSize
+        header[80..84].copy_from_slice(&0x4u32.to_le_bytes()); // pf flags = DDPF_FOURCC
+        header[84..88].copy_from_slice(b"DXT1");
+
+        // Mip 0: 32 bytes of recognisable pattern; compressible.
+        let mip0: Vec<u8> = (0..32).map(|i| (i as u8) & 0x0F).collect();
+        let mip0_lz4 = lz4_flex::block::compress(&mip0);
+        // Mip 1: 8 bytes of distinct data; stored raw.
+        let mip1: Vec<u8> = (0..8).map(|i| 0xA0 + i as u8).collect();
+
+        // Per-mip slots at offset 0x20.
+        header[0x20..0x24].copy_from_slice(&(mip0_lz4.len() as u32).to_le_bytes());
+        header[0x24..0x28].copy_from_slice(&(mip1.len() as u32).to_le_bytes());
+
+        let mut on_disk = Vec::from(&header[..]);
+        on_disk.extend_from_slice(&mip0_lz4);
+        on_disk.extend_from_slice(&mip1);
+
+        let uncompressed_size = header.len() + mip0.len() + mip1.len();
+        let decoded = decompress_partial(&on_disk, uncompressed_size).unwrap();
+
+        let mut expected = Vec::from(&header[..]);
+        expected.extend_from_slice(&mip0);
+        expected.extend_from_slice(&mip1);
+        assert_eq!(decoded.len(), expected.len());
+        // Body must match byte-for-byte. The header is allowed to differ
+        // only in the per-mip slots, which the decoder leaves untouched.
+        assert_eq!(&decoded[128..], &expected[128..]);
+    }
+
+    #[test]
+    fn partial_per_mip_trailing_raw_synthetic() {
+        // Build a 16×16 BC1 DDS with 3 mips where only mip 0 is
+        // LZ4-compressed; mip 1 and mip 2 fall under the "trailing raw"
+        // rule (slot == 0).
+        let mut header = [0u8; 128];
+        header[..4].copy_from_slice(b"DDS ");
+        header[4..8].copy_from_slice(&124u32.to_le_bytes());
+        header[8..12].copy_from_slice(&0x00021007u32.to_le_bytes());
+        header[12..16].copy_from_slice(&16u32.to_le_bytes());
+        header[16..20].copy_from_slice(&16u32.to_le_bytes());
+        header[28..32].copy_from_slice(&3u32.to_le_bytes());
+        header[76..80].copy_from_slice(&32u32.to_le_bytes());
+        header[80..84].copy_from_slice(&0x4u32.to_le_bytes());
+        header[84..88].copy_from_slice(b"DXT1");
+
+        // Raw sizes for BC1: 16×16 → 4×4 blocks × 8 = 128 bytes
+        //                   8×8  → 2×2 blocks × 8 = 32 bytes
+        //                   4×4  → 1×1 blocks × 8 = 8 bytes
+        let mip0: Vec<u8> = (0..128).map(|i| (i as u8) & 0x07).collect();
+        let mip1: Vec<u8> = (0..32).map(|i| 0x80 ^ (i as u8)).collect();
+        let mip2: Vec<u8> = (0..8).map(|i| 0xF0 | (i as u8 & 0xF)).collect();
+        let mip0_lz4 = lz4_flex::block::compress(&mip0);
+
+        header[0x20..0x24].copy_from_slice(&(mip0_lz4.len() as u32).to_le_bytes());
+        // slot[1] and slot[2] are zero → "remaining mips are raw".
+
+        let mut on_disk = Vec::from(&header[..]);
+        on_disk.extend_from_slice(&mip0_lz4);
+        on_disk.extend_from_slice(&mip1);
+        on_disk.extend_from_slice(&mip2);
+
+        let uncompressed_size = 128 + 128 + 32 + 8;
+        let decoded = decompress_partial(&on_disk, uncompressed_size).unwrap();
+
+        let mut expected = Vec::from(&header[..]);
+        expected.extend_from_slice(&mip0);
+        expected.extend_from_slice(&mip1);
+        expected.extend_from_slice(&mip2);
+        assert_eq!(decoded.len(), expected.len());
+        assert_eq!(&decoded[128..], &expected[128..]);
+    }
+
+    #[test]
+    fn partial_garbled_lz4_returns_error() {
+        // 128-byte header is fine, but the "LZ4" body is nonsense
+        // bytes that won't decode to the claimed uncompressed_size.
+        let mut on_disk = vec![0u8; 128];
+        on_disk.extend_from_slice(&[0xFFu8; 64]);
+        let err = decompress_partial(&on_disk, 200_000).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    /// Live-install smoke check: walk a handful of partial-compressed
+    /// DDS files spanning every supported sub-format — icons (identity
+    /// + header-LZ4) and worldmap SDFs (per-mip table).
+    ///
+    /// Each must round-trip through `extract_file` to bytes that start
+    /// with the DDS magic and match the PAMT-declared length. Skips
+    /// cleanly when the game isn't installed.
+    #[test]
+    fn live_install_extracts_partial_icons() {
+        let game = std::env::var_os("CRIMSON_GAME_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(
+                    r"D:\SteamLibrary\steamapps\common\Crimson Desert",
+                )
+            });
+        let group_dir = game.join("0012");
+        let pamt_path = group_dir.join("0.pamt");
+        let Ok(pamt_bytes) = std::fs::read(&pamt_path) else {
+            eprintln!(
+                "skipping live_install_extracts_partial_icons: no {}",
+                pamt_path.display()
+            );
+            return;
+        };
+        let pamt = PackMeta::parse(&pamt_bytes, None).expect("0012/0.pamt parses");
+
+        let mut checked_identity = 0usize;
+        let mut checked_lz4 = 0usize;
+        let mut checked_per_mip = 0usize;
+        for d in &pamt.directories {
+            let is_icon = d.path.starts_with("ui/texture/icon");
+            let is_worldmap = d.path.starts_with("ui/texture/image/worldmap");
+            if !is_icon && !is_worldmap {
+                continue;
+            }
+            for f in &d.files {
+                if !f.file.is_partial {
+                    continue;
+                }
+                if !f.name.to_ascii_lowercase().ends_with(".dds") {
+                    continue;
+                }
+                let want_identity = f.file.compressed_size == f.file.uncompressed_size;
+                if is_icon {
+                    if (want_identity && checked_identity >= 4)
+                        || (!want_identity && checked_lz4 >= 4)
+                    {
+                        continue;
+                    }
+                } else {
+                    // Worldmap exercises strategy 3 (per-mip).
+                    if checked_per_mip >= 4 {
+                        continue;
+                    }
+                }
+                let out = extract_file(
+                    &group_dir,
+                    f,
+                    &d.path,
+                    &pamt.header.encrypt_info.encrypt_info,
+                )
+                .unwrap_or_else(|e| {
+                    panic!("extract {}/{} failed: {}", d.path, f.name, e)
+                });
+                assert_eq!(
+                    out.len(),
+                    f.file.uncompressed_size as usize,
+                    "{}/{} size mismatch",
+                    d.path,
+                    f.name
+                );
+                assert_eq!(
+                    &out[..4],
+                    b"DDS ",
+                    "{}/{} should be a valid DDS",
+                    d.path,
+                    f.name
+                );
+                if is_icon {
+                    if want_identity {
+                        checked_identity += 1;
+                    } else {
+                        checked_lz4 += 1;
+                    }
+                } else {
+                    checked_per_mip += 1;
+                }
+            }
+            if checked_identity >= 4 && checked_lz4 >= 4 && checked_per_mip >= 4 {
+                return;
+            }
+        }
+        eprintln!(
+            "live_install_extracts_partial_icons: identity={} lz4={} per_mip={}",
+            checked_identity, checked_lz4, checked_per_mip,
+        );
+    }
+
 
     #[test]
     fn test_compress_decompress_lz4() {

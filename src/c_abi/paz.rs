@@ -14,11 +14,17 @@
 //! `0.pamt`. Once extracted, the bytes get fed straight into
 //! [`super::paloc::crimson_paloc_load_from_bytes`].
 //!
+//! Partial-compression entries (`is_partial`) ARE supported: the bulk
+//! of `0012/ui/texture/icon/` lives in that layout (header(128) +
+//! LZ4-with-prefix-dict, or identity when LZ4 declined). Some other
+//! 1.06 subtrees (notably `0012/ui/texture/image/worldmap/` SDFs and
+//! large mesh assets in 0009/0015) use an additional chunked variant
+//! the decoder doesn't yet understand — those still surface as
+//! `BODY_PARSE`, the same code as any other PAZ extraction failure.
+//!
 //! Not exposed here (future PR if needed):
 //! - PAMT enumeration (list directories / files without extracting).
 //! - Batch extraction (avoid re-parsing PAMT N times).
-//! - Partial-compression files (`is_partial`), which `extract_file`
-//!   itself doesn't support yet either.
 
 use std::ffi::CStr;
 use std::os::raw::c_char;
@@ -292,6 +298,84 @@ mod tests {
             )
         };
         assert_eq!(rc, error::IO);
+    }
+
+    /// End-to-end check that the C ABI now extracts partial-compressed
+    /// icons (the bulk of `0012/ui/texture/icon/`). Picks one of the
+    /// LZ4-compressed entries (so we exercise the prefix-dict decoder,
+    /// not just the identity case) and validates the standard DDS magic.
+    #[test]
+    fn c_abi_paz_extract_partial_dds_icon() {
+        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
+            });
+        let pamt_path = game_root.join("0012").join("0.pamt");
+        if !pamt_path.is_file() {
+            eprintln!(
+                "skipping c_abi_paz_extract_partial_dds_icon: no {}",
+                pamt_path.display()
+            );
+            return;
+        }
+        // Pick a partial DDS where compressed_size < uncompressed_size
+        // (real LZ4 work, not the identity fast path). Use a font atlas
+        // from 0012/ui/fonts/imagefont/ — every entry there is partial
+        // compressed in 1.06 and they're small enough to keep the test
+        // quick.
+        let pamt_bytes = std::fs::read(&pamt_path).expect("read 0.pamt");
+        let pamt = PackMeta::parse(&pamt_bytes, None).expect("parse 0.pamt");
+        let mut pick: Option<(String, String, u32, u32)> = None;
+        for d in &pamt.directories {
+            if d.path != "ui/fonts/imagefont" {
+                continue;
+            }
+            for f in &d.files {
+                if !f.file.is_partial {
+                    continue;
+                }
+                if !f.name.to_ascii_lowercase().ends_with(".dds") {
+                    continue;
+                }
+                if f.file.compressed_size >= f.file.uncompressed_size {
+                    continue;
+                }
+                pick = Some((
+                    d.path.clone(),
+                    f.name.clone(),
+                    f.file.compressed_size,
+                    f.file.uncompressed_size,
+                ));
+                break;
+            }
+            if pick.is_some() {
+                break;
+            }
+        }
+        let Some((dir_str, name_str, c_size, u_size)) = pick else {
+            eprintln!("skipping: no LZ4-compressed partial DDS found under ui/fonts/imagefont");
+            return;
+        };
+        let pamt_c = CString::new(pamt_path.to_str().unwrap()).unwrap();
+        let dir_c = CString::new(dir_str.clone()).unwrap();
+        let name_c = CString::new(name_str.clone()).unwrap();
+        let bytes = extract_via_abi(&pamt_c, &dir_c, &name_c).unwrap_or_else(|rc| {
+            panic!(
+                "extract failed for {}/{} (c={}, u={}): rc={}",
+                dir_str, name_str, c_size, u_size, rc
+            )
+        });
+        assert_eq!(
+            bytes.len(),
+            u_size as usize,
+            "extracted size must match PAMT uncompressed_size"
+        );
+        assert_eq!(
+            &bytes[..4],
+            b"DDS ",
+            "partial-compressed icon must round-trip to a valid DDS"
+        );
     }
 
     #[test]
