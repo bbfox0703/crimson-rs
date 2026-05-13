@@ -4,6 +4,7 @@ mod item_info;
 mod python;
 mod save;
 mod skill_info;
+mod string_info;
 pub(crate) mod python_traits;
 
 #[cfg(feature = "c_abi")]
