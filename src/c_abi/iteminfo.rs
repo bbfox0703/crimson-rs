@@ -31,6 +31,10 @@ use crate::item_info::ItemInfo;
 pub struct CrimsonItemInfoHandle {
     by_key: HashMap<u32, String>,
     max_stack_by_key: HashMap<u32, u64>,
+    /// First entry of `item_icon_list[0].icon_path` (a `StringInfoKey`
+    /// hash) per item key. Items with no icon list aren't inserted —
+    /// the lookup returns `NOT_FOUND` instead of writing 0.
+    icon_path_by_key: HashMap<u32, u32>,
     /// `(key, string_key)` in file order so the caller can enumerate
     /// via [`crimson_iteminfo_get_entry`].
     entries: Vec<(u32, String)>,
@@ -44,10 +48,21 @@ impl CrimsonItemInfoHandle {
         let mut offset = 0usize;
         let mut entries: Vec<(u32, String)> = Vec::new();
         let mut max_stack_by_key: HashMap<u32, u64> = HashMap::new();
+        let mut icon_path_by_key: HashMap<u32, u32> = HashMap::new();
         while offset < data.len() {
             let item = ItemInfo::read_from(data, &mut offset)?;
             entries.push((item.key.0, item.string_key.data.to_owned()));
             max_stack_by_key.insert(item.key.0, item.max_stack_count);
+            // Only capture the first per-item icon. Items without an
+            // `item_icon_list` entry are intentionally skipped — the
+            // lookup surface reports those as NOT_FOUND, mirroring the
+            // string-key lookup's contract for dev-only items.
+            if let Some(first) = item.item_icon_list.items.first() {
+                let hash = first.icon_path.0;
+                if hash != 0 {
+                    icon_path_by_key.insert(item.key.0, hash);
+                }
+            }
         }
         if offset != data.len() {
             return Err(io::Error::new(
@@ -60,7 +75,12 @@ impl CrimsonItemInfoHandle {
             ));
         }
         let by_key = entries.iter().cloned().collect();
-        Ok(CrimsonItemInfoHandle { by_key, max_stack_by_key, entries })
+        Ok(CrimsonItemInfoHandle {
+            by_key,
+            max_stack_by_key,
+            icon_path_by_key,
+            entries,
+        })
     }
 }
 
@@ -224,6 +244,42 @@ pub unsafe extern "C" fn crimson_iteminfo_lookup_string_key(
             std::ptr::copy_nonoverlapping(name.as_ptr(), buf, name.len());
             *buf.add(name.len()) = 0;
         }
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Look up the first `item_icon_list[0].icon_path` for a given `ItemKey
+/// (u32)` and write the resulting `StringInfoKey` (u32 hash) into
+/// `*out_hash`. The downstream icon-extraction pipeline pipes the hash
+/// through the stringinfo bridge to obtain a texture name like
+/// `ItemIcon_Prefab_cd_phm_04_arw_0020`, lowercases it, appends
+/// `.dds`, and PAZ-extracts the texture from group `0012`'s
+/// `ui/texture/icon/` directory.
+///
+/// Returns `NOT_FOUND` when the key isn't in the loaded table OR the
+/// item ships without an `item_icon_list` entry OR the first entry's
+/// `icon_path` is 0 (interpreted as "no icon"). On `NOT_FOUND`,
+/// `*out_hash` is set to 0.
+///
+/// # Safety
+/// `handle` and `out_hash` must be non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_iteminfo_lookup_icon_path_hash(
+    handle: *const CrimsonItemInfoHandle,
+    item_key: u32,
+    out_hash: *mut u32,
+) -> i32 {
+    if handle.is_null() || out_hash.is_null() {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_hash = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let Some(hash) = h.icon_path_by_key.get(&item_key) else {
+            return error::NOT_FOUND;
+        };
+        unsafe { *out_hash = *hash };
         error::OK
     }))
     .unwrap_or(error::PANIC)
@@ -483,6 +539,39 @@ mod tests {
         let rc = unsafe { crimson_iteminfo_lookup_max_stack(handle, u32::MAX, &mut bogus) };
         assert_eq!(rc, error::NOT_FOUND);
         assert_eq!(bogus, 0, "out_max_stack should be reset on NOT_FOUND");
+
+        // ── icon_path_hash lookup: at least one item in any real game
+        // install ships an icon. Walk the table and assert there's at
+        // least one hit, then assert u32::MAX is NOT_FOUND.
+        let mut found_at_least_one_icon = false;
+        for i in 0..count.min(2000) {
+            let mut ik: u32 = 0;
+            let mut req: usize = 0;
+            let _ = unsafe {
+                crimson_iteminfo_get_entry(
+                    handle, i, &mut ik, ptr::null_mut(), 0, &mut req,
+                )
+            };
+            let mut icon_hash: u32 = 0;
+            let rc = unsafe {
+                crimson_iteminfo_lookup_icon_path_hash(handle, ik, &mut icon_hash)
+            };
+            if rc == error::OK && icon_hash != 0 {
+                found_at_least_one_icon = true;
+                break;
+            }
+        }
+        assert!(
+            found_at_least_one_icon,
+            "expected at least one item in the first 2000 to have an icon"
+        );
+
+        let mut bogus_icon: u32 = 0;
+        let rc = unsafe {
+            crimson_iteminfo_lookup_icon_path_hash(handle, u32::MAX, &mut bogus_icon)
+        };
+        assert_eq!(rc, error::NOT_FOUND);
+        assert_eq!(bogus_icon, 0, "out_hash should be reset on NOT_FOUND");
 
         // OUT_OF_RANGE on get_entry past the end.
         let rc = unsafe {
