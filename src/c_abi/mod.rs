@@ -113,6 +113,28 @@ pub struct CrimsonPathStep {
     pub element_idx: u32,
 }
 
+/// One element of a scalar batch mutation, passed to
+/// [`crimson_save_set_scalar_fields_batch`].
+///
+/// Each op fully describes one scalar write: target block, descent path,
+/// leaf field index, and replacement bytes. The path and byte buffers are
+/// borrowed for the duration of the batch call only — the caller owns and
+/// keeps them alive across the FFI boundary.
+///
+/// Layout matches the argument list of
+/// [`crimson_save_set_scalar_field_path`] so the same caller-side
+/// validation rules apply per-op.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct CrimsonScalarBatchOp {
+    pub block_idx: u32,
+    pub field_idx: u32,
+    pub path: *const CrimsonPathStep,
+    pub path_len: usize,
+    pub bytes: *const u8,
+    pub bytes_len: usize,
+}
+
 // ── Load / free ────────────────────────────────────────────────────────────
 
 /// Load and fully decode a `.save` file.
@@ -407,6 +429,62 @@ pub unsafe extern "C" fn crimson_save_get_block_json(
 
 // ── Mutation ───────────────────────────────────────────────────────────────
 
+/// Resolve `(block_idx, path, field_idx)` to the leaf scalar's byte range
+/// in the body buffer, validating every navigation step.
+///
+/// On success returns `(start, end)` such that `start..end` is exactly the
+/// slice to overwrite. Pure read of `blocks`; the caller does the write.
+///
+/// Shared between the single-op setters and the batch entry point so the
+/// three surfaces stay in lockstep — same path semantics, same error
+/// codes, same `bytes_len` invariant.
+fn resolve_leaf_range(
+    blocks: &[ObjectBlock],
+    body_len: usize,
+    block_idx: u32,
+    path: &[CrimsonPathStep],
+    field_idx: u32,
+    bytes_len: usize,
+) -> Result<(usize, usize), i32> {
+    let Some(top) = blocks.get(block_idx as usize) else {
+        return Err(error::OUT_OF_RANGE);
+    };
+    let mut current: &ObjectBlock = top;
+    for step in path {
+        let Some(field) = current.fields.get(step.field_idx as usize) else {
+            return Err(error::OUT_OF_RANGE);
+        };
+        current = match &field.value {
+            FieldValue::Locator {
+                child: Some(child), ..
+            } => child.as_ref(),
+            FieldValue::ObjectList { elements, .. } => {
+                let Some(el) = elements.get(step.element_idx as usize) else {
+                    return Err(error::OUT_OF_RANGE);
+                };
+                el
+            }
+            _ => return Err(error::NOT_NAVIGABLE),
+        };
+    }
+    let Some(leaf) = current.fields.get(field_idx as usize) else {
+        return Err(error::OUT_OF_RANGE);
+    };
+    if !matches!(leaf.kind, FieldKind::FixedPrefix | FieldKind::FixedSuffix) {
+        return Err(error::NOT_SCALAR);
+    }
+    let expected = leaf.end.saturating_sub(leaf.start);
+    if bytes_len != expected {
+        return Err(error::LENGTH_MISMATCH);
+    }
+    if leaf.end > body_len {
+        // Defensive guard: decoder produced offsets into the same body
+        // buffer it parsed, so leaf.end > body_len should be unreachable.
+        return Err(error::OUT_OF_RANGE);
+    }
+    Ok((leaf.start, leaf.end))
+}
+
 /// Overwrite the bytes of a fixed-size scalar field with `bytes`.
 ///
 /// Constraints:
@@ -442,26 +520,11 @@ pub unsafe extern "C" fn crimson_save_set_scalar_field(
     }
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &mut *handle };
-        let Some(block) = h.blocks.get(block_idx as usize) else {
-            return error::OUT_OF_RANGE;
-        };
-        let Some(field) = block.fields.get(field_idx as usize) else {
-            return error::OUT_OF_RANGE;
-        };
-        if !matches!(field.kind, FieldKind::FixedPrefix | FieldKind::FixedSuffix) {
-            return error::NOT_SCALAR;
-        }
-        let expected = field.end.saturating_sub(field.start);
-        if bytes_len != expected {
-            return error::LENGTH_MISMATCH;
-        }
-        let dst_start = field.start;
-        let dst_end = field.end;
-        if dst_end > h.save.body.len() {
-            // Shouldn't happen — decoder produced offsets, body is the
-            // same buffer it parsed. Defensive guard for the unsafe write.
-            return error::OUT_OF_RANGE;
-        }
+        let (dst_start, dst_end) =
+            match resolve_leaf_range(&h.blocks, h.save.body.len(), block_idx, &[], field_idx, bytes_len) {
+                Ok(range) => range,
+                Err(code) => return code,
+            };
         let src = unsafe { std::slice::from_raw_parts(bytes, bytes_len) };
         h.save.body[dst_start..dst_end].copy_from_slice(src);
         // Refresh decoded blocks so consumers see the new value on the
@@ -526,57 +589,157 @@ pub unsafe extern "C" fn crimson_save_set_scalar_field_path(
     }
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &mut *handle };
-
-        // Resolve the leaf field's body byte range in an immutable-borrow
-        // scope so the mutable write below doesn't conflict.
         let steps: &[CrimsonPathStep] = if path_len == 0 {
             &[]
         } else {
             unsafe { std::slice::from_raw_parts(path, path_len) }
         };
-
-        let (dst_start, dst_end) = {
-            let Some(top) = h.blocks.get(block_idx as usize) else {
-                return error::OUT_OF_RANGE;
+        let (dst_start, dst_end) =
+            match resolve_leaf_range(&h.blocks, h.save.body.len(), block_idx, steps, field_idx, bytes_len) {
+                Ok(range) => range,
+                Err(code) => return code,
             };
-            let mut current: &ObjectBlock = top;
-            for step in steps {
-                let Some(field) = current.fields.get(step.field_idx as usize) else {
-                    return error::OUT_OF_RANGE;
-                };
-                current = match &field.value {
-                    FieldValue::Locator {
-                        child: Some(child), ..
-                    } => child.as_ref(),
-                    FieldValue::ObjectList { elements, .. } => {
-                        let Some(el) = elements.get(step.element_idx as usize) else {
-                            return error::OUT_OF_RANGE;
-                        };
-                        el
-                    }
-                    _ => return error::NOT_NAVIGABLE,
-                };
-            }
-            let Some(leaf) = current.fields.get(field_idx as usize) else {
-                return error::OUT_OF_RANGE;
-            };
-            if !matches!(leaf.kind, FieldKind::FixedPrefix | FieldKind::FixedSuffix) {
-                return error::NOT_SCALAR;
-            }
-            let expected = leaf.end.saturating_sub(leaf.start);
-            if bytes_len != expected {
-                return error::LENGTH_MISMATCH;
-            }
-            if leaf.end > h.save.body.len() {
-                // Same defensive guard as the top-level setter.
-                return error::OUT_OF_RANGE;
-            }
-            (leaf.start, leaf.end)
-        };
-
         let src = unsafe { std::slice::from_raw_parts(bytes, bytes_len) };
         h.save.body[dst_start..dst_end].copy_from_slice(src);
         h.blocks = h.body.decode_blocks(&h.save.body);
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Apply many scalar mutations in one FFI round trip, sharing a single
+/// post-batch re-decode.
+///
+/// Semantics:
+///
+/// 1. **Validate everything first.** Each op's `(block_idx, path[],
+///    field_idx, bytes_len)` is resolved through the same rules as
+///    [`crimson_save_set_scalar_field_path`] (`NOT_SCALAR`,
+///    `LENGTH_MISMATCH`, `OUT_OF_RANGE`, `NOT_NAVIGABLE`). On any error
+///    the call returns immediately with no mutation applied — the save
+///    body is left exactly as it was before the call.
+/// 2. **Patch all ops in order.** Identical to running N
+///    `crimson_save_set_scalar_field_path` calls sequentially, except no
+///    re-decode happens between ops.
+/// 3. **One re-decode at the end.** The decoded `blocks` are refreshed
+///    a single time after the last patch, regardless of `op_count`.
+///
+/// This is the high-throughput path for bulk edits — e.g. "fill every
+/// item's stack to max", which performs 168 writes today and would
+/// otherwise pay 168 × `decode_blocks` cost. Wall-time goes from
+/// O(N · block_count) to O(N + block_count).
+///
+/// `out_failed_op_index` (optional, may be NULL):
+/// - On error, written with the index of the op whose validation failed
+///   so the caller can pinpoint the offending mutation.
+/// - On success, written with `usize::MAX` as a sentinel meaning
+///   "no failure". Callers can either ignore the value on `OK` or check
+///   it explicitly.
+///
+/// # Safety
+/// `handle` must be a live, exclusive handle. `ops` must point to
+/// `op_count` readable [`CrimsonScalarBatchOp`] values for the duration
+/// of the call. Each op's `path` and `bytes` pointers must point to
+/// `path_len` / `bytes_len` readable bytes respectively, for the
+/// duration of the call. `out_failed_op_index` may be NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_set_scalar_fields_batch(
+    handle: *mut CrimsonSaveHandle,
+    ops: *const CrimsonScalarBatchOp,
+    op_count: usize,
+    out_failed_op_index: *mut usize,
+) -> i32 {
+    if handle.is_null() {
+        return error::NULL_ARG;
+    }
+    if ops.is_null() && op_count != 0 {
+        return error::NULL_ARG;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        // Trivial batch: no work, no re-decode, no failure index to set.
+        if op_count == 0 {
+            if !out_failed_op_index.is_null() {
+                unsafe {
+                    *out_failed_op_index = usize::MAX;
+                }
+            }
+            return error::OK;
+        }
+
+        let h = unsafe { &mut *handle };
+        let ops_slice: &[CrimsonScalarBatchOp] =
+            unsafe { std::slice::from_raw_parts(ops, op_count) };
+
+        // Per-op NULL_ARG pre-check (path / bytes pointers). Mirrors
+        // the single-op setter's invariants without rolling them into
+        // resolve_leaf_range, which works on a typed slice.
+        for (i, op) in ops_slice.iter().enumerate() {
+            if op.path.is_null() && op.path_len != 0 {
+                if !out_failed_op_index.is_null() {
+                    unsafe {
+                        *out_failed_op_index = i;
+                    }
+                }
+                return error::NULL_ARG;
+            }
+            if op.bytes.is_null() && op.bytes_len != 0 {
+                if !out_failed_op_index.is_null() {
+                    unsafe {
+                        *out_failed_op_index = i;
+                    }
+                }
+                return error::NULL_ARG;
+            }
+        }
+
+        // Phase 1 — validate every op against the (immutable) decoded
+        // tree. Collect each op's resolved byte range. On the first
+        // failure we abort without writing anything.
+        let mut ranges: Vec<(usize, usize)> = Vec::with_capacity(op_count);
+        for (i, op) in ops_slice.iter().enumerate() {
+            let steps: &[CrimsonPathStep] = if op.path_len == 0 {
+                &[]
+            } else {
+                unsafe { std::slice::from_raw_parts(op.path, op.path_len) }
+            };
+            match resolve_leaf_range(
+                &h.blocks,
+                h.save.body.len(),
+                op.block_idx,
+                steps,
+                op.field_idx,
+                op.bytes_len,
+            ) {
+                Ok(range) => ranges.push(range),
+                Err(code) => {
+                    if !out_failed_op_index.is_null() {
+                        unsafe {
+                            *out_failed_op_index = i;
+                        }
+                    }
+                    return code;
+                }
+            }
+        }
+
+        // Phase 2 — apply every patch in input order. Pure memcpy over
+        // already-validated ranges; no validation errors possible here.
+        // Note: overlapping ranges between ops are not detected. Last
+        // write wins, exactly as if the caller had run N sequential
+        // single-op setters.
+        for (op, (dst_start, dst_end)) in ops_slice.iter().zip(ranges) {
+            let src = unsafe { std::slice::from_raw_parts(op.bytes, op.bytes_len) };
+            h.save.body[dst_start..dst_end].copy_from_slice(src);
+        }
+
+        // Phase 3 — one re-decode covers all mutations.
+        h.blocks = h.body.decode_blocks(&h.save.body);
+
+        if !out_failed_op_index.is_null() {
+            unsafe {
+                *out_failed_op_index = usize::MAX;
+            }
+        }
         error::OK
     }))
     .unwrap_or(error::PANIC)
@@ -1397,5 +1560,459 @@ mod tests {
         );
 
         unsafe { crimson_save_free(h2) };
+    }
+
+    /// Collect every top-level u32 FixedPrefix/FixedSuffix scalar in the
+    /// save, paired with its current value. Returned as
+    /// `(block_idx, field_idx, current_u32)`. Used by the batch tests to
+    /// build many-op fixtures without inventing schema knowledge.
+    fn collect_top_level_u32_scalars(
+        handle: *mut CrimsonSaveHandle,
+    ) -> Vec<(u32, u32, u32)> {
+        let h = unsafe { &*handle };
+        let mut out = Vec::new();
+        for (block_idx, block) in h.blocks.iter().enumerate() {
+            for (field_idx, f) in block.fields.iter().enumerate() {
+                if !matches!(f.kind, FieldKind::FixedPrefix | FieldKind::FixedSuffix) {
+                    continue;
+                }
+                let len = f.end.saturating_sub(f.start);
+                if len != 4 {
+                    continue;
+                }
+                if let FieldValue::Scalar(ScalarValue::U32(v)) = &f.value {
+                    out.push((block_idx as u32, field_idx as u32, *v));
+                }
+            }
+        }
+        out
+    }
+
+    /// Drives the batch entry point with a mix of top-level + one nested
+    /// op against a live save: apply, verify each value reflected in the
+    /// decoded JSON, write to a tempfile, reload, and confirm every
+    /// sentinel survived HMAC / ChaCha20 / LZ4 re-emission.
+    #[test]
+    fn c_abi_set_scalar_fields_batch_smoke() {
+        let Some(path) = find_save() else {
+            eprintln!("skipping c_abi_set_scalar_fields_batch_smoke: no live save");
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+
+        let mut handle: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle) },
+            error::OK
+        );
+
+        // Grab 5 top-level u32 scalars + 1 nested op. The nested op
+        // exercises the path-traversal branch alongside the empty-path
+        // ones so the batch covers both code paths in resolve_leaf_range.
+        let mut top = collect_top_level_u32_scalars(handle);
+        assert!(
+            top.len() >= 5,
+            "expected ≥5 top-level u32 scalars in live save; got {}",
+            top.len()
+        );
+        top.truncate(5);
+        let nested = find_nested_u32_scalar(handle)
+            .expect("expected a nested u32 scalar in live save");
+
+        // Build a stable mapping (block, path[], field) → sentinel bytes
+        // that owns its buffers across the batch call. The ops slice
+        // borrows from this storage.
+        struct OpFixture {
+            block_idx: u32,
+            field_idx: u32,
+            steps: Vec<CrimsonPathStep>,
+            bytes: [u8; 4],
+            expected_decoded: u32,
+        }
+        let mut fixtures: Vec<OpFixture> = Vec::new();
+        for (i, (b, f, original)) in top.iter().enumerate() {
+            let sentinel = original.wrapping_add(0x5EED_0000 + i as u32);
+            fixtures.push(OpFixture {
+                block_idx: *b,
+                field_idx: *f,
+                steps: Vec::new(),
+                bytes: sentinel.to_le_bytes(),
+                expected_decoded: sentinel,
+            });
+        }
+        let (nb, nstep, nleaf, noriginal, _) = nested;
+        let nested_sentinel = noriginal.wrapping_add(0xBADD_F00D);
+        fixtures.push(OpFixture {
+            block_idx: nb,
+            field_idx: nleaf,
+            steps: vec![nstep],
+            bytes: nested_sentinel.to_le_bytes(),
+            expected_decoded: nested_sentinel,
+        });
+
+        let ops: Vec<CrimsonScalarBatchOp> = fixtures
+            .iter()
+            .map(|fx| CrimsonScalarBatchOp {
+                block_idx: fx.block_idx,
+                field_idx: fx.field_idx,
+                path: if fx.steps.is_empty() {
+                    ptr::null()
+                } else {
+                    fx.steps.as_ptr()
+                },
+                path_len: fx.steps.len(),
+                bytes: fx.bytes.as_ptr(),
+                bytes_len: fx.bytes.len(),
+            })
+            .collect();
+
+        let mut failed_idx: usize = 0;
+        assert_eq!(
+            unsafe {
+                crimson_save_set_scalar_fields_batch(
+                    handle,
+                    ops.as_ptr(),
+                    ops.len(),
+                    &mut failed_idx,
+                )
+            },
+            error::OK
+        );
+        assert_eq!(
+            failed_idx,
+            usize::MAX,
+            "OK return must write usize::MAX sentinel to out_failed_op_index"
+        );
+
+        // Every top-level op must be reflected in the decoded JSON.
+        for fx in fixtures.iter().filter(|fx| fx.steps.is_empty()) {
+            let json = read_block_json(handle, fx.block_idx);
+            let needle = format!("\"value\":\"{} <u32>\"", fx.expected_decoded);
+            assert!(
+                json.contains(&needle),
+                "top-level batch op (block={}, field={}) not visible in JSON: {json:.300}…",
+                fx.block_idx,
+                fx.field_idx
+            );
+        }
+
+        // Round-trip via write_to_file + reload — every sentinel must
+        // survive HMAC / ChaCha20 / LZ4 re-emission.
+        let _tmp = tempfile::NamedTempFile::new().unwrap();
+        let tmp_path = CString::new(_tmp.path().to_str().unwrap()).unwrap();
+        assert_eq!(
+            unsafe { crimson_save_write_to_file(handle, tmp_path.as_ptr()) },
+            error::OK
+        );
+        unsafe { crimson_save_free(handle) };
+
+        let mut reloaded: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(tmp_path.as_ptr(), &mut reloaded) },
+            error::OK
+        );
+        let mut hmac: i32 = 0;
+        assert_eq!(
+            unsafe { crimson_save_get_hmac_ok(reloaded, &mut hmac) },
+            error::OK
+        );
+        assert_eq!(hmac, 1, "HMAC must verify on reload after batch mutation");
+
+        for fx in fixtures.iter().filter(|fx| fx.steps.is_empty()) {
+            let json = read_block_json(reloaded, fx.block_idx);
+            let needle = format!("\"value\":\"{} <u32>\"", fx.expected_decoded);
+            assert!(
+                json.contains(&needle),
+                "reloaded JSON missing sentinel for block={}, field={}: {json:.300}…",
+                fx.block_idx,
+                fx.field_idx
+            );
+        }
+
+        // Empty-batch: zero ops returns OK + writes the sentinel.
+        let mut sentinel_slot: usize = 0;
+        assert_eq!(
+            unsafe {
+                crimson_save_set_scalar_fields_batch(
+                    reloaded,
+                    ptr::null(),
+                    0,
+                    &mut sentinel_slot,
+                )
+            },
+            error::OK
+        );
+        assert_eq!(sentinel_slot, usize::MAX);
+
+        unsafe { crimson_save_free(reloaded) };
+    }
+
+    /// Validate the all-or-nothing contract: if any op in the batch fails
+    /// validation, the body must be left exactly as it was on entry, and
+    /// `out_failed_op_index` must point at the offending op.
+    #[test]
+    fn c_abi_set_scalar_fields_batch_atomicity() {
+        let Some(path) = find_save() else {
+            eprintln!("skipping c_abi_set_scalar_fields_batch_atomicity: no live save");
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+
+        let mut handle: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle) },
+            error::OK
+        );
+
+        // Snapshot the entire body so we can compare bytes after the
+        // failed batch and prove zero mutation happened.
+        let body_before: Vec<u8> = {
+            let h = unsafe { &*handle };
+            h.save.body.clone()
+        };
+
+        let scalars = collect_top_level_u32_scalars(handle);
+        assert!(
+            scalars.len() >= 2,
+            "expected ≥2 top-level u32 scalars for atomicity test"
+        );
+        let (b0, f0, v0) = scalars[0];
+        let (b1, f1, _) = scalars[1];
+
+        // Op 0: valid mutation. Op 1: same target but with bytes_len=3
+        // — guaranteed LENGTH_MISMATCH because the field is u32 (4 bytes).
+        let sentinel0 = v0.wrapping_add(0xDEAD_BEEF).to_le_bytes();
+        let bad_bytes: [u8; 3] = [0, 0, 0];
+
+        let ops = [
+            CrimsonScalarBatchOp {
+                block_idx: b0,
+                field_idx: f0,
+                path: ptr::null(),
+                path_len: 0,
+                bytes: sentinel0.as_ptr(),
+                bytes_len: sentinel0.len(),
+            },
+            CrimsonScalarBatchOp {
+                block_idx: b1,
+                field_idx: f1,
+                path: ptr::null(),
+                path_len: 0,
+                bytes: bad_bytes.as_ptr(),
+                bytes_len: bad_bytes.len(),
+            },
+        ];
+
+        let mut failed_idx: usize = 0;
+        let rc = unsafe {
+            crimson_save_set_scalar_fields_batch(
+                handle,
+                ops.as_ptr(),
+                ops.len(),
+                &mut failed_idx,
+            )
+        };
+        assert_eq!(rc, error::LENGTH_MISMATCH);
+        assert_eq!(failed_idx, 1, "failed_op_index must pinpoint the offending op");
+
+        // The body must be byte-identical to entry — op 0 must NOT have
+        // been applied just because validation reached it first.
+        let body_after: &[u8] = unsafe { &(*handle).save.body };
+        assert_eq!(
+            body_after.len(),
+            body_before.len(),
+            "body length must not change on failed batch"
+        );
+        assert!(
+            body_after == body_before.as_slice(),
+            "body must be byte-identical to pre-batch on validation failure"
+        );
+
+        // Different error: NOT_NAVIGABLE via path that walks into a scalar.
+        let bad_step = [CrimsonPathStep {
+            field_idx: f0,
+            element_idx: 0,
+        }];
+        let dummy: [u8; 4] = [0, 0, 0, 0];
+        let ops2 = [CrimsonScalarBatchOp {
+            block_idx: b0,
+            field_idx: 0,
+            path: bad_step.as_ptr(),
+            path_len: bad_step.len(),
+            bytes: dummy.as_ptr(),
+            bytes_len: dummy.len(),
+        }];
+        let mut failed_idx2: usize = 0;
+        assert_eq!(
+            unsafe {
+                crimson_save_set_scalar_fields_batch(
+                    handle,
+                    ops2.as_ptr(),
+                    ops2.len(),
+                    &mut failed_idx2,
+                )
+            },
+            error::NOT_NAVIGABLE
+        );
+        assert_eq!(failed_idx2, 0);
+
+        // NULL_ARG: per-op null bytes with non-zero len must surface
+        // through out_failed_op_index at the right index.
+        let good_bytes = sentinel0;
+        let ops3 = [
+            CrimsonScalarBatchOp {
+                block_idx: b0,
+                field_idx: f0,
+                path: ptr::null(),
+                path_len: 0,
+                bytes: good_bytes.as_ptr(),
+                bytes_len: good_bytes.len(),
+            },
+            CrimsonScalarBatchOp {
+                block_idx: b1,
+                field_idx: f1,
+                path: ptr::null(),
+                path_len: 0,
+                bytes: ptr::null(),
+                bytes_len: 4,
+            },
+        ];
+        let mut failed_idx3: usize = 0;
+        assert_eq!(
+            unsafe {
+                crimson_save_set_scalar_fields_batch(
+                    handle,
+                    ops3.as_ptr(),
+                    ops3.len(),
+                    &mut failed_idx3,
+                )
+            },
+            error::NULL_ARG
+        );
+        assert_eq!(failed_idx3, 1);
+
+        // NULL handle: top-level NULL_ARG; out_failed_op_index is not
+        // touched (handle is null so we can't write back through it
+        // safely, and the per-op pre-check never runs).
+        assert_eq!(
+            unsafe {
+                crimson_save_set_scalar_fields_batch(
+                    ptr::null_mut(),
+                    ops3.as_ptr(),
+                    ops3.len(),
+                    ptr::null_mut(),
+                )
+            },
+            error::NULL_ARG
+        );
+
+        unsafe { crimson_save_free(handle) };
+    }
+
+    /// Equivalence check at scale: applying N ops through the batch
+    /// entry point produces the byte-identical body that running the same
+    /// N ops one-at-a-time through the single-op setter would. This is
+    /// the soundness invariant the perf optimization rests on.
+    #[test]
+    fn c_abi_set_scalar_fields_batch_matches_single_op() {
+        let Some(path) = find_save() else {
+            eprintln!("skipping c_abi_set_scalar_fields_batch_matches_single_op: no live save");
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+
+        let mut handle_batch: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle_batch) },
+            error::OK
+        );
+        let mut handle_single: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle_single) },
+            error::OK
+        );
+
+        // Collect candidates from the batch handle; both handles parsed
+        // the same file so positions are identical. Cap at 200 to keep
+        // the test fast — 200 ops is already 5× the fill-stacks use
+        // case and is plenty to exercise the batch path.
+        let mut scalars = collect_top_level_u32_scalars(handle_batch);
+        assert!(
+            scalars.len() >= 50,
+            "expected ≥50 top-level u32 scalars in live save; got {}",
+            scalars.len()
+        );
+        scalars.truncate(200);
+        let n = scalars.len();
+
+        // Build (sentinel_bytes_owned, op) pairs. Each sentinel is a
+        // deterministic mutation of the original so two ops on the same
+        // target wouldn't accidentally land on the same byte pattern.
+        let sentinels: Vec<[u8; 4]> = scalars
+            .iter()
+            .enumerate()
+            .map(|(i, (_, _, v))| v.wrapping_add(0xC0DE_0000 + i as u32).to_le_bytes())
+            .collect();
+        let ops: Vec<CrimsonScalarBatchOp> = scalars
+            .iter()
+            .zip(sentinels.iter())
+            .map(|((b, f, _), bytes)| CrimsonScalarBatchOp {
+                block_idx: *b,
+                field_idx: *f,
+                path: ptr::null(),
+                path_len: 0,
+                bytes: bytes.as_ptr(),
+                bytes_len: bytes.len(),
+            })
+            .collect();
+
+        // Apply via batch on handle A.
+        let mut failed_idx: usize = 0;
+        assert_eq!(
+            unsafe {
+                crimson_save_set_scalar_fields_batch(
+                    handle_batch,
+                    ops.as_ptr(),
+                    ops.len(),
+                    &mut failed_idx,
+                )
+            },
+            error::OK,
+            "batch of {n} ops should apply cleanly"
+        );
+
+        // Apply the same N ops one-at-a-time on handle B via the
+        // pre-existing single-op setter.
+        for ((b, f, _), bytes) in scalars.iter().zip(sentinels.iter()) {
+            assert_eq!(
+                unsafe {
+                    crimson_save_set_scalar_field(
+                        handle_single,
+                        *b,
+                        *f,
+                        bytes.as_ptr(),
+                        bytes.len(),
+                    )
+                },
+                error::OK
+            );
+        }
+
+        // Both bodies must be byte-identical. This is the equivalence
+        // proof: batch == N × single-op, with one re-decode instead of N.
+        let body_batch: &[u8] = unsafe { &(*handle_batch).save.body };
+        let body_single: &[u8] = unsafe { &(*handle_single).save.body };
+        assert_eq!(
+            body_batch.len(),
+            body_single.len(),
+            "body lengths must match between batch and single-op handles"
+        );
+        assert!(
+            body_batch == body_single,
+            "batch body must be byte-identical to N × single-op body"
+        );
+
+        unsafe { crimson_save_free(handle_batch) };
+        unsafe { crimson_save_free(handle_single) };
     }
 }
