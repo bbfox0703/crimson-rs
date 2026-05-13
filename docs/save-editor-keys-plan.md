@@ -9,6 +9,16 @@ Companion to [`crimsonforge-feature-gaps.md`](./crimsonforge-feature-gaps.md);
 that doc surveyed CrimsonForge in general, this one targets the specific keys
 the Save Editor consumes.
 
+Cross-referenced 2026-05-14 against the editor's own
+`CrimsonAtomtic/docs/status.md` ("Key resolvers we still need — C#
+consumption expectations" section, items #4–#6 in the deferred list). The
+editor side has already enumerated the C# integration touchpoints
+(`NativeMethods` block in `NativeSaveLoader.cs`, new `I<Catalog>Catalog.cs`
++ `Native<Catalog>Catalog.cs` files, `LocalizationProvider.Resolve<Key>`
+methods, `TypeNameToTypeByte` dispatch), so the only non-trivial choice
+for each upstream PR is the ABI shape itself. ABI recommendations below
+reflect their stated preferences.
+
 ---
 
 ## Status snapshot
@@ -81,6 +91,14 @@ the editor needs and drops the rest of the entry graph.
 
 **File**: `0008/.../gamedata/knowledgeinfo.pabgb` (+ `knowledgegroupinfo.pabgb`)
 
+**Editor-side correction**: `CrimsonAtomtic/docs/status.md` item #4 groups
+SkillKey and KnowledgeKey under one "`skill_info` bridge" line, expecting
+the same parser to resolve both. It can't — they live in different
+`.pabgb` files. KnowledgeKey is a **separate bridge** with its own parser
+(`src/knowledge_info/` + `src/c_abi/knowledge_info.rs`). The editor side
+will then need a `LocalizationProvider.ResolveKnowledgeKey(uint)` that's
+distinct from `ResolveSkillKey`.
+
 **Why it's not "just mirror iteminfo"**: CrimsonForge does **not** have a
 schema parser for knowledgeinfo. The Python side (`translation/localization_usage_index.py`
 `_tag_knowledgeinfo`) uses a regex scanner: find every `Knowledge_<name>\x00`
@@ -134,7 +152,19 @@ unfit for the modding pipeline that consumes this crate.
    inline ("[Mission: Prologue]"), so a **template-resolver** layer is
    needed on top of the row-lookup bridge.
 
-**Recommended path**:
+**ABI shape — editor's explicit preference (status.md item #6)**:
+
+> *Recommended: shape A (Rust expands templates).*
+> `crimson_mission_info_lookup_display_name(mission_handle, paloc_handle, u32 key, byte* buf, …) → i32`.
+> Rust gets a paloc handle alongside its own, does the `{StaticInfo:Mission:KEY}` walk
+> internally, returns a **fully-resolved localized string**. C# stays simple.
+>
+> The editor side rejected the segmented-output alternative ("template syntax
+> knowledge belongs in the parser, not spread across the FFI"). So the bridge
+> needs to take a paloc handle as a second argument — not just expose a raw
+> row lookup.
+
+**Recommended path** (revised against editor preference):
 
 1. Extract all five `.pabgb` files. Save under `out/baselines/1.06/` (gitignored).
 2. Confirm `tools/patch_quest_hp.py` (CrimsonForge) — it already located an
@@ -142,13 +172,17 @@ unfit for the modding pipeline that consumes this crate.
    Ogre quest. That row offset is a strong starting point for schema RE:
    work outward from a known byte to infer the row size, then the row count.
 3. Hexpat pass for each table. Land them as `src/quest_info/`, `src/mission_info/`.
-4. **Template resolver**: implement a small function `resolve_static_info_token`
-   that takes a token like `"StaticInfo:Mission:12345"` and a set of loaded
-   handles (quest, mission, character, item) and returns the resolved
-   display name. Lives in `src/c_abi/template.rs` or similar — a thin
-   utility, not a separate parser.
-5. Bridges per table. Five total but four of them are likely identical-shape
-   (key → name); only the gauge/wanted variants might need extra getters.
+4. **Template resolver lives in Rust, not C#**. The shape A choice changes
+   where this lives compared to the earlier draft of this doc. Implement
+   `src/c_abi/template.rs` exposing a `resolve_template_string(paloc_handle,
+   handles…, &str) -> String` that walks `{StaticInfo:Mission:KEY}` /
+   `{StaticInfo:Quest:KEY}` / `{StaticInfo:Character:KEY}` etc. tokens and
+   substitutes resolved localized strings. The mission / quest bridges
+   call into this from their `_lookup_display_name` getters.
+5. Bridges per table. The primary surface is now `_lookup_display_name`
+   (fully-resolved string) plus the bare `_lookup_string_key` (raw row name)
+   for debugging / non-templated callers. Five tables total — `_display_name`
+   is the editor-facing API; `_string_key` is the debug API.
 
 **Size estimate**: 3–5 sessions. Most of the time is the schema RE.
 
@@ -175,6 +209,19 @@ merchant at coord X" by template, not by character.
 - `core/character_asset_resolver.py` (CrimsonForge) walks 19 `.pabgb`
   tables looking for character key references. That walk-list is the
   shortlist to dump.
+
+**ABI shape — editor's explicit preference (status.md item #5)**:
+
+> *Recommended: two-output single call.*
+> `crimson_<source>_lookup_character_key(handle, u32 spawnId, out u32 characterKey, out u32 stringInfoHash) → i32`.
+> The two outputs let the C# caller resolve the display name in one of two
+> ways: (a) trust the `stringInfoHash` directly via the stringinfo bridge, or
+> (b) chain through a future `characterinfo` bridge using the `characterKey`.
+> The editor side wants both options available without needing two FFI calls.
+>
+> Combine FieldNPC + FieldGimmick under one bridge **if they share the same
+> source file** (extremely likely); otherwise ship as two bridges with
+> identical shape.
 
 **Recommended path**:
 
@@ -264,7 +311,24 @@ six-function pattern that's already in production for iteminfo.
 - Whether to ship `mission_info` separately from `quest_info` or merge into
   one parser module (their shape might be near-identical — wait until the
   hexpat pass to decide).
-- Whether the template-resolver lives in the C ABI layer (rendered strings
-  cross the boundary as bytes) or stays editor-side (caller composes the
-  final string from individual lookups). I'd lean editor-side for now —
-  the bridge stays single-purpose, the resolver is one C# helper.
+
+## Decisions settled (recorded against editor-side prefs)
+
+- ~~Template-resolver location~~ — **lives in Rust**. The editor's
+  status.md explicitly prefers shape A: pass a paloc handle through the
+  mission/quest bridge, do template expansion inside the parser, return
+  a fully-resolved localized string across the FFI.
+- ~~Skill / Knowledge — one bridge or two~~ — **two bridges**. They
+  read different `.pabgb` files; the editor's assumption that one parser
+  covers both is incorrect.
+- ~~FieldNPC ABI shape~~ — **two outputs in one call**
+  (`out characterKey`, `out stringInfoHash`), per editor preference.
+
+## Vendor flow
+
+`CrimsonAtomtic/vendor/update_vendors.ps1` does `git reset --hard origin/dev`
+on `vendor/crimson-rs`, so any push to this repo's `dev` flows into the
+editor on the next vendor refresh — **no PR coordination needed beyond
+keeping `dev` green**. CI gates on `main` (the `clippy + cargo test`
+required check) protect the merge path; the editor consumes `dev`
+directly.
