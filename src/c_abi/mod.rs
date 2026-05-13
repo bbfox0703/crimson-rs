@@ -26,6 +26,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use crate::save::{Body, DecodedField, FieldKind, FieldValue, ObjectBlock, Save, SaveError, ScalarValue};
 
 pub mod paloc;
+pub mod paz;
 
 /// Stable error codes returned by every fallible C entry point.
 ///
