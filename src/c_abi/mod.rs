@@ -52,6 +52,11 @@ pub mod error {
     /// `crimson_save_write_to_file` failed downstream of a successful
     /// re-serialize (filesystem error, permissions, etc.).
     pub const WRITE_FAILED: i32 = -14;
+    /// A mid-path navigation step in `crimson_save_set_scalar_field_path`
+    /// targeted a field whose kind is not navigable (only `ObjectLocator`
+    /// with a resolved child and `ObjectList` permit descent). Distinct
+    /// from `NOT_SCALAR`, which only fires on the leaf.
+    pub const NOT_NAVIGABLE: i32 = -15;
     pub const PANIC: i32 = -99;
 }
 
@@ -79,6 +84,24 @@ pub struct CrimsonBlockInfo {
     pub data_size: u32,
     pub fields_present: u32,
     pub fields_decoded: u32,
+}
+
+/// One step of a descent path used by
+/// [`crimson_save_set_scalar_field_path`].
+///
+/// Each step says: "from the current block, look up `field_idx`; if that
+/// field is an `ObjectList`, descend into element `element_idx`; if it's
+/// an `ObjectLocator` with a resolved child, descend into the child
+/// (`element_idx` is ignored)". Anything else fails with `NOT_NAVIGABLE`.
+///
+/// The terminal field index (the scalar being written) is passed
+/// separately from the path so the caller can address either a top-level
+/// block field (empty path) or a deeply-nested one with the same API.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CrimsonPathStep {
+    pub field_idx: u32,
+    pub element_idx: u32,
 }
 
 // ── Load / free ────────────────────────────────────────────────────────────
@@ -435,6 +458,115 @@ pub unsafe extern "C" fn crimson_save_set_scalar_field(
         // Refresh decoded blocks so consumers see the new value on the
         // next get_block_json. Re-parsing the body is cheap (schema/TOC
         // unchanged); decode_blocks is the only meaningful work.
+        h.blocks = h.body.decode_blocks(&h.save.body);
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Path-addressed variant of [`crimson_save_set_scalar_field`].
+///
+/// Mutates a fixed-size scalar field reachable through a chain of inline
+/// children and list elements. The `(block_idx, path[], field_idx)`
+/// triple uniquely identifies any decoded scalar in the save tree:
+///
+/// - `block_idx` picks a top-level TOC block.
+/// - `path` is a sequence of [`CrimsonPathStep`] descents from that
+///   block. Each step's `field_idx` selects a nested-bearing field of
+///   the current block (must resolve to `ObjectLocator` with an inline
+///   child, or `ObjectList`). For lists, `element_idx` picks the element.
+/// - `field_idx` (the leaf) is the scalar to write inside the block we
+///   arrive at after `path_len` descents. With `path_len == 0` this
+///   behaves identically to [`crimson_save_set_scalar_field`].
+///
+/// All other invariants match the top-level setter:
+/// - leaf must be `FixedPrefix` / `FixedSuffix` → otherwise `NOT_SCALAR`
+/// - `bytes_len` must equal the leaf's recorded byte range → otherwise
+///   `LENGTH_MISMATCH`
+/// - on success the body is patched in place and every block re-decoded
+///
+/// Errors:
+/// - `OUT_OF_RANGE` for any bad index along the path or at the leaf
+/// - `NOT_NAVIGABLE` when a mid-path field isn't a locator-with-child
+///   or a list (e.g. a scalar in the middle of the chain)
+/// - `NULL_ARG` on null `handle`, null `bytes` with non-zero length, or
+///   null `path` with non-zero `path_len`
+///
+/// # Safety
+/// `handle` must be a live, exclusive handle. `path` must point to
+/// `path_len` readable [`CrimsonPathStep`] values, and `bytes` to
+/// `bytes_len` readable bytes, both for the duration of the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_set_scalar_field_path(
+    handle: *mut CrimsonSaveHandle,
+    block_idx: u32,
+    path: *const CrimsonPathStep,
+    path_len: usize,
+    field_idx: u32,
+    bytes: *const u8,
+    bytes_len: usize,
+) -> i32 {
+    if handle.is_null() {
+        return error::NULL_ARG;
+    }
+    if bytes.is_null() && bytes_len != 0 {
+        return error::NULL_ARG;
+    }
+    if path.is_null() && path_len != 0 {
+        return error::NULL_ARG;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &mut *handle };
+
+        // Resolve the leaf field's body byte range in an immutable-borrow
+        // scope so the mutable write below doesn't conflict.
+        let steps: &[CrimsonPathStep] = if path_len == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(path, path_len) }
+        };
+
+        let (dst_start, dst_end) = {
+            let Some(top) = h.blocks.get(block_idx as usize) else {
+                return error::OUT_OF_RANGE;
+            };
+            let mut current: &ObjectBlock = top;
+            for step in steps {
+                let Some(field) = current.fields.get(step.field_idx as usize) else {
+                    return error::OUT_OF_RANGE;
+                };
+                current = match &field.value {
+                    FieldValue::Locator {
+                        child: Some(child), ..
+                    } => child.as_ref(),
+                    FieldValue::ObjectList { elements, .. } => {
+                        let Some(el) = elements.get(step.element_idx as usize) else {
+                            return error::OUT_OF_RANGE;
+                        };
+                        el
+                    }
+                    _ => return error::NOT_NAVIGABLE,
+                };
+            }
+            let Some(leaf) = current.fields.get(field_idx as usize) else {
+                return error::OUT_OF_RANGE;
+            };
+            if !matches!(leaf.kind, FieldKind::FixedPrefix | FieldKind::FixedSuffix) {
+                return error::NOT_SCALAR;
+            }
+            let expected = leaf.end.saturating_sub(leaf.start);
+            if bytes_len != expected {
+                return error::LENGTH_MISMATCH;
+            }
+            if leaf.end > h.save.body.len() {
+                // Same defensive guard as the top-level setter.
+                return error::OUT_OF_RANGE;
+            }
+            (leaf.start, leaf.end)
+        };
+
+        let src = unsafe { std::slice::from_raw_parts(bytes, bytes_len) };
+        h.save.body[dst_start..dst_end].copy_from_slice(src);
         h.blocks = h.body.decode_blocks(&h.save.body);
         error::OK
     }))
@@ -981,5 +1113,280 @@ mod tests {
         };
         assert_eq!(rc, error::OK);
         String::from_utf8(buf[..needed - 1].to_vec()).unwrap()
+    }
+
+    /// Locate a (block, path, leaf, current_value, scalar_byte_len) tuple
+    /// pointing at a u32-shaped scalar reachable via a one-step descent
+    /// (either through a Locator's inline child or the first element of
+    /// an ObjectList). Returns `None` if nothing in the save matches —
+    /// the live-save assertion below handles that case explicitly.
+    fn find_nested_u32_scalar(
+        handle: *mut CrimsonSaveHandle,
+    ) -> Option<(u32, CrimsonPathStep, u32, u32, usize)> {
+        let h = unsafe { &*handle };
+        for (block_idx, block) in h.blocks.iter().enumerate() {
+            for (parent_field_idx, parent_field) in block.fields.iter().enumerate() {
+                // Inline locator → walk the child.
+                if let FieldValue::Locator {
+                    child: Some(child), ..
+                } = &parent_field.value
+                    && let Some(leaf) = pick_scalar_field(child)
+                {
+                    return Some((
+                        block_idx as u32,
+                        CrimsonPathStep {
+                            field_idx: parent_field_idx as u32,
+                            element_idx: 0,
+                        },
+                        leaf.0,
+                        leaf.1,
+                        leaf.2,
+                    ));
+                }
+                // ObjectList → walk the first element.
+                if let FieldValue::ObjectList { elements, .. } = &parent_field.value
+                    && let Some(first) = elements.first()
+                    && let Some(leaf) = pick_scalar_field(first)
+                {
+                    return Some((
+                        block_idx as u32,
+                        CrimsonPathStep {
+                            field_idx: parent_field_idx as u32,
+                            element_idx: 0,
+                        },
+                        leaf.0,
+                        leaf.1,
+                        leaf.2,
+                    ));
+                }
+            }
+        }
+        None
+    }
+
+    /// Pick a u32-shaped FixedPrefix/FixedSuffix field from `block`.
+    /// Returns (field_idx, current_u32_value, byte_len). Restricting to
+    /// u32 keeps the test independent of which exact field we land on —
+    /// we just need predictable bit width for the sentinel.
+    fn pick_scalar_field(block: &ObjectBlock) -> Option<(u32, u32, usize)> {
+        for (idx, f) in block.fields.iter().enumerate() {
+            if !matches!(f.kind, FieldKind::FixedPrefix | FieldKind::FixedSuffix) {
+                continue;
+            }
+            let len = f.end.saturating_sub(f.start);
+            if len != 4 {
+                continue;
+            }
+            if let FieldValue::Scalar(ScalarValue::U32(v)) = &f.value {
+                return Some((idx as u32, *v, len));
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn c_abi_set_scalar_field_path() {
+        let Some(path) = find_save() else {
+            eprintln!("skipping c_abi_set_scalar_field_path: no live save under %LOCALAPPDATA%");
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+
+        let mut handle: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle) },
+            error::OK
+        );
+
+        // ── Empty-path parity: path_len=0 must behave identically to
+        // the top-level setter. Block 0 field 0 is the _characterKey
+        // fixed_suffix u32 the existing tests already exercise.
+        let sentinel: [u8; 4] = [0xAB, 0xCD, 0xEF, 0x01];
+        assert_eq!(
+            unsafe {
+                crimson_save_set_scalar_field_path(
+                    handle,
+                    0,
+                    ptr::null(),
+                    0,
+                    0,
+                    sentinel.as_ptr(),
+                    sentinel.len(),
+                )
+            },
+            error::OK
+        );
+        let after_top = read_block_json(handle, 0);
+        assert!(
+            after_top.contains("\"value\":\"32492971 <u32>\""),
+            "empty-path mutation must equal the top-level setter; got: {after_top:.300}…"
+        );
+
+        // ── Find a nested scalar and mutate it.
+        let Some((block_idx, step, leaf_idx, original, len)) = find_nested_u32_scalar(handle)
+        else {
+            // Any non-trivial save has at least one InventorySaveData /
+            // EquipmentSaveData with nested scalars. If we hit this we
+            // want to know — fail loudly rather than silently skip.
+            unsafe { crimson_save_free(handle) };
+            panic!("expected a nested u32 scalar in a live save; schema or fixture drifted");
+        };
+        assert_eq!(len, 4, "find_nested_u32_scalar contract");
+
+        // Pick a sentinel guaranteed to differ from the original value.
+        let nested_sentinel: u32 = original.wrapping_add(0x0BAD_F00D);
+        let nested_bytes = nested_sentinel.to_le_bytes();
+        let steps = [step];
+        assert_eq!(
+            unsafe {
+                crimson_save_set_scalar_field_path(
+                    handle,
+                    block_idx,
+                    steps.as_ptr(),
+                    steps.len(),
+                    leaf_idx,
+                    nested_bytes.as_ptr(),
+                    nested_bytes.len(),
+                )
+            },
+            error::OK,
+            "nested-path mutation must succeed (block={block_idx}, parent_field={}, leaf={leaf_idx}, original=0x{:08x})",
+            step.field_idx, original
+        );
+
+        // The mutation must round-trip through write_to_file + reload —
+        // i.e. survive HMAC / ChaCha20 / LZ4 re-emission.
+        let _tmp = tempfile::NamedTempFile::new().unwrap();
+        let tmp_path_str = _tmp.path().to_str().unwrap().to_owned();
+        let tmp_path = CString::new(tmp_path_str).unwrap();
+        assert_eq!(
+            unsafe { crimson_save_write_to_file(handle, tmp_path.as_ptr()) },
+            error::OK
+        );
+        unsafe { crimson_save_free(handle) };
+
+        let mut reloaded: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(tmp_path.as_ptr(), &mut reloaded) },
+            error::OK
+        );
+        let mut hmac: i32 = 0;
+        assert_eq!(
+            unsafe { crimson_save_get_hmac_ok(reloaded, &mut hmac) },
+            error::OK
+        );
+        assert_eq!(hmac, 1, "HMAC must verify on reload after nested-path mutation");
+
+        // Confirm the reloaded copy carries the nested sentinel where
+        // we left it. Re-discover the path so this test stays robust to
+        // any schema drift (we relocate the same logical position from
+        // the in-memory tree, not from cached indices).
+        let reloaded_target = find_nested_u32_scalar(reloaded);
+        unsafe { crimson_save_free(reloaded) };
+        let (_, _, _, post_value, _) = reloaded_target.expect("nested scalar still findable post-reload");
+        assert_eq!(
+            post_value, nested_sentinel,
+            "reloaded save must carry the nested sentinel"
+        );
+
+        // ── Error paths ────────────────────────────────────────────────
+        let mut h2: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut h2) },
+            error::OK
+        );
+        let dummy = [0u8; 4];
+
+        // NOT_NAVIGABLE: target block 0 field 0 (a scalar) as a mid-path
+        // step. Walking *into* a scalar is the canonical "not navigable"
+        // failure.
+        let bad_steps = [CrimsonPathStep {
+            field_idx: 0,
+            element_idx: 0,
+        }];
+        assert_eq!(
+            unsafe {
+                crimson_save_set_scalar_field_path(
+                    h2,
+                    0,
+                    bad_steps.as_ptr(),
+                    bad_steps.len(),
+                    0,
+                    dummy.as_ptr(),
+                    dummy.len(),
+                )
+            },
+            error::NOT_NAVIGABLE
+        );
+
+        // OUT_OF_RANGE on a path step's field_idx.
+        let oor_step = [CrimsonPathStep {
+            field_idx: u32::MAX,
+            element_idx: 0,
+        }];
+        assert_eq!(
+            unsafe {
+                crimson_save_set_scalar_field_path(
+                    h2,
+                    0,
+                    oor_step.as_ptr(),
+                    oor_step.len(),
+                    0,
+                    dummy.as_ptr(),
+                    dummy.len(),
+                )
+            },
+            error::OUT_OF_RANGE
+        );
+
+        // NULL_ARG: null handle.
+        assert_eq!(
+            unsafe {
+                crimson_save_set_scalar_field_path(
+                    ptr::null_mut(),
+                    0,
+                    ptr::null(),
+                    0,
+                    0,
+                    dummy.as_ptr(),
+                    dummy.len(),
+                )
+            },
+            error::NULL_ARG
+        );
+
+        // NULL_ARG: null path with non-zero path_len.
+        assert_eq!(
+            unsafe {
+                crimson_save_set_scalar_field_path(
+                    h2,
+                    0,
+                    ptr::null(),
+                    1,
+                    0,
+                    dummy.as_ptr(),
+                    dummy.len(),
+                )
+            },
+            error::NULL_ARG
+        );
+
+        // NULL_ARG: null bytes with non-zero bytes_len.
+        assert_eq!(
+            unsafe {
+                crimson_save_set_scalar_field_path(
+                    h2,
+                    0,
+                    ptr::null(),
+                    0,
+                    0,
+                    ptr::null(),
+                    4,
+                )
+            },
+            error::NULL_ARG
+        );
+
+        unsafe { crimson_save_free(h2) };
     }
 }
