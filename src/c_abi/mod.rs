@@ -25,6 +25,8 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use crate::save::{Body, DecodedField, FieldKind, FieldValue, ObjectBlock, Save, SaveError, ScalarValue};
 
+pub mod paloc;
+
 /// Stable error codes returned by every fallible C entry point.
 ///
 /// Reserved space: `[-99, -1]`. New error categories add a new negative
@@ -57,6 +59,10 @@ pub mod error {
     /// with a resolved child and `ObjectList` permit descent). Distinct
     /// from `NOT_SCALAR`, which only fires on the leaf.
     pub const NOT_NAVIGABLE: i32 = -15;
+    /// `crimson_paloc_lookup` could not find the requested key in the
+    /// loaded localization table. Distinct from `BUFFER_TOO_SMALL`
+    /// (which means "key found, but caller's buffer is too small").
+    pub const NOT_FOUND: i32 = -16;
     pub const PANIC: i32 = -99;
 }
 
