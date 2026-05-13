@@ -28,6 +28,7 @@ use crate::save::{Body, DecodedField, FieldKind, FieldValue, ObjectBlock, Save, 
 pub mod iteminfo;
 pub mod paloc;
 pub mod paz;
+pub mod string_info;
 
 /// Stable error codes returned by every fallible C entry point.
 ///
