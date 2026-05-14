@@ -1014,6 +1014,28 @@ fn overrun<T>(what: &'static str) -> io::Result<T> {
     ))
 }
 
+/// Decode a single list-element worth of bytes into an [`ObjectBlock`].
+///
+/// Reads from offset 0: wrapper (`u16 mbc | mask | u16 type_idx | u8
+/// reserved | u32 sent1 | u32 sent2 | u32 payload_offset`) followed by
+/// the inline payload. Returns the element block with
+/// `locator_wrapper` populated, suitable for direct insertion into a
+/// `FieldValue::ObjectList::elements` vector.
+///
+/// Used by the c_abi `list_insert_element` entry point (Phase B.3) to
+/// validate caller-supplied template bytes. Gated to `c_abi` builds
+/// because that's the only consumer; PyO3 / lib-only consumers don't
+/// need it.
+#[cfg(feature = "c_abi")]
+pub(crate) fn decode_one_list_element_bytes(
+    bytes: &[u8],
+    schema: &Schema,
+) -> io::Result<ObjectBlock> {
+    let by_index = type_index_map(&schema.types);
+    let (_end, block) = decode_object_list_element(bytes, 0, bytes.len(), &by_index)?;
+    Ok(block)
+}
+
 /// Reduce a [`ScalarValue`] to a JSON-friendly integer when possible.
 /// Lossy for `Bytes` / floats, kept for cross-language consumers (Python)
 /// that want a plain int comparison.
