@@ -24,7 +24,7 @@ Rust library with Python bindings (via PyO3/maturin) for reading, writing, and m
 # When picking up the next session
 Two active workstreams — read the relevant one first, then proceed:
 
-1. **Save Editor key resolver bridges** (active as of 2026-05-14, dev = `e379624`). Seven of nine planned items shipped: SkillKey, MissionKey, QuestKey, StageKey, KnowledgeKey, QuestGaugeKey bridges + `crimson_calculate_checksum` extern "C" wrapper. The Jenkins hash hop transform that drives Mission/Quest/Stage/Knowledge title resolution is cracked and pinned. **Start at the "🎯 New session pickup" callout at the top of [`docs/save-editor-keys-plan.md`](docs/save-editor-keys-plan.md).** Next concrete item is **#8 FieldNPC + FieldGimmick** — first half-session is investigation (locate the spawn-template `.pabgb` table); standard bridge follows if the table is clean. [`docs/save-editor-keys-reference.md`](docs/save-editor-keys-reference.md) is the regression-baseline ground truth.
+1. **Save Editor key resolver bridges** (active as of 2026-05-14). Nine bridges shipped: SkillKey, MissionKey, QuestKey, StageKey, KnowledgeKey, QuestGaugeKey, SubLevelKey, GimmickInfoKey + `crimson_calculate_checksum` extern "C" wrapper. 134 tests with `c_abi`, 67 without; clippy clean both modes. The Jenkins hash hop transform that drives Mission/Quest/Stage/Knowledge title resolution is cracked and pinned. **Start at the "🎯 New session pickup" callout at the top of [`docs/save-editor-keys-plan.md`](docs/save-editor-keys-plan.md).** **CharacterKey (#6) is the only outstanding work** — investigation surfaced that the save's `FieldNPCSaveDataKey` is just a slot index (real key is the sibling `_characterKey`); bridge prototyped to 22% coverage but not shipped — full findings in §6. Next concrete work depends on user direction: resume §6 (re-probe `npcinfo.pabgb` or gather a save with named NPCs), or pick up an optional follow-on (knowledge group breadcrumb, quest chapter rollup). [`docs/save-editor-keys-reference.md`](docs/save-editor-keys-reference.md) is the regression-baseline ground truth.
 
 2. **New game patch breaks parsing** (the longstanding fallback workstream). Core parsers (iteminfo + skill) are byte-perfect across every version probed; if a patch drifts, follow the diagnostic flow in `scripts/CLAUDE.md` ("On a new game patch"). CI gates the lint+test invariants. The 7 new save-editor bridges have similar version-drift risk — their tests skip cleanly when the live game install isn't present, so cross-version verification is `cargo test --lib --features c_abi` with the appropriate game install hooked up.
 
@@ -46,8 +46,8 @@ Two active workstreams — read the relevant one first, then proceed:
 # Rust Module Structure
 ```
 src/
-├── lib.rs                   # Crate root (mission/quest/stage/knowledge/questgauge
-│                            #   modules gated behind #[cfg(feature = "c_abi")])
+├── lib.rs                   # Crate root (mission/quest/stage/knowledge/questgauge/
+│                            #   sub_level/gimmick modules gated behind #[cfg(feature = "c_abi")])
 ├── python.rs                # PyO3 bindings
 ├── binary/                  # Container formats
 │   ├── pamt.rs, papgt.rs    # PAMT / PAPGT parse + write
@@ -73,7 +73,9 @@ src/
     ├── quest_info.rs        # QuestKey → name + arc heading (hash hop, lo32=0x100)
     ├── stage_info.rs        # StageKey → name + title (hash hop, lo32=0x101/0x102)
     ├── knowledge_info.rs    # KnowledgeKey → name + title (hash hop, lo32=0x490)
-    └── quest_gauge_info.rs  # QuestGaugeKey → name only (no PALOC chain)
+    ├── quest_gauge_info.rs  # QuestGaugeKey → name only (no PALOC chain)
+    ├── sub_level_info.rs    # SubLevelKey → name only (no PALOC chain)
+    └── gimmick_info.rs      # GimmickInfoKey → name + display label (PALOC, NO hash hop, lo32=0x200)
 
 # Lossy anchor-scan parsers used by the c_abi bridges live alongside in
 # src/<table>_info/mod.rs. Each parser is feature-gated to the c_abi

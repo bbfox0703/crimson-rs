@@ -2,30 +2,38 @@
 
 > **🎯 New session pickup — start here.**
 >
-> **Where we are (frozen 2026-05-14, dev = `e379624`)**: 7 of 9 original
-> execution-order items shipped. All save-side key types that the editor's
-> `QuestSaveData` block surfaces now resolve to localized display titles
-> through one-shot FFI calls. The Jenkins hash hop transform is verified
-> and pinned in `crimson_calculate_checksum` tests. See "Verified hash
-> transform" below for the one-paragraph architecture and
+> **Where we are (frozen 2026-05-14)**: 9 of 9 original execution-order
+> items either shipped or replaced. All save-side key types that the
+> editor's `QuestSaveData` block surfaces resolve to localized display
+> titles through one-shot FFI calls; `SubLevelSaveData` and
+> `AlertHistorySaveData` entries resolve through the sub_level bridge
+> (no-PALOC); `FieldGimmickSaveData` entries resolve via the new
+> `gimmick_info` bridge against the `_gimmickInfoKey` sibling (the
+> save-side `FieldGimmickSaveDataKey` itself is save-internal). The
+> only remaining gap is CharacterKey (#6), still at the prototype
+> stage. The Jenkins hash hop transform is verified and pinned. See
+> "Verified hash transform" below for the architecture and
 > [`save-editor-keys-reference.md`](./save-editor-keys-reference.md) for
 > the 1.06 ground-truth comparison set.
 >
-> **Shipped this session**: `mission_info`, `quest_info`, `stage_info`,
-> `quest_gauge_info`, `knowledge_info` bridges + `checksum` extern "C"
-> wrapper. 124 tests with `c_abi`, 67 without. Clippy clean both modes.
+> **Shipped so far**: `mission_info`, `quest_info`, `stage_info`,
+> `quest_gauge_info`, `knowledge_info`, `sub_level_info`,
+> `gimmick_info` bridges + `checksum` extern "C" wrapper + the
+> legacy `skill_info` bridge. 134 tests with `c_abi`, 67 without.
+> Clippy clean both modes.
 >
 > **Remaining**:
-> - **#8 FieldNPC + FieldGimmick** (next up) — Save Editor item #5 in
->   their status.md. Spawn-template ID → real CharacterKey resolution.
->   The lookup table has **not been located**; first half-session is
->   investigation (grep the ~30 `.pabgb` files in group 0008 for a known
->   FieldNPC key like `117_440_514` from the editor's keycases handoff).
->   ABI shape pre-spec'd by the editor: `lookup_character_key(spawnId,
->   out characterKey, out stringInfoHash) → i32`. See section #6 in this
->   doc for the full spec.
-> - **#9 SubLevelKey** — defer until concretely needed; only 7 distinct
->   values in the handoff.
+> - **#6 CharacterKey** — **PAUSED** after investigation. The earlier
+>   "FieldNPCSaveDataKey → real CharacterKey" framing was wrong:
+>   FieldNPCSaveDataKey is a save-internal slot index (values 3–233);
+>   the save already stores the real `_characterKey` as a sibling.
+>   CharacterKey bridge prototyped — uses Pattern A no-hash chain
+>   (`(charkey & 0xFFFFFF) << 32 | 0x30`) and hits 22% (49/221) of
+>   the sample save's unresolved keys. Full findings in §6. Resume
+>   when either (a) `npcinfo.pabgb` gets re-probed for the 78%
+>   missing characters, or (b) a different save sample shows the
+>   named NPCs the user listed (Peddler / Finley / Bruna's Assistant)
+>   and we can pin live ground-truth.
 > - **Optional follow-ons** (recorded in "Open RE questions" + section
 >   #2 of this doc): knowledge group breadcrumb (would need
 >   `knowledge_group_info` sibling bridge + row-body parse), quest
@@ -33,13 +41,14 @@
 >   lo32=0x490 mission-variant meaning (Q4, partially overshadowed by
 >   the knowledge work).
 >
-> **First concrete next action**: investigate `0008/.../gamedata/binary__/client/bin/`
-> for a file whose decrypted bytes contain the byte sequence
-> `02 00 00 07` (= FieldNPCSaveDataKey `117_440_514` in LE u32) at a
-> `(key, name_len, name)` anchor. If located, the bridge follows the
-> standard 7-function template — same as `mission_info` etc. Half-session
-> to investigate + 2 sessions to ship if it's a clean schema; otherwise
-> the value is genuinely save-internal and the bridge work is skipped.
+> **First concrete next action**: depends on user direction. Either
+> resume §6 CharacterKey investigation (re-probe `npcinfo.pabgb` with
+> a header-prefixed schema model, or gather a save sample containing
+> named NPCs to pin ground-truth against), or pick up an "Optional
+> follow-on" from the list above. With gimmick_info + sub_level_info
+> shipped, every handoff-bundle key type from the live save now has a
+> deterministic path to a useful name except for the 78% of
+> CharacterKey values that don't appear in PALOC at lo32=0x30.
 >
 > Extracted `.pabgb` baselines for this work live in
 > `out/baselines/1.06/` (gitignored). Re-extract with
@@ -83,9 +92,11 @@ chain.
 | **QuestKey** | 6 | `questinfo.pabgb` + PALOC u64 | ✅ | ✅ `src/c_abi/quest_info.rs` | **A + hash hop (shipped)** |
 | **QuestGaugeKey** | 0 (rare) | `questgaugeinfo.pabgb` | ✅ | ✅ `src/c_abi/quest_gauge_info.rs` | A — gamedata table (**no hash hop**; gauges aren't in PALOC) |
 | **StageKey** | 36,613 | `stageinfo.pabgb` + PALOC u64 | ✅ | ✅ `src/c_abi/stage_info.rs` | **A + hash hop (shipped)** |
-| **FieldNPC CharacterKey** | 103 | unknown spawn table | ✗ | ✗ | TBD |
-| **FieldGimmickSaveDataKey** | 4,363 | likely save-internal | ✗ | ✗ | save-internal *(presumed)* |
-| **SubLevelKey** | 7 | unknown | ✗ | ✗ | TBD |
+| **CharacterKey** *(via FieldNPCSaveData._characterKey)* | 221 | `characterinfo.pabgb` + PALOC u64 | ✗ (probed, 22% coverage prototype, not shipped) | ✗ | A — gamedata table (cat byte strip + lo32=0x30 PALOC), 78% miss path needs investigation |
+| **GimmickInfoKey** *(via FieldGimmickSaveData._gimmickInfoKey)* | 530 unique (6,666 occurrences) | `gimmickinfo.pabgb` + PALOC u64 | ✅ | ✅ `src/c_abi/gimmick_info.rs` | A — gamedata table (**no hash hop**; identity key into PALOC, default lo32=0x200), 99.4% coverage |
+| **FieldNPCSaveDataKey** | 103 | save-internal (spawn-slot index) | n/a | n/a | save-internal *(verified — see §6)* |
+| **FieldGimmickSaveDataKey** | 4,363 | save-internal (spawn-slot index) | n/a | n/a | save-internal — real bridge is sibling `_gimmickInfoKey` above |
+| **SubLevelKey** | 7 | `sublevelinfo.pabgb` | ✅ | ✅ `src/c_abi/sub_level_info.rs` | A — gamedata table (**no hash hop, no PALOC**; sub-levels not localized) |
 | **ItemKey** | 669 | `iteminfo.pabgb` (parser ahead of save) | ✅ | ✅ | A — gamedata table |
 | **Hash hop helper** | n/a | `crypto::checksum::calculate_checksum` | ✅ | ✅ `src/c_abi/checksum.rs` | exposed for editor-side chain composition |
 
@@ -607,58 +618,242 @@ bridge's minimum surface doesn't need byte-roundtrip.
 
 ---
 
-## 6. FieldNPC CharacterKey → real CharacterKey
+## 6. FieldNPC / FieldGimmick / CharacterKey — investigation findings (2026-05-14)
 
-The "FieldNPC key" stored in a save isn't a `CD_M0001_00_Ogre`-style
-character ID — it's a **spawn template ID** that resolves through a
-separate lookup to the underlying character.
+**Status: PAUSED after investigation pivot. CharacterKey bridge
+prototyped but not shipped — 22% coverage on the sample save; the
+remaining 78% need a different table that hasn't been located.**
 
-**State of knowledge**:
-- The lookup table has **not been located**. Candidates worth probing:
-  - `charactertemplate.pabgb` / `charactertemplateinfo.pabgb` if it exists
-  - `npcspawn.pabgb` / `fieldnpc.pabgb` / `fieldspawn.pabgb`
-  - The world-level files (sublevels, region info) — spawn tables sometimes
-    live with the level rather than with the character data
-- The handoff bundle includes 103 unresolved FieldNPCSaveDataKey values
-  with rich sibling context (`_spawnFieldInfoKey`, `_characterKey`,
-  `_mercenaryNo`) — useful disambiguation signal during the
-  investigation.
+### What the earlier plan got wrong
 
-### ABI shape — editor's explicit preference (status.md item #5)
+Earlier text framed FieldNPCSaveDataKey as a *spawn template ID* that
+resolves through a separate lookup into a real CharacterKey. The
+handoff data disproves that framing:
 
-> *Recommended: two-output single call.*
-> `crimson_<source>_lookup_character_key(handle, u32 spawnId, out u32 characterKey, out u32 stringInfoHash) → i32`.
+```
+FieldNPCSaveData {
+  _fieldNpcSaveDataKey: 3..233          ← save-local spawn-slot index, NOT hashed
+  _characterKey:        0x02000010..    ← already the real char key (sibling!)
+  _spawnFieldInfoKey:   FieldInfoKey
+  _friendly:            bool
+}
+```
 
-Combine FieldNPC + FieldGimmick under one bridge **if they share the
-same source file**; otherwise ship as two bridges with identical shape.
+- **FieldNPCSaveDataKey** values are tiny u8-shaped integers (range 3–233,
+  hi-byte=0 across all 103 entries). Save-internal index — no
+  game-data table to look up.
+- **FieldGimmickSaveDataKey** same shape: range 1788–953,478,
+  hi-byte=0 across all 4,363 entries. Pairs with sibling
+  `_gimmickInfoKey` (which IS the real game-data key for the gimmick).
+- The **real bridge target** is the `_characterKey` u32 sibling, not
+  the `*SaveDataKey` itself.
 
-**Size**: 1 session for the investigation, then 2–3 for parser + bridge.
+### CharacterKey investigation — what was probed
+
+- `characterinfo.pabgb` exists in `0008/gamedata/binary__/client/bin/`
+  (1.5 MB, ~17k anchor-scannable rows after filtering all-digit
+  embedded stringinfo refs). Schema same shape as missioninfo/etc:
+  `[u32 key][u32 name_len][name][...variable body]`. Row keys top out
+  around 1.7M; hi-byte=0 across real rows.
+- **Resolution chain (Pattern A, NO hash hop)**:
+  ```
+  save._characterKey 0x07000002
+    └─► row_key = (charkey & 0xFFFFFF) = 2  (strip cat byte)
+    └─► PALOC u64 = (row_key << 32) | 0x30 = 0x200000030
+    └─► PALOC[u64] = "Yann"
+  ```
+  Verified for a handful: `0x07000002 → "Yann"`, `0x06000f4a → "Pierre"`,
+  `0x0a000001 → "Kliff"`, `0x09000f4d → "Noble"`.
+- Coverage against the editor's 221 unresolved CharacterKey sample:
+  **49 / 221 = 22%** at `lo32 = 0x30`. The other 172 have lo24 values
+  that aren't in PALOC at lo32=0x30 (or any other namespace — those
+  hits are coincidental collisions with iteminfo/skillinfo small IDs).
+  - Sibling files probed: `npcinfo.pabgb` (46 KB, not a row table —
+    different schema), `charactergroupinfo.pabgb` (293 KB, 496 rows
+    with hashed-looking u32 keys like `0x42c70042`, none overlap with
+    save CharacterKeys).
+- **Hypothesis for the 78%**: characters without standalone PALOC
+  display names. Generic field NPCs ("Peddler", "Stranger", "Fisherman"
+  etc that the user listed) DO exist in PALOC at lo32=0x30 — but the
+  sample save's 221 unresolved values don't include those specific
+  characters. If a future save touches a Finley / Bruna's Assistant /
+  Herspia Packhorse instance, those would resolve through this same
+  chain.
+
+### Cat byte (hi-byte of save's `_characterKey`)
+
+- Range 0x02–0xfe, 90+ distinct values across the 221 sample.
+- Same lo24 appears under multiple cat bytes:
+  `0x07000002 / 0x08000002 / 0x0a000002 / 0x0b000002` all resolve to
+  `lo24=2 → "Yann"`.
+- Looks like a variant / spawn-region / faction marker, not an
+  indirection into a per-region row table. The bridge strips it.
+
+### ABI shape — recommended when this work resumes
+
+Mirrors mission/quest/stage modulo the no-hash-hop change:
+
+```
+crimson_characterinfo_load_from_bytes / _free / _entry_count
+crimson_characterinfo_lookup_string_key(handle, charkey, …)
+    -> internal name from characterinfo row (after `& 0xFFFFFF` strip)
+crimson_characterinfo_lookup_display_name(handle, paloc_handle, charkey, lo32)
+    -> PALOC display via ((charkey & 0xFFFFFF) << 32) | lo32
+    Default lo32 = 0x30. NOT_FOUND on the 78% miss path; caller
+    falls back to lookup_string_key.
+```
+
+### Open decisions for the next session
+
+- Whether 22% coverage is shippable as-is or whether `npcinfo.pabgb`
+  is worth re-probing with a different schema model (it's 46 KB —
+  maybe a header-prefixed indexed table, not the standard
+  `(key, name, body)` shape). If `npcinfo` is the missing link, lifts
+  coverage closer to 100%.
+- Whether to also expose a standalone `crimson_paloc_lookup_character`
+  helper (no characterinfo handle needed — pure PALOC arithmetic) so
+  the editor can resolve display names without parsing characterinfo.
+  Cheaper but loses the internal-name fallback for the 78%.
+- FieldGimmickSaveDataKey: same save-internal verdict as
+  FieldNPCSaveDataKey. The real bridge target would be the
+  `_gimmickInfoKey` sibling → `gimmickinfo.pabgb` (54 KB+ neighbor in
+  the same dir, not yet probed).
+
+### Scratch artifact
+
+The investigation probe lived at `src/c_abi/_probe_characterinfo.rs`
+behind `#[cfg(test)] #[ignore]`. Deleted after the findings were
+folded into this doc. Re-create from this section's chain spec if
+the work resumes.
 
 ---
 
-## 7. FieldGimmickSaveDataKey — pair with FieldNPC
+## 7. GimmickInfoKey — SHIPPED (Pattern A, NO hash hop)
 
-**Editor finding (status.md §862)**: every harvested gimmick sample
-returns no PALOC entry at any of the 5 known u32 type bytes. Editor
-classifies as save-internal — but same caveat as StageKey: with the
-hash transform known, that classification needs retesting.
+`FieldGimmickSaveDataKey` itself is save-internal (verified in §6).
+The save block always pairs it with the `_gimmickInfoKey` sibling
+(TypeName `GimmickInfoKey`), and that one IS the gamedata key.
 
-Treat as a sibling of FieldNPC. When the FieldNPC investigation finds
-its spawn table, scan the same file (and immediate neighbors) for the
-gimmick keys.
+### Bridge findings
 
-**Size**: marginal cost ≈ 0.5 session on top of FieldNPC.
+`gimmickinfo.pabgb` lives in `0008/gamedata/binary__/client/bin/`,
+same dir as the other shipped tables. The probe pass (2026-05-14)
+established:
+
+- **Schema same shape as iteminfo/missioninfo/etc.**:
+  `[u32 key][u32 name_len][name][...variable body]`. Row keys span
+  hi-bytes `0x00, 0x01, 0x07, 0x08, 0x09`, so the `(key >> 24) == 0`
+  constraint other parsers use would miss ~12% of real rows. Scanner
+  here caps at `(key >> 24) < 0x10` (handles seen + headroom).
+- **Body-byte noise** — two specific false-positive patterns
+  (`UnnamedTrigger_0` at `0x01000000`, `GimmickOnExitState` at
+  `0x7475706e` = ASCII "tupn") filtered via `(key & 0xFFFFFF) != 0`
+  and the hi-byte cap.
+- **Identity PALOC chain, NO hash hop.** Save's `_gimmickInfoKey` is
+  the PALOC hi32 directly. `(gimmick_key << 32) | 0x200` resolves to
+  the display label (`"Fire"`, `"Prison"`, `"Broken Box"`, ...).
+  Hash-hop probe over 30 sample internal names: zero hits at any
+  namespace — confirms the row key, not its hashlittle2, is the
+  PALOC key.
+- **PALOC namespaces with meaningful content**:
+  - `lo32 = 0x200` (512) — display label (530/530 of sample save's
+    `_gimmickInfoKey` values resolve here). **Bridge default.**
+  - `lo32 = 0x19202` (102914) — long description (~9 rows; furniture
+    inspect text).
+  - `lo32 = 0x60` (96) — interaction verb (Move / Skin / Load / Open).
+  - Coincidental collisions at `0x30`, `0x70`, `0x71` (character /
+    item tables share the small-integer key space) — caller selects
+    the namespace they trust.
+- **Coverage**: 527/530 (99.4%) of the editor's sample save's
+  `_gimmickInfoKey` values resolve through the scanner; the 3 misses
+  are dev/test gimmicks or rows the scanner couldn't isolate from
+  surrounding body noise.
+
+### Shipped surface
+
+```text
+src/gimmick_info/mod.rs            # parser
+src/c_abi/gimmick_info.rs          # C ABI bridge
+
+crimson_gimmickinfo_load_from_bytes / _load_from_file / _free
+crimson_gimmickinfo_entry_count
+crimson_gimmickinfo_lookup_string_key   # internal name fallback
+crimson_gimmickinfo_lookup_display_name # PALOC chain, no hash hop
+crimson_gimmickinfo_get_entry           # enumeration
+```
+
+The display-name function keeps the `handle` parameter in its
+signature even though the chain doesn't consult the gimmickinfo
+table at resolve time — kept for API symmetry with sibling bridges
+and to allow a future cat-byte transform (or analogous indirection)
+to hook in without an ABI break.
+
+### Tests
+
+5 tests added (4 c_abi plumbing/chain + 1 parser live). 134 total
+with `c_abi`, 67 without. Clippy clean both modes.
 
 ---
 
-## 8. SubLevelKey — unknown, lowest priority
+## 8. SubLevelKey — SHIPPED (Pattern A, NO PALOC chain)
 
-`sublevelinfo.pabgb` is referenced by CrimsonForge's
-`localization_usage_index.py` under `CATEGORY_KNOWLEDGE`. Only 7
-distinct values in the handoff — defer until the editor concretely
-needs it.
+Save-side `SubLevelKey (u32)` identifies a **per-faction /
+per-stat / per-skill progress track**. Lives in
+`SubLevelSaveData._list[N]._key` blocks paired with sibling `_level`,
+`_maxAchievedLevel`, `_experience` fields, plus
+`AlertHistorySaveData._subLevelKey` notification entries.
 
-**Size**: 1–2 sessions when prioritized.
+### What got shipped
+
+`sublevelinfo.pabgb` is **8.6 KB** — by far the smallest of the
+bridged tables. ~40 real rows after the anchor scanner's strict
+filter (first byte must be ASCII letter, hi-byte=0 on the key).
+All seven values from the handoff resolve cleanly:
+
+| Key | Internal name | Track type |
+|---:|---|---|
+| 522 | `SkillPoint_Oongka` | Per-character skill points |
+| 600 | `Contribution_Graymane` | Faction reputation |
+| 603 | `Contribution_Demenissian` | Faction reputation |
+| 604 | `Contribution_Pailunese` | Faction reputation |
+| 605 | `Contribution_Delesyian` | Faction reputation |
+| 606 | `Contribution_Tashkalpan` | Faction reputation |
+| 701 | `LiberationRefugee` | Story progress |
+
+Plus the surrounding row clusters: stat tracks (101–113 = Hp/Mp/
+Stamina/CriticalRate/etc.), Abyss variants (201–203), achievement
+tracks (401–403), other faction tracks not in this save, and religion
+tracks (1000–1002).
+
+### Shipped surface
+
+```text
+src/sub_level_info/mod.rs               # parser
+src/c_abi/sub_level_info.rs             # C ABI bridge
+
+crimson_sublevelinfo_load_from_bytes / _load_from_file / _free
+crimson_sublevelinfo_entry_count
+crimson_sublevelinfo_lookup_string_key
+crimson_sublevelinfo_get_entry
+```
+
+**No `lookup_display_name`** — mirrors `quest_gauge_info`. PALOC
+probe confirmed zero meaningful hits at any namespace:
+- Pattern A (raw key) hits at `lo32 ∈ {0x402f1, 0x802f1, 0xc02f1}`
+  return generic UI tooltip strings ("Unavailable during combat.")
+  that share the small hi32 by coincidence, not real localizations.
+- hashlittle2(name) hash-hop probe: zero hits at any namespace.
+
+The localized UI label the player sees (e.g. "Demenissian
+Reputation") is composed at runtime from the row's prefix
+(`Contribution_`, `Religion_`, `SkillPoint_`) plus a suffix faction
+or character name resolved through a different table — out of scope
+for this bridge.
+
+### Tests
+
+5 tests added (4 c_abi plumbing + 1 parser live-integration). 129
+total with `c_abi`, 67 without. Clippy clean both modes.
 
 ---
 
@@ -736,8 +931,18 @@ Picking by `(value × tractability) / risk`:
 7. ~~**QuestGaugeKey**~~ — done
    (`src/c_abi/quest_gauge_info.rs`, 5 tests; no `lookup_display_name`
    because gauges have no PALOC entries at any namespace)
-8. **FieldNPC + FieldGimmick** — investigation pays for both.
-9. **SubLevelKey** — defer until concretely needed.
+8. **FieldNPC / FieldGimmick / CharacterKey** — **PAUSED** after
+   investigation pivot. The save-side `*SaveDataKey` is a slot index,
+   not a hashed character ID — the real bridge target is the sibling
+   `_characterKey` u32 → `characterinfo.pabgb` chain. Prototype hits
+   22% (49/221) of the sample save; the 78% miss path needs
+   re-investigation of `npcinfo.pabgb` or a different sample save.
+   Full findings in §6.
+9. ~~**SubLevelKey**~~ — done
+   (`src/c_abi/sub_level_info.rs`, 5 tests; no `lookup_display_name`
+   because sub-level rows have no PALOC entries at any namespace —
+   localized UI label is composed at runtime from prefix + faction
+   name resolved elsewhere)
 
 Compared to my earlier plan: MissionKey/QuestKey moved from "medium
 3–5 sessions" through "small 1–2 sessions (PALOC reverse-index)" to
@@ -827,6 +1032,29 @@ No public API breakage on existing surface.
   `0x491` for description; 0x49D/E/F for variants. Disproves the
   editor's earlier hypothesis that KnowledgeKey wouldn't resolve
   through PALOC.
+- ~~SubLevelKey bridge~~ — shipped
+  (`src/c_abi/sub_level_info.rs` + `src/sub_level_info/`). Pattern A
+  only — **no `lookup_display_name` function**. PALOC probe across
+  raw-key and hash-hop transforms returned only coincidental matches
+  with generic UI tooltips. ~40 row entries for faction reputation,
+  per-character skill points, stat caps, religion, and story
+  progress tracks. All 7 handoff values pinned.
+- ~~FieldNPCSaveDataKey / FieldGimmickSaveDataKey classification~~ —
+  **save-internal verified** (values are dense small integers
+  3–953,478 with hi-byte=0, never overlap with hashed gamedata
+  keys). The real bridge target is the sibling u32 inside the same
+  block (`_characterKey` for NPCs; `_gimmickInfoKey` for gimmicks).
+  CharacterKey bridge prototyped to 22% coverage but not shipped —
+  see §6 for the 78% miss-path TODO. GimmickInfoKey bridge SHIPPED
+  at 99.4% coverage — see §7.
+- ~~GimmickInfoKey bridge~~ — shipped
+  (`src/c_abi/gimmick_info.rs` + `src/gimmick_info/`). Pattern A
+  with **no hash hop** — the rarest shape so far. Save's
+  `_gimmickInfoKey` is the PALOC hi32 verbatim; chain is
+  `(gimmick_key << 32) | lo32`. Default `lo32 = 0x200` for display
+  label; `0x19202` for description; `0x60` for interaction verb.
+  Scanner uses a loose hi-byte cap (`< 0x10`) to cover cat-bytes
+  0x01/0x07/0x08/0x09 + body-byte noise filter.
 
 ## Open user decisions
 
