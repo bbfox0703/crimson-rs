@@ -68,6 +68,13 @@ impl FieldKind {
 }
 
 /// Typed payload attached to a [`DecodedField`].
+//
+// Some preservation fields below (header_bytes / trailer_bytes / wrapper_prefix)
+// are only consumed by the encoder, which itself is dead in non-test builds
+// until the Phase B.2 C ABI wrapper lands. `allow(dead_code)` keeps clippy
+// quiet for the field-read warning in the meantime — the bytes ARE captured
+// at decode time so a future round-trip writer sees them.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum FieldValue {
     /// Field was absent in the presence mask, or the decoder gave up here.
@@ -81,29 +88,76 @@ pub enum FieldValue {
     /// Dynamic primitive array (meta_kind 3). Same shape as
     /// [`FieldValue::InlineBytes`] but tagged separately so callers can
     /// distinguish the two header layouts.
+    ///
+    /// `header_bytes` captures the raw bytes preceding `bytes` (the
+    /// variant's prefix + count field). `trailer_bytes` captures any
+    /// bytes following `bytes` (e.g. the `01 01 01 01 01` sentinel for
+    /// `prefix_00xx0100`, or the optional trailing `01` for
+    /// `marker_prefix`). Together with `bytes` they reconstruct the
+    /// on-disk field bytes exactly; the encoder (see [`super::encoder`])
+    /// just splats `header_bytes ++ bytes ++ trailer_bytes`.
     DynamicArray {
         count: u32,
         bytes: Vec<u8>,
         /// Which of the 4 known header layouts this matched; useful for
         /// regression analysis when a new game version drifts the format.
         header_variant: &'static str,
+        header_bytes: Vec<u8>,
+        trailer_bytes: Vec<u8>,
     },
     /// Inline-object locator (meta_kind 4 / 5). If the locator's child
     /// payload sits immediately after the wrapper and the child type was
     /// resolvable, we recurse and produce the nested block here.
+    ///
+    /// `child_reserved`, `child_sentinel1`, `child_sentinel2` capture the
+    /// wrapper bytes that sit between the child mask and the
+    /// `child_payload_offset` field. The decoder discards them
+    /// semantically but the encoder needs them for round-trip identity.
+    ///
+    /// `wrapper_prefix` captures 0..=8 padding bytes between
+    /// `field.start` and the start of the wrapper proper. Always empty
+    /// for `meta_kind == 4`; non-empty when `meta_kind == 5` and the
+    /// engine wrote leading pad bytes before the wrapper (the decoder
+    /// scans for the first plausible `mask_byte_count` at offsets 0..=8).
     Locator {
         child_type_index: u16,
         child_type_name: String,
         child_payload_offset: u32,
+        child_reserved: u8,
+        child_sentinel1: u32,
+        child_sentinel2: u32,
+        wrapper_prefix: Vec<u8>,
         child: Option<Box<ObjectBlock>>,
     },
     /// Object list (meta_kind 6 / 7). `header_variant` is the
     /// disambiguator for the multiple known header shapes.
+    ///
+    /// `header_bytes` captures the raw bytes of the list's variant-
+    /// specific header (the slice the decoder consumed before walking
+    /// elements). Holding it verbatim makes round-trip trivial and lets
+    /// the encoder patch only the count bytes when an element is
+    /// inserted / removed (Phase B.2).
     ObjectList {
         count: u32,
         header_variant: &'static str,
+        header_bytes: Vec<u8>,
         elements: Vec<ObjectBlock>,
     },
+}
+
+/// Locator wrapper bytes attached to an [`ObjectBlock`] when it was decoded
+/// as an `object_list` element or as an inline locator child.
+///
+/// Top-level TOC blocks set this to `None`. For list elements / inline
+/// children the wrapper sits immediately before the block's payload bytes
+/// and the encoder reconstructs it from this struct.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectLocatorWrapper {
+    pub type_index: u16,
+    pub child_reserved: u8,
+    pub sentinel1: u32,
+    pub sentinel2: u32,
+    pub payload_offset: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -135,6 +189,11 @@ pub struct ObjectBlock {
     pub data_size: u32,
     pub mask_byte_count: u16,
     pub mask_bytes: Vec<u8>,
+    /// For top-level blocks: the `u32` immediately after the mask. For
+    /// inline locator children / object_list elements: the `u32` at the
+    /// start of the inline payload (which the decoder used to call
+    /// "reserved_u32"). Either way the encoder writes it back at the
+    /// same offset.
     pub reserved_u32: u32,
     pub fields: Vec<DecodedField>,
     /// Trailer bytes between the end of the forward walk and the start
@@ -153,6 +212,11 @@ pub struct ObjectBlock {
     pub trailing_pad: Vec<u8>,
     /// Byte ranges inside the block that no decoder placed (start, end).
     pub undecoded_ranges: Vec<(usize, usize)>,
+    /// Locator wrapper bytes that precede this block on disk, when it was
+    /// decoded as a list element or an inline locator child. `None` for
+    /// top-level TOC blocks (which carry their own `mask_byte_count` +
+    /// `mask_bytes` + `reserved_u32` header instead).
+    pub locator_wrapper: Option<ObjectLocatorWrapper>,
 }
 
 /// Build a quick lookup `class_index -> &TypeDef` reusable across calls.

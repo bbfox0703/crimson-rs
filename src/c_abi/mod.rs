@@ -954,7 +954,7 @@ fn format_field_value(f: &DecodedField) -> String {
         (FieldKind::InlineBytes, FieldValue::InlineBytes { count, bytes }) => {
             format!("<{count} items, {} bytes>", bytes.len())
         }
-        (FieldKind::DynamicArray, FieldValue::DynamicArray { count, bytes, header_variant }) => {
+        (FieldKind::DynamicArray, FieldValue::DynamicArray { count, bytes, header_variant, .. }) => {
             format!("<{count} items, {} bytes, {header_variant}>", bytes.len())
         }
         (FieldKind::ObjectLocator, FieldValue::Locator { child_type_name, child_payload_offset, child, .. }) => {

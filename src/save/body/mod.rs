@@ -22,13 +22,17 @@
 //! [`Body::decode_blocks`] to run it.
 
 mod decoder;
+mod encoder;
 mod object;
 mod schema;
 mod toc;
 
 use std::io;
 
-pub use object::{DecodedField, FieldKind, FieldValue, ObjectBlock, ScalarValue};
+pub use encoder::{encode_body, encode_top_level_block};
+pub use object::{
+    DecodedField, FieldKind, FieldValue, ObjectBlock, ObjectLocatorWrapper, ScalarValue,
+};
 pub(crate) use schema::Schema;
 pub(crate) use toc::Toc;
 
@@ -84,5 +88,33 @@ impl Body {
     /// was called with.
     pub fn decode_blocks(&self, raw: &[u8]) -> Vec<ObjectBlock> {
         decoder::decode_blocks(raw, &self.schema, &self.toc)
+    }
+
+    /// Re-emit the body as bytes, recomputing the TOC offsets from the
+    /// supplied `blocks`. `raw` must be the original body the schema was
+    /// parsed from — only the prefix + schema region (`raw[0..schema_end]`)
+    /// is reused verbatim; the TOC header + entries + data section are
+    /// recomputed from scratch.
+    ///
+    /// For unmodified blocks (round-trip), the output equals `raw`
+    /// byte-for-byte. For mutated blocks (after a length-changing edit)
+    /// the data section grows / shrinks accordingly and TOC offsets +
+    /// `stream_size` reflect the new layout.
+    ///
+    /// `allow(dead_code)` until Phase B.2 wires a C ABI consumer; the
+    /// golden round-trip tests exercise this path via `cfg(test)` code.
+    #[allow(dead_code)]
+    pub fn write(&self, raw: &[u8], blocks: &[ObjectBlock]) -> io::Result<Vec<u8>> {
+        if raw.len() < self.schema.schema_end {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "raw len {} < schema_end {}",
+                    raw.len(),
+                    self.schema.schema_end
+                ),
+            ));
+        }
+        encoder::encode_body(self, &raw[..self.schema.schema_end], blocks)
     }
 }
