@@ -31,14 +31,15 @@ chain.
 | --- | ---:| --- | --- | --- | --- |
 | **SkillKey** | 0 (absent in this save) | `skill.pabgb` + `.pabgh` | ✅ | ✅ `src/c_abi/skill_info.rs` | A — gamedata table |
 | **KnowledgeKey** | 392 | `knowledgeinfo.pabgb` | ✗ | ✗ | A — gamedata table |
-| **MissionKey** | 1,299 | `missioninfo.pabgb` + PALOC u64 | ✗ | ✗ | **A + hash hop** |
+| **MissionKey** | 1,299 | `missioninfo.pabgb` + PALOC u64 | ✗ | ✗ | **A + hash hop (verified end-to-end)** |
 | **QuestKey** | 6 | `questinfo.pabgb` + PALOC u64 | ✗ | ✗ | **A + hash hop** |
 | **QuestGaugeKey** | 0 (rare) | `questgaugeinfo.pabgb` | ✗ | ✗ | A — gamedata table |
-| **StageKey** | 36,613 | `stageinfo.pabgb` (likely) + hash hop | ✗ | ✗ | A + hash hop *(presumed)* |
+| **StageKey** | 36,613 | `stageinfo.pabgb` + PALOC u64 | ✗ | ✗ | **A + hash hop (verified)** |
 | **FieldNPC CharacterKey** | 103 | unknown spawn table | ✗ | ✗ | TBD |
 | **FieldGimmickSaveDataKey** | 4,363 | likely save-internal | ✗ | ✗ | save-internal *(presumed)* |
 | **SubLevelKey** | 7 | unknown | ✗ | ✗ | TBD |
 | **ItemKey** | 669 | `iteminfo.pabgb` (parser ahead of save) | ✅ | ✅ | A — gamedata table |
+| **Hash hop helper** | n/a | `crypto::checksum::calculate_checksum` | ✅ | ✅ `src/c_abi/checksum.rs` | exposed for editor-side chain composition |
 
 \* From `D:\Github\CrimsonAtomtic\out\analyze\handoff\keycases_unresolved.jsonl`,
 one live 1.06 save (slot0).
@@ -119,14 +120,62 @@ upper 32 = 3,594,586,120 confirmed).
 
 When all 7,972 distinct ASCII identifiers across `questinfo.pabgb +
 missioninfo.pabgb` were hashed and the result tried against every
-numeric PALOC u64 key, **701 clean hits** came back, broken down:
+numeric PALOC u64 key, **701 clean hits** came back. The same probe on
+`stageinfo.pabgb` (57,094 identifiers) added **6,911 more hits**.
+Combined breakdown:
 
 - `lo32 = 256` (0x100): 673 hits — sub-arc / region / chapter headings
   ("Mazes", "Roothold", "Pailune Faction", "Emperor of the Bonepit")
-- `lo32 = 257` (0x101): 28 hits at this scan — quest line items
-- `lo32 = 1168` (0x490): not in this scan; reserved for follow-up
+- `lo32 = 257` (0x101): 6,520 hits — individual quest / stage titles
+  ("Unfamiliar Lands", "Beighen Militiaman at Stellen Manor Patrol",
+   "Mise-en-scene Before Intro Combat")
+- `lo32 = 258` (0x102): 404 hits — stage / shop descriptions
+  ("A grocer's shop run by Gromin, who has ill ties with…")
+- `lo32 = 1168` (0x490): mission text variant; not deeply probed yet
 
 Zero false positives observed. The transform is byte-deterministic.
+
+### End-to-end verified chain (save MissionKey → display title)
+
+Live anchor scan against `missioninfo.pabgb` (2026-05-14) traced **all 7
+of the user's prologue + chapter-1 Main Quest titles** back to a real
+save-side MissionKey value, and confirmed each one is present in the
+editor's `keycases_full.jsonl` handoff. Sample slice from the run
+(`state=5` means completed in this save; `completedTime` is the
+monotonic in-game clock):
+
+| save MissionKey | Internal name | completedTime | Display title |
+| ---:| --- | ---:| --- |
+| 1000157 | Mission_Intro_Tutorial_I | 97,635 | Unfamiliar Lands |
+| 1000160 | Mission_Intro_MainBattle | 188,301 | In Ashes |
+| 1000620 | Mission_Intro_Abyss_Tutorial | 276,192 | Realm of Uncertainty |
+| 1000164 | Mission_Intro_After_Horse | 307,325 | New Journey |
+| 1000052 | Mission_MeetAlustain_Alustain_Strength | 396,512 | Where Rumors Gather |
+| 1000053 | Mission_MeetAlustain_Alustain_Wisdom | 407,522 | Mysterious Man |
+| 1000083 | Mission_IronStronghold_Block_ReturnToSister | 7,148,855 | Where the Wind Guides You |
+
+The completedTime monotonicity matches the in-game story order
+perfectly — last row is the Hernand-chapter quest, played ~70× later
+than the prologue tutorial. **The architecture is concretely
+verified.** Bridge implementation can rely on these rows as fixtures.
+
+### Anchor-scan finding — `missioninfo.pabgb` row schema
+
+The seven matches above also pinned the row header layout:
+
+```text
+[u32 key][u32 name_len][name_len bytes ASCII][...rest of row]
+```
+
+This matches `iteminfo.pabgb` exactly — same header shape PA uses
+across the gamedata `.pabgb` family. Distance between consecutive
+anchors gives the row body size (varies per row: 334–390 bytes
+observed in the prologue cluster), consistent with variable-length
+fields (PALOC string refs, conditional flags). Full schema RE for
+a byte-roundtrip parser is still pending, but the **bridge only
+needs the (key, name) pair**, which the anchor scan resolves
+trivially — exactly the same shortcut `iteminfo` and `skill_info`
+take internally.
 
 ### PA's terminology vs UI
 
@@ -315,41 +364,42 @@ during schema RE).
 
 ---
 
-## 5. StageKey — investigate first (Pattern A + hash hop, probably)
+## 5. StageKey — VERIFIED (Pattern A + hash hop)
 
-**From the screenshots**: **46,541 instances per save** — the dominant
-data type in QuestSaveData. From the editor handoff: **36,613 distinct
-unresolved values** — by far the biggest worklist.
+**Verified 2026-05-14**: same hash transform as Mission/Quest. The
+editor's earlier "save-internal" classification was wrong.
 
-### Conflicting signals (now resolvable)
+### Findings
 
-**Editor's earlier status.md call**: classified as "save-internal"
-because PALOC lookup at the 5 known u32 type bytes returned nothing.
-With the hash transform now verified, that classification is most
-likely **wrong** — StageKey resolves via the same chain:
-
-```
-save StageKey → stageinfo.pabgb row → "Stage_*" internal name
-              → hashlittle2_c → hi32 → (hi32 << 32) | <namespace>
-              → PALOC u64 lookup
-```
-
-CrimsonForge's `character_asset_resolver.py:145` confirms
-`gamedata/stageinfo.pabgb` exists in the walk-list.
+- `stageinfo.pabgb` is the source of truth — **26 MB**, 57,094 distinct
+  ASCII identifiers. Largest gamedata table we've touched.
+- Names are **region-themed**, not `Stage_*` prefixed:
+  `Intro_Tutorial_Miseenscene_00`, `DelesyiaCastle_Herbert_BlueStone`,
+  `Beighen_Camp_Patrol_I`, `Hernand_Normal_Start_Child6`, etc.
+- The hash probe surfaced **6,911 PALOC matches** at `lo32 ∈ {0x100,
+  0x101, 0x102}`. `0x102` is new vs Mission/Quest — it's the
+  description field for stages and shops (e.g. `Shop_Dem_GreenfieldFarm`
+  at 0x101 → "Produce Shop", at 0x102 → "A merchant who sells fresh
+  products from cultivators and ranchers…").
+- **End-to-end test**: `StageKey 1004305` (from the editor's screenshot
+  of `_stageStateData[0]._key`) → anchor in stageinfo at offset
+  `0x159790B` → name `Intro_Tutorial_Miseenscene_00` → hash
+  `3530966846` → PALOC u64 `(3530966846 << 32) | 0x101` →
+  **"Mise-en-scene Before Intro Combat"**. ✓
 
 ### Path
 
-1. **One-hour test**: extract `stageinfo.pabgb`, grep for `Stage_*`
-   ASCII identifiers, hash each, check against PALOC u64 keys at
-   `lo32 ∈ {0x100, 0x101, 0x490}`. If matches come back, the bridge is
-   mechanical. If not, dig deeper.
-2. If the transform applies: schema RE + Pattern A bridge as
-   `src/c_abi/stage_info.rs`. With 46,541 instances this is the
-   highest-volume bridge by far.
-3. If it doesn't: confirm save-internal, document, no bridge work.
+1. Schema RE for `stageinfo.pabgb`. Same `[u32 key][u32 name_len][name]`
+   header as mission/quest/iteminfo, so the bridge can use the anchor
+   scan shortcut without a full schema parser.
+2. Build `src/c_abi/stage_info.rs` mirroring the missioninfo bridge.
+   Default `lo32 = 0x101` for title lookups.
+3. **High value**: 46,541 rows per save means this bridge resolves more
+   names than any other.
 
-**Size**: 0.5 session for the investigation, then 1–2 sessions for the
-bridge if it lands.
+**Size**: 1–2 sessions for the bridge (no investigation gate needed
+now). Schema RE may want a hexpat pass on the larger file but the
+bridge's minimum surface doesn't need byte-roundtrip.
 
 ---
 
@@ -416,11 +466,12 @@ needs it.
 10/10 user-provided Main Quest titles and 701 broader matches. See
 "Verified hash transform" above.
 
-### Q2. Does StageKey use the same transform?
+### ~~Q2. Does StageKey use the same transform?~~ ✅ RESOLVED
 
-Half-session test described in §5. Likely yes given the parallels in
-naming conventions (`Stage_*` strings should grep cleanly from
-`stageinfo.pabgb`); confirm before committing to a bridge design.
+Yes — `hashlittle2_c(name) << 32 | 0x101` (titles) or `0x102`
+(descriptions). 6,911 PALOC matches, including `StageKey 1004305 →
+"Intro_Tutorial_Miseenscene_00" → "Mise-en-scene Before Intro Combat"`.
+See §5.
 
 ### Q3. KnowledgeKey small-vs-large namespace split
 
@@ -430,13 +481,19 @@ See §2. Small KnowledgeKey values resolve at PALOC `0x93` directly
 
 ### Q4. What is lo32 = 0x490 (1168)?
 
-Saw 4 PALOC hits for `lo32 = 0x490` in the verification pass (e.g.
-"Ambush" at hi32 ∈ {679530922, 934361767, 2965653965}). All values at
-this namespace look mission-related but the exact meaning vs `0x101` is
-unclear. Probably a sub-category of mission text (objective vs title?
-description vs subtitle?). Worth a quick scan during the missioninfo
-bridge work — if it's noisy, document and ignore; if it carries useful
-text the editor wants, bridge in.
+Saw 4 PALOC hits for `lo32 = 0x490` in the early Mission/Quest pass
+(e.g. "Ambush" at hi32 ∈ {679530922, 934361767, 2965653965}). All
+values at this namespace look mission-related but the exact meaning
+vs `0x101` is unclear. Probably a sub-category of mission text
+(objective vs title? description vs subtitle?). Worth a quick scan
+during the missioninfo bridge work — if it's noisy, document and
+ignore; if it carries useful text the editor wants, bridge in.
+
+The StageKey probe also surfaced **`lo32 = 0x102` (258)** as a new
+namespace — 404 hits, all looking like description/secondary text
+(shops, stages). The mission/quest bridges should probe this byte
+too; if it carries useful descriptions, expose it via the
+`lookup_display_name` API's namespace argument.
 
 ### Q5. The 6 unresolved QuestKey values with odd magnitudes
 
@@ -452,18 +509,18 @@ Investigate during the questinfo schema RE.
 Picking by `(value × tractability) / risk`:
 
 1. ~~**SkillKey**~~ — done
-2. **`crimson_calculate_checksum` C ABI** — 30-minute task, extern "C"
-   wrapper over the existing Rust function. Unblocks the editor side
-   from doing hash hops without a Python tooling round trip.
+2. ~~**`crimson_calculate_checksum` C ABI**~~ — done
+   (`src/c_abi/checksum.rs`, 4 tests pinned against the verified
+   `(internal_name, hi32)` mappings)
 3. **MissionKey via missioninfo bridge** (Option B from §3) — the big
-   user-visible win. Schema RE + bridge + one-shot
-   `lookup_display_name`. The hash transform is verified, so this is
-   schema RE only.
+   user-visible win. The bridge can use the anchor-scan shortcut to
+   skip a full schema RE — just walk `[u32 key][u32 name_len][name]`
+   headers and retain the `(key, name)` pair, exactly like iteminfo
+   and skillinfo do internally.
 4. **QuestKey via questinfo bridge** — small parallel work; same shape
-   as missioninfo. Together with missioninfo unlocks the full
-   "Quest/Mission" name column in the editor.
-5. **StageKey hash test (Q2)** — half-session. Likely cracks, leading
-   to a sixth bridge that handles 46k rows per save.
+   as missioninfo.
+5. **StageKey via stageinfo bridge** — now verified (§5), no
+   investigation gate. Highest row count of any bridge (46k+).
 6. **KnowledgeKey** (Pattern A) — small parser + the namespace test
    from Q3.
 7. **QuestGaugeKey** — small parser.
@@ -515,10 +572,21 @@ No public API breakage on existing surface.
   `questinfo.pabgb` for arc/chapter headings, hashed and looked up
   against PALOC u64 keys.
 - ~~Q1 hash transform~~ — **`hashlittle2_c(internal_name) << 32 |
-  lo32_namespace`**, verified end-to-end.
+  lo32_namespace`**, verified end-to-end against 7 user-provided Main
+  Quest titles with matching save-side MissionKey values + completedTime
+  monotonicity.
 - ~~MissionKey/QuestKey ABI shape~~ — **Option B** (one-shot
   `_lookup_display_name(paloc_handle, key, lo32)` returning the
   resolved string in one FFI call).
+- ~~Q2 StageKey transform~~ — **same hash hop applies**. Editor's
+  "save-internal" classification was wrong. 6,911 PALOC matches in
+  `stageinfo.pabgb`. `lo32 = 0x102 (258)` is a new namespace for
+  stage descriptions.
+- ~~Hash exposed to C ABI~~ — shipped as
+  `crimson_calculate_checksum(data, len, &out)` in
+  `src/c_abi/checksum.rs`. Tests pinned against the verified
+  `(internal_name, hi32)` mappings so a future regression to the
+  Jenkins variant would surface immediately.
 
 ## Open user decisions
 
