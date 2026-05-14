@@ -5,6 +5,8 @@ mod item_info;
 mod mission_info;
 mod python;
 #[cfg(feature = "c_abi")]
+mod quest_gauge_info;
+#[cfg(feature = "c_abi")]
 mod quest_info;
 mod save;
 mod skill_info;
