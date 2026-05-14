@@ -1,44 +1,49 @@
-//! `questgaugeinfo.pabgb` bridge — C ABI surface.
+//! `sublevelinfo.pabgb` bridge — C ABI surface.
 //!
-//! Resolves save-side `QuestGaugeKey (u32)` to the gauge's internal
-//! name (e.g. `"QuestGauge_WindCliffFort"`). Unlike the
-//! mission / quest / stage bridges, **no `lookup_display_name`
-//! function is exposed** because QuestGauge rows don't have PALOC
-//! entries at any namespace — they're internal-only progress meters
-//! (kill counters, faction-operation tickers, region-defense gauges).
-//! The localized name a player sees in the UI comes from the
-//! referenced stage / mission, not the gauge itself.
+//! Resolves save-side `SubLevelKey (u32)` to the track's internal
+//! name (e.g. `"Contribution_Pailunese"`, `"SkillPoint_Kliff"`).
+//! Mirrors [`super::quest_gauge_info`] in shape — **no
+//! `lookup_display_name` function is exposed** because SubLevel rows
+//! don't have PALOC entries at any namespace.
 //!
-//! The internal name is still useful in the Save Editor's resolved-
-//! name column: `"QuestGauge_WindCliffFort"` is enough context for
-//! a modder to know what they're looking at. Future enhancement
-//! could parse the row body to extract referenced StageKey / mission
-//! keys and chain into the stage / mission bridges, but the bridge
-//! itself stays single-purpose.
+//! The probe pass that confirmed zero PALOC chain went through:
 //!
-//! See `docs/save-editor-keys-plan.md` §4 for the rationale and the
-//! probe that confirmed zero PALOC hits across every namespace.
+//! - Pattern A (raw key) hits at `lo32 ∈ {0x402f1, 0x802f1, 0xc02f1}`
+//!   return generic UI tooltip strings ("Unavailable during combat.",
+//!   "Cannot be used at the moment.") that share the small hi32 with
+//!   our row keys by coincidence — not real localizations.
+//! - hashlittle2(name) hash-hop probe: zero hits at any namespace.
+//!
+//! The localized UI label a player sees (e.g. "Demenissian Reputation")
+//! is composed at runtime from the row's prefix
+//! (`Contribution_` / `Religion_` / `SkillPoint_` / `Liberation`...)
+//! plus the suffix faction/character name resolved separately. Out of
+//! scope for this bridge — the Save Editor surfaces the internal name
+//! directly in its resolved-name column, same pattern as QuestGauge.
+//!
+//! See `docs/save-editor-keys-plan.md` §8 for the rationale and the
+//! probe that confirmed no PALOC chain.
 
 use std::collections::HashMap;
 use std::os::raw::c_char;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use super::error;
-use crate::quest_gauge_info::parse_quest_gauge_info_lossy;
+use crate::sub_level_info::parse_sub_level_info_lossy;
 
-/// Opaque handle exposing `(QuestGaugeKey, internal_name)` lookups
-/// against the loaded `questgaugeinfo.pabgb`.
+/// Opaque handle exposing `(SubLevelKey, internal_name)` lookups
+/// against the loaded `sublevelinfo.pabgb`.
 #[repr(C)]
-pub struct CrimsonQuestGaugeInfoHandle {
+pub struct CrimsonSubLevelInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,
 }
 
-impl CrimsonQuestGaugeInfoHandle {
+impl CrimsonSubLevelInfoHandle {
     fn from_bytes(data: &[u8]) -> Self {
-        let raw = parse_quest_gauge_info_lossy(data);
-        // First-wins dedup (see mission_info::from_bytes for the
-        // rationale; same comment applies here).
+        let raw = parse_sub_level_info_lossy(data);
+        // First-wins dedup: the real row appears before any later
+        // body-byte collision that happens to share the key.
         let mut by_key: HashMap<u32, String> = HashMap::with_capacity(raw.len());
         let mut entries: Vec<(u32, String)> = Vec::with_capacity(raw.len());
         for e in raw {
@@ -47,21 +52,21 @@ impl CrimsonQuestGaugeInfoHandle {
                 entries.push((e.key, e.name));
             }
         }
-        CrimsonQuestGaugeInfoHandle { by_key, entries }
+        CrimsonSubLevelInfoHandle { by_key, entries }
     }
 }
 
 // ── Load / free ────────────────────────────────────────────────────────────
 
-/// Parse `questgaugeinfo.pabgb` from disk.
+/// Parse `sublevelinfo.pabgb` from disk.
 ///
 /// # Safety
 /// `path` must be a NUL-terminated UTF-8 string. `out_handle` must be
 /// non-null and writable for the duration of the call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn crimson_questgaugeinfo_load_from_file(
+pub unsafe extern "C" fn crimson_sublevelinfo_load_from_file(
     path: *const c_char,
-    out_handle: *mut *mut CrimsonQuestGaugeInfoHandle,
+    out_handle: *mut *mut CrimsonSubLevelInfoHandle,
 ) -> i32 {
     if path.is_null() || out_handle.is_null() {
         return error::NULL_ARG;
@@ -76,23 +81,23 @@ pub unsafe extern "C" fn crimson_questgaugeinfo_load_from_file(
             Ok(b) => b,
             Err(_) => return error::IO,
         };
-        let handle = CrimsonQuestGaugeInfoHandle::from_bytes(&bytes);
+        let handle = CrimsonSubLevelInfoHandle::from_bytes(&bytes);
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
     .unwrap_or(error::PANIC)
 }
 
-/// Parse questgaugeinfo bytes already in memory.
+/// Parse sublevelinfo bytes already in memory.
 ///
 /// # Safety
 /// `data` must point to `data_len` readable bytes (may be null iff
 /// `data_len == 0`). `out_handle` must be non-null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn crimson_questgaugeinfo_load_from_bytes(
+pub unsafe extern "C" fn crimson_sublevelinfo_load_from_bytes(
     data: *const u8,
     data_len: usize,
-    out_handle: *mut *mut CrimsonQuestGaugeInfoHandle,
+    out_handle: *mut *mut CrimsonSubLevelInfoHandle,
 ) -> i32 {
     if out_handle.is_null() {
         return error::NULL_ARG;
@@ -107,7 +112,7 @@ pub unsafe extern "C" fn crimson_questgaugeinfo_load_from_bytes(
         } else {
             unsafe { std::slice::from_raw_parts(data, data_len) }
         };
-        let handle = CrimsonQuestGaugeInfoHandle::from_bytes(slice);
+        let handle = CrimsonSubLevelInfoHandle::from_bytes(slice);
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -120,9 +125,7 @@ pub unsafe extern "C" fn crimson_questgaugeinfo_load_from_bytes(
 /// `handle` must be null or a pointer previously returned by one of
 /// the loaders and not yet freed.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn crimson_questgaugeinfo_free(
-    handle: *mut CrimsonQuestGaugeInfoHandle,
-) {
+pub unsafe extern "C" fn crimson_sublevelinfo_free(handle: *mut CrimsonSubLevelInfoHandle) {
     if handle.is_null() {
         return;
     }
@@ -133,13 +136,13 @@ pub unsafe extern "C" fn crimson_questgaugeinfo_free(
 
 // ── Scalar getters ─────────────────────────────────────────────────────────
 
-/// Total number of gauges in the loaded table.
+/// Total number of sub-level tracks in the loaded table.
 ///
 /// # Safety
 /// `handle` must be live; `out_count` must be non-null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn crimson_questgaugeinfo_entry_count(
-    handle: *const CrimsonQuestGaugeInfoHandle,
+pub unsafe extern "C" fn crimson_sublevelinfo_entry_count(
+    handle: *const CrimsonSubLevelInfoHandle,
     out_count: *mut u32,
 ) -> i32 {
     if handle.is_null() || out_count.is_null() {
@@ -155,23 +158,23 @@ pub unsafe extern "C" fn crimson_questgaugeinfo_entry_count(
 
 // ── Internal-name lookup (the only resolution surface) ─────────────────────
 
-/// Look up the internal name for a given `QuestGaugeKey (u32)` and
-/// write it into `buf` (NUL-terminated UTF-8). Two-call pattern.
+/// Look up the internal name for a given `SubLevelKey (u32)` and write
+/// it into `buf` (NUL-terminated UTF-8). Two-call pattern.
 ///
-/// Returns `NOT_FOUND` when `gauge_key` isn't in the table.
+/// Returns `NOT_FOUND` when `sub_level_key` isn't in the table.
 ///
 /// **No `lookup_display_name` analogue exists for this bridge** —
-/// QuestGauge rows have no PALOC entries (confirmed by exhaustive
-/// scan, see `docs/save-editor-keys-plan.md` §4). The internal name
-/// is the only resolution surface; the editor surfaces it directly.
+/// SubLevel rows have no PALOC entries (confirmed by exhaustive
+/// scan, see `docs/save-editor-keys-plan.md` §8). The internal name
+/// is the only resolution surface.
 ///
 /// # Safety
 /// `handle` and `required` must be non-null; `buf` may be null iff
 /// `buf_len == 0`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn crimson_questgaugeinfo_lookup_string_key(
-    handle: *const CrimsonQuestGaugeInfoHandle,
-    gauge_key: u32,
+pub unsafe extern "C" fn crimson_sublevelinfo_lookup_string_key(
+    handle: *const CrimsonSubLevelInfoHandle,
+    sub_level_key: u32,
     buf: *mut u8,
     buf_len: usize,
     required: *mut usize,
@@ -185,7 +188,7 @@ pub unsafe extern "C" fn crimson_questgaugeinfo_lookup_string_key(
     unsafe { *required = 0 };
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &*handle };
-        let Some(name) = h.by_key.get(&gauge_key) else {
+        let Some(name) = h.by_key.get(&sub_level_key) else {
             return error::NOT_FOUND;
         };
         write_str_to_buf(name, buf, buf_len, required)
@@ -195,14 +198,14 @@ pub unsafe extern "C" fn crimson_questgaugeinfo_lookup_string_key(
 
 // ── Enumeration ────────────────────────────────────────────────────────────
 
-/// Get the `(gauge_key, internal_name)` pair at insertion index `idx`.
+/// Get the `(sub_level_key, internal_name)` pair at insertion index `idx`.
 ///
 /// # Safety
 /// `handle`, `out_key`, and `required` must be non-null; `buf` may be
 /// null iff `buf_len == 0`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn crimson_questgaugeinfo_get_entry(
-    handle: *const CrimsonQuestGaugeInfoHandle,
+pub unsafe extern "C" fn crimson_sublevelinfo_get_entry(
+    handle: *const CrimsonSubLevelInfoHandle,
     idx: u32,
     out_key: *mut u32,
     buf: *mut u8,
@@ -250,7 +253,10 @@ fn write_str_to_buf(
 
 #[cfg(test)]
 mod tests {
-    //! Live-install integration test against `questgaugeinfo.pabgb`.
+    //! Live-install integration test against `sublevelinfo.pabgb`.
+    //! Pins the same KNOWN mappings as the parser-side test, exercised
+    //! through the C ABI surface to catch any FFI-level breakage
+    //! (handle lifecycle, two-call pattern, NULL handling).
 
     use super::*;
     use crate::c_abi::paz::crimson_paz_extract_file;
@@ -258,10 +264,18 @@ mod tests {
     use std::path::PathBuf;
     use std::ptr;
 
+    /// (SubLevelKey, expected internal_name). A subset of the parser
+    /// test's KNOWN list — same source, same ground truth, narrower
+    /// here because the C ABI test mostly probes plumbing rather than
+    /// scanner coverage.
     const KNOWN: &[(u32, &str)] = &[
-        (1_000_083, "QuestGauge_WindCliffFort"),
-        (1_000_084, "QuestGauge_AbandonedWyvernNest"),
-        (1_000_091, "QuestGauge_FortManub"),
+        (522, "SkillPoint_Oongka"),
+        (600, "Contribution_Graymane"),
+        (603, "Contribution_Demenissian"),
+        (604, "Contribution_Pailunese"),
+        (605, "Contribution_Delesyian"),
+        (606, "Contribution_Tashkalpan"),
+        (701, "LiberationRefugee"),
     ];
 
     fn find_pamt() -> Option<PathBuf> {
@@ -319,37 +333,37 @@ mod tests {
     }
 
     #[test]
-    fn c_abi_questgaugeinfo_live() {
+    fn c_abi_sublevelinfo_live() {
         let Some(pamt_path) = find_pamt() else {
-            eprintln!("skipping c_abi_questgaugeinfo_live: no game install");
+            eprintln!("skipping c_abi_sublevelinfo_live: no game install");
             return;
         };
         let pamt = CString::new(pamt_path.to_str().unwrap()).unwrap();
         let bytes = extract_file(
             pamt.as_c_str(),
             "gamedata/binary__/client/bin",
-            "questgaugeinfo.pabgb",
+            "sublevelinfo.pabgb",
         );
 
-        let mut gh: *mut CrimsonQuestGaugeInfoHandle = ptr::null_mut();
+        let mut sh: *mut CrimsonSubLevelInfoHandle = ptr::null_mut();
         let rc = unsafe {
-            crimson_questgaugeinfo_load_from_bytes(bytes.as_ptr(), bytes.len(), &mut gh)
+            crimson_sublevelinfo_load_from_bytes(bytes.as_ptr(), bytes.len(), &mut sh)
         };
         assert_eq!(rc, error::OK);
-        assert!(!gh.is_null());
+        assert!(!sh.is_null());
 
         let mut count: u32 = 0;
         assert_eq!(
-            unsafe { crimson_questgaugeinfo_entry_count(gh, &mut count) },
+            unsafe { crimson_sublevelinfo_entry_count(sh, &mut count) },
             error::OK
         );
-        assert!(count > 200, "expected >200 gauges, got {count}");
+        assert!(count > 30, "expected >30 sub-levels, got {count}");
 
         for &(key, expected) in KNOWN {
             let mut req: usize = 0;
             let rc_size = unsafe {
-                crimson_questgaugeinfo_lookup_string_key(
-                    gh,
+                crimson_sublevelinfo_lookup_string_key(
+                    sh,
                     key,
                     ptr::null_mut(),
                     0,
@@ -357,17 +371,17 @@ mod tests {
                 )
             };
             let got = read_string_result(rc_size, req, |b, n, r| unsafe {
-                crimson_questgaugeinfo_lookup_string_key(gh, key, b, n, r)
+                crimson_sublevelinfo_lookup_string_key(sh, key, b, n, r)
             });
-            assert_eq!(got, expected, "QuestGaugeKey {key} name mismatch");
+            assert_eq!(got, expected, "SubLevelKey {key} name mismatch");
         }
 
         // Negative path
         let mut req: usize = 0;
         assert_eq!(
             unsafe {
-                crimson_questgaugeinfo_lookup_string_key(
-                    gh,
+                crimson_sublevelinfo_lookup_string_key(
+                    sh,
                     u32::MAX,
                     ptr::null_mut(),
                     0,
@@ -377,19 +391,19 @@ mod tests {
             error::NOT_FOUND,
         );
 
-        unsafe { crimson_questgaugeinfo_free(gh) };
+        unsafe { crimson_sublevelinfo_free(sh) };
     }
 
     #[test]
-    fn c_abi_questgaugeinfo_null_args() {
-        let mut gh: *mut CrimsonQuestGaugeInfoHandle = ptr::null_mut();
+    fn c_abi_sublevelinfo_null_args() {
+        let mut sh: *mut CrimsonSubLevelInfoHandle = ptr::null_mut();
         assert_eq!(
-            unsafe { crimson_questgaugeinfo_load_from_bytes(ptr::null(), 16, &mut gh) },
+            unsafe { crimson_sublevelinfo_load_from_bytes(ptr::null(), 16, &mut sh) },
             error::NULL_ARG,
         );
         assert_eq!(
             unsafe {
-                crimson_questgaugeinfo_load_from_bytes(
+                crimson_sublevelinfo_load_from_bytes(
                     [0u8; 1].as_ptr(),
                     1,
                     ptr::null_mut(),
@@ -399,13 +413,13 @@ mod tests {
         );
         let mut count: u32 = 0;
         assert_eq!(
-            unsafe { crimson_questgaugeinfo_entry_count(ptr::null(), &mut count) },
+            unsafe { crimson_sublevelinfo_entry_count(ptr::null(), &mut count) },
             error::NULL_ARG,
         );
         let mut req: usize = 0;
         assert_eq!(
             unsafe {
-                crimson_questgaugeinfo_lookup_string_key(
+                crimson_sublevelinfo_lookup_string_key(
                     ptr::null(),
                     0,
                     ptr::null_mut(),
@@ -418,26 +432,26 @@ mod tests {
     }
 
     #[test]
-    fn c_abi_questgaugeinfo_empty_bytes_yields_empty_handle() {
-        let mut gh: *mut CrimsonQuestGaugeInfoHandle = ptr::null_mut();
-        let rc = unsafe { crimson_questgaugeinfo_load_from_bytes(ptr::null(), 0, &mut gh) };
+    fn c_abi_sublevelinfo_empty_bytes_yields_empty_handle() {
+        let mut sh: *mut CrimsonSubLevelInfoHandle = ptr::null_mut();
+        let rc = unsafe { crimson_sublevelinfo_load_from_bytes(ptr::null(), 0, &mut sh) };
         assert_eq!(rc, error::OK);
-        assert!(!gh.is_null());
+        assert!(!sh.is_null());
         let mut count: u32 = 0;
         assert_eq!(
-            unsafe { crimson_questgaugeinfo_entry_count(gh, &mut count) },
+            unsafe { crimson_sublevelinfo_entry_count(sh, &mut count) },
             error::OK
         );
         assert_eq!(count, 0);
-        unsafe { crimson_questgaugeinfo_free(gh) };
+        unsafe { crimson_sublevelinfo_free(sh) };
     }
 
     #[test]
-    fn c_abi_questgaugeinfo_load_bad_path_returns_io() {
+    fn c_abi_sublevelinfo_load_bad_path_returns_io() {
         let bad = CString::new("Z:\\definitely\\does\\not\\exist.pabgb").unwrap();
-        let mut gh: *mut CrimsonQuestGaugeInfoHandle = ptr::null_mut();
-        let rc = unsafe { crimson_questgaugeinfo_load_from_file(bad.as_ptr(), &mut gh) };
+        let mut sh: *mut CrimsonSubLevelInfoHandle = ptr::null_mut();
+        let rc = unsafe { crimson_sublevelinfo_load_from_file(bad.as_ptr(), &mut sh) };
         assert_eq!(rc, error::IO);
-        assert!(gh.is_null());
+        assert!(sh.is_null());
     }
 }

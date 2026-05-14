@@ -59,12 +59,22 @@ pub struct CrimsonMissionInfoHandle {
 impl CrimsonMissionInfoHandle {
     fn from_bytes(data: &[u8]) -> Self {
         let raw = parse_mission_info_lossy(data);
-        let entries: Vec<(u32, String)> =
-            raw.into_iter().map(|e| (e.key, e.name)).collect();
-        // Build the lookup map. If the file ever ships duplicate keys
-        // (unlikely — PA's gamedata files use unique IDs) the
-        // last-wins HashMap behaviour is the conservative choice.
-        let by_key = entries.iter().cloned().collect();
+        // First-wins dedup so both `by_key` and `entries` agree on
+        // one canonical row per key. The earlier implementation built
+        // a last-wins HashMap from a duplicate-containing Vec, which
+        // made `get_entry` enumeration surface duplicates even though
+        // `lookup_string_key` would silently pick the winner. With
+        // the scanner's UTF-8 strict check in place, real duplicates
+        // are unlikely — but the dedup also guards against any
+        // future parser drift.
+        let mut by_key: HashMap<u32, String> = HashMap::with_capacity(raw.len());
+        let mut entries: Vec<(u32, String)> = Vec::with_capacity(raw.len());
+        for e in raw {
+            if let std::collections::hash_map::Entry::Vacant(v) = by_key.entry(e.key) {
+                v.insert(e.name.clone());
+                entries.push((e.key, e.name));
+            }
+        }
         CrimsonMissionInfoHandle { by_key, entries }
     }
 }
@@ -640,6 +650,60 @@ mod tests {
 
         unsafe { crimson_missioninfo_free(mh) };
         unsafe { crimson_paloc_free(ph) };
+    }
+
+    /// Regression for issue `001-missioninfo-invalid-utf8-names` from
+    /// the CrimsonAtomtic editor outbox. The earlier last-wins
+    /// HashMap + duplicate-Vec layout in
+    /// `CrimsonMissionInfoHandle::from_bytes` made
+    /// `crimson_missioninfo_get_entry` surface the same MissionKey
+    /// multiple times (the editor's probe reported
+    /// `MissionKey 1000038` appearing 4× in the first 5 samples).
+    /// After the fix, `get_entry` enumeration is one row per key.
+    #[test]
+    fn c_abi_missioninfo_get_entry_no_duplicates() {
+        let Some(pamt_path) = find_pamt() else {
+            eprintln!("skipping c_abi_missioninfo_get_entry_no_duplicates: no game install");
+            return;
+        };
+        let pamt = CString::new(pamt_path.to_str().unwrap()).unwrap();
+        let mission_bytes = extract_file(
+            pamt.as_c_str(),
+            "gamedata/binary__/client/bin",
+            "missioninfo.pabgb",
+        );
+        let mut mh: *mut CrimsonMissionInfoHandle = ptr::null_mut();
+        let rc = unsafe {
+            crimson_missioninfo_load_from_bytes(
+                mission_bytes.as_ptr(),
+                mission_bytes.len(),
+                &mut mh,
+            )
+        };
+        assert_eq!(rc, error::OK);
+
+        let mut count: u32 = 0;
+        assert_eq!(
+            unsafe { crimson_missioninfo_entry_count(mh, &mut count) },
+            error::OK
+        );
+
+        let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        for idx in 0..count {
+            let mut key: u32 = 0;
+            let mut req: usize = 0;
+            // Size-only call returns BUFFER_TOO_SMALL with the required
+            // size — fine for this test, we don't need the name.
+            let _ = unsafe {
+                crimson_missioninfo_get_entry(mh, idx, &mut key, ptr::null_mut(), 0, &mut req)
+            };
+            assert!(
+                seen.insert(key),
+                "duplicate MissionKey {key} at index {idx} from get_entry"
+            );
+        }
+
+        unsafe { crimson_missioninfo_free(mh) };
     }
 
     #[test]

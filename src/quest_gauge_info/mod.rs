@@ -69,7 +69,8 @@ pub fn parse_quest_gauge_info_lossy(data: &[u8]) -> Vec<QuestGaugeInfoEntry> {
             data[start + 3],
         ]);
         let name_bytes = &data[start + 8..start + 8 + slen];
-        let name = String::from_utf8_lossy(name_bytes).into_owned();
+        // Scanner already validated valid UTF-8 — the unwrap is sound.
+        let name = std::str::from_utf8(name_bytes).unwrap().to_owned();
         entries.push(QuestGaugeInfoEntry { key, name });
         cursor = start + 8 + slen;
     }
@@ -98,6 +99,7 @@ fn scan_next_anchor(data: &[u8], from: usize) -> Option<usize> {
                 if bytes[0].is_ascii_alphabetic()
                     && bytes.contains(&b'_')
                     && bytes.iter().all(|&b| is_ident_byte(b))
+                    && std::str::from_utf8(bytes).is_ok()
                 {
                     return Some(o);
                 }

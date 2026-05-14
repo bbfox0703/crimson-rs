@@ -51,7 +51,8 @@ pub fn parse_quest_info_lossy(data: &[u8]) -> Vec<QuestInfoEntry> {
             data[start + 3],
         ]);
         let name_bytes = &data[start + 8..start + 8 + slen];
-        let name = String::from_utf8_lossy(name_bytes).into_owned();
+        // Scanner already validated valid UTF-8 — the unwrap is sound.
+        let name = std::str::from_utf8(name_bytes).unwrap().to_owned();
         entries.push(QuestInfoEntry { key, name });
         cursor = start + 8 + slen;
     }
@@ -72,7 +73,13 @@ fn scan_next_anchor(data: &[u8], from: usize) -> Option<usize> {
             ]) as usize;
             if (2..=128).contains(&slen) && o + 8 + slen <= n {
                 let bytes = &data[o + 8..o + 8 + slen];
-                if bytes.iter().all(|&b| is_ident_byte(b)) {
+                // Same `_` requirement as mission_info — every real
+                // Quest_*/Challenge_* row has it, body-byte noise
+                // mostly doesn't.
+                if bytes.contains(&b'_')
+                    && bytes.iter().all(|&b| is_ident_byte(b))
+                    && std::str::from_utf8(bytes).is_ok()
+                {
                     return Some(o);
                 }
             }

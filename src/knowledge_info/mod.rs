@@ -68,7 +68,8 @@ pub fn parse_knowledge_info_lossy(data: &[u8]) -> Vec<KnowledgeInfoEntry> {
             data[start + 3],
         ]);
         let name_bytes = &data[start + 8..start + 8 + slen];
-        let name = String::from_utf8_lossy(name_bytes).into_owned();
+        // Scanner already validated valid UTF-8 — the unwrap is sound.
+        let name = std::str::from_utf8(name_bytes).unwrap().to_owned();
         entries.push(KnowledgeInfoEntry { key, name });
         cursor = start + 8 + slen;
     }
@@ -80,7 +81,14 @@ fn scan_next_anchor(data: &[u8], from: usize) -> Option<usize> {
     let mut o = from;
     while o + 12 < n {
         let key = u32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]);
-        if key != 0 && (key >> 24) == 0 {
+        // Knowledge rows mostly use hi-byte=0 (regular knowledge IDs)
+        // but a chunk use hi-byte=0x7F for the auto-unlock / recipe
+        // category — e.g. `0x7FFFFD9F → "Knowledge_Recipe_Jerky"`,
+        // `0x7FFFFDAE → "Knowledge_Colette"`. The handoff bundle had
+        // 215 of these flagged as unresolved before the cap got
+        // widened. `< 0x80` covers them plus headroom and excludes
+        // 0x80+ body-byte noise.
+        if key != 0 && (key >> 24) < 0x80 {
             let slen = u32::from_le_bytes([
                 data[o + 4],
                 data[o + 5],
@@ -92,6 +100,7 @@ fn scan_next_anchor(data: &[u8], from: usize) -> Option<usize> {
                 if bytes[0].is_ascii_alphabetic()
                     && bytes.contains(&b'_')
                     && bytes.iter().all(|&b| is_ident_byte(b))
+                    && std::str::from_utf8(bytes).is_ok()
                 {
                     return Some(o);
                 }
@@ -119,11 +128,17 @@ mod tests {
     /// against the live install. Each was independently hash-matched
     /// to a PALOC title (see the bridge tests).
     const KNOWN: &[(u32, &str)] = &[
+        // hi-byte=0 — regular knowledge entries
         (1_000_424, "Knowledge_Hp"),
         (1_002_588, "Knowledge_Node_Dem_Ruins_0007"),
         (1_002_294, "Knowledge_Node_Dem_HiddenCave"),
         (1_002_763, "Knowledge_AbyssRuins_Dem_0020"),
         (1_004_037, "Knowledge_Demian_Plate_Boots_V"),
+        // Regression for CrimsonAtomtic editor issue #2:
+        // hi-byte=0x7F — auto-unlock / recipe / named-NPC knowledge.
+        (0x7fff_fd9f, "Knowledge_Recipe_Jerky"),
+        (0x7fff_fda0, "Knowledge_Recipe_Jerky_Pieces"),
+        (0x7fff_fdae, "Knowledge_Colette"),
     ];
 
     fn find_knowledge_bytes() -> Option<Vec<u8>> {

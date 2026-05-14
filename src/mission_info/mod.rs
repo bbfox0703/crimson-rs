@@ -48,13 +48,20 @@ pub struct MissionInfoEntry {
 /// - Every byte in the name slice is an identifier byte (ASCII
 ///   alphanumeric / `_` / ` `) or a UTF-8 high byte. Pearl Abyss has
 ///   occasionally used Roman numerals (Ⅲ/Ⅳ/Ⅵ) in iteminfo names, so
-///   matching iteminfo's relaxed check here keeps the scanner future-
-///   proof.
+///   matching iteminfo's relaxed check here keeps the scanner
+///   future-proof.
+/// - The full name slice parses as valid UTF-8. The byte-level
+///   identifier check permits any `b >= 0x80`, but a real UTF-8
+///   high byte is part of a multi-byte sequence — random high bytes
+///   inside row bodies (rewards/HP/loc refs/etc.) routinely fail this
+///   check. Without it, ~16% of recovered rows were body-noise
+///   false-positives that `from_utf8_lossy` would render as
+///   `U+FFFD REPLACEMENT CHARACTER` glyphs. The strict check rejects
+///   them at scan time so the bridge never sees mojibake.
 ///
-/// Returns entries in the order they appear in the file. The same
-/// MissionKey can in principle appear multiple times if Pearl Abyss
-/// ever ships duplicate rows (none observed in 1.06), but the bridge's
-/// HashMap will deduplicate by last-wins.
+/// Returns entries in the order they appear in the file. The bridge's
+/// `from_bytes` uses first-wins dedup so any legitimate duplicate
+/// MissionKey row (none observed in 1.06) is suppressed.
 pub fn parse_mission_info_lossy(data: &[u8]) -> Vec<MissionInfoEntry> {
     let mut entries = Vec::new();
     let mut cursor = 0;
@@ -72,12 +79,8 @@ pub fn parse_mission_info_lossy(data: &[u8]) -> Vec<MissionInfoEntry> {
             data[start + 3],
         ]);
         let name_bytes = &data[start + 8..start + 8 + slen];
-        // The scanner already validated each byte is identifier-shape
-        // (ASCII or UTF-8 high). `from_utf8_lossy` would only fire on
-        // an invalid UTF-8 high sequence; in practice every name in
-        // 1.06 is pure ASCII so this never lossy-substitutes. Defensive
-        // anyway so a future UTF-8 hiccup doesn't crash the bridge.
-        let name = String::from_utf8_lossy(name_bytes).into_owned();
+        // Scanner already validated valid UTF-8 — the unwrap is sound.
+        let name = std::str::from_utf8(name_bytes).unwrap().to_owned();
         entries.push(MissionInfoEntry { key, name });
         cursor = start + 8 + slen;
     }
@@ -93,6 +96,13 @@ pub fn parse_mission_info_lossy(data: &[u8]) -> Vec<MissionInfoEntry> {
 /// Missioninfo doesn't share that quirk — the byte after the name is
 /// the row's first body field, which can be any value. Dropping the
 /// NUL check keeps the scanner working without false negatives.
+///
+/// Validates UTF-8 in addition to the byte-level identifier-shape
+/// check — the latter permits any `b >= 0x80`, which lets random
+/// high bytes inside row bodies pass when they shouldn't. Strict
+/// UTF-8 catches them; see the parser's doc-comment for the
+/// CrimsonAtomtic editor's mojibake report (16% of mission rows
+/// were false-positives before this check landed).
 fn scan_next_anchor(data: &[u8], from: usize) -> Option<usize> {
     let n = data.len();
     let mut o = from;
@@ -107,7 +117,18 @@ fn scan_next_anchor(data: &[u8], from: usize) -> Option<usize> {
             ]) as usize;
             if (2..=128).contains(&slen) && o + 8 + slen <= n {
                 let bytes = &data[o + 8..o + 8 + slen];
-                if bytes.iter().all(|&b| is_ident_byte(b)) {
+                // Require `_` in the name. Every real
+                // `Mission_*` / `Challenge_*` row has at least one;
+                // the body-byte false-positives the editor reported
+                // were 2-char fragments like `"fI"` that happened to
+                // share a `(key, slen)` with a real row at a later
+                // offset. Without this check, first-wins dedup picked
+                // the noise over the real anchor (the keycases
+                // bundle's report has the dump).
+                if bytes.contains(&b'_')
+                    && bytes.iter().all(|&b| is_ident_byte(b))
+                    && std::str::from_utf8(bytes).is_ok()
+                {
                     return Some(o);
                 }
             }
@@ -218,5 +239,40 @@ mod tests {
                 e.name,
             );
         }
+
+        // Regression: filed by the CrimsonAtomtic editor at
+        // `D:\Github\CrimsonAtomtic\out\crimson-rs-issues\001-missioninfo-invalid-utf8-names.md`.
+        // The previous `from_utf8_lossy` parse let 791/4,939 mission
+        // rows (16%) through with one or more U+FFFD replacement
+        // characters in their internal name — body-byte noise that
+        // the byte-level `is_ident` check passed because it permits
+        // `b >= 0x80`. The strict `std::str::from_utf8` validation
+        // inside the scanner rejects those at scan time.
+        for e in &entries {
+            assert!(
+                !e.name.contains('\u{fffd}'),
+                "U+FFFD slipped through: key={}, name={:?}",
+                e.key,
+                e.name,
+            );
+            // Real names always have `_` — body-noise fragments like
+            // `"fI"` (also valid UTF-8) wouldn't.
+            assert!(
+                e.name.contains('_'),
+                "mission name without underscore: key={}, name={:?}",
+                e.key,
+                e.name,
+            );
+        }
+
+        // Duplicate behaviour: `parse_mission_info_lossy` is allowed
+        // to return the same MissionKey more than once — observed
+        // for `MissionKey 65536 "Musket_0001_Phase01_00"` in the 1.06
+        // file (likely a row embedded as a body field of another
+        // row, indistinguishable from the real row at scanner level
+        // without a full body-RE pass). The bridge's first-wins
+        // dedup in `CrimsonMissionInfoHandle::from_bytes` collapses
+        // these. The invariant the bridge tests assert is that
+        // `get_entry` never surfaces a duplicate key.
     }
 }
