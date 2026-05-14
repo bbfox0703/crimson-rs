@@ -32,9 +32,9 @@ chain.
 | **SkillKey** | 0 (absent in this save) | `skill.pabgb` + `.pabgh` | ✅ | ✅ `src/c_abi/skill_info.rs` | A — gamedata table |
 | **KnowledgeKey** | 392 | `knowledgeinfo.pabgb` | ✗ | ✗ | A — gamedata table |
 | **MissionKey** | 1,299 | `missioninfo.pabgb` + PALOC u64 | ✅ | ✅ `src/c_abi/mission_info.rs` | **A + hash hop (shipped)** |
-| **QuestKey** | 6 | `questinfo.pabgb` + PALOC u64 | ✗ | ✗ | **A + hash hop** |
+| **QuestKey** | 6 | `questinfo.pabgb` + PALOC u64 | ✅ | ✅ `src/c_abi/quest_info.rs` | **A + hash hop (shipped)** |
 | **QuestGaugeKey** | 0 (rare) | `questgaugeinfo.pabgb` | ✗ | ✗ | A — gamedata table |
-| **StageKey** | 36,613 | `stageinfo.pabgb` + PALOC u64 | ✗ | ✗ | **A + hash hop (verified)** |
+| **StageKey** | 36,613 | `stageinfo.pabgb` + PALOC u64 | ✅ | ✅ `src/c_abi/stage_info.rs` | **A + hash hop (shipped)** |
 | **FieldNPC CharacterKey** | 103 | unknown spawn table | ✗ | ✗ | TBD |
 | **FieldGimmickSaveDataKey** | 4,363 | likely save-internal | ✗ | ✗ | save-internal *(presumed)* |
 | **SubLevelKey** | 7 | unknown | ✗ | ✗ | TBD |
@@ -241,8 +241,9 @@ the transform here first before committing to a bridge design.
 
 ## 3. MissionKey + QuestKey titles — Pattern A + hash hop
 
-**MissionKey bridge SHIPPED** in `src/c_abi/mission_info.rs`. QuestKey
-bridge still TBD; its shape is mechanical from missioninfo's template.
+**Both bridges SHIPPED**: `src/c_abi/mission_info.rs` for individual
+quest line items (English UI's "quest titles"), `src/c_abi/quest_info.rs`
+for arc / region / chapter headings.
 
 The architecture I drafted in earlier versions of this doc proposed
 parsing PALOC `0xC1` entries and walking embedded
@@ -393,10 +394,12 @@ during schema RE).
 
 ---
 
-## 5. StageKey — VERIFIED (Pattern A + hash hop)
+## 5. StageKey — SHIPPED (Pattern A + hash hop)
 
-**Verified 2026-05-14**: same hash transform as Mission/Quest. The
-editor's earlier "save-internal" classification was wrong.
+**Bridge SHIPPED** in `src/c_abi/stage_info.rs`. The editor's earlier
+"save-internal" classification was wrong; the same hash transform
+applies, and the bridge surfaces ~57k row names with PALOC display
+titles at `lo32 ∈ {0x101, 0x102}`.
 
 ### Findings
 
@@ -540,13 +543,14 @@ Picking by `(value × tractability) / risk`:
 1. ~~**SkillKey**~~ — done
 2. ~~**`crimson_calculate_checksum` C ABI**~~ — done
 3. ~~**MissionKey via missioninfo bridge** (Option B)~~ — done
-   (`src/c_abi/mission_info.rs`, 5 tests including live full-chain
-   integration against the 7 ground-truth mappings)
-4. **QuestKey via questinfo bridge** — mechanical copy of missioninfo
-   shape. Same lossy anchor scanner, default `lo32 = 0x100` for arc
-   headings vs `0x101` for quests.
-5. **StageKey via stageinfo bridge** — verified (§5), no
-   investigation gate. Highest row count of any bridge (46k+).
+4. ~~**QuestKey via questinfo bridge**~~ — done
+   (`src/c_abi/quest_info.rs`, 5 tests including live full-chain
+   integration against 6 ground-truth mappings — covers both
+   `lo32=0x100` arc headings and the `lo32=0x101` secondary
+   namespace from `Challenge_Maze`)
+5. ~~**StageKey via stageinfo bridge**~~ — done
+   (`src/c_abi/stage_info.rs`, 5 tests including the shop description
+   case at `lo32=0x102`; 57k+ rows resolved per save)
 6. **KnowledgeKey** (Pattern A) — small parser + the namespace test
    from Q3.
 7. **QuestGaugeKey** — small parser.
@@ -618,6 +622,14 @@ No public API breakage on existing surface.
   `lookup_display_name` that chains MissionKey → name → hash →
   PALOC u64 → display title in one FFI call. Live integration test
   against all 7 ground-truth mappings passes.
+- ~~QuestKey bridge~~ — shipped (`src/c_abi/quest_info.rs` +
+  `src/quest_info/`). Same architecture as missioninfo. Default
+  `lo32 = 0x100` for arc/region headings; caller passes `0x101` for
+  the secondary namespace some rows expose (e.g. `Challenge_Maze`).
+- ~~StageKey bridge~~ — shipped (`src/c_abi/stage_info.rs` +
+  `src/stage_info/`). Same architecture. Default `lo32 = 0x101` for
+  stage titles; `0x102` for the longer descriptions that shops and
+  some stages carry.
 
 ## Open user decisions
 
