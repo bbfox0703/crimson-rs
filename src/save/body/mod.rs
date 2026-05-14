@@ -32,6 +32,7 @@ use std::io;
 pub use encoder::{encode_body, encode_top_level_block};
 pub use object::{
     DecodedField, FieldKind, FieldValue, ObjectBlock, ObjectLocatorWrapper, ScalarValue,
+    scalar_from_bytes,
 };
 pub(crate) use schema::Schema;
 pub(crate) use toc::Toc;
