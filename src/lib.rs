@@ -4,8 +4,12 @@ mod item_info;
 #[cfg(feature = "c_abi")]
 mod mission_info;
 mod python;
+#[cfg(feature = "c_abi")]
+mod quest_info;
 mod save;
 mod skill_info;
+#[cfg(feature = "c_abi")]
+mod stage_info;
 mod string_info;
 pub(crate) mod python_traits;
 

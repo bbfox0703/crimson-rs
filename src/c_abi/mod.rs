@@ -30,7 +30,9 @@ pub mod iteminfo;
 pub mod mission_info;
 pub mod paloc;
 pub mod paz;
+pub mod quest_info;
 pub mod skill_info;
+pub mod stage_info;
 pub mod string_info;
 
 /// Stable error codes returned by every fallible C entry point.
