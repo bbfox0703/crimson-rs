@@ -27,6 +27,7 @@ use crate::save::{Body, DecodedField, FieldKind, FieldValue, ObjectBlock, Save, 
 
 pub mod checksum;
 pub mod iteminfo;
+pub mod knowledge_info;
 pub mod mission_info;
 pub mod paloc;
 pub mod paz;
