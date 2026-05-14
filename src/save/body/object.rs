@@ -238,8 +238,15 @@ pub(crate) fn field_present(mask_bytes: &[u8], field_index: usize) -> bool {
 /// Matches Python `_type_to_edit_format` semantics: type-name + size pick
 /// a primitive; anything that doesn't match falls back to raw bytes.
 pub(crate) fn decode_scalar(data: &[u8], field: &FieldDef) -> ScalarValue {
-    let size = field.meta_size as usize;
-    let lower = field.type_name.to_ascii_lowercase();
+    scalar_from_bytes(data, &field.type_name, field.meta_size as usize)
+}
+
+/// Decode a scalar from raw LE bytes given just its declared type name +
+/// byte size. Same heuristic as [`decode_scalar`] but callable without a
+/// full [`FieldDef`] — used by the c_abi mutation surface (Phase B.2)
+/// when synthesizing a `ScalarValue` for a newly-present field.
+pub fn scalar_from_bytes(data: &[u8], type_name: &str, size: usize) -> ScalarValue {
+    let lower = type_name.to_ascii_lowercase();
     if lower == "bool" && size == 1 {
         return ScalarValue::Bool(data[0] != 0);
     }

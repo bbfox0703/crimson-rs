@@ -75,6 +75,22 @@ pub mod error {
     /// loaded localization table. Distinct from `BUFFER_TOO_SMALL`
     /// (which means "key found, but caller's buffer is too small").
     pub const NOT_FOUND: i32 = -16;
+    /// A length-changing list mutation targeted an `object_list` whose
+    /// header `header_variant` doesn't have a fixed-size header we know
+    /// how to rewrite (e.g. `marker_run_plus_zeros`, whose leading `01`
+    /// run length we don't capture separately). Inserts / removes on
+    /// this variant are rejected until the encoder learns to patch it.
+    pub const LIST_VARIANT_UNSUPPORTED: i32 = -17;
+    /// A length-changing mutation targeted a field whose schema
+    /// `meta_kind` isn't a fixed-size scalar (0 or 2). For example,
+    /// flipping the mask bit of an `object_list` field via
+    /// `crimson_save_set_scalar_field_present` is rejected — only
+    /// scalar fields are supported by that entry point.
+    pub const NOT_SCALAR_FIELD_KIND: i32 = -18;
+    /// A length-changing mutation produced bytes the parser can't read
+    /// back (e.g. `Body::write` errored, or the re-parse failed). The
+    /// handle's state is restored to what it was before the call.
+    pub const MUTATION_INVALID: i32 = -19;
     pub const PANIC: i32 = -99;
 }
 
@@ -494,6 +510,186 @@ fn resolve_leaf_range(
     Ok((leaf.start, leaf.end))
 }
 
+/// Mutable counterpart to [`resolve_leaf_range`] used by the length-
+/// changing edit surface (Phase B.2).
+///
+/// Navigates `(block_idx, path[])` and returns a `&mut DecodedField` at
+/// `field_idx` in the deepest reachable block. Same path semantics +
+/// error codes as `resolve_leaf_range`, but produces a mutable handle
+/// so the caller can swap the field's `FieldValue` / kind / mask.
+fn navigate_mut_to_field<'a>(
+    blocks: &'a mut [ObjectBlock],
+    block_idx: u32,
+    path: &[CrimsonPathStep],
+    field_idx: u32,
+) -> Result<&'a mut DecodedField, i32> {
+    let parent = navigate_mut_to_parent(blocks, block_idx, path)?;
+    parent
+        .fields
+        .get_mut(field_idx as usize)
+        .ok_or(error::OUT_OF_RANGE)
+}
+
+/// Walk `path[]` from the top-level block at `block_idx`, returning a
+/// `&mut ObjectBlock` to the deepest block the path reaches. Path steps
+/// can descend through `Locator { child: Some(_) }` or `ObjectList`
+/// elements; anything else fails with `NOT_NAVIGABLE`.
+fn navigate_mut_to_parent<'a>(
+    blocks: &'a mut [ObjectBlock],
+    block_idx: u32,
+    path: &[CrimsonPathStep],
+) -> Result<&'a mut ObjectBlock, i32> {
+    let mut current = blocks
+        .get_mut(block_idx as usize)
+        .ok_or(error::OUT_OF_RANGE)?;
+    for step in path {
+        let field = current
+            .fields
+            .get_mut(step.field_idx as usize)
+            .ok_or(error::OUT_OF_RANGE)?;
+        current = match &mut field.value {
+            FieldValue::Locator { child: Some(child), .. } => child.as_mut(),
+            FieldValue::ObjectList { elements, .. } => elements
+                .get_mut(step.element_idx as usize)
+                .ok_or(error::OUT_OF_RANGE)?,
+            _ => return Err(error::NOT_NAVIGABLE),
+        };
+    }
+    Ok(current)
+}
+
+/// Apply a closure that mutates the decoded block tree, then re-emit
+/// the body via [`Body::write`], replace the cached `save.body`, and
+/// re-parse + re-decode so subsequent reads see the new layout.
+///
+/// On any error (including encode / re-parse failures) the handle is
+/// left fully untouched — the closure mutates `h.blocks` in place, but
+/// if the re-emit fails we restore the original blocks from the
+/// pre-mutation snapshot.
+fn apply_length_changing_mutation<F>(h: &mut CrimsonSaveHandle, mutator: F) -> i32
+where
+    F: FnOnce(&mut Vec<ObjectBlock>) -> Result<(), i32>,
+{
+    // Snapshot for rollback. Cloning the blocks tree is O(N); acceptable
+    // for the user-facing edit cadence (single-digit edits per second
+    // tops), and saves us from leaving the handle in a half-baked state
+    // if `Body::write` or `Body::parse` fails on bytes we produced.
+    let blocks_backup = h.blocks.clone();
+
+    if let Err(code) = mutator(&mut h.blocks) {
+        // Mutator already gave up; restore and return.
+        h.blocks = blocks_backup;
+        return code;
+    }
+
+    let new_body = match h.body.write(&h.save.body, &h.blocks) {
+        Ok(b) => b,
+        Err(_) => {
+            h.blocks = blocks_backup;
+            return error::MUTATION_INVALID;
+        }
+    };
+    let new_body_parsed = match Body::parse(&new_body) {
+        Ok(b) => b,
+        Err(_) => {
+            h.blocks = blocks_backup;
+            return error::MUTATION_INVALID;
+        }
+    };
+    let new_blocks = new_body_parsed.decode_blocks(&new_body);
+
+    h.save.body = new_body;
+    h.body = new_body_parsed;
+    h.blocks = new_blocks;
+    error::OK
+}
+
+/// Rewrite the count bytes of an `object_list` variant header in place.
+///
+/// Variants whose header has a fixed size (everything except
+/// `marker_run_plus_zeros`) are supported. The count's byte position is
+/// derived as `(header_bytes.len() - fixed_size) + variant_offset`,
+/// where `header_bytes.len() - fixed_size` is the heuristic-skip
+/// padding the decoder captured at the front.
+fn update_object_list_count_in_header(
+    header_bytes: &mut [u8],
+    header_variant: &str,
+    new_count: u32,
+) -> Result<(), i32> {
+    // (variant_name, fixed_header_size, count_offset_from_body_cursor,
+    //  count_size_in_bytes, max_count, count_endian)
+    enum Endian {
+        LeU24,
+        LeU32,
+        BeU16,
+    }
+    let (fixed_size, count_offset, count_endian) = match header_variant {
+        "zero1_count_u24" => (18usize, 1usize, Endian::LeU24),
+        "zero4_count_u32" => (18, 4, Endian::LeU32),
+        "ones_then_count" => (21, 4, Endian::LeU32),
+        "one_count_u16be" => (19, 1, Endian::BeU16),
+        // marker_run_plus_zeros: header has 1+N leading `01` bytes that
+        // aren't captured separately. Until we add `marker_count` to
+        // `FieldValue::ObjectList` we can't reliably re-emit a new count.
+        _ => return Err(error::LIST_VARIANT_UNSUPPORTED),
+    };
+    if header_bytes.len() < fixed_size {
+        return Err(error::OUT_OF_RANGE);
+    }
+    let pad_len = header_bytes.len() - fixed_size;
+    let off = pad_len + count_offset;
+    match count_endian {
+        Endian::LeU24 => {
+            if new_count > 0xFF_FFFF {
+                return Err(error::OUT_OF_RANGE);
+            }
+            header_bytes[off] = (new_count & 0xFF) as u8;
+            header_bytes[off + 1] = ((new_count >> 8) & 0xFF) as u8;
+            header_bytes[off + 2] = ((new_count >> 16) & 0xFF) as u8;
+        }
+        Endian::LeU32 => {
+            header_bytes[off..off + 4].copy_from_slice(&new_count.to_le_bytes());
+        }
+        Endian::BeU16 => {
+            if new_count > 0xFFFF {
+                return Err(error::OUT_OF_RANGE);
+            }
+            let bytes = (new_count as u16).to_be_bytes();
+            header_bytes[off..off + 2].copy_from_slice(&bytes);
+        }
+    }
+    Ok(())
+}
+
+/// Decide whether a (present) scalar field at `field_idx` should be
+/// emitted as `FixedPrefix` (forward pass) or `FixedSuffix` (reverse
+/// pass) — replicates the decoder's reverse-pass rule.
+///
+/// Reverse pass walks fields backward from the end, peeling present
+/// scalars as `FixedSuffix` until it hits a present non-scalar field;
+/// at that point it stops. So a scalar at index `field_idx` is
+/// `FixedSuffix` iff every higher-index field is either absent or
+/// (also peelable, i.e. a present scalar). Equivalently: iff
+/// `field_idx > last_index_of_present_non_scalar`.
+fn classify_scalar_after_mask_toggle(parent: &ObjectBlock, field_idx: usize) -> FieldKind {
+    let mut last_non_scalar: i64 = -1;
+    for (i, f) in parent.fields.iter().enumerate() {
+        if i == field_idx {
+            // The toggled field is scalar (caller validates); it doesn't
+            // count as a non-scalar boundary.
+            continue;
+        }
+        if f.present && !matches!(f.meta_kind, 0 | 2) {
+            last_non_scalar = i as i64;
+        }
+    }
+    if (field_idx as i64) > last_non_scalar {
+        FieldKind::FixedSuffix
+    } else {
+        FieldKind::FixedPrefix
+    }
+}
+
 /// Overwrite the bytes of a fixed-size scalar field with `bytes`.
 ///
 /// Constraints:
@@ -750,6 +946,280 @@ pub unsafe extern "C" fn crimson_save_set_scalar_fields_batch(
             }
         }
         error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+// ── Length-changing edits (Phase B.2) ──────────────────────────────────────
+
+/// Remove element `element_idx` from the `object_list` field reached by
+/// `(block_idx, path[], field_idx)`. The list's `count` is decremented,
+/// the variant header's count bytes are rewritten, and the body is
+/// re-encoded + re-parsed so subsequent reads see the new layout.
+///
+/// Validation:
+/// - The leaf field must be `FieldKind::ObjectList`; else `NOT_SCALAR`
+///   (overloaded — "not a list either"; the existing code maps non-list
+///   leaves to this).
+/// - `element_idx` must be `< current count`; else `OUT_OF_RANGE`.
+/// - The list's `header_variant` must be one of the fixed-size variants
+///   (`zero1_count_u24`, `zero4_count_u32`, `ones_then_count`,
+///   `one_count_u16be`); else `LIST_VARIANT_UNSUPPORTED`. The
+///   `marker_run_plus_zeros` variant is deferred — its header's leading
+///   `01` run length isn't separately captured, so we can't reliably
+///   re-emit a different count.
+///
+/// On success the in-memory body is fully replaced and the cached
+/// decoded blocks are refreshed. On any error the handle is left
+/// untouched.
+///
+/// # Safety
+/// `handle` must be a live, exclusive handle. `path` must point to
+/// `path_len` readable [`CrimsonPathStep`] values for the duration of
+/// the call (or be NULL with `path_len == 0`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_list_remove_element(
+    handle: *mut CrimsonSaveHandle,
+    block_idx: u32,
+    path: *const CrimsonPathStep,
+    path_len: usize,
+    field_idx: u32,
+    element_idx: u32,
+) -> i32 {
+    if handle.is_null() {
+        return error::NULL_ARG;
+    }
+    if path.is_null() && path_len != 0 {
+        return error::NULL_ARG;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &mut *handle };
+        let steps: &[CrimsonPathStep] = if path_len == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(path, path_len) }
+        };
+        apply_length_changing_mutation(h, |blocks| {
+            let field = navigate_mut_to_field(blocks, block_idx, steps, field_idx)?;
+            let FieldValue::ObjectList {
+                count,
+                header_variant,
+                header_bytes,
+                elements,
+            } = &mut field.value
+            else {
+                return Err(error::NOT_SCALAR);
+            };
+            if (element_idx as usize) >= elements.len() {
+                return Err(error::OUT_OF_RANGE);
+            }
+            elements.remove(element_idx as usize);
+            *count = elements.len() as u32;
+            update_object_list_count_in_header(header_bytes, header_variant, *count)?;
+            Ok(())
+        })
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Clone element `src_element_idx` of an `object_list` and insert the
+/// copy at `dst_element_idx`. The list's `count` is incremented and the
+/// variant header's count bytes are rewritten.
+///
+/// `dst_element_idx` must be in `0..=new_count` (i.e. `0..=count + 1`
+/// after the clone). `dst_element_idx == count + 1` would be illegal
+/// — pass `dst_element_idx == count` to append.
+///
+/// After cloning, the new element is byte-identical to the source.
+/// Callers typically follow up with
+/// [`crimson_save_set_scalar_field_path`] to patch fields (`_itemKey`,
+/// `_stackCount`, etc.) so the clone represents a distinct entity.
+///
+/// Validation:
+/// - The leaf field must be `FieldKind::ObjectList`; else `NOT_SCALAR`.
+/// - `src_element_idx` must be `< current count`; else `OUT_OF_RANGE`.
+/// - `dst_element_idx` must be `<= count + 1`; else `OUT_OF_RANGE`.
+///   (`<= count` is also OK; the comparison uses the post-clone count.)
+/// - The list's `header_variant` must be a fixed-size variant; else
+///   `LIST_VARIANT_UNSUPPORTED`.
+///
+/// # Safety
+/// `handle` must be a live, exclusive handle. `path` must point to
+/// `path_len` readable [`CrimsonPathStep`] values for the duration of
+/// the call (or be NULL with `path_len == 0`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_list_clone_element(
+    handle: *mut CrimsonSaveHandle,
+    block_idx: u32,
+    path: *const CrimsonPathStep,
+    path_len: usize,
+    field_idx: u32,
+    src_element_idx: u32,
+    dst_element_idx: u32,
+) -> i32 {
+    if handle.is_null() {
+        return error::NULL_ARG;
+    }
+    if path.is_null() && path_len != 0 {
+        return error::NULL_ARG;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &mut *handle };
+        let steps: &[CrimsonPathStep] = if path_len == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(path, path_len) }
+        };
+        apply_length_changing_mutation(h, |blocks| {
+            let field = navigate_mut_to_field(blocks, block_idx, steps, field_idx)?;
+            let FieldValue::ObjectList {
+                count,
+                header_variant,
+                header_bytes,
+                elements,
+            } = &mut field.value
+            else {
+                return Err(error::NOT_SCALAR);
+            };
+            if (src_element_idx as usize) >= elements.len() {
+                return Err(error::OUT_OF_RANGE);
+            }
+            // Post-clone count is elements.len() + 1; dst must be <= that.
+            if (dst_element_idx as usize) > elements.len() {
+                return Err(error::OUT_OF_RANGE);
+            }
+            let cloned = elements[src_element_idx as usize].clone();
+            elements.insert(dst_element_idx as usize, cloned);
+            *count = elements.len() as u32;
+            update_object_list_count_in_header(header_bytes, header_variant, *count)?;
+            Ok(())
+        })
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Flip the mask bit of a fixed-size scalar field, inserting (or
+/// removing) the corresponding bytes in the enclosing block's payload.
+///
+/// `present_flag == 1` makes the field present:
+/// - The mask bit at `field_idx` in the enclosing block is set.
+/// - `init_bytes` (length `init_len`) must equal the field's
+///   `meta_size` and is decoded into a `ScalarValue` per the schema's
+///   `type_name` heuristic (`bool`, `u8..u64`, `i8..i64`, `f32`, `f64`,
+///   or raw `bytes`).
+/// - The field is classified as `FixedPrefix` or `FixedSuffix` per the
+///   decoder's reverse-pass rule (suffix iff no present non-scalar
+///   field exists at a higher index).
+///
+/// `present_flag == 0` makes the field absent:
+/// - The mask bit is cleared.
+/// - The field's `kind` becomes `Absent`, its `value` becomes `None`.
+/// - `init_bytes` is ignored (pass NULL + 0).
+///
+/// Validation:
+/// - The field's schema `meta_kind` must be `0` or `2` (fixed scalar);
+///   else `NOT_SCALAR_FIELD_KIND`. Toggling list / locator / inline
+///   field presence requires the template-builder ABI (Phase B.3).
+/// - When `present_flag == 1`, `init_len` must equal the field's
+///   `meta_size`; else `LENGTH_MISMATCH`.
+/// - When `present_flag == 0` AND the field is already absent (or
+///   `present_flag == 1` AND already present), the call is a no-op
+///   that still re-emits the body. Cheap, but the caller can short-
+///   circuit by checking `crimson_save_get_block_json` first.
+///
+/// # Safety
+/// `handle` must be a live, exclusive handle. `path` must point to
+/// `path_len` readable [`CrimsonPathStep`] values (or NULL with
+/// `path_len == 0`). When `present_flag == 1`, `init_bytes` must point
+/// to `init_len` readable bytes (or be NULL only if `init_len == 0`,
+/// which only applies to zero-size fields — unusual).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_set_scalar_field_present(
+    handle: *mut CrimsonSaveHandle,
+    block_idx: u32,
+    path: *const CrimsonPathStep,
+    path_len: usize,
+    field_idx: u32,
+    present_flag: i32,
+    init_bytes: *const u8,
+    init_len: usize,
+) -> i32 {
+    if handle.is_null() {
+        return error::NULL_ARG;
+    }
+    if path.is_null() && path_len != 0 {
+        return error::NULL_ARG;
+    }
+    let make_present = present_flag != 0;
+    if make_present && init_bytes.is_null() && init_len != 0 {
+        return error::NULL_ARG;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &mut *handle };
+        let steps: &[CrimsonPathStep] = if path_len == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(path, path_len) }
+        };
+        // Copy init_bytes out of the raw pointer up front so the closure
+        // below is fully owned.
+        let init: Vec<u8> = if make_present {
+            unsafe { std::slice::from_raw_parts(init_bytes, init_len) }.to_vec()
+        } else {
+            Vec::new()
+        };
+        apply_length_changing_mutation(h, |blocks| {
+            let parent = navigate_mut_to_parent(blocks, block_idx, steps)?;
+            let target_idx = field_idx as usize;
+            let Some(field) = parent.fields.get(target_idx) else {
+                return Err(error::OUT_OF_RANGE);
+            };
+            let meta_kind = field.meta_kind;
+            let meta_size = field.meta_size as usize;
+            let type_name = field.type_name.clone();
+            if !matches!(meta_kind, 0 | 2) || meta_size == 0 {
+                return Err(error::NOT_SCALAR_FIELD_KIND);
+            }
+            if make_present && init.len() != meta_size {
+                return Err(error::LENGTH_MISMATCH);
+            }
+
+            // Toggle the mask bit at `target_idx`.
+            let byte_idx = target_idx / 8;
+            let bit_idx = target_idx % 8;
+            if byte_idx >= parent.mask_bytes.len() {
+                return Err(error::OUT_OF_RANGE);
+            }
+            if make_present {
+                parent.mask_bytes[byte_idx] |= 1 << bit_idx;
+            } else {
+                parent.mask_bytes[byte_idx] &= !(1 << bit_idx);
+            }
+
+            // Decide forward vs reverse classification for the new state.
+            let new_kind = if make_present {
+                classify_scalar_after_mask_toggle(parent, target_idx)
+            } else {
+                FieldKind::Absent
+            };
+
+            // Patch the field's decoded shape. The encoder picks up these
+            // values on the next encode pass.
+            let field_mut = parent.fields.get_mut(target_idx).expect("field bounds checked above");
+            field_mut.present = make_present;
+            field_mut.kind = new_kind;
+            if make_present {
+                let value = crate::save::scalar_from_bytes(&init, &type_name, meta_size);
+                field_mut.value = FieldValue::Scalar(value);
+                // start/end are stale but the encoder ignores them for
+                // scalar emission; they'll be refreshed by the re-decode.
+            } else {
+                field_mut.value = FieldValue::None;
+                field_mut.start = 0;
+                field_mut.end = 0;
+            }
+            Ok(())
+        })
     }))
     .unwrap_or(error::PANIC)
 }
@@ -2023,5 +2493,427 @@ mod tests {
 
         unsafe { crimson_save_free(handle_batch) };
         unsafe { crimson_save_free(handle_single) };
+    }
+
+    // ── Length-changing edits (Phase B.2) ──────────────────────────────────
+
+    /// Find the first top-level (block_idx, field_idx) whose value is an
+    /// `ObjectList` with `header_variant == "zero1_count_u24"` and at
+    /// least one element. Returns `None` if none — all live 1.06 saves
+    /// have multiple matches, so this is mostly a CI-environment guard.
+    fn find_object_list(
+        blocks: &[ObjectBlock],
+    ) -> Option<(u32, u32)> {
+        for (b_idx, block) in blocks.iter().enumerate() {
+            for (f_idx, field) in block.fields.iter().enumerate() {
+                if let FieldValue::ObjectList {
+                    elements,
+                    header_variant,
+                    ..
+                } = &field.value
+                    && !elements.is_empty()
+                    && *header_variant == "zero1_count_u24"
+                {
+                    return Some((b_idx as u32, f_idx as u32));
+                }
+            }
+        }
+        None
+    }
+
+    /// Clone an existing list element to a new position, then remove the
+    /// clone. The save body should be byte-identical to the original — a
+    /// strong invariant that exercises the full encode → re-parse path.
+    #[test]
+    fn c_abi_list_clone_then_remove_roundtrip() {
+        let Some(path) = find_save() else {
+            eprintln!("skipping c_abi_list_clone_then_remove_roundtrip: no live save");
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+
+        let mut handle: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle) },
+            error::OK
+        );
+
+        let original_body = unsafe { (*handle).save.body.clone() };
+        let (block_idx, field_idx) = unsafe { find_object_list(&(*handle).blocks) }
+            .expect("expected a zero1_count_u24 object_list with elements in a live save");
+
+        // Clone element 0 into slot 1 (shifts the rest down).
+        let rc = unsafe {
+            crimson_save_list_clone_element(
+                handle,
+                block_idx,
+                ptr::null(),
+                0,
+                field_idx,
+                0,
+                1,
+            )
+        };
+        assert_eq!(rc, error::OK, "clone failed with rc={rc}");
+        let after_clone = unsafe { (*handle).save.body.clone() };
+        assert_ne!(
+            after_clone, original_body,
+            "body should have changed after clone"
+        );
+        assert!(
+            after_clone.len() > original_body.len(),
+            "cloning should grow the body"
+        );
+
+        // Remove the clone at slot 1.
+        let rc = unsafe {
+            crimson_save_list_remove_element(
+                handle,
+                block_idx,
+                ptr::null(),
+                0,
+                field_idx,
+                1,
+            )
+        };
+        assert_eq!(rc, error::OK, "remove failed with rc={rc}");
+        let after_remove = unsafe { (*handle).save.body.clone() };
+        assert_eq!(
+            after_remove, original_body,
+            "clone-then-remove must be byte-identical to the original body"
+        );
+
+        unsafe { crimson_save_free(handle) };
+    }
+
+    /// `list_remove_element` then bring the same element back by cloning
+    /// the new head is NOT byte-identical (different element repeated)
+    /// — verified by negation. This locks in the per-element identity:
+    /// clones are byte-equal copies, not "any element of the same class".
+    #[test]
+    fn c_abi_list_clone_distinct_source_changes_body() {
+        let Some(path) = find_save() else {
+            eprintln!("skipping c_abi_list_clone_distinct_source: no live save");
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let mut handle: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle) },
+            error::OK
+        );
+
+        // Need a list with >= 2 distinct elements (bytes differ).
+        let target = unsafe {
+            let h = &*handle;
+            let mut chosen = None;
+            for (b_idx, block) in h.blocks.iter().enumerate() {
+                for (f_idx, field) in block.fields.iter().enumerate() {
+                    if let FieldValue::ObjectList {
+                        elements,
+                        header_variant,
+                        ..
+                    } = &field.value
+                        && elements.len() >= 2
+                        && *header_variant == "zero1_count_u24"
+                    {
+                        let a_start = elements[0].data_offset as usize;
+                        let a_end = a_start + elements[0].data_size as usize;
+                        let b_start = elements[1].data_offset as usize;
+                        let b_end = b_start + elements[1].data_size as usize;
+                        let a = &h.save.body[a_start..a_end];
+                        let b = &h.save.body[b_start..b_end];
+                        if a != b {
+                            chosen = Some((b_idx as u32, f_idx as u32));
+                            break;
+                        }
+                    }
+                }
+                if chosen.is_some() {
+                    break;
+                }
+            }
+            chosen
+        };
+        let Some((block_idx, field_idx)) = target else {
+            eprintln!(
+                "skipping c_abi_list_clone_distinct_source: no list with two distinct elements"
+            );
+            unsafe { crimson_save_free(handle) };
+            return;
+        };
+
+        let original_body = unsafe { (*handle).save.body.clone() };
+
+        // Clone src=1 into dst=0, then remove the clone at 0. Body
+        // should round-trip back (we didn't change anything net).
+        assert_eq!(
+            unsafe {
+                crimson_save_list_clone_element(
+                    handle, block_idx, ptr::null(), 0, field_idx, 1, 0,
+                )
+            },
+            error::OK
+        );
+        let after_clone = unsafe { (*handle).save.body.clone() };
+        assert_ne!(after_clone, original_body);
+        assert_eq!(
+            unsafe {
+                crimson_save_list_remove_element(handle, block_idx, ptr::null(), 0, field_idx, 0)
+            },
+            error::OK
+        );
+        let after_remove = unsafe { (*handle).save.body.clone() };
+        assert_eq!(after_remove, original_body);
+
+        unsafe { crimson_save_free(handle) };
+    }
+
+    /// Toggle a present scalar field absent, then back to present with
+    /// the same bytes. Body must be byte-identical to the original.
+    /// Exercises the mask-bit edit, the FixedPrefix/FixedSuffix
+    /// classification rule, and the encoder's reverse-pass ordering.
+    #[test]
+    fn c_abi_set_scalar_field_present_toggle_roundtrip() {
+        let Some(path) = find_save() else {
+            eprintln!("skipping c_abi_set_scalar_field_present_toggle_roundtrip: no live save");
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let mut handle: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle) },
+            error::OK
+        );
+
+        let original_body = unsafe { (*handle).save.body.clone() };
+
+        // Find a top-level block with a present scalar field. Prefer
+        // FixedSuffix so the classification round-trip is exercised; fall
+        // back to FixedPrefix if no suffix is found.
+        let found = unsafe {
+            let h = &*handle;
+            let mut prefer: Option<(u32, u32, Vec<u8>)> = None;
+            let mut fallback: Option<(u32, u32, Vec<u8>)> = None;
+            for (b_idx, block) in h.blocks.iter().enumerate() {
+                for (f_idx, field) in block.fields.iter().enumerate() {
+                    if !field.present || !matches!(field.meta_kind, 0 | 2) {
+                        continue;
+                    }
+                    let bytes = h.save.body[field.start..field.end].to_vec();
+                    let entry = (b_idx as u32, f_idx as u32, bytes);
+                    match field.kind {
+                        FieldKind::FixedSuffix if prefer.is_none() => prefer = Some(entry),
+                        FieldKind::FixedPrefix if fallback.is_none() => fallback = Some(entry),
+                        _ => {}
+                    }
+                    if prefer.is_some() && fallback.is_some() {
+                        break;
+                    }
+                }
+                if prefer.is_some() {
+                    break;
+                }
+            }
+            prefer.or(fallback)
+        };
+        let Some((block_idx, field_idx, original_bytes)) = found else {
+            eprintln!("skipping c_abi_set_scalar_field_present_toggle_roundtrip: no scalar field");
+            unsafe { crimson_save_free(handle) };
+            return;
+        };
+
+        // Make the field absent.
+        assert_eq!(
+            unsafe {
+                crimson_save_set_scalar_field_present(
+                    handle,
+                    block_idx,
+                    ptr::null(),
+                    0,
+                    field_idx,
+                    0,
+                    ptr::null(),
+                    0,
+                )
+            },
+            error::OK
+        );
+        let after_clear = unsafe { (*handle).save.body.clone() };
+        assert!(
+            after_clear.len() < original_body.len(),
+            "clearing a present field should shrink the body"
+        );
+
+        // Make it present again with the original bytes.
+        let rc = unsafe {
+            crimson_save_set_scalar_field_present(
+                handle,
+                block_idx,
+                ptr::null(),
+                0,
+                field_idx,
+                1,
+                original_bytes.as_ptr(),
+                original_bytes.len(),
+            )
+        };
+        assert_eq!(rc, error::OK, "re-set present failed with rc={rc}");
+        let after_set = unsafe { (*handle).save.body.clone() };
+        assert_eq!(
+            after_set, original_body,
+            "clear-then-set-with-original-bytes must be byte-identical"
+        );
+
+        unsafe { crimson_save_free(handle) };
+    }
+
+    /// `set_scalar_field_present` rejects non-scalar fields with
+    /// `NOT_SCALAR_FIELD_KIND` and length mismatches with
+    /// `LENGTH_MISMATCH`. Errors must leave the handle untouched.
+    #[test]
+    fn c_abi_set_scalar_field_present_validation() {
+        let Some(path) = find_save() else {
+            eprintln!("skipping c_abi_set_scalar_field_present_validation: no live save");
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let mut handle: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle) },
+            error::OK
+        );
+
+        // Find any object_list field index in any block — we'll point
+        // set_scalar_field_present at it to confirm rejection.
+        let (block_idx, list_field_idx) = unsafe {
+            let h = &*handle;
+            let mut found = None;
+            for (b_idx, block) in h.blocks.iter().enumerate() {
+                for (f_idx, field) in block.fields.iter().enumerate() {
+                    if matches!(field.value, FieldValue::ObjectList { .. }) {
+                        found = Some((b_idx as u32, f_idx as u32));
+                        break;
+                    }
+                }
+                if found.is_some() {
+                    break;
+                }
+            }
+            found.expect("expected at least one object_list field in a live save")
+        };
+
+        let snapshot = unsafe { (*handle).save.body.clone() };
+
+        // Non-scalar field rejection.
+        let dummy = [0u8; 8];
+        let rc = unsafe {
+            crimson_save_set_scalar_field_present(
+                handle,
+                block_idx,
+                ptr::null(),
+                0,
+                list_field_idx,
+                1,
+                dummy.as_ptr(),
+                dummy.len(),
+            )
+        };
+        assert_eq!(rc, error::NOT_SCALAR_FIELD_KIND);
+        assert_eq!(
+            unsafe { (*handle).save.body.clone() },
+            snapshot,
+            "handle must be untouched on error"
+        );
+
+        // Length mismatch rejection. Pick a scalar field and lie about
+        // the byte count.
+        let (b2, f2, meta_size) = unsafe {
+            let h = &*handle;
+            let mut found = None;
+            for (b_idx, block) in h.blocks.iter().enumerate() {
+                for (f_idx, field) in block.fields.iter().enumerate() {
+                    if matches!(field.meta_kind, 0 | 2) && field.meta_size > 0 {
+                        found = Some((b_idx as u32, f_idx as u32, field.meta_size as usize));
+                        break;
+                    }
+                }
+                if found.is_some() {
+                    break;
+                }
+            }
+            found.expect("expected at least one scalar field schema in a live save")
+        };
+        let wrong_len = vec![0u8; meta_size + 1];
+        let rc = unsafe {
+            crimson_save_set_scalar_field_present(
+                handle,
+                b2,
+                ptr::null(),
+                0,
+                f2,
+                1,
+                wrong_len.as_ptr(),
+                wrong_len.len(),
+            )
+        };
+        assert_eq!(rc, error::LENGTH_MISMATCH);
+        assert_eq!(
+            unsafe { (*handle).save.body.clone() },
+            snapshot,
+            "handle must be untouched on length error"
+        );
+
+        unsafe { crimson_save_free(handle) };
+    }
+
+    /// Cloning an element grows the body by exactly the source element's
+    /// `data_size` (the wrapper + payload bytes). Locks the size delta
+    /// observation from the slot100/slot101 RE pass.
+    #[test]
+    fn c_abi_list_clone_grows_body_by_element_size() {
+        let Some(path) = find_save() else {
+            eprintln!("skipping c_abi_list_clone_grows_body_by_element_size: no live save");
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let mut handle: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle) },
+            error::OK
+        );
+
+        let original_len = unsafe { (*handle).save.body.len() };
+        let (block_idx, field_idx, expected_delta) = unsafe {
+            let h = &*handle;
+            let (b_idx, f_idx) =
+                find_object_list(&h.blocks).expect("expected a zero1_count_u24 list");
+            let element_size = match &h.blocks[b_idx as usize].fields[f_idx as usize].value {
+                FieldValue::ObjectList { elements, .. } => elements[0].data_size as usize,
+                _ => unreachable!(),
+            };
+            (b_idx, f_idx, element_size)
+        };
+
+        let rc = unsafe {
+            crimson_save_list_clone_element(
+                handle,
+                block_idx,
+                ptr::null(),
+                0,
+                field_idx,
+                0,
+                1,
+            )
+        };
+        assert_eq!(rc, error::OK);
+        let new_len = unsafe { (*handle).save.body.len() };
+        assert_eq!(
+            new_len - original_len,
+            expected_delta,
+            "clone must grow the body by exactly the element's data_size"
+        );
+
+        unsafe { crimson_save_free(handle) };
     }
 }

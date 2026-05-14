@@ -47,7 +47,7 @@ mod io;
 #[allow(unused_imports)]
 pub use body::{
     Body, DecodedField, FieldKind, FieldValue, ObjectBlock, ObjectLocatorWrapper, ScalarValue,
-    encode_body, encode_top_level_block,
+    encode_body, encode_top_level_block, scalar_from_bytes,
 };
 pub use header::{HEADER_SIZE, SaveHeader};
 pub use io::Save;
