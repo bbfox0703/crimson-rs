@@ -26,6 +26,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use crate::save::{Body, DecodedField, FieldKind, FieldValue, ObjectBlock, Save, SaveError, ScalarValue};
 
 pub mod checksum;
+pub mod gimmick_info;
 pub mod iteminfo;
 pub mod knowledge_info;
 pub mod mission_info;
@@ -36,6 +37,7 @@ pub mod quest_info;
 pub mod skill_info;
 pub mod stage_info;
 pub mod string_info;
+pub mod sub_level_info;
 
 /// Stable error codes returned by every fallible C entry point.
 ///

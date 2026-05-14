@@ -1,5 +1,7 @@
 mod binary;
 mod crypto;
+#[cfg(feature = "c_abi")]
+mod gimmick_info;
 mod item_info;
 #[cfg(feature = "c_abi")]
 mod knowledge_info;
@@ -15,6 +17,8 @@ mod skill_info;
 #[cfg(feature = "c_abi")]
 mod stage_info;
 mod string_info;
+#[cfg(feature = "c_abi")]
+mod sub_level_info;
 pub(crate) mod python_traits;
 
 #[cfg(feature = "c_abi")]
