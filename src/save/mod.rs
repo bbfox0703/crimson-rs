@@ -49,6 +49,12 @@ pub use body::{
     Body, DecodedField, FieldKind, FieldValue, ObjectBlock, ObjectLocatorWrapper, ScalarValue,
     encode_body, encode_top_level_block, scalar_from_bytes,
 };
+// Only the c_abi length-changing edit path consumes this helper today
+// (`crimson_save_list_insert_element` validates caller-supplied template
+// bytes by decoding them); skip the re-export in non-c_abi builds so
+// clippy doesn't warn about an unused import.
+#[cfg(feature = "c_abi")]
+pub(crate) use body::decode_one_list_element_bytes;
 pub use header::{HEADER_SIZE, SaveHeader};
 pub use io::Save;
 #[cfg(feature = "c_abi")]

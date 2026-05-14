@@ -1224,6 +1224,213 @@ pub unsafe extern "C" fn crimson_save_set_scalar_field_present(
     .unwrap_or(error::PANIC)
 }
 
+/// Produce the minimal valid bytes for a list element of `class_index`.
+///
+/// The emitted element has:
+/// - Locator wrapper: `mbc` (= `ceil(field_count / 8)` clamped to `1..=16`)
+///   mask bytes (all zero, so every field is absent), `type_index =
+///   class_index`, all sentinels and `payload_offset` zero.
+/// - Inline payload: `u32 reserved = 0`, no field bytes, `u32
+///   trailing_size = 4`.
+///
+/// Total size: wrapper (`mbc + 17`) + payload (`8`) = `mbc + 25` bytes.
+/// For a class with a 4-byte mask (≤32 fields), the element is 29 bytes.
+///
+/// Uses the standard two-call pattern: pass `buf=NULL, buf_len=0` to
+/// learn the required size, then allocate and call again. `out_required`
+/// is always populated when non-NULL.
+///
+/// The returned bytes parse via the decoder as a valid list element of
+/// `class_index` with every field marked absent. Callers typically:
+/// 1. Call this to get an "empty shell" for the desired class.
+/// 2. Call [`crimson_save_list_insert_element`] to add the shell to a
+///    list.
+/// 3. Call [`crimson_save_set_scalar_field_present`] (and
+///    [`crimson_save_set_scalar_field_path`]) for each field they want
+///    to populate.
+///
+/// Errors:
+/// - `OUT_OF_RANGE` when `class_index` doesn't resolve to a schema
+///   type, or `field_count > 128` (would need mbc > 16, which the
+///   decoder rejects).
+/// - `BUFFER_TOO_SMALL` when `buf_len` is too small.
+///
+/// # Safety
+/// `handle` must be a live handle. If `buf` is non-NULL it must be
+/// writable for at least `buf_len` bytes. If `out_required` is non-NULL
+/// it must be a writable `*mut usize`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_make_empty_element_bytes(
+    handle: *const CrimsonSaveHandle,
+    class_index: u32,
+    buf: *mut u8,
+    buf_len: usize,
+    out_required: *mut usize,
+) -> i32 {
+    if handle.is_null() {
+        return error::NULL_ARG;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let bytes = match build_empty_element_bytes(class_index, &h.body) {
+            Ok(b) => b,
+            Err(code) => return code,
+        };
+        let required = bytes.len();
+        if !out_required.is_null() {
+            unsafe {
+                *out_required = required;
+            }
+        }
+        if buf.is_null() || buf_len < required {
+            return error::BUFFER_TOO_SMALL;
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, bytes.len());
+        }
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Insert a caller-supplied list-element bytes blob into an
+/// `object_list` field at `insert_at`.
+///
+/// `bytes[0..bytes_len]` must be the raw bytes of a complete list
+/// element: wrapper + inline payload, exactly as
+/// [`crimson_save_make_empty_element_bytes`] produces (or as you'd
+/// extract from `raw[element.data_offset .. element.data_offset +
+/// element.data_size]` of an existing decoded element).
+///
+/// Validation:
+/// - The leaf field must be `FieldKind::ObjectList`; else `NOT_SCALAR`.
+/// - `bytes` must parse as a valid list element of a class known to
+///   the schema; else `BODY_PARSE`.
+/// - `insert_at` must be `<= current count`; else `OUT_OF_RANGE`.
+/// - The list's `header_variant` must be a fixed-size variant; else
+///   `LIST_VARIANT_UNSUPPORTED`.
+///
+/// On success the list grows by one element, the variant header's
+/// count bytes are rewritten, and the body is re-encoded + re-parsed
+/// so subsequent reads see the new layout. On any failure the handle
+/// is left untouched.
+///
+/// # Safety
+/// `handle` must be a live, exclusive handle. `path` must point to
+/// `path_len` readable [`CrimsonPathStep`] values (or NULL with
+/// `path_len == 0`). `bytes` must point to `bytes_len` readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_list_insert_element(
+    handle: *mut CrimsonSaveHandle,
+    block_idx: u32,
+    path: *const CrimsonPathStep,
+    path_len: usize,
+    field_idx: u32,
+    insert_at: u32,
+    bytes: *const u8,
+    bytes_len: usize,
+) -> i32 {
+    if handle.is_null() {
+        return error::NULL_ARG;
+    }
+    if path.is_null() && path_len != 0 {
+        return error::NULL_ARG;
+    }
+    if bytes.is_null() && bytes_len != 0 {
+        return error::NULL_ARG;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &mut *handle };
+        let steps: &[CrimsonPathStep] = if path_len == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(path, path_len) }
+        };
+        // Copy the element bytes + clone the schema up front so the
+        // closure below doesn't borrow `h` twice.
+        let bytes_vec: Vec<u8> =
+            unsafe { std::slice::from_raw_parts(bytes, bytes_len) }.to_vec();
+        let schema_clone = h.body.schema.clone();
+        let parsed = match crate::save::decode_one_list_element_bytes(&bytes_vec, &schema_clone) {
+            Ok(el) => el,
+            Err(_) => return error::BODY_PARSE,
+        };
+        apply_length_changing_mutation(h, move |blocks| {
+            let field = navigate_mut_to_field(blocks, block_idx, steps, field_idx)?;
+            let FieldValue::ObjectList {
+                count,
+                header_variant,
+                header_bytes,
+                elements,
+            } = &mut field.value
+            else {
+                return Err(error::NOT_SCALAR);
+            };
+            if (insert_at as usize) > elements.len() {
+                return Err(error::OUT_OF_RANGE);
+            }
+            elements.insert(insert_at as usize, parsed);
+            *count = elements.len() as u32;
+            update_object_list_count_in_header(header_bytes, header_variant, *count)?;
+            Ok(())
+        })
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Construct the minimal valid bytes for a list element of
+/// `class_index`. See [`crimson_save_make_empty_element_bytes`] for the
+/// exposed C ABI shape; this is the Rust helper that does the work.
+fn build_empty_element_bytes(class_index: u32, body: &Body) -> Result<Vec<u8>, i32> {
+    let type_def = body
+        .schema
+        .types
+        .iter()
+        .find(|t| t.index == class_index)
+        .ok_or(error::OUT_OF_RANGE)?;
+    let field_count = type_def.fields.len();
+    // The decoder accepts mbc in 1..=16, so cap at 16 (= 128 fields max).
+    // Decoder rule mirrored from object/decoder: `expected_mask_bytes =
+    // type_def.fields.len().div_ceil(8).max(1)`.
+    let mbc = field_count.div_ceil(8).max(1);
+    if mbc > 16 {
+        return Err(error::OUT_OF_RANGE);
+    }
+
+    // Wrapper layout: u16 mbc (2) | u8[mbc] mask | u16 type_index (2)
+    //   | u8 reserved (1) | u32 sent1 (4) | u32 sent2 (4)
+    //   | u32 payload_offset (4)
+    //   = 2 + mbc + 2 + 1 + 4 + 4 + 4 = mbc + 17 bytes.
+    // Inline payload: u32 reserved (4) | (no fields) | u32 trailing_size (4)
+    //   = 8 bytes.
+    let wrapper_size = mbc + 17;
+    let payload_size = 4 + 4;
+    let total = wrapper_size + payload_size;
+    let mut out = Vec::with_capacity(total);
+
+    // Wrapper bytes.
+    out.extend_from_slice(&(mbc as u16).to_le_bytes());
+    out.extend(std::iter::repeat_n(0u8, mbc));
+    out.extend_from_slice(&(class_index as u16).to_le_bytes());
+    out.push(0); // child_reserved
+    out.extend_from_slice(&0u32.to_le_bytes()); // sentinel1
+    out.extend_from_slice(&0u32.to_le_bytes()); // sentinel2
+    out.extend_from_slice(&0u32.to_le_bytes()); // payload_offset (advisory)
+
+    // Inline payload bytes. `trailing_size = 4` because the size u32
+    // sits 4 bytes after `payload_start` (just the `reserved` u32).
+    out.extend_from_slice(&0u32.to_le_bytes()); // payload reserved
+    out.extend_from_slice(&4u32.to_le_bytes()); // payload trailing_size
+
+    debug_assert_eq!(
+        out.len(),
+        total,
+        "empty element bytes len mismatch ({total} expected, got {})",
+        out.len()
+    );
+    Ok(out)
+}
+
 /// Serialize the in-memory save back to `path` using the original nonce.
 ///
 /// Uses `Save::write_with_nonce` so the on-disk layout matches what the
@@ -2913,6 +3120,420 @@ mod tests {
             expected_delta,
             "clone must grow the body by exactly the element's data_size"
         );
+
+        unsafe { crimson_save_free(handle) };
+    }
+
+    // ── Schema-aware element builder + list_insert_element (Phase B.3) ─────
+
+    /// `make_empty_element_bytes` produces bytes that decode cleanly back
+    /// to an `ObjectBlock` of the requested class with all fields absent.
+    /// Two-call pattern: query size, then fill.
+    #[test]
+    fn c_abi_make_empty_element_bytes_decodes() {
+        let Some(path) = find_save() else {
+            eprintln!("skipping c_abi_make_empty_element_bytes_decodes: no live save");
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let mut handle: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle) },
+            error::OK
+        );
+
+        // Pick the class of any existing list element so we know the
+        // class_index is valid and the produced bytes can sit alongside
+        // the real elements in that list.
+        let (class_index, expected_mbc) = unsafe {
+            let h = &*handle;
+            let (b_idx, f_idx) = find_object_list(&h.blocks)
+                .expect("expected a zero1_count_u24 object_list");
+            let element = match &h.blocks[b_idx as usize].fields[f_idx as usize].value {
+                FieldValue::ObjectList { elements, .. } => &elements[0],
+                _ => unreachable!(),
+            };
+            (element.class_index, element.mask_byte_count as usize)
+        };
+
+        // Two-call pattern: first call with NULL buf -> BUFFER_TOO_SMALL +
+        // required size; second call with allocated buf -> OK.
+        let mut required: usize = 0;
+        let rc = unsafe {
+            crimson_save_make_empty_element_bytes(
+                handle,
+                class_index,
+                ptr::null_mut(),
+                0,
+                &mut required,
+            )
+        };
+        assert_eq!(rc, error::BUFFER_TOO_SMALL);
+        // total = wrapper (mbc + 17) + payload (4 + 4) = mbc + 25
+        let expected_len = expected_mbc + 25;
+        assert_eq!(
+            required, expected_len,
+            "empty element should be mbc({expected_mbc}) + 25 = {expected_len} bytes"
+        );
+
+        let mut buf = vec![0u8; required];
+        let rc = unsafe {
+            crimson_save_make_empty_element_bytes(
+                handle,
+                class_index,
+                buf.as_mut_ptr(),
+                buf.len(),
+                ptr::null_mut(),
+            )
+        };
+        assert_eq!(rc, error::OK);
+
+        // Sanity-check the wrapper shape: u16 mbc, mbc zero mask bytes,
+        // u16 type_index (= class_index low 16 bits).
+        let parsed_mbc = u16::from_le_bytes([buf[0], buf[1]]) as usize;
+        assert_eq!(parsed_mbc, expected_mbc);
+        for i in 0..parsed_mbc {
+            assert_eq!(buf[2 + i], 0, "mask byte {i} should be zero");
+        }
+        let parsed_type = u16::from_le_bytes([buf[2 + parsed_mbc], buf[3 + parsed_mbc]]);
+        assert_eq!(parsed_type as u32, class_index);
+
+        // The trailing u32 (last 4 bytes) is `trailing_size = 4` because
+        // the size u32 sits 4 bytes after payload_start.
+        let trailing = u32::from_le_bytes([
+            buf[required - 4],
+            buf[required - 3],
+            buf[required - 2],
+            buf[required - 1],
+        ]);
+        assert_eq!(trailing, 4, "trailing_size should be 4 for an empty payload");
+
+        unsafe { crimson_save_free(handle) };
+    }
+
+    /// `make_empty_element_bytes` then `list_insert_element` adds an empty
+    /// element; subsequent `list_remove_element` reverses it. The body
+    /// must be byte-identical to the original.
+    #[test]
+    fn c_abi_insert_empty_then_remove_roundtrip() {
+        let Some(path) = find_save() else {
+            eprintln!("skipping c_abi_insert_empty_then_remove_roundtrip: no live save");
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let mut handle: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle) },
+            error::OK
+        );
+
+        let original_body = unsafe { (*handle).save.body.clone() };
+        let (block_idx, field_idx, element_class_idx) = unsafe {
+            let h = &*handle;
+            let (b_idx, f_idx) = find_object_list(&h.blocks)
+                .expect("expected a zero1_count_u24 object_list");
+            let class = match &h.blocks[b_idx as usize].fields[f_idx as usize].value {
+                FieldValue::ObjectList { elements, .. } => elements[0].class_index,
+                _ => unreachable!(),
+            };
+            (b_idx, f_idx, class)
+        };
+
+        // Build empty element bytes for the list's element class.
+        let mut required: usize = 0;
+        unsafe {
+            crimson_save_make_empty_element_bytes(
+                handle,
+                element_class_idx,
+                ptr::null_mut(),
+                0,
+                &mut required,
+            );
+        }
+        let mut empty = vec![0u8; required];
+        assert_eq!(
+            unsafe {
+                crimson_save_make_empty_element_bytes(
+                    handle,
+                    element_class_idx,
+                    empty.as_mut_ptr(),
+                    empty.len(),
+                    ptr::null_mut(),
+                )
+            },
+            error::OK
+        );
+
+        // Insert at the head (index 0). Body should grow by exactly the
+        // empty element's length.
+        let rc = unsafe {
+            crimson_save_list_insert_element(
+                handle,
+                block_idx,
+                ptr::null(),
+                0,
+                field_idx,
+                0,
+                empty.as_ptr(),
+                empty.len(),
+            )
+        };
+        assert_eq!(rc, error::OK, "insert failed with rc={rc}");
+        let after_insert = unsafe { (*handle).save.body.clone() };
+        assert_ne!(after_insert, original_body);
+        assert_eq!(
+            after_insert.len() - original_body.len(),
+            empty.len(),
+            "insert must grow the body by exactly the element's len"
+        );
+
+        // Remove the inserted element (now at index 0).
+        let rc = unsafe {
+            crimson_save_list_remove_element(
+                handle,
+                block_idx,
+                ptr::null(),
+                0,
+                field_idx,
+                0,
+            )
+        };
+        assert_eq!(rc, error::OK);
+        let after_remove = unsafe { (*handle).save.body.clone() };
+        assert_eq!(
+            after_remove, original_body,
+            "insert-empty then remove must round-trip"
+        );
+
+        unsafe { crimson_save_free(handle) };
+    }
+
+    /// `list_insert_element` rejects malformed template bytes
+    /// (`BODY_PARSE`) without touching the handle. Out-of-range
+    /// `insert_at` returns `OUT_OF_RANGE`.
+    #[test]
+    fn c_abi_list_insert_element_validation() {
+        let Some(path) = find_save() else {
+            eprintln!("skipping c_abi_list_insert_element_validation: no live save");
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let mut handle: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle) },
+            error::OK
+        );
+
+        let original_body = unsafe { (*handle).save.body.clone() };
+        let (block_idx, field_idx) = unsafe {
+            let h = &*handle;
+            find_object_list(&h.blocks).expect("expected a zero1_count_u24 object_list")
+        };
+
+        // Garbage bytes — too short to be a valid wrapper.
+        let garbage = [0u8; 4];
+        let rc = unsafe {
+            crimson_save_list_insert_element(
+                handle,
+                block_idx,
+                ptr::null(),
+                0,
+                field_idx,
+                0,
+                garbage.as_ptr(),
+                garbage.len(),
+            )
+        };
+        assert_eq!(rc, error::BODY_PARSE);
+        assert_eq!(
+            unsafe { (*handle).save.body.clone() },
+            original_body,
+            "handle must be untouched on BODY_PARSE error"
+        );
+
+        // Out-of-range insert position. Build empty element first.
+        let element_class_idx = unsafe {
+            let h = &*handle;
+            match &h.blocks[block_idx as usize].fields[field_idx as usize].value {
+                FieldValue::ObjectList { elements, .. } => elements[0].class_index,
+                _ => unreachable!(),
+            }
+        };
+        let mut required: usize = 0;
+        unsafe {
+            crimson_save_make_empty_element_bytes(
+                handle,
+                element_class_idx,
+                ptr::null_mut(),
+                0,
+                &mut required,
+            );
+        }
+        let mut empty = vec![0u8; required];
+        unsafe {
+            crimson_save_make_empty_element_bytes(
+                handle,
+                element_class_idx,
+                empty.as_mut_ptr(),
+                empty.len(),
+                ptr::null_mut(),
+            );
+        }
+        let rc = unsafe {
+            crimson_save_list_insert_element(
+                handle,
+                block_idx,
+                ptr::null(),
+                0,
+                field_idx,
+                u32::MAX,
+                empty.as_ptr(),
+                empty.len(),
+            )
+        };
+        assert_eq!(rc, error::OUT_OF_RANGE);
+        assert_eq!(
+            unsafe { (*handle).save.body.clone() },
+            original_body,
+            "handle must be untouched on OUT_OF_RANGE error"
+        );
+
+        unsafe { crimson_save_free(handle) };
+    }
+
+    /// End-to-end: insert empty element, populate one scalar field via
+    /// `set_scalar_field_present`, then `set_scalar_field_path` on a
+    /// nested location. Verifies the full B.1 + B.2 + B.3 chain.
+    #[test]
+    fn c_abi_insert_then_populate_field() {
+        let Some(path) = find_save() else {
+            eprintln!("skipping c_abi_insert_then_populate_field: no live save");
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let mut handle: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle) },
+            error::OK
+        );
+
+        // Pick a list + element class. Find any scalar field schema in
+        // that element class to populate.
+        let (block_idx, field_idx, element_class_idx, target_scalar_field, scalar_size) =
+            unsafe {
+                let h = &*handle;
+                let (b_idx, f_idx) = find_object_list(&h.blocks)
+                    .expect("expected a zero1_count_u24 object_list");
+                let element = match &h.blocks[b_idx as usize].fields[f_idx as usize].value {
+                    FieldValue::ObjectList { elements, .. } => &elements[0],
+                    _ => unreachable!(),
+                };
+                let class_idx = element.class_index;
+                // Find a scalar field schema entry on the element. Use the
+                // existing element's field list which has the schema-derived
+                // (name, meta_kind, meta_size) information.
+                let mut scalar = None;
+                for f in &element.fields {
+                    if matches!(f.meta_kind, 0 | 2) && f.meta_size > 0 {
+                        scalar = Some((f.field_index, f.meta_size as usize));
+                        break;
+                    }
+                }
+                let (scalar_field, scalar_size) = scalar.expect("expected a scalar field");
+                (b_idx, f_idx, class_idx, scalar_field, scalar_size)
+            };
+
+        // Build + insert empty element at the head.
+        let mut required: usize = 0;
+        unsafe {
+            crimson_save_make_empty_element_bytes(
+                handle,
+                element_class_idx,
+                ptr::null_mut(),
+                0,
+                &mut required,
+            );
+        }
+        let mut empty = vec![0u8; required];
+        unsafe {
+            crimson_save_make_empty_element_bytes(
+                handle,
+                element_class_idx,
+                empty.as_mut_ptr(),
+                empty.len(),
+                ptr::null_mut(),
+            );
+        }
+        assert_eq!(
+            unsafe {
+                crimson_save_list_insert_element(
+                    handle,
+                    block_idx,
+                    ptr::null(),
+                    0,
+                    field_idx,
+                    0,
+                    empty.as_ptr(),
+                    empty.len(),
+                )
+            },
+            error::OK
+        );
+
+        // Populate the chosen scalar field via set_scalar_field_present.
+        // Use 0xAB-fill bytes so a path-set later can detect the value.
+        let init = vec![0xAB_u8; scalar_size];
+        let path_step = CrimsonPathStep {
+            field_idx,
+            element_idx: 0,
+        };
+        let rc = unsafe {
+            crimson_save_set_scalar_field_present(
+                handle,
+                block_idx,
+                &path_step,
+                1,
+                target_scalar_field,
+                1,
+                init.as_ptr(),
+                init.len(),
+            )
+        };
+        assert_eq!(rc, error::OK, "set_scalar_field_present failed with rc={rc}");
+
+        // Now overwrite the same field with a different value via
+        // set_scalar_field_path — confirms the new element is reachable
+        // by the existing path-addressed setter too.
+        let overwrite = vec![0xCD_u8; scalar_size];
+        let rc = unsafe {
+            crimson_save_set_scalar_field_path(
+                handle,
+                block_idx,
+                &path_step,
+                1,
+                target_scalar_field,
+                overwrite.as_ptr(),
+                overwrite.len(),
+            )
+        };
+        assert_eq!(rc, error::OK, "set_scalar_field_path failed with rc={rc}");
+
+        // Verify by reading the new element's scalar.
+        unsafe {
+            let h = &*handle;
+            let el = match &h.blocks[block_idx as usize].fields[field_idx as usize].value {
+                FieldValue::ObjectList { elements, .. } => &elements[0],
+                _ => unreachable!(),
+            };
+            let f = &el.fields[target_scalar_field as usize];
+            assert!(f.present, "field must be present after set_field_present");
+            assert_eq!(f.end - f.start, scalar_size);
+            assert_eq!(
+                &h.save.body[f.start..f.end],
+                overwrite.as_slice(),
+                "scalar bytes must match the overwrite value"
+            );
+        }
 
         unsafe { crimson_save_free(handle) };
     }

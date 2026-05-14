@@ -34,6 +34,8 @@ pub use object::{
     DecodedField, FieldKind, FieldValue, ObjectBlock, ObjectLocatorWrapper, ScalarValue,
     scalar_from_bytes,
 };
+#[cfg(feature = "c_abi")]
+pub(crate) use decoder::decode_one_list_element_bytes;
 pub(crate) use schema::Schema;
 pub(crate) use toc::Toc;
 
