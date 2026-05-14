@@ -53,7 +53,8 @@ pub fn parse_stage_info_lossy(data: &[u8]) -> Vec<StageInfoEntry> {
             data[start + 3],
         ]);
         let name_bytes = &data[start + 8..start + 8 + slen];
-        let name = String::from_utf8_lossy(name_bytes).into_owned();
+        // Scanner already validated valid UTF-8 — the unwrap is sound.
+        let name = std::str::from_utf8(name_bytes).unwrap().to_owned();
         entries.push(StageInfoEntry { key, name });
         cursor = start + 8 + slen;
     }
@@ -65,7 +66,20 @@ fn scan_next_anchor(data: &[u8], from: usize) -> Option<usize> {
     let mut o = from;
     while o + 12 < n {
         let key = u32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]);
-        if key != 0 && (key >> 24) == 0 {
+        // Stage rows use category-prefixed keys: hi-byte 0x00 for
+        // mainline stages, 0x05 for `HerStore_*` (Hernandian stores),
+        // 0x41 for `Shop_*` (city shops), and a handful of others
+        // observed in the 1.06 install. Cap at < 0x80 — covers every
+        // real category seen, excludes the body-byte noise that
+        // tends to start with high-bit bytes (e.g. checksum tails),
+        // and naturally excludes the i32-negative-encoded save
+        // sentinels (`0xFFFF*`) the editor's issue #2 pattern 2
+        // flagged as save-internal. Verified against the editor's
+        // CrimsonAtomtic issue #2 dump for `StageKey 1100170020`
+        // (0x41934324 → "Shop_Hernand_General"), `1100170040`
+        // (0x41934338 → "Shop_Hernand_Pub"), and `98200060`
+        // (0x05DA69FC → "HerStore_Grocery").
+        if key != 0 && (key >> 24) < 0x80 {
             let slen = u32::from_le_bytes([
                 data[o + 4],
                 data[o + 5],
@@ -74,7 +88,12 @@ fn scan_next_anchor(data: &[u8], from: usize) -> Option<usize> {
             ]) as usize;
             if (2..=128).contains(&slen) && o + 8 + slen <= n {
                 let bytes = &data[o + 8..o + 8 + slen];
-                if bytes.iter().all(|&b| is_ident_byte(b)) {
+                // Same `_` requirement as mission_info — every real
+                // Stage_*/Intro_*/etc. row has it.
+                if bytes.contains(&b'_')
+                    && bytes.iter().all(|&b| is_ident_byte(b))
+                    && std::str::from_utf8(bytes).is_ok()
+                {
                     return Some(o);
                 }
             }
@@ -100,11 +119,19 @@ mod tests {
     /// the editor's keycases handoff and `docs/save-editor-keys-plan.md`.
     /// Includes `1004305` from the editor's UI screenshot.
     const KNOWN: &[(u32, &str)] = &[
+        // hi-byte = 0x00 — mainline stages (well-covered by the
+        // original scanner constraint).
         (1_004_305, "Intro_Tutorial_Miseenscene_00"),
         (1_000_001, "DelesyiaCastle_Herbert_BlueStone"),
         (1_000_002, "Varnia_UrdavahResearch_RedStone"),
         (1_001_566, "AnvilHill_Block_Patrol_I"),
         (1_012_833, "Shop_Demeniss_Faction_Elemore_Grocery"),
+        // Regression for CrimsonAtomtic editor issue #2 pattern 1.
+        // hi-byte = 0x05 — `HerStore_*` (Hernandian stores).
+        (98_200_060, "HerStore_Grocery"),
+        // hi-byte = 0x41 — `Shop_*` (city shops).
+        (1_100_170_020, "Shop_Hernand_General"),
+        (1_100_170_040, "Shop_Hernand_Pub"),
     ];
 
     fn find_stageinfo_bytes() -> Option<Vec<u8>> {

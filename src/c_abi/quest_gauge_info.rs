@@ -37,9 +37,16 @@ pub struct CrimsonQuestGaugeInfoHandle {
 impl CrimsonQuestGaugeInfoHandle {
     fn from_bytes(data: &[u8]) -> Self {
         let raw = parse_quest_gauge_info_lossy(data);
-        let entries: Vec<(u32, String)> =
-            raw.into_iter().map(|e| (e.key, e.name)).collect();
-        let by_key = entries.iter().cloned().collect();
+        // First-wins dedup (see mission_info::from_bytes for the
+        // rationale; same comment applies here).
+        let mut by_key: HashMap<u32, String> = HashMap::with_capacity(raw.len());
+        let mut entries: Vec<(u32, String)> = Vec::with_capacity(raw.len());
+        for e in raw {
+            if let std::collections::hash_map::Entry::Vacant(v) = by_key.entry(e.key) {
+                v.insert(e.name.clone());
+                entries.push((e.key, e.name));
+            }
+        }
         CrimsonQuestGaugeInfoHandle { by_key, entries }
     }
 }
