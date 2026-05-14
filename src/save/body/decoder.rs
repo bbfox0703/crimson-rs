@@ -26,8 +26,8 @@ use std::collections::HashMap;
 use std::io;
 
 use super::object::{
-    DecodedField, FieldKind, FieldValue, ObjectBlock, ScalarValue, decode_scalar, field_present,
-    type_index_map,
+    DecodedField, FieldKind, FieldValue, ObjectBlock, ObjectLocatorWrapper, ScalarValue,
+    decode_scalar, field_present, type_index_map,
 };
 use super::schema::{FieldDef, Schema, TypeDef};
 use super::toc::Toc;
@@ -116,6 +116,7 @@ fn decode_one_block(
         fields,
         trailing_pad,
         undecoded_ranges: undecoded,
+        locator_wrapper: None,
     })
 }
 
@@ -382,12 +383,16 @@ fn decode_dynamic_array(
             let data_offset = offset + 9;
             let data_end = data_offset + (count as usize) * (field.meta_size as usize);
             let bytes = raw[data_offset..data_end].to_vec();
+            let header_bytes = raw[offset..data_offset].to_vec();
+            let trailer_bytes = raw[data_end..end].to_vec();
             return Ok((
                 end,
                 FieldValue::DynamicArray {
                     count,
                     bytes,
                     header_variant: "prefix_00xx0100",
+                    header_bytes,
+                    trailer_bytes,
                 },
                 "prefix_00xx0100",
             ));
@@ -415,12 +420,16 @@ fn decode_dynamic_array(
                 let data_offset = marker_end + 5;
                 let data_end = data_offset + (count as usize) * (field.meta_size as usize);
                 let bytes = raw[data_offset..data_end].to_vec();
+                let header_bytes = raw[offset..data_offset].to_vec();
+                let trailer_bytes = raw[data_end..end].to_vec();
                 return Ok((
                     end,
                     FieldValue::DynamicArray {
                         count,
                         bytes,
                         header_variant: "marker_prefix",
+                        header_bytes,
+                        trailer_bytes,
                     },
                     "marker_prefix",
                 ));
@@ -450,12 +459,15 @@ fn decode_dynamic_array(
     }
     let data_offset = offset + data_skip;
     let bytes = raw[data_offset..end].to_vec();
+    let header_bytes = raw[offset..data_offset].to_vec();
     Ok((
         end,
         FieldValue::DynamicArray {
             count,
             bytes,
             header_variant,
+            header_bytes,
+            trailer_bytes: Vec::new(),
         },
         header_variant,
     ))
@@ -468,6 +480,7 @@ fn decode_inline_object_locator(
     by_index: &HashMap<u32, &TypeDef>,
     locator_kind: u16,
 ) -> io::Result<(usize, FieldValue)> {
+    let field_start = cursor;
     // Kind 5 hides the wrapper behind up to 8 prefix bytes; scan for the
     // first plausible mask_byte_count u16 in 1..=16.
     let body_cursor = if locator_kind == 5 {
@@ -503,12 +516,14 @@ fn decode_inline_object_locator(
     if wrapper_end > tail_cursor {
         return overrun("object locator");
     }
-    // Skipped fields here (kept for reference, not currently surfaced):
-    //   child_mask_bytes = raw[body_cursor + 2 .. body_cursor + 2 + mbc]
-    //   child_reserved_u8 = raw[body_cursor + 2 + mbc + 2]
-    //   child_sentinel1_u32 = u32 at body_cursor + 2 + mbc + 3
-    //   child_sentinel2_u32 = u32 at body_cursor + 2 + mbc + 7
+    // Wrapper layout: u16 mbc | u8[mbc] child_mask | u16 child_type_index
+    //                 | u8 child_reserved | u32 sentinel1 | u32 sentinel2
+    //                 | u32 child_payload_offset
+    // Total: 2 + mbc + 2 + 1 + 4 + 4 + 4 bytes (= wrapper_end - body_cursor).
     let child_type_index = read_u16(raw, body_cursor + 2 + mbc);
+    let child_reserved = raw[body_cursor + 2 + mbc + 2];
+    let child_sentinel1 = read_u32(raw, body_cursor + 2 + mbc + 3);
+    let child_sentinel2 = read_u32(raw, body_cursor + 2 + mbc + 7);
     let child_payload_offset = read_u32(raw, body_cursor + 2 + mbc + 11);
 
     let child_type_def = by_index.get(&(child_type_index as u32)).copied();
@@ -534,7 +549,9 @@ fn decode_inline_object_locator(
             }
             decode_inline_object_payload(raw, td, &child_mask_owned, start, tail, by_index)
                 .ok()
-                .map(|(child_end, _, _, fields)| (start, child_end, fields))
+                .map(|(child_end, reserved, _, fields, pad)| {
+                    (start, child_end, reserved, fields, pad)
+                })
         };
 
         let mut decoded = try_payload(wrapper_end, tail_cursor);
@@ -542,7 +559,7 @@ fn decode_inline_object_locator(
             decoded = try_payload(child_payload_offset as usize, raw.len());
         }
 
-        if let Some((payload_start, child_end, fields)) = decoded {
+        if let Some((payload_start, child_end, payload_reserved, fields, pad)) = decoded {
             if payload_start == wrapper_end {
                 // Inline: outer forward cursor advances past wrapper + child.
                 end = child_end;
@@ -554,22 +571,40 @@ fn decode_inline_object_locator(
                 data_size: (child_end - payload_start) as u32,
                 mask_byte_count: mbc as u16,
                 mask_bytes: child_mask_owned,
-                reserved_u32: 0,
+                reserved_u32: payload_reserved,
                 fields,
-                trailing_pad: Vec::new(),
+                trailing_pad: pad,
                 undecoded_ranges: Vec::new(),
+                locator_wrapper: Some(ObjectLocatorWrapper {
+                    type_index: child_type_index,
+                    child_reserved,
+                    sentinel1: child_sentinel1,
+                    sentinel2: child_sentinel2,
+                    payload_offset: child_payload_offset,
+                }),
             }));
         }
     }
 
+    let wrapper_prefix = raw[field_start..body_cursor].to_vec();
     let value = FieldValue::Locator {
         child_type_index,
         child_type_name,
         child_payload_offset,
+        child_reserved,
+        child_sentinel1,
+        child_sentinel2,
+        wrapper_prefix,
         child: child_block,
     };
     Ok((end, value))
 }
+
+/// Decoded inline-object payload: `(end_offset, reserved_u32, size_u32,
+/// fields, pad)`. `pad` holds any bytes between the forward-walk's end
+/// cursor and the trailing-size location — needed for round-trip
+/// encoding.
+type InlinePayloadDecode = (usize, u32, u32, Vec<DecodedField>, Vec<u8>);
 
 /// Decode one inline-object payload (used by the locator path when the
 /// child sits right after the wrapper). The payload terminates at a
@@ -581,7 +616,7 @@ fn decode_inline_object_payload(
     payload_start: usize,
     tail_cursor: usize,
     by_index: &HashMap<u32, &TypeDef>,
-) -> io::Result<(usize, u32, u32, Vec<DecodedField>)> {
+) -> io::Result<InlinePayloadDecode> {
     if payload_start + 8 > tail_cursor {
         return overrun("inline object payload");
     }
@@ -720,7 +755,13 @@ fn decode_inline_object_payload(
         )
     })?;
     let size_u32 = read_u32(raw, size_at);
-    Ok((size_at + 4, reserved_u32, size_u32, fields))
+    // Bytes between the forward-walk end and the trailing-size location
+    // are not claimed by any field. The decoder previously dropped them
+    // (they were still "covered" at the enclosing block level via
+    // collect_decoded_ranges, so undecoded_ranges stayed empty). The
+    // encoder needs them verbatim — return as a pad slice to caller.
+    let pad = raw[cursor..size_at].to_vec();
+    Ok((size_at + 4, reserved_u32, size_u32, fields, pad))
 }
 
 fn decode_object_list(
@@ -836,14 +877,20 @@ fn try_decode_object_list_at(
         body_cursor + header_size
     };
 
+    // Capture every byte from the field's declared start (`field_cursor`)
+    // up to the end of the variant header (`body_cursor + header_size`).
+    // When `decode_object_list` tried body_offset > 0, the bytes between
+    // `field_cursor` and `body_cursor` are skipped padding that the
+    // encoder needs to re-emit; including them here keeps the round-trip
+    // byte-perfect.
+    let header_bytes = raw[field_cursor..body_cursor + header_size].to_vec();
+
     let value = FieldValue::ObjectList {
         count,
         header_variant,
+        header_bytes,
         elements,
     };
-    // `field_cursor` is the field's start offset; `end` minus that gives
-    // the field length the caller can record.
-    let _ = field_cursor;
     Ok((end, value, header_variant))
 }
 
@@ -859,7 +906,11 @@ fn decode_object_list_element(
             child: Some(b),
             child_type_index,
             child_type_name,
-            ..
+            child_reserved,
+            child_sentinel1,
+            child_sentinel2,
+            child_payload_offset,
+            wrapper_prefix: _,
         } => {
             let mut block = *b;
             // Inline iff the child's bytes end exactly where the locator
@@ -871,19 +922,33 @@ fn decode_object_list_element(
             // block's data range pointing at the payload only; the wrapper
             // bytes are claimed by the outer object_list field's
             // start..end range.
-            let _ = (child_type_index, child_type_name);
+            let _ = child_type_name;
             let inline = (block.data_offset as usize + block.data_size as usize) == end;
             if inline {
                 block.data_offset = cursor as u32;
                 block.data_size = (end - cursor) as u32;
             }
+            // Make sure the child block carries the wrapper bytes; decode_inline_object_locator
+            // already sets this, but defensively re-stamp so list-element call sites
+            // produce a consistent shape.
+            block.locator_wrapper = Some(ObjectLocatorWrapper {
+                type_index: child_type_index,
+                child_reserved,
+                sentinel1: child_sentinel1,
+                sentinel2: child_sentinel2,
+                payload_offset: child_payload_offset,
+            });
             Ok((end, block))
         }
         FieldValue::Locator {
             child: None,
             child_type_index,
             child_type_name,
-            ..
+            child_reserved,
+            child_sentinel1,
+            child_sentinel2,
+            child_payload_offset,
+            wrapper_prefix: _,
         } => {
             // The wrapper was structurally valid but the child payload
             // decode failed (e.g. an unfamiliar dynamic_array header
@@ -902,6 +967,13 @@ fn decode_object_list_element(
                 fields: Vec::new(),
                 trailing_pad: Vec::new(),
                 undecoded_ranges: Vec::new(),
+                locator_wrapper: Some(ObjectLocatorWrapper {
+                    type_index: child_type_index,
+                    child_reserved,
+                    sentinel1: child_sentinel1,
+                    sentinel2: child_sentinel2,
+                    payload_offset: child_payload_offset,
+                }),
             };
             Ok((end, block))
         }

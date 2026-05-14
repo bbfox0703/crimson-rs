@@ -1688,7 +1688,7 @@ fn fill_field_value<'py>(
             d.set_item("bytes", PyBytes::new(py, bytes))?;
             Ok(())
         }
-        FieldValue::DynamicArray { count, bytes, header_variant } => {
+        FieldValue::DynamicArray { count, bytes, header_variant, .. } => {
             d.set_item("count", *count)?;
             d.set_item("bytes", PyBytes::new(py, bytes))?;
             d.set_item("header_variant", *header_variant)?;
@@ -1699,6 +1699,7 @@ fn fill_field_value<'py>(
             child_type_name,
             child_payload_offset,
             child,
+            ..
         } => {
             d.set_item("child_type_index", *child_type_index)?;
             d.set_item("child_type_name", child_type_name)?;
@@ -1708,7 +1709,7 @@ fn fill_field_value<'py>(
             }
             Ok(())
         }
-        FieldValue::ObjectList { count, header_variant, elements } => {
+        FieldValue::ObjectList { count, header_variant, elements, .. } => {
             d.set_item("count", *count)?;
             d.set_item("header_variant", *header_variant)?;
             let list = PyList::empty(py);

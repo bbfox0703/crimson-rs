@@ -40,7 +40,15 @@ mod crypto;
 mod header;
 mod io;
 
-pub use body::{Body, DecodedField, FieldKind, FieldValue, ObjectBlock, ScalarValue};
+// `ObjectLocatorWrapper` and `encode_body` are part of the public API
+// surface used by downstream C ABI / Python consumers; the `unused_imports`
+// allow keeps clippy quiet when no in-crate code happens to reference them
+// via the `crate::save::` path.
+#[allow(unused_imports)]
+pub use body::{
+    Body, DecodedField, FieldKind, FieldValue, ObjectBlock, ObjectLocatorWrapper, ScalarValue,
+    encode_body, encode_top_level_block,
+};
 pub use header::{HEADER_SIZE, SaveHeader};
 pub use io::Save;
 #[cfg(feature = "c_abi")]

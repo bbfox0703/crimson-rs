@@ -673,4 +673,256 @@ mod tests {
         );
         let _ = path;
     }
+
+    /// Walk every save.save under %LOCALAPPDATA%\Pearl Abyss\CD\save\<UserID>\
+    /// (slot0..slot199). Returns `(path, file_bytes)` for each one found.
+    /// Empty if no install / saves present.
+    fn collect_all_saves() -> Vec<(std::path::PathBuf, Vec<u8>)> {
+        use std::path::PathBuf;
+        let Some(local) = std::env::var_os("LOCALAPPDATA") else {
+            return Vec::new();
+        };
+        let save_root = PathBuf::from(local).join("Pearl Abyss/CD/save");
+        let Ok(users) = std::fs::read_dir(&save_root) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for user in users.flatten() {
+            let user_path = user.path();
+            if !user_path.is_dir() {
+                continue;
+            }
+            let Ok(entries) = std::fs::read_dir(&user_path) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let Some(name_str) = name.to_str() else {
+                    continue;
+                };
+                if !name_str.starts_with("slot") {
+                    continue;
+                }
+                let save_path = entry.path().join("save.save");
+                if let Ok(data) = std::fs::read(&save_path) {
+                    out.push((save_path, data));
+                }
+            }
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
+    /// Walk a decoded ObjectBlock tree looking for the smallest sub-element
+    /// whose stored `data_offset..data_offset+data_size` range straddles the
+    /// given body offset. Useful for narrowing down a roundtrip failure.
+    fn find_element_at_offset<'a>(
+        block: &'a crate::save::ObjectBlock,
+        path: &str,
+        target_offset: usize,
+    ) -> Option<(String, &'a crate::save::ObjectBlock)> {
+        use crate::save::FieldValue;
+        for field in &block.fields {
+            match &field.value {
+                FieldValue::ObjectList { elements, .. } => {
+                    for (i, el) in elements.iter().enumerate() {
+                        let s = el.data_offset as usize;
+                        let e = s + el.data_size as usize;
+                        if (s..e).contains(&target_offset) {
+                            let sub_path = format!("{path}.{}[{}]", field.name, i);
+                            return find_element_at_offset(el, &sub_path, target_offset)
+                                .or(Some((sub_path, el)));
+                        }
+                    }
+                }
+                FieldValue::Locator { child: Some(c), .. } => {
+                    let s = c.data_offset as usize;
+                    let e = s + c.data_size as usize;
+                    if (s..e).contains(&target_offset) {
+                        let sub_path = format!("{path}.{}<child>", field.name);
+                        return find_element_at_offset(c, &sub_path, target_offset)
+                            .or(Some((sub_path, c)));
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// Per-block round-trip: for every top-level TOC block, encode it
+    /// standalone and check the bytes match `raw[block.data_offset..end]`.
+    /// Pinpoints the offending block + class when the encoder drops bytes.
+    #[test]
+    fn test_save_body_block_roundtrip_per_block() {
+        use crate::save::{Body, Save, encode_top_level_block};
+        let saves = collect_all_saves();
+        if saves.is_empty() {
+            eprintln!("skipping per-block roundtrip: no saves found");
+            return;
+        }
+        let mut total_blocks = 0usize;
+        for (path, data) in &saves {
+            let save = Save::parse(data).unwrap();
+            let body = Body::parse(&save.body).unwrap();
+            let blocks = body.decode_blocks(&save.body);
+            total_blocks += blocks.len();
+            for block in &blocks {
+                let start = block.data_offset as usize;
+                let end = start + block.data_size as usize;
+                let original = &save.body[start..end];
+                let encoded = encode_top_level_block(block).unwrap_or_else(|e| {
+                    panic!(
+                        "{}: encode failed for block toc_idx?? class={} ({}): {}",
+                        path.display(),
+                        block.class_name,
+                        block.class_index,
+                        e
+                    )
+                });
+                if encoded.as_slice() != original {
+                    // Find the first divergent byte for a useful diagnostic.
+                    let first_diff = original
+                        .iter()
+                        .zip(encoded.iter())
+                        .position(|(a, b)| a != b)
+                        .unwrap_or(original.len().min(encoded.len()));
+                    // Locate the smallest sub-element that contains the
+                    // diff offset, so failures pinpoint a specific element.
+                    let body_diff_offset = start + first_diff;
+                    let smallest = find_element_at_offset(
+                        block,
+                        &block.class_name,
+                        body_diff_offset,
+                    );
+                    let element_info = match smallest {
+                        Some((p, el)) => {
+                            let mut s = format!(
+                                "    smallest containing element: {p}\n      class={} data_offset={:#x} data_size={} mask_bytes={:02x?} reserved={:#x} trailing_pad_len={}",
+                                el.class_name,
+                                el.data_offset,
+                                el.data_size,
+                                el.mask_bytes,
+                                el.reserved_u32,
+                                el.trailing_pad.len(),
+                            );
+                            let el_start = el.data_offset as usize;
+                            let el_end = el_start + el.data_size as usize;
+                            let intra = body_diff_offset.saturating_sub(el_start);
+                            s.push_str(&format!(
+                                "\n      diff at intra-element offset {} ({:#x})",
+                                intra, intra,
+                            ));
+                            s.push_str("\n      element fields:");
+                            for f in &el.fields {
+                                if f.start < f.end {
+                                    let rs = f.start - el_start;
+                                    let re = f.end - el_start;
+                                    s.push_str(&format!(
+                                        "\n        #{:2} {:28} kind={:14} [{:#x}..{:#x}) len={}",
+                                        f.field_index, f.name, f.kind.as_str(), rs, re, re - rs,
+                                    ));
+                                } else if f.present {
+                                    s.push_str(&format!(
+                                        "\n        #{:2} {:28} kind={:14} (present, no span)",
+                                        f.field_index, f.name, f.kind.as_str(),
+                                    ));
+                                }
+                            }
+                            s.push_str(&format!(
+                                "\n      element original bytes: {:02x?}",
+                                &save.body[el_start..el_end]
+                            ));
+                            s
+                        }
+                        None => "    (no sub-element found at diff offset)".to_string(),
+                    };
+                    // Walk the field tree printing each field's intra-block
+                    // span so we can identify which one straddles the diff.
+                    let mut field_dump = String::new();
+                    let block_start = block.data_offset as usize;
+                    for field in &block.fields {
+                        if field.start < field.end {
+                            let rel_start = field.start - block_start;
+                            let rel_end = field.end - block_start;
+                            field_dump.push_str(&format!(
+                                "    field #{:2} {:30} kind={:14} [{:#x}..{:#x}) len={}\n",
+                                field.field_index,
+                                field.name,
+                                field.kind.as_str(),
+                                rel_start,
+                                rel_end,
+                                rel_end - rel_start,
+                            ));
+                        }
+                    }
+                    panic!(
+                        "{}: block class={} ({}) at offset {:#x} did not round-trip\n  \
+                         original len={}, encoded len={}\n  \
+                         first diff at intra-block offset {} ({:#x})\n  \
+                         original bytes [diff-32 .. diff+32]: {:02x?}\n  \
+                         encoded  bytes [diff-32 .. diff+32]: {:02x?}\n{}\n  \
+                         field map:\n{}",
+                        path.display(),
+                        block.class_name,
+                        block.class_index,
+                        start,
+                        original.len(),
+                        encoded.len(),
+                        first_diff,
+                        first_diff,
+                        &original[first_diff.saturating_sub(32)..(first_diff + 32).min(original.len())],
+                        &encoded[first_diff.saturating_sub(32)..(first_diff + 32).min(encoded.len())],
+                        element_info,
+                        field_dump,
+                    );
+                }
+            }
+            println!(
+                "{}: {} blocks all round-trip ok",
+                path.display(),
+                blocks.len()
+            );
+        }
+        println!("per-block roundtrip OK across {} saves, {} blocks total", saves.len(), total_blocks);
+    }
+
+    /// Full-body round-trip: Body::parse → decode_blocks → Body::write must
+    /// produce bytes identical to the original `save.body`.
+    #[test]
+    fn test_save_body_full_roundtrip() {
+        use crate::save::{Body, Save};
+        let saves = collect_all_saves();
+        if saves.is_empty() {
+            eprintln!("skipping full-body roundtrip: no saves found");
+            return;
+        }
+        for (path, data) in &saves {
+            let save = Save::parse(data).unwrap();
+            let body = Body::parse(&save.body).unwrap();
+            let blocks = body.decode_blocks(&save.body);
+            let written = body.write(&save.body, &blocks).unwrap_or_else(|e| {
+                panic!("{}: body.write failed: {}", path.display(), e)
+            });
+            if written != save.body {
+                let first_diff = save
+                    .body
+                    .iter()
+                    .zip(written.iter())
+                    .position(|(a, b)| a != b)
+                    .unwrap_or(save.body.len().min(written.len()));
+                panic!(
+                    "{}: body did not round-trip\n  \
+                     original len={}, written len={}\n  \
+                     first diff at body offset {} ({:#x})",
+                    path.display(),
+                    save.body.len(),
+                    written.len(),
+                    first_diff,
+                    first_diff,
+                );
+            }
+            println!("{}: full body round-trip ok ({} bytes)", path.display(), save.body.len());
+        }
+    }
 }
