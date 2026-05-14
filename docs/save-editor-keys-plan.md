@@ -31,7 +31,7 @@ chain.
 | --- | ---:| --- | --- | --- | --- |
 | **SkillKey** | 0 (absent in this save) | `skill.pabgb` + `.pabgh` | ✅ | ✅ `src/c_abi/skill_info.rs` | A — gamedata table |
 | **KnowledgeKey** | 392 | `knowledgeinfo.pabgb` | ✗ | ✗ | A — gamedata table |
-| **MissionKey** | 1,299 | `missioninfo.pabgb` + PALOC u64 | ✗ | ✗ | **A + hash hop (verified end-to-end)** |
+| **MissionKey** | 1,299 | `missioninfo.pabgb` + PALOC u64 | ✅ | ✅ `src/c_abi/mission_info.rs` | **A + hash hop (shipped)** |
 | **QuestKey** | 6 | `questinfo.pabgb` + PALOC u64 | ✗ | ✗ | **A + hash hop** |
 | **QuestGaugeKey** | 0 (rare) | `questgaugeinfo.pabgb` | ✗ | ✗ | A — gamedata table |
 | **StageKey** | 36,613 | `stageinfo.pabgb` + PALOC u64 | ✗ | ✗ | **A + hash hop (verified)** |
@@ -241,6 +241,9 @@ the transform here first before committing to a bridge design.
 
 ## 3. MissionKey + QuestKey titles — Pattern A + hash hop
 
+**MissionKey bridge SHIPPED** in `src/c_abi/mission_info.rs`. QuestKey
+bridge still TBD; its shape is mechanical from missioninfo's template.
+
 The architecture I drafted in earlier versions of this doc proposed
 parsing PALOC `0xC1` entries and walking embedded
 `{staticInfo:Mission:KEY}` tokens. That's no longer needed. With the
@@ -258,6 +261,32 @@ Same chain for QuestKey, with the row from `questinfo.pabgb` and (often)
 `lo32 = 0x100` for arc headings rather than `0x101` for individual
 quests. The two `.pabgb` files seem to share the naming convention
 modulo the prefix.
+
+### MissionKey bridge — shipped surface
+
+```c
+crimson_missioninfo_load_from_file(path, &handle);
+crimson_missioninfo_load_from_bytes(data, len, &handle);
+crimson_missioninfo_entry_count(handle, &count);
+crimson_missioninfo_lookup_string_key(handle, key, buf, len, &req);
+    // → "Mission_Intro_Tutorial_I" (debug / fallback)
+crimson_missioninfo_lookup_display_name(
+    handle, paloc_handle, key, lo32_namespace, buf, len, &req);
+    // → "Unfamiliar Lands" (production, one FFI call)
+crimson_missioninfo_get_entry(handle, idx, &key, buf, len, &req);
+crimson_missioninfo_free(handle);
+```
+
+Loaded once at startup against the PAZ-extracted
+`missioninfo.pabgb`. The display_name function chains through the
+existing PALOC handle so the editor doesn't have to compose
+`name → hash → u64 → decimal-format → PALOC.lookup` in C#.
+
+Backed by a lossy anchor scanner in `src/mission_info/mod.rs` —
+schema RE for byte-roundtrip is **not** done (and not needed) because
+the bridge only consumes `(key, name)`. The scanner validates each
+candidate header rigorously (key < 2^24, name_len ∈ [2,128],
+identifier-byte name); zero false positives observed on 1.06.
 
 ### ABI shape — two options
 
@@ -510,16 +539,13 @@ Picking by `(value × tractability) / risk`:
 
 1. ~~**SkillKey**~~ — done
 2. ~~**`crimson_calculate_checksum` C ABI**~~ — done
-   (`src/c_abi/checksum.rs`, 4 tests pinned against the verified
-   `(internal_name, hi32)` mappings)
-3. **MissionKey via missioninfo bridge** (Option B from §3) — the big
-   user-visible win. The bridge can use the anchor-scan shortcut to
-   skip a full schema RE — just walk `[u32 key][u32 name_len][name]`
-   headers and retain the `(key, name)` pair, exactly like iteminfo
-   and skillinfo do internally.
-4. **QuestKey via questinfo bridge** — small parallel work; same shape
-   as missioninfo.
-5. **StageKey via stageinfo bridge** — now verified (§5), no
+3. ~~**MissionKey via missioninfo bridge** (Option B)~~ — done
+   (`src/c_abi/mission_info.rs`, 5 tests including live full-chain
+   integration against the 7 ground-truth mappings)
+4. **QuestKey via questinfo bridge** — mechanical copy of missioninfo
+   shape. Same lossy anchor scanner, default `lo32 = 0x100` for arc
+   headings vs `0x101` for quests.
+5. **StageKey via stageinfo bridge** — verified (§5), no
    investigation gate. Highest row count of any bridge (46k+).
 6. **KnowledgeKey** (Pattern A) — small parser + the namespace test
    from Q3.
@@ -587,6 +613,11 @@ No public API breakage on existing surface.
   `src/c_abi/checksum.rs`. Tests pinned against the verified
   `(internal_name, hi32)` mappings so a future regression to the
   Jenkins variant would surface immediately.
+- ~~MissionKey bridge~~ — shipped (`src/c_abi/mission_info.rs` +
+  `src/mission_info/`). Anchor-scan parser + Option B one-shot
+  `lookup_display_name` that chains MissionKey → name → hash →
+  PALOC u64 → display title in one FFI call. Live integration test
+  against all 7 ground-truth mappings passes.
 
 ## Open user decisions
 
