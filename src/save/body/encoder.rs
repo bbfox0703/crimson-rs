@@ -50,14 +50,22 @@ use super::object::{
     DecodedField, FieldKind, FieldValue, ObjectBlock, ObjectLocatorWrapper, ScalarValue,
 };
 
-/// Encode a single top-level TOC block back to bytes.
+/// Encode a single top-level TOC block back to bytes, treating
+/// `block_data_offset` as the absolute body offset where this block
+/// will sit. The encoder uses this to recompute each locator
+/// wrapper's `payload_offset` u32 (an absolute body offset that
+/// points at the wrapper's inline payload) instead of trusting the
+/// stored value, which goes stale the moment a block moves.
 ///
-/// The output matches the byte range `raw[block.data_offset..block.data_offset+block.data_size]`
-/// for unmodified blocks parsed by the decoder.
-pub fn encode_top_level_block(block: &ObjectBlock) -> io::Result<Vec<u8>> {
+/// For unmodified blocks (where `block_data_offset` matches
+/// `block.data_offset` — the location the decoder originally read
+/// them from), the output is byte-identical to the original save.
+/// For mutated saves where blocks have shifted, the recomputed
+/// `payload_offset` values point at the new wrapper-end locations.
+pub fn encode_top_level_block(block: &ObjectBlock, block_data_offset: u32) -> io::Result<Vec<u8>> {
     let mut out = Vec::with_capacity(block.data_size as usize);
     write_block_header(&mut out, block);
-    write_block_fields(&mut out, block)?;
+    write_block_fields(&mut out, block, block_data_offset)?;
     Ok(out)
 }
 
@@ -98,16 +106,30 @@ pub fn encode_body(
         ));
     }
 
-    // Encode each block first so we know its size.
-    let mut block_bytes: Vec<Vec<u8>> = Vec::with_capacity(blocks.len());
-    for block in blocks {
-        block_bytes.push(encode_top_level_block(block)?);
-    }
+    // Encode each block first so we know its size. To compute the
+    // absolute body offset to pass each `encode_top_level_block` call,
+    // we need to know the block's data_offset upfront — but data_offset
+    // depends on the cumulative size of preceding blocks, which we
+    // don't know yet. Two-pass approach: encode every block once with
+    // its OLD `data_offset`, accumulate sizes, then if the new offset
+    // differs, re-encode that block with the corrected absolute offset.
+    //
+    // Most edits are append/insert-at-front, so a few blocks move and
+    // need re-encoding; the rest match their old data_offset. For an
+    // unmodified body, the second pass is a no-op.
 
     let toc_header_size = 3 * 4;
     let toc_entry_size = 5 * 4;
     let toc_total = toc_header_size + blocks.len() * toc_entry_size;
     let data_start = body.schema.schema_end + toc_total;
+
+    // First pass: encode using the block's OLD data_offset as the body
+    // position. For unmodified blocks this is correct; for moved blocks
+    // we'll patch in pass 2.
+    let mut block_bytes: Vec<Vec<u8>> = Vec::with_capacity(blocks.len());
+    for block in blocks {
+        block_bytes.push(encode_top_level_block(block, block.data_offset)?);
+    }
 
     // Recompute data_offset for each block, accumulating from data_start.
     let mut offsets: Vec<u32> = Vec::with_capacity(blocks.len());
@@ -117,6 +139,26 @@ pub fn encode_body(
         cursor += bytes.len();
     }
     let stream_size = cursor as u32;
+
+    // Second pass: re-encode any block whose NEW data_offset differs
+    // from its OLD data_offset. The re-encoded bytes have the same
+    // length (encoder is deterministic w.r.t. structural shape) but
+    // carry the corrected absolute `payload_offset` values inside
+    // locator wrappers.
+    for (i, block) in blocks.iter().enumerate() {
+        if offsets[i] != block.data_offset {
+            let re_encoded = encode_top_level_block(block, offsets[i])?;
+            debug_assert_eq!(
+                re_encoded.len(),
+                block_bytes[i].len(),
+                "block {} re-encode size drift: {} -> {}",
+                i,
+                block_bytes[i].len(),
+                re_encoded.len()
+            );
+            block_bytes[i] = re_encoded;
+        }
+    }
 
     let mut out = Vec::with_capacity(cursor);
     out.extend_from_slice(prefix_schema_bytes);
@@ -151,13 +193,13 @@ fn write_block_header(out: &mut Vec<u8>, block: &ObjectBlock) {
     write_u32(out, block.reserved_u32);
 }
 
-fn write_block_fields(out: &mut Vec<u8>, block: &ObjectBlock) -> io::Result<()> {
+fn write_block_fields(out: &mut Vec<u8>, block: &ObjectBlock, block_data_offset: u32) -> io::Result<()> {
     // Forward pass: emit every field except FixedSuffix in index order.
     for field in &block.fields {
         if field.kind == FieldKind::FixedSuffix {
             continue;
         }
-        encode_field(out, field)?;
+        encode_field(out, field, block_data_offset)?;
     }
     // Trailing pad sits between forward fields and the reverse-peeled tail.
     out.extend_from_slice(&block.trailing_pad);
@@ -166,12 +208,12 @@ fn write_block_fields(out: &mut Vec<u8>, block: &ObjectBlock) -> io::Result<()> 
         if field.kind != FieldKind::FixedSuffix {
             continue;
         }
-        encode_field(out, field)?;
+        encode_field(out, field, block_data_offset)?;
     }
     Ok(())
 }
 
-fn encode_field(out: &mut Vec<u8>, field: &DecodedField) -> io::Result<()> {
+fn encode_field(out: &mut Vec<u8>, field: &DecodedField, block_data_offset: u32) -> io::Result<()> {
     match field.kind {
         FieldKind::Absent | FieldKind::Unknown => Ok(()),
         FieldKind::FixedPrefix | FieldKind::FixedSuffix => match &field.value {
@@ -218,7 +260,7 @@ fn encode_field(out: &mut Vec<u8>, field: &DecodedField) -> io::Result<()> {
                 ),
             )),
         },
-        FieldKind::ObjectLocator => encode_locator_field(out, field),
+        FieldKind::ObjectLocator => encode_locator_field(out, field, block_data_offset),
         FieldKind::ObjectList => match &field.value {
             FieldValue::ObjectList {
                 header_bytes,
@@ -227,7 +269,7 @@ fn encode_field(out: &mut Vec<u8>, field: &DecodedField) -> io::Result<()> {
             } => {
                 out.extend_from_slice(header_bytes);
                 for element in elements {
-                    encode_list_element(out, element)?;
+                    encode_list_element(out, element, block_data_offset)?;
                 }
                 Ok(())
             }
@@ -239,10 +281,9 @@ fn encode_field(out: &mut Vec<u8>, field: &DecodedField) -> io::Result<()> {
     }
 }
 
-fn encode_locator_field(out: &mut Vec<u8>, field: &DecodedField) -> io::Result<()> {
+fn encode_locator_field(out: &mut Vec<u8>, field: &DecodedField, block_data_offset: u32) -> io::Result<()> {
     let FieldValue::Locator {
         child_type_index,
-        child_payload_offset,
         child_reserved,
         child_sentinel1,
         child_sentinel2,
@@ -294,7 +335,15 @@ fn encode_locator_field(out: &mut Vec<u8>, field: &DecodedField) -> io::Result<(
     out.push(*child_reserved);
     write_u32(out, *child_sentinel1);
     write_u32(out, *child_sentinel2);
-    write_u32(out, *child_payload_offset);
+    // payload_offset is the ABSOLUTE body offset where this wrapper's
+    // inline payload starts (= wrapper_end). Recompute from the
+    // current encode position instead of trusting the stored
+    // `child_payload_offset` value, which is correct only when the
+    // containing block hasn't moved. After a clone-insert or list
+    // shift, the stored value is stale and the game's load-time
+    // pointer chase crashes on the dangling offset.
+    let wrapper_end_body_offset = block_data_offset + (out.len() as u32) + 4;
+    write_u32(out, wrapper_end_body_offset);
 
     // Inline child payload? The decoder advanced `end = child_end` only
     // when payload_start == wrapper_end. For non-inline cases (payload
@@ -305,12 +354,12 @@ fn encode_locator_field(out: &mut Vec<u8>, field: &DecodedField) -> io::Result<(
     let field_len = field.end.saturating_sub(field.start);
     if field_len > wrapper_size {
         // Inline child payload follows. Emit it.
-        encode_inline_payload(out, child_block)?;
+        encode_inline_payload(out, child_block, block_data_offset)?;
     }
     Ok(())
 }
 
-fn encode_list_element(out: &mut Vec<u8>, element: &ObjectBlock) -> io::Result<()> {
+fn encode_list_element(out: &mut Vec<u8>, element: &ObjectBlock, block_data_offset: u32) -> io::Result<()> {
     let wrapper = element.locator_wrapper.as_ref().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -320,14 +369,15 @@ fn encode_list_element(out: &mut Vec<u8>, element: &ObjectBlock) -> io::Result<(
             ),
         )
     })?;
-    encode_list_element_wrapper(out, element, wrapper);
-    encode_inline_payload(out, element)
+    encode_list_element_wrapper(out, element, wrapper, block_data_offset);
+    encode_inline_payload(out, element, block_data_offset)
 }
 
 fn encode_list_element_wrapper(
     out: &mut Vec<u8>,
     element: &ObjectBlock,
     wrapper: &ObjectLocatorWrapper,
+    block_data_offset: u32,
 ) {
     write_u16(out, element.mask_byte_count);
     out.extend_from_slice(&element.mask_bytes);
@@ -335,7 +385,12 @@ fn encode_list_element_wrapper(
     out.push(wrapper.child_reserved);
     write_u32(out, wrapper.sentinel1);
     write_u32(out, wrapper.sentinel2);
-    write_u32(out, wrapper.payload_offset);
+    // Same payload_offset recomputation as encode_locator_field: write
+    // the ABSOLUTE body offset of the wrapper's end (= start of the
+    // inline payload that follows). Stored wrapper.payload_offset is
+    // ignored — stale after any list shift.
+    let wrapper_end_body_offset = block_data_offset + (out.len() as u32) + 4;
+    write_u32(out, wrapper_end_body_offset);
 }
 
 /// Inline object payload: `u32 reserved | fields | pad | u32 trailing_size`.
@@ -346,22 +401,22 @@ fn encode_list_element_wrapper(
 /// claim under any field — captured on the child block as `trailing_pad`
 /// so the encoder can splat them back here (no field ownership for them,
 /// but they need to round-trip).
-fn encode_inline_payload(out: &mut Vec<u8>, child: &ObjectBlock) -> io::Result<()> {
+fn encode_inline_payload(out: &mut Vec<u8>, child: &ObjectBlock, block_data_offset: u32) -> io::Result<()> {
     let payload_start = out.len();
     write_u32(out, child.reserved_u32);
-    write_inline_payload_fields(out, child)?;
+    write_inline_payload_fields(out, child, block_data_offset)?;
     out.extend_from_slice(&child.trailing_pad);
     let trailing_size = (out.len() - payload_start) as u32;
     write_u32(out, trailing_size);
     Ok(())
 }
 
-fn write_inline_payload_fields(out: &mut Vec<u8>, child: &ObjectBlock) -> io::Result<()> {
+fn write_inline_payload_fields(out: &mut Vec<u8>, child: &ObjectBlock, block_data_offset: u32) -> io::Result<()> {
     // Inline payload field walk is FORWARD-ONLY (no reverse pass) — see
     // decoder::decode_inline_object_payload. So no FixedSuffix handling,
     // no trailing_pad split; just walk fields in order.
     for field in &child.fields {
-        encode_field(out, field)?;
+        encode_field(out, field, block_data_offset)?;
     }
     Ok(())
 }
