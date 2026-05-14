@@ -30,7 +30,7 @@ chain.
 | Key | Unresolved count* | Source | Rust parser | C ABI bridge | Pattern |
 | --- | ---:| --- | --- | --- | --- |
 | **SkillKey** | 0 (absent in this save) | `skill.pabgb` + `.pabgh` | ✅ | ✅ `src/c_abi/skill_info.rs` | A — gamedata table |
-| **KnowledgeKey** | 392 | `knowledgeinfo.pabgb` | ✗ | ✗ | A — gamedata table |
+| **KnowledgeKey** | 392 | `knowledgeinfo.pabgb` + PALOC u64 | ✅ | ✅ `src/c_abi/knowledge_info.rs` | **A + hash hop (shipped)** |
 | **MissionKey** | 1,299 | `missioninfo.pabgb` + PALOC u64 | ✅ | ✅ `src/c_abi/mission_info.rs` | **A + hash hop (shipped)** |
 | **QuestKey** | 6 | `questinfo.pabgb` + PALOC u64 | ✅ | ✅ `src/c_abi/quest_info.rs` | **A + hash hop (shipped)** |
 | **QuestGaugeKey** | 0 (rare) | `questgaugeinfo.pabgb` | ✅ | ✅ `src/c_abi/quest_gauge_info.rs` | A — gamedata table (**no hash hop**; gauges aren't in PALOC) |
@@ -218,24 +218,110 @@ Live install on 1.06 reports ~280 skills.
 
 ---
 
-## 2. KnowledgeKey — small, RE work needed first (Pattern A)
+## 2. KnowledgeKey — SHIPPED (Pattern A + hash hop)
 
-**File**: `0008/.../gamedata/knowledgeinfo.pabgb` (+ `knowledgegroupinfo.pabgb`)
+**Bridge SHIPPED** in `src/c_abi/knowledge_info.rs`.
 
-**Editor-side correction**: `CrimsonAtomtic/docs/status.md` item #4 groups
-SkillKey and KnowledgeKey under one "`skill_info` bridge" line, expecting
-the same parser to resolve both. It can't — they live in different
-`.pabgb` files. KnowledgeKey is a **separate bridge** (`src/knowledge_info/`
-+ `src/c_abi/knowledge_info.rs`).
+**File**: `0008/.../gamedata/knowledgeinfo.pabgb` (3 MB, ~5,500 rows).
 
-**Two-namespace finding from status.md §834**: small KnowledgeKey values
-(1, 2, 4, 7, 51) live at PALOC 0x93 as **knowledge category names**
-("Various Combat Skills", "Fundamentals of Cooking"). Large-numbered
-keys are knowledge *entries* and resolve elsewhere — quite possibly via
-the same hash-hop transform now that we know it exists. Worth testing
-the transform here first before committing to a bridge design.
+### Probe finding — hash transform applies, contrary to earlier hypothesis
 
-**Size**: 1–2 sessions.
+The editor's status.md and earlier drafts of this doc both
+hypothesised that KnowledgeKey wouldn't resolve through PALOC under
+the standard hash hop. **The probe disproved this.** Hashing every
+`Knowledge_*` name in `knowledgeinfo.pabgb` against the full
+124,800-entry English PALOC produced **29,330 hits** distributed
+across multiple namespaces:
+
+- `lo32 = 0x490` (1168): **5,483 hits** — knowledge entry title
+  (every row resolves here)
+- `lo32 = 0x491` (1169): 5,483 hits — short description (every row)
+- `lo32 = 0x49F` (1183): 5,483 hits — description alternate
+- `lo32 = 0x49D` (1181) / `0x49E` (1182): ~3,900 hits each —
+  secondary "lore" / "discovery" text variants
+- `lo32 = 0x890 / 0x891 / 0x89F` (~1,400 each), `0xC90 / 0xC91 /
+  0xC9F` (~100 each), etc. — paginated text variants for certain
+  sub-categories
+
+Sample mappings (used as live test fixtures):
+
+| KnowledgeKey | internal_name | lo32 | display title |
+| ---:| --- | ---:| --- |
+| 1002588 | `Knowledge_Node_Dem_Ruins_0007` | 0x490 | "Demenissian Ruins" |
+| 1002588 | (same) | 0x491 | "Ruins of the continent of Pywel." |
+| 1002294 | `Knowledge_Node_Dem_HiddenCave` | 0x490 | "Hidden Cave" |
+| 1002763 | `Knowledge_AbyssRuins_Dem_0020` | 0x490 | "Abyss Nexus" |
+| 1004037 | `Knowledge_Demian_Plate_Boots_V` | 0x490 | "Executioner of Darkness Plate Boots" |
+
+### What the bridge DOESN'T cover (intentionally)
+
+The user's "web data" reference showed a 4-level category hierarchy:
+
+```
+Creatures > Terrestrial Creatures > Amphibians > Burrowing Salamander
+People > Crimson Desert > Equipment Vendors > Brookner
+Mounts > Loyal Companions > Horses > Herspia
+```
+
+That hierarchy lives in **`knowledgegroupinfo.pabgb`** (a separate
+99 KB file, extracted to `out/baselines/1.06/` but not parsed by
+this bridge) as integer category IDs at `lo32 = 0x92 / 0x93`:
+
+| Category | hi32 (= group ID) | lo32 |
+| --- | ---:| --- |
+| Creatures | 4 | 0x92 |
+| People | 2 | 0x92 |
+| Terrestrial Creatures | 104 | 0x92 |
+| Amphibians | 1045 | 0x92 |
+| Bosses | 11 | 0x92 (also 0x93) |
+| Mounts | 15 | 0x92 |
+| Loyal Companions | 151 | 0x92 |
+| Horses | 1510 | 0x92 |
+
+Note `hi32` here is a **literal integer group ID**, not a Jenkins
+hash — confirms the editor's "small KnowledgeKey values live at
+PALOC 0x93" finding from status.md §834 was actually a **group-ID
+namespace**, not a small-leaf-KnowledgeKey namespace. The two are
+distinct: leaf knowledge titles use the hash hop at `lo32=0x490`,
+group rollups use the direct integer at `lo32=0x92/0x93`.
+
+Mapping a leaf KnowledgeKey to its parent group requires parsing
+the knowledgeinfo row body (the body bytes contain a group_id
+reference — confirmed by inspection during the probe). That's
+**out of scope for this bridge**. A future `knowledge_group_info`
+sibling bridge plus a `lookup_category_breadcrumb` chain could
+surface the full "Creatures > Terrestrial > Amphibians > X"
+trail. The shipped bridge stops at the leaf title.
+
+### Shipped surface
+
+```c
+crimson_knowledgeinfo_load_from_{file,bytes}(...)
+crimson_knowledgeinfo_entry_count(handle, &count)
+crimson_knowledgeinfo_lookup_string_key(handle, key, buf, len, &req)
+crimson_knowledgeinfo_lookup_display_name(handle, paloc_handle, key,
+                                          lo32_namespace,
+                                          buf, len, &req)
+crimson_knowledgeinfo_get_entry(handle, idx, &key, buf, len, &req)
+crimson_knowledgeinfo_free(handle)
+```
+
+5 tests (4 c_abi bridge + 1 parser module) including a live
+full-chain assertion on 5 (KnowledgeKey, internal_name, lo32,
+display_title) tuples, with the dual-namespace
+`Knowledge_Node_Dem_Ruins_0007` case to pin `lo32` as load-bearing
+(0x490 → "Demenissian Ruins", 0x491 → "Ruins of the continent of
+Pywel.").
+
+### Earlier corrections (preserved for the record)
+
+- `CrimsonAtomtic/docs/status.md` item #4 grouped SkillKey +
+  KnowledgeKey under one "skill_info bridge" line. They live in
+  different files; KnowledgeKey is a separate bridge.
+- Earlier drafts of this doc warned against shipping CrimsonForge's
+  regex scanner for `Knowledge_<name>\x00`. The shipped bridge
+  uses the same anchor-scan approach as mission/quest/stage instead
+  — header-based and deterministic.
 
 ---
 
@@ -543,11 +629,16 @@ Yes — `hashlittle2_c(name) << 32 | 0x101` (titles) or `0x102`
 "Intro_Tutorial_Miseenscene_00" → "Mise-en-scene Before Intro Combat"`.
 See §5.
 
-### Q3. KnowledgeKey small-vs-large namespace split
+### ~~Q3. KnowledgeKey small-vs-large namespace split~~ ✅ RESOLVED
 
-See §2. Small KnowledgeKey values resolve at PALOC `0x93` directly
-(category names). Large values may use the hash-hop transform on
-`Knowledge_*` row names. One-hour test once the bridge work starts.
+Leaf KnowledgeKey rows resolve via the **hash hop** at `lo32 = 0x490`
+(title), `0x491` (description), and 0x49D/E/F variants. The
+"small-value PALOC 0x93 entries" the editor noted are actually the
+**knowledge group rollup** (Creatures, People, Bosses, etc.) — a
+separate namespace where `hi32` is a literal integer group ID, not
+a hash. Those rollups live in `knowledgegroupinfo.pabgb`; the
+shipped bridge only covers the leaf table. See §2 for the full
+breakdown.
 
 ### Q4. What is lo32 = 0x490 (1168)?
 
@@ -589,8 +680,11 @@ Picking by `(value × tractability) / risk`:
 5. ~~**StageKey via stageinfo bridge**~~ — done
    (`src/c_abi/stage_info.rs`, 5 tests including the shop description
    case at `lo32=0x102`; 57k+ rows resolved per save)
-6. **KnowledgeKey** (Pattern A) — small parser + the namespace test
-   from Q3.
+6. ~~**KnowledgeKey**~~ — done
+   (`src/c_abi/knowledge_info.rs`, 5 tests; hash hop applies same
+   as mission/quest/stage. Default `lo32 = 0x490` for title.
+   Category breadcrumb via `knowledgegroupinfo.pabgb` is a future
+   enhancement, not shipped.)
 7. ~~**QuestGaugeKey**~~ — done
    (`src/c_abi/quest_gauge_info.rs`, 5 tests; no `lookup_display_name`
    because gauges have no PALOC entries at any namespace)
@@ -678,6 +772,13 @@ No public API breakage on existing surface.
   resolved-name column. The "honest" API design: no
   `paloc_handle` parameter anywhere, so callers can't be confused
   into thinking they'd get a localized title.
+- ~~KnowledgeKey bridge~~ — shipped
+  (`src/c_abi/knowledge_info.rs` + `src/knowledge_info/`). Same
+  hash-hop shape as mission/quest/stage; 29,330 PALOC hits in the
+  cross-validation probe. Default `lo32 = 0x490` for title;
+  `0x491` for description; 0x49D/E/F for variants. Disproves the
+  editor's earlier hypothesis that KnowledgeKey wouldn't resolve
+  through PALOC.
 
 ## Open user decisions
 
