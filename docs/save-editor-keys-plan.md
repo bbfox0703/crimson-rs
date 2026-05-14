@@ -1,5 +1,53 @@
 # Save Editor key resolvers — plan
 
+> **🎯 New session pickup — start here.**
+>
+> **Where we are (frozen 2026-05-14, dev = `e379624`)**: 7 of 9 original
+> execution-order items shipped. All save-side key types that the editor's
+> `QuestSaveData` block surfaces now resolve to localized display titles
+> through one-shot FFI calls. The Jenkins hash hop transform is verified
+> and pinned in `crimson_calculate_checksum` tests. See "Verified hash
+> transform" below for the one-paragraph architecture and
+> [`save-editor-keys-reference.md`](./save-editor-keys-reference.md) for
+> the 1.06 ground-truth comparison set.
+>
+> **Shipped this session**: `mission_info`, `quest_info`, `stage_info`,
+> `quest_gauge_info`, `knowledge_info` bridges + `checksum` extern "C"
+> wrapper. 124 tests with `c_abi`, 67 without. Clippy clean both modes.
+>
+> **Remaining**:
+> - **#8 FieldNPC + FieldGimmick** (next up) — Save Editor item #5 in
+>   their status.md. Spawn-template ID → real CharacterKey resolution.
+>   The lookup table has **not been located**; first half-session is
+>   investigation (grep the ~30 `.pabgb` files in group 0008 for a known
+>   FieldNPC key like `117_440_514` from the editor's keycases handoff).
+>   ABI shape pre-spec'd by the editor: `lookup_character_key(spawnId,
+>   out characterKey, out stringInfoHash) → i32`. See section #6 in this
+>   doc for the full spec.
+> - **#9 SubLevelKey** — defer until concretely needed; only 7 distinct
+>   values in the handoff.
+> - **Optional follow-ons** (recorded in "Open RE questions" + section
+>   #2 of this doc): knowledge group breadcrumb (would need
+>   `knowledge_group_info` sibling bridge + row-body parse), quest
+>   chapter rollup ("Prologue: Dead of Night" et al. — never located),
+>   lo32=0x490 mission-variant meaning (Q4, partially overshadowed by
+>   the knowledge work).
+>
+> **First concrete next action**: investigate `0008/.../gamedata/binary__/client/bin/`
+> for a file whose decrypted bytes contain the byte sequence
+> `02 00 00 07` (= FieldNPCSaveDataKey `117_440_514` in LE u32) at a
+> `(key, name_len, name)` anchor. If located, the bridge follows the
+> standard 7-function template — same as `mission_info` etc. Half-session
+> to investigate + 2 sessions to ship if it's a clean schema; otherwise
+> the value is genuinely save-internal and the bridge work is skipped.
+>
+> Extracted `.pabgb` baselines for this work live in
+> `out/baselines/1.06/` (gitignored). Re-extract with
+> `crimson_rs.extract_file(GAME_DIR, "0008", "gamedata/binary__/client/bin", "<file>.pabgb")`
+> if missing.
+
+---
+
 The Save Editor surfaces integer keys that decode against game-data tables
 and PALOC. This doc records the current state and the RE roadmap for each
 key category — what's shipped, what's blocked on what, and the recommended
