@@ -46,6 +46,17 @@ impl CrimsonPalocHandle {
         let by_key = entries.iter().cloned().collect();
         Ok(CrimsonPalocHandle { by_key, entries })
     }
+
+    /// In-crate lookup used by sibling bridges (e.g. `mission_info`)
+    /// that compose the `key → hash → u64 PALOC key → string` chain
+    /// internally. Returns `None` when the key isn't in the table.
+    ///
+    /// Not exposed to the C ABI directly — the C surface uses the
+    /// length-prefixed [`crimson_paloc_lookup`] entry point. This is
+    /// just the same `HashMap::get` without the FFI ceremony.
+    pub(crate) fn lookup_str(&self, key: &str) -> Option<&str> {
+        self.by_key.get(key).map(String::as_str)
+    }
 }
 
 // ── Load / free ────────────────────────────────────────────────────────────

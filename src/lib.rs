@@ -1,6 +1,8 @@
 mod binary;
 mod crypto;
 mod item_info;
+#[cfg(feature = "c_abi")]
+mod mission_info;
 mod python;
 mod save;
 mod skill_info;
