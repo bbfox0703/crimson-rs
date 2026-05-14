@@ -33,7 +33,7 @@ chain.
 | **KnowledgeKey** | 392 | `knowledgeinfo.pabgb` | ✗ | ✗ | A — gamedata table |
 | **MissionKey** | 1,299 | `missioninfo.pabgb` + PALOC u64 | ✅ | ✅ `src/c_abi/mission_info.rs` | **A + hash hop (shipped)** |
 | **QuestKey** | 6 | `questinfo.pabgb` + PALOC u64 | ✅ | ✅ `src/c_abi/quest_info.rs` | **A + hash hop (shipped)** |
-| **QuestGaugeKey** | 0 (rare) | `questgaugeinfo.pabgb` | ✗ | ✗ | A — gamedata table |
+| **QuestGaugeKey** | 0 (rare) | `questgaugeinfo.pabgb` | ✅ | ✅ `src/c_abi/quest_gauge_info.rs` | A — gamedata table (**no hash hop**; gauges aren't in PALOC) |
 | **StageKey** | 36,613 | `stageinfo.pabgb` + PALOC u64 | ✅ | ✅ `src/c_abi/stage_info.rs` | **A + hash hop (shipped)** |
 | **FieldNPC CharacterKey** | 103 | unknown spawn table | ✗ | ✗ | TBD |
 | **FieldGimmickSaveDataKey** | 4,363 | likely save-internal | ✗ | ✗ | save-internal *(presumed)* |
@@ -378,19 +378,57 @@ because no template-resolver is needed.
 
 ---
 
-## 4. QuestGaugeKey — small (Pattern A)
+## 4. QuestGaugeKey — SHIPPED (Pattern A, NO hash hop)
 
-**File**: `0008/.../gamedata/questgaugeinfo.pabgb`
+**Bridge SHIPPED** in `src/c_abi/quest_gauge_info.rs`.
 
-**From QuestSaveData**: 311 instances per save. Top-level field in the
-save block. Editor needs to surface the gauge name in the resolved-name
-column.
+**File**: `0008/.../gamedata/questgaugeinfo.pabgb` (40 KB on 1.06,
+~380 valid rows).
 
-Plausibly same hash-hop transform as Mission/Quest, with row names
-following a `QuestGauge_*` convention (not yet verified — confirm
-during schema RE).
+**Important deviation from mission/quest/stage**: exhaustive PALOC
+probe confirmed **QuestGauge names have zero PALOC hits at any
+namespace byte** (every u64 PALOC key in the 124,800-entry English
+table was scanned; not a single match). Gauges are internal-only
+progress meters (kill counters, faction-operation tickers,
+region-defense gauges) — the localized name a player sees comes from
+the referenced stage / mission, not the gauge itself.
 
-**Size**: 1 session, low risk.
+Practical consequence for the C ABI: the bridge exposes only
+`lookup_string_key` — there is **no `lookup_display_name`** function.
+The editor's resolved-name column surfaces the internal name directly
+(e.g. `"QuestGauge_WindCliffFort"`), which is enough context for a
+modder to recognise the gauge.
+
+Names follow the convention `QuestGauge_<region_or_theme>`. The
+parser uses a slightly tighter anchor-scan validator than its
+sibling parsers (first byte must be ASCII letter AND name must
+contain at least one `_`) to filter ~9 body-byte false positives the
+looser rules would let through.
+
+### Shipped surface
+
+```c
+crimson_questgaugeinfo_load_from_{file,bytes}(...)
+crimson_questgaugeinfo_entry_count(handle, &count)
+crimson_questgaugeinfo_lookup_string_key(handle, key, buf, len, &req)
+    // → "QuestGauge_WindCliffFort" (the only resolution surface)
+crimson_questgaugeinfo_get_entry(handle, idx, &key, buf, len, &req)
+crimson_questgaugeinfo_free(handle)
+```
+
+5 tests (4 c_abi bridge + 1 parser module) pin known mappings
+against the live install. No `paloc_handle` argument anywhere on
+the bridge — keeps the API surface honest about what the gauge
+table can and can't resolve.
+
+### Future enhancement (out of scope)
+
+The row body contains references to other keys — the first 4 bytes
+after the name look like a 7-digit u32 in the 1000xxx range, likely
+a related MissionKey or StageKey. A future enhancement could parse
+the body and chain into the mission / stage bridges for "this gauge
+tracks mission/stage X" resolution. The current bridge stays
+single-purpose.
 
 ---
 
@@ -553,7 +591,9 @@ Picking by `(value × tractability) / risk`:
    case at `lo32=0x102`; 57k+ rows resolved per save)
 6. **KnowledgeKey** (Pattern A) — small parser + the namespace test
    from Q3.
-7. **QuestGaugeKey** — small parser.
+7. ~~**QuestGaugeKey**~~ — done
+   (`src/c_abi/quest_gauge_info.rs`, 5 tests; no `lookup_display_name`
+   because gauges have no PALOC entries at any namespace)
 8. **FieldNPC + FieldGimmick** — investigation pays for both.
 9. **SubLevelKey** — defer until concretely needed.
 
@@ -630,6 +670,14 @@ No public API breakage on existing surface.
   `src/stage_info/`). Same architecture. Default `lo32 = 0x101` for
   stage titles; `0x102` for the longer descriptions that shops and
   some stages carry.
+- ~~QuestGaugeKey bridge~~ — shipped
+  (`src/c_abi/quest_gauge_info.rs` + `src/quest_gauge_info/`). Pattern
+  A only — **no hash hop function**. Exhaustive PALOC probe confirmed
+  gauges aren't localized at any namespace byte. The bridge surfaces
+  internal names like `"QuestGauge_WindCliffFort"` for the editor's
+  resolved-name column. The "honest" API design: no
+  `paloc_handle` parameter anywhere, so callers can't be confused
+  into thinking they'd get a localized title.
 
 ## Open user decisions
 
