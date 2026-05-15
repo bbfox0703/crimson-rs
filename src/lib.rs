@@ -424,8 +424,9 @@ mod tests {
     // ── Save file tests ────────────────────────────────────────────────────
     //
     // Save tests dynamically discover a save.save under
-    // %LOCALAPPDATA%\Pearl Abyss\CD\save\<UserID>\slot0\, because the user
-    // ID varies per machine. Tests skip cleanly if no save is found.
+    // %LOCALAPPDATA%\Pearl Abyss\CD\save\<UserID>\slot*\, because the user
+    // ID and slot numbers both vary per machine. Tests skip cleanly if no
+    // save is found.
 
     fn try_find_save() -> Option<(std::path::PathBuf, Vec<u8>)> {
         use std::path::PathBuf;
@@ -445,14 +446,43 @@ mod tests {
                 return None;
             }
         };
-        for user in users.flatten() {
-            let user_path = user.path();
-            if !user_path.is_dir() {
-                continue;
-            }
-            // Try slot0 first, then any slot directory.
+        // Two passes: prefer the canonical slot0/1/2 trio (stable across
+        // sessions and the lowest indices that any user with a save tends
+        // to have populated), then fall back to *any* slotN directory so
+        // a machine that only has post-1.07 slots (slot100+ on the
+        // maintainer's box) still exercises the save tests instead of
+        // silently skipping them.
+        let mut user_dirs: Vec<PathBuf> = users
+            .flatten()
+            .map(|u| u.path())
+            .filter(|p| p.is_dir())
+            .collect();
+        user_dirs.sort();
+        for user_path in &user_dirs {
             for slot in ["slot0", "slot1", "slot2"] {
                 let path = user_path.join(slot).join("save.save");
+                if let Ok(data) = std::fs::read(&path) {
+                    return Some((path, data));
+                }
+            }
+        }
+        for user_path in &user_dirs {
+            let Ok(entries) = std::fs::read_dir(user_path) else {
+                continue;
+            };
+            let mut slot_dirs: Vec<PathBuf> = entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.is_dir()
+                        && p.file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|n| n.starts_with("slot"))
+                })
+                .collect();
+            slot_dirs.sort();
+            for slot_dir in slot_dirs {
+                let path = slot_dir.join("save.save");
                 if let Ok(data) = std::fs::read(&path) {
                     return Some((path, data));
                 }
