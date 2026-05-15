@@ -1867,4 +1867,165 @@ mod tests {
         eprintln!("\nwrote mapping JSON: {}", json_path.display());
     }
 
+    /// PALOC template-density probe.
+    ///
+    /// Loads the English PALOC, classifies every entry by namespace
+    /// (the `lo32` of the u64 key — `0x70` = item titles, `0x30` =
+    /// character titles, `0x71` = item descriptions, etc.), and counts
+    /// how many entries in each namespace contain PA's template
+    /// markers (`{`, `<br/>`, `%0`/`%1`/`%s`/`%d`, `[EMPTY]` sentinels).
+    /// Output is the per-namespace template-density table that
+    /// settles the "do we need a template resolver?" question.
+    ///
+    /// CrimsonForge's tokenizer (`D:\Github\crimsonforge\core\
+    /// translation_tokenizer.py`) enumerates PA's template families:
+    /// - `{StaticInfo:Type:Key#fallback_label}` — cross-reference with
+    ///   embedded fallback label
+    /// - `{plain:tokens}` — opaque cross-references
+    /// - `<br/>`, `<b>`, `<color>` — HTML-style tags
+    /// - `[EMPTY]`, `[FULL]` — sentinels
+    /// - `%0`, `%1`, `%s`, `%d` — printf-style arg placeholders
+    ///
+    /// Resolver scope decision (per `docs/save-editor-keys-plan.md`
+    /// status): only needed if a downstream consumer surfaces
+    /// description / dialogue / objective text. The shipped
+    /// `lookup_display_name` chains for Mission/Quest/Stage/Knowledge/
+    /// Character/GimmickInfo target the **title** namespaces (lo32 =
+    /// 0x30 / 0x100 / 0x101 / 0x490 / 0x200) where templates are rare
+    /// or absent — those bridges don't need a resolver.
+    #[test]
+    #[ignore = "investigation only — paloc template density survey"]
+    fn _probe_paloc_template_density() {
+        use crate::binary::pamt::PackMeta;
+        use crate::binary::paz;
+
+        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
+            });
+        let pamt_path = game_root.join("0020").join("0.pamt");
+        let Ok(pamt_bytes) = std::fs::read(&pamt_path) else {
+            eprintln!("skipping: no {}", pamt_path.display());
+            return;
+        };
+        let pamt = PackMeta::parse(&pamt_bytes, None).expect("parse PAMT");
+        let dir = pamt
+            .directories
+            .iter()
+            .find(|d| d.path == "gamedata/stringtable/binary__")
+            .expect("paloc dir");
+        let file = dir
+            .files
+            .iter()
+            .find(|f| f.name == "localizationstring_eng.paloc")
+            .expect("paloc file");
+        let paloc_bytes = paz::extract_file(
+            &game_root.join("0020"),
+            file,
+            "gamedata/stringtable/binary__",
+            &pamt.header.encrypt_info.encrypt_info,
+        )
+        .expect("extract paloc");
+        let paloc = crate::binary::paloc::LocalizationFile::parse(&paloc_bytes)
+            .expect("parse paloc");
+        eprintln!("loaded English PALOC: {} entries", paloc.entries.len());
+
+        // Per-namespace stats. Numeric key parses as u64; lo32 = key & 0xffffffff
+        // is the namespace tag, hi32 = key >> 32 is the actual row id.
+        #[derive(Default, Debug)]
+        struct NsStats {
+            total: u32,
+            with_curly: u32,         // contains `{` … `}`
+            with_static_info: u32,   // contains `{StaticInfo:`
+            with_pct_arg: u32,       // contains `%0`/`%1`/`%s`/`%d`/`%%`
+            with_br: u32,            // contains `<br/>` or `<br>`
+            with_sentinel: u32,      // contains `[EMPTY]` / `[FULL]` / similar
+            with_any_template: u32,
+        }
+        let mut by_ns: std::collections::BTreeMap<u32, NsStats> = Default::default();
+
+        fn contains_pct_arg(s: &str) -> bool {
+            let bytes = s.as_bytes();
+            for i in 0..bytes.len().saturating_sub(1) {
+                if bytes[i] == b'%' {
+                    let next = bytes[i + 1];
+                    if next.is_ascii_digit() || matches!(next, b's' | b'd' | b'%') {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+
+        for e in &paloc.entries {
+            // PALOC keys are stored as ASCII decimal strings of u64.
+            let Ok(key_u64) = e.string_key.data.parse::<u64>() else { continue };
+            let ns = key_u64 as u32; // lo32 = namespace
+            let s = &e.string_value.data;
+            let entry = by_ns.entry(ns).or_default();
+            entry.total += 1;
+            let curly = s.contains('{') && s.contains('}');
+            let si = curly && s.contains("{StaticInfo:") || s.contains("{Staticinfo:");
+            let pct = contains_pct_arg(s);
+            let br = s.contains("<br/>") || s.contains("<br>") || s.contains("<BR/>");
+            let sentinel = s.contains("[EMPTY]") || s.contains("[FULL]") || s.contains("[NONE]");
+            if curly { entry.with_curly += 1; }
+            if si { entry.with_static_info += 1; }
+            if pct { entry.with_pct_arg += 1; }
+            if br { entry.with_br += 1; }
+            if sentinel { entry.with_sentinel += 1; }
+            if curly || pct || br || sentinel {
+                entry.with_any_template += 1;
+            }
+        }
+
+        // Sort namespaces by total descending so the table is readable.
+        let mut nss: Vec<(u32, &NsStats)> = by_ns.iter().map(|(k, v)| (*k, v)).collect();
+        nss.sort_by_key(|x| std::cmp::Reverse(x.1.total));
+
+        eprintln!(
+            "\n{:<12} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
+            "lo32_ns", "total", "any_tpl", "{...}", "Static", "%arg", "<br>", "[EMPT]"
+        );
+        for (ns, st) in nss.iter().take(25) {
+            eprintln!(
+                "0x{:08x} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
+                ns, st.total, st.with_any_template, st.with_curly,
+                st.with_static_info, st.with_pct_arg, st.with_br, st.with_sentinel,
+            );
+        }
+        eprintln!("(+{} smaller namespaces)", nss.len().saturating_sub(25));
+
+        // Specific namespaces the shipped bridges target — call those
+        // out by name so the conclusion is obvious.
+        let bridge_namespaces: &[(u32, &str)] = &[
+            (0x30, "CharacterKey display"),
+            (0x70, "ItemKey title"),
+            (0x71, "ItemKey description (sometimes)"),
+            (0x100, "QuestKey arc heading"),
+            (0x101, "StageKey title"),
+            (0x102, "StageKey description"),
+            (0x200, "GimmickInfoKey display"),
+            (0x490, "MissionKey/KnowledgeKey title"),
+            (0x19202, "GimmickInfoKey long description"),
+        ];
+        eprintln!("\n— Shipped bridge target namespaces —");
+        for &(ns, label) in bridge_namespaces {
+            if let Some(st) = by_ns.get(&ns) {
+                let pct = st
+                    .total
+                    .checked_div(1)
+                    .map(|_| (st.with_any_template * 100).checked_div(st.total).unwrap_or(0))
+                    .unwrap_or(0);
+                eprintln!(
+                    "  lo32=0x{:<6x} {:<40} total={:>5}  any_tpl={:>4} ({}%)  Static={}",
+                    ns, label, st.total, st.with_any_template, pct, st.with_static_info,
+                );
+            } else {
+                eprintln!("  lo32=0x{:<6x} {:<40} (no entries)", ns, label);
+            }
+        }
+    }
+
 }
