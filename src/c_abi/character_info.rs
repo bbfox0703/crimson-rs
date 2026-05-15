@@ -1557,4 +1557,314 @@ mod tests {
             }
         }
     }
+
+    /// Abyss-gate per-gate mapping probe — Path B (`CrimsonAtomtic`) input.
+    ///
+    /// CrimsonAtomtic wants to replace the bulk "unlock all abyss gates"
+    /// UX from the PyQt5 reference editor with per-gate controls
+    /// (toggle lock state, mark discovered, set puzzle state). To do
+    /// that it needs to identify each abyss-gate `FieldGimmickSaveData`
+    /// block in a save and know which state-hash values mean what.
+    /// This probe builds that mapping end-to-end.
+    ///
+    /// What it does (2026-05-15 baseline against a 1.07 `slot0/save.save`):
+    ///
+    /// 1. Loads `gimmickinfo.pabgb` (via the shipped parser) and
+    ///    collects every row whose internal name contains "abyss" or
+    ///    "hyperspace". 2,313 rows match in 1.07.
+    /// 2. Walks the live save's `FieldGimmickSaveData` blocks (4,264
+    ///    in this save), filters for those whose `_gimmickInfoKey`
+    ///    lands in the abyss set. 356 blocks match.
+    /// 3. For each match dumps `(_gimmickInfoKey, internal_name,
+    ///    _ownerLevelName, _initStateNameHash, _isLockState,
+    ///    _fieldGimmickSaveDataKey)` and writes the full table to
+    ///    `out/abyss_gate_probe/mapping.json` (gitignored).
+    /// 4. Asserts the **three known `_initStateNameHash` constants**
+    ///    that this save sample surfaces:
+    ///
+    /// | Hash         | Count | Empirical meaning |
+    /// |--------------|-------|-------------------|
+    /// | `0x866c7489` | 88    | Default / "untouched" — assigned to bridge gimmicks the player hasn't crossed yet |
+    /// | `0xe300acfe` | 16    | Activated — assigned to bridge gimmicks the player HAS crossed (state visibly changed in-game) |
+    /// | `0x150b14d0` | 252   | Idle / decoration — standstones, artifacts, ambient abyss pieces |
+    ///
+    /// The hash → state-name decode is NOT pinned yet. None of Jenkins
+    /// hashlittle / hashlittle2 / FNV-1a / SDBM / DJB2 / CRC32 with the
+    /// seeds we tried produced a match against either common state-name
+    /// candidates (Locked / Unlocked / Active / Root / Idle / …) or the
+    /// ASCII strings harvested from the matching `.binarygimmick` files
+    /// (`gimmick_abyssone_bridge_gate_01.binarygimmick`,
+    /// `abyss_standstone_01.binarygimmick`). PA's HashCode32 appears
+    /// to use a custom algorithm; cracking the decode requires IDA
+    /// decompilation of the engine's hash routine (or one known
+    /// `(name, hash)` pair to back-fit). See `docs/abyss-gate-map.md`
+    /// §"Open RE" for the resume plan.
+    ///
+    /// **Useful breadcrumb for the decode work**: within each
+    /// `.binarygimmick` body the state hash appears as a structured
+    /// record. For example, in `gimmick_abyssone_bridge_gate_01.binarygimmick`
+    /// at offset `0x16b`:
+    /// ```text
+    /// [0x283bf40d][0x7c9c9e2f][0xfd45d6ee][0x5bdda844][0x866c7489 00 00 00 00][0x866c7489 00 00 00 00] …
+    /// ```
+    /// The trailing duplicated `[state_hash][00 00 00 00]` pair is the
+    /// state node record. The four preceding hashes are likely event-
+    /// handler hashes (Enter / Exit / Frame / …) that re-appear across
+    /// every state node — same shape observed in `abyss_standstone_01.binarygimmick`
+    /// at a different offset. Cracking any one of those 4 handler-name
+    /// hashes would give us the back-fit.
+    ///
+    /// Empirical state values are enough for the editor today — Path B
+    /// can hardcode the three constants and patch
+    /// `FieldGimmickSaveData._initStateNameHash` directly, no name
+    /// decode needed. See `docs/abyss-gate-map.md` for the full
+    /// implementation outline.
+    #[test]
+    #[ignore = "investigation only — abyss gate mapping for CrimsonAtomtic Path B"]
+    fn _probe_abyss_gate_mapping() {
+        use crate::binary::pamt::PackMeta;
+        use crate::binary::paz;
+        use crate::gimmick_info::parse_gimmick_info_lossy;
+        use crate::save::{Body, FieldValue, ScalarValue, Save};
+
+        // ── Locate the live save ───────────────────────────────────
+        let save_path = std::env::var_os("CRIMSON_LIVE_SAVE")
+            .map(PathBuf::from)
+            .or_else(|| {
+                let appdata = std::env::var_os("LOCALAPPDATA")?;
+                let root = PathBuf::from(appdata)
+                    .join("Pearl Abyss")
+                    .join("CD")
+                    .join("save");
+                std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
+                    let p = entry.path().join("slot0").join("save.save");
+                    p.is_file().then_some(p)
+                })
+            });
+        let Some(save_path) = save_path else {
+            eprintln!("skipping: no live save");
+            return;
+        };
+
+        // ── Locate game install + extract gimmickinfo.pabgb ────────
+        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
+            });
+        let pamt_path = game_root.join("0008").join("0.pamt");
+        let Ok(pamt_bytes) = std::fs::read(&pamt_path) else {
+            eprintln!("skipping: no {}", pamt_path.display());
+            return;
+        };
+        let pamt = PackMeta::parse(&pamt_bytes, None).expect("parse PAMT");
+        let dir = pamt
+            .directories
+            .iter()
+            .find(|d| d.path == "gamedata/binary__/client/bin")
+            .expect("dir");
+        let gimmick_file = dir
+            .files
+            .iter()
+            .find(|f| f.name == "gimmickinfo.pabgb")
+            .expect("gimmickinfo.pabgb missing");
+        let gimmick_bytes = paz::extract_file(
+            &game_root.join("0008"),
+            gimmick_file,
+            "gamedata/binary__/client/bin",
+            &pamt.header.encrypt_info.encrypt_info,
+        )
+        .expect("extract gimmickinfo");
+
+        // ── Filter gimmickinfo for abyss-related names ─────────────
+        let gimmick_entries = parse_gimmick_info_lossy(&gimmick_bytes);
+        let abyss_gimmicks: std::collections::HashMap<u32, String> = gimmick_entries
+            .iter()
+            .filter(|e| {
+                let lower = e.name.to_ascii_lowercase();
+                lower.contains("abyss") || lower.contains("hyperspace")
+            })
+            .map(|e| (e.key, e.name.clone()))
+            .collect();
+        eprintln!(
+            "gimmickinfo: {} total rows, {} abyss-related",
+            gimmick_entries.len(),
+            abyss_gimmicks.len()
+        );
+
+        // ── Parse the save + collect abyss-gate FieldGimmick blocks ─
+        let raw = std::fs::read(&save_path).expect("read save");
+        let save = Save::parse(&raw).expect("parse save");
+        let body = Body::parse(&save.body).expect("parse body");
+        let blocks = body.decode_blocks(&save.body);
+
+        let mut gimmick_blocks: Vec<&crate::save::ObjectBlock> = Vec::new();
+        for b in &blocks {
+            if b.class_name == "FieldGimmickSaveData" {
+                gimmick_blocks.push(b);
+            }
+            walk(b, &mut gimmick_blocks);
+        }
+        fn walk<'a>(b: &'a crate::save::ObjectBlock, out: &mut Vec<&'a crate::save::ObjectBlock>) {
+            for f in &b.fields {
+                if let FieldValue::ObjectList { elements, .. } = &f.value {
+                    for e in elements {
+                        if e.class_name == "FieldGimmickSaveData" {
+                            out.push(e);
+                        }
+                        walk(e, out);
+                    }
+                } else if let FieldValue::Locator { child: Some(c), .. } = &f.value {
+                    walk(c, out);
+                }
+            }
+        }
+
+        // Per-gate record + collection
+        #[derive(Debug, Clone)]
+        struct GateRecord {
+            gimmick_info_key: u32,
+            internal_name: String,
+            owner_level_name: String,
+            init_state_hash: u32,
+            is_lock_state: Option<bool>,
+            field_gimmick_save_data_key: u32,
+        }
+        let mut gates: Vec<GateRecord> = Vec::new();
+        for b in &gimmick_blocks {
+            let mut gimmick_info_key: Option<u32> = None;
+            let mut owner_level_name: String = String::new();
+            let mut init_state_hash: Option<u32> = None;
+            let mut is_lock_state: Option<bool> = None;
+            let mut slot_key: Option<u32> = None;
+            for f in &b.fields {
+                if !f.present {
+                    continue;
+                }
+                match (f.name.as_str(), &f.value) {
+                    ("_gimmickInfoKey", FieldValue::Scalar(ScalarValue::U32(v))) => {
+                        gimmick_info_key = Some(*v);
+                    }
+                    ("_ownerLevelName", FieldValue::InlineBytes { bytes, .. }) => {
+                        owner_level_name = std::str::from_utf8(bytes)
+                            .unwrap_or("")
+                            .trim_end_matches('\0')
+                            .to_string();
+                    }
+                    ("_initStateNameHash", FieldValue::Scalar(ScalarValue::U32(v))) => {
+                        init_state_hash = Some(*v);
+                    }
+                    ("_isLockState", FieldValue::Scalar(ScalarValue::Bool(v))) => {
+                        is_lock_state = Some(*v);
+                    }
+                    ("_fieldGimmickSaveDataKey", FieldValue::Scalar(ScalarValue::U32(v))) => {
+                        slot_key = Some(*v);
+                    }
+                    _ => {}
+                }
+            }
+            let Some(gimmick_info_key) = gimmick_info_key else { continue };
+            let Some(internal_name) = abyss_gimmicks.get(&gimmick_info_key).cloned() else {
+                continue;
+            };
+            gates.push(GateRecord {
+                gimmick_info_key,
+                internal_name,
+                owner_level_name,
+                init_state_hash: init_state_hash.unwrap_or(0),
+                is_lock_state,
+                field_gimmick_save_data_key: slot_key.unwrap_or(0),
+            });
+        }
+        eprintln!("abyss-gate FieldGimmick blocks in save: {}", gates.len());
+        assert!(
+            gates.len() > 100,
+            "expected >100 abyss-gate blocks; got {} — gimmickinfo filter may need updating",
+            gates.len()
+        );
+
+        // ── Pin the 3 known state-hash constants ────────────────────
+        let mut hash_counts: std::collections::BTreeMap<u32, u32> = Default::default();
+        for g in &gates {
+            *hash_counts.entry(g.init_state_hash).or_insert(0) += 1;
+        }
+        eprintln!("distinct _initStateNameHash values:");
+        for (h, count) in &hash_counts {
+            eprintln!("  0x{h:08x}: {count} gates");
+        }
+        // The three constants the Path B editor pin to. If any of these
+        // disappears across patches, the editor's per-gate UI will need
+        // a re-RE pass.
+        for &expected in &[0x866c_7489u32, 0xe300_acfeu32, 0x150b_14d0u32] {
+            assert!(
+                hash_counts.contains_key(&expected),
+                "missing pinned state hash 0x{expected:08x} — likely save-state or PA-patch drift"
+            );
+        }
+
+        // Sort and dump the top of the per-gate table (first 12 for
+        // visual inspection — full table in the JSON).
+        let mut gates_sorted = gates.clone();
+        gates_sorted.sort_by_key(|g| (g.owner_level_name.clone(), g.gimmick_info_key));
+        eprintln!(
+            "\n{:<12} {:<42} {:<32} {:>10} {:>5} {:>10}",
+            "gimmickKey", "internal_name", "owner_level", "stateHash", "lock?", "slotKey"
+        );
+        for g in gates_sorted.iter().take(12) {
+            eprintln!(
+                "0x{:08x}   {:<42} {:<32} 0x{:08x} {:>5} {:>10}",
+                g.gimmick_info_key,
+                g.internal_name,
+                g.owner_level_name,
+                g.init_state_hash,
+                g.is_lock_state.map_or("-".to_string(), |b| b.to_string()),
+                g.field_gimmick_save_data_key,
+            );
+        }
+        if gates_sorted.len() > 12 {
+            eprintln!("(+{} more — see JSON dump)", gates_sorted.len() - 12);
+        }
+
+        // ── Dump JSON for offline analysis ─────────────────────────
+        let out_dir = PathBuf::from("out").join("abyss_gate_probe");
+        let _ = std::fs::create_dir_all(&out_dir);
+        let json_path = out_dir.join("mapping.json");
+        let mut json = String::new();
+        json.push_str("{\n  \"gates\": [\n");
+        for (i, g) in gates_sorted.iter().enumerate() {
+            json.push_str(&format!(
+                "    {{\"gimmick_info_key\": {}, \"internal_name\": {:?}, \"owner_level_name\": {:?}, \"init_state_hash\": {}, \"init_state_hash_hex\": \"0x{:08x}\", \"is_lock_state\": {}, \"field_gimmick_save_data_key\": {}}}{}\n",
+                g.gimmick_info_key,
+                g.internal_name,
+                g.owner_level_name,
+                g.init_state_hash,
+                g.init_state_hash,
+                g.is_lock_state.map_or("null".to_string(), |b| b.to_string()),
+                g.field_gimmick_save_data_key,
+                if i + 1 < gates_sorted.len() { "," } else { "" },
+            ));
+        }
+        json.push_str("  ],\n  \"state_hashes\": [\n");
+        let hash_vec: Vec<_> = hash_counts.iter().collect();
+        for (i, (h, c)) in hash_vec.iter().enumerate() {
+            let label = match **h {
+                0x866c_7489 => "\"default_untouched\"",
+                0xe300_acfe => "\"activated_crossed\"",
+                0x150b_14d0 => "\"idle_decoration\"",
+                _ => "null",
+            };
+            json.push_str(&format!(
+                "    {{\"hash\": {}, \"hash_hex\": \"0x{:08x}\", \"gate_count\": {}, \"empirical_label\": {}}}{}\n",
+                h,
+                h,
+                c,
+                label,
+                if i + 1 < hash_vec.len() { "," } else { "" },
+            ));
+        }
+        json.push_str("  ]\n}\n");
+        std::fs::write(&json_path, json).expect("write json");
+        eprintln!("\nwrote mapping JSON: {}", json_path.display());
+    }
+
 }
