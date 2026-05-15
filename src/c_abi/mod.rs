@@ -91,6 +91,13 @@ pub mod error {
     /// back (e.g. `Body::write` errored, or the re-parse failed). The
     /// handle's state is restored to what it was before the call.
     pub const MUTATION_INVALID: i32 = -19;
+    /// A length-changing inline-bytes mutation targeted a field whose
+    /// schema `meta_kind` isn't `1` (InlineBytes). For example, calling
+    /// `crimson_save_set_inline_bytes_field` against a fixed-size scalar
+    /// field is rejected — the caller should use
+    /// `crimson_save_set_scalar_field_present` (or
+    /// `crimson_save_set_scalar_field`) for those.
+    pub const NOT_INLINE_BYTES: i32 = -20;
     pub const PANIC: i32 = -99;
 }
 
@@ -1965,6 +1972,141 @@ pub unsafe extern "C" fn crimson_save_dynamic_array_get_u32_elements(
         error::OK
     }))
     .unwrap_or(error::PANIC)
+}
+
+/// Wholesale-replace the contents of an `inline_bytes` field (the
+/// schema's `meta_kind == 1` shape: a `u32 count` header followed by
+/// `count * meta_size` payload bytes). Used for length-changing edits
+/// to string-like fields — `_mercenaryName` is the motivating case
+/// (length-prefixed UTF-8) but the same surface works for any
+/// homogeneous element-width inline array.
+///
+/// Validation:
+/// - The leaf field's `meta_kind` must be `1`; else `NOT_INLINE_BYTES`.
+///   Use [`crimson_save_set_scalar_field_present`] for fixed-size
+///   scalars (`meta_kind` 0 / 2) and the dynamic-array setters for
+///   `meta_kind == 3`.
+/// - `new_bytes_len` must be a multiple of the field's `meta_size`
+///   (so the `count = new_bytes_len / meta_size` math is exact); else
+///   `LENGTH_MISMATCH`.
+/// - The computed `count` must fit in a `u32`; else `OUT_OF_RANGE`.
+///
+/// Semantics:
+/// - When the field was absent (mask bit cleared), this call promotes
+///   it to present and writes the new bytes — exactly mirrors the
+///   absent → present path on [`crimson_save_set_scalar_field_present`].
+/// - When the field was already present, the existing bytes are
+///   dropped and replaced with `new_bytes`. The encoder's re-emit
+///   shifts every downstream offset (TOC, locator wrappers,
+///   `payload_offset`s) to match the new length.
+/// - Passing `new_bytes_len == 0` writes a zero-length string (count
+///   slot becomes 0, payload becomes empty). The field stays present
+///   — to fully clear the field's bytes from the block, use a future
+///   "make-absent" entry point (not yet exposed for inline_bytes).
+///
+/// # Safety
+/// `handle` must be a live, exclusive handle. `path` must point to
+/// `path_len` readable [`CrimsonPathStep`] values for the duration of
+/// the call (or be NULL with `path_len == 0`). `new_bytes` must point
+/// to `new_bytes_len` readable bytes for the duration of the call (or
+/// be NULL with `new_bytes_len == 0`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_set_inline_bytes_field(
+    handle: *mut CrimsonSaveHandle,
+    block_idx: u32,
+    path: *const CrimsonPathStep,
+    path_len: usize,
+    field_idx: u32,
+    new_bytes: *const u8,
+    new_bytes_len: usize,
+) -> i32 {
+    if handle.is_null() {
+        return error::NULL_ARG;
+    }
+    if path.is_null() && path_len != 0 {
+        return error::NULL_ARG;
+    }
+    if new_bytes.is_null() && new_bytes_len != 0 {
+        return error::NULL_ARG;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &mut *handle };
+        let steps: &[CrimsonPathStep] = if path_len == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(path, path_len) }
+        };
+        // Snapshot the bytes out of the raw pointer up front so the
+        // closure below is fully owned and doesn't carry raw pointers
+        // across the encode boundary.
+        let bytes: Vec<u8> = if new_bytes_len == 0 {
+            Vec::new()
+        } else {
+            unsafe { std::slice::from_raw_parts(new_bytes, new_bytes_len) }.to_vec()
+        };
+        apply_length_changing_mutation(h, |blocks| {
+            write_inline_bytes_in_place(blocks, block_idx, steps, field_idx, &bytes)
+        })
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Shared mutator for [`crimson_save_set_inline_bytes_field`]. Walks
+/// the path, validates the leaf field's `meta_kind == 1`, sets the
+/// mask bit, and overwrites the `FieldValue::InlineBytes` payload with
+/// the new bytes. `count` is derived from `new_bytes.len() / meta_size`.
+fn write_inline_bytes_in_place(
+    blocks: &mut [ObjectBlock],
+    block_idx: u32,
+    path: &[CrimsonPathStep],
+    field_idx: u32,
+    new_bytes: &[u8],
+) -> Result<(), i32> {
+    let parent = navigate_mut_to_parent(blocks, block_idx, path)?;
+    let target_idx = field_idx as usize;
+    let Some(field) = parent.fields.get(target_idx) else {
+        return Err(error::OUT_OF_RANGE);
+    };
+    if field.meta_kind != 1 {
+        return Err(error::NOT_INLINE_BYTES);
+    }
+    let meta_size = field.meta_size as usize;
+    if meta_size == 0 {
+        // Defensive: the decoder shouldn't emit zero-width inline
+        // arrays, but the field-shape invariant lives in metadata so
+        // guard explicitly.
+        return Err(error::NOT_INLINE_BYTES);
+    }
+    if !new_bytes.len().is_multiple_of(meta_size) {
+        return Err(error::LENGTH_MISMATCH);
+    }
+    let count_usize = new_bytes.len() / meta_size;
+    if count_usize > u32::MAX as usize {
+        return Err(error::OUT_OF_RANGE);
+    }
+    let count = count_usize as u32;
+
+    // Flip the mask bit on if the field was previously absent — same
+    // shape as the absent → present path in `set_scalar_field_present`.
+    let byte_idx = target_idx / 8;
+    let bit_idx = target_idx % 8;
+    if byte_idx >= parent.mask_bytes.len() {
+        return Err(error::OUT_OF_RANGE);
+    }
+    parent.mask_bytes[byte_idx] |= 1 << bit_idx;
+
+    let field_mut = parent
+        .fields
+        .get_mut(target_idx)
+        .expect("field bounds checked above");
+    field_mut.present = true;
+    field_mut.kind = FieldKind::InlineBytes;
+    field_mut.value = FieldValue::InlineBytes {
+        count,
+        bytes: new_bytes.to_vec(),
+    };
+    // start / end will be refreshed on re-decode after the encode pass.
+    Ok(())
 }
 
 /// Read-only counterpart to [`navigate_mut_to_parent`]. Walks the
@@ -4657,6 +4799,199 @@ mod tests {
             error::OK
         );
         assert_eq!(sentinel_slot, usize::MAX);
+
+        unsafe { crimson_save_free(handle) };
+    }
+
+    /// `set_inline_bytes_field` round-trip: load a real save, locate
+    /// any present `inline_bytes` field (`meta_kind == 1`), rewrite
+    /// it with new bytes via the FFI, verify the body changes; then
+    /// rewrite back to the original payload and verify byte-identity.
+    /// Mirrors the assertion shape of `c_abi_list_clone_distinct_source`.
+    #[test]
+    fn c_abi_set_inline_bytes_field_roundtrip() {
+        let Some(path) = find_save() else {
+            eprintln!("skipping c_abi_set_inline_bytes_field_roundtrip: no live save");
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let mut handle: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle) },
+            error::OK
+        );
+
+        // Find any present inline_bytes field in a top-level block. Live
+        // saves consistently carry several (e.g. _mercenaryName,
+        // _accountUserName); pick the first one we encounter so the test
+        // doesn't bind to a specific class shape.
+        let target = unsafe {
+            let h = &*handle;
+            let mut chosen: Option<(u32, u32, Vec<u8>, u32)> = None;
+            'outer: for (b_idx, block) in h.blocks.iter().enumerate() {
+                for (f_idx, field) in block.fields.iter().enumerate() {
+                    if field.meta_kind != 1 || !field.present {
+                        continue;
+                    }
+                    if let FieldValue::InlineBytes { count, bytes } = &field.value {
+                        chosen = Some((b_idx as u32, f_idx as u32, bytes.clone(), *count));
+                        break 'outer;
+                    }
+                }
+            }
+            chosen
+        };
+        let Some((block_idx, field_idx, original_bytes, _original_count)) = target else {
+            eprintln!(
+                "skipping c_abi_set_inline_bytes_field_roundtrip: no present inline_bytes field"
+            );
+            unsafe { crimson_save_free(handle) };
+            return;
+        };
+
+        let original_body = unsafe { (*handle).save.body.clone() };
+
+        // Rewrite with new bytes the same length as the original — keeps
+        // the body length stable so any change must come from payload
+        // bytes themselves, not cascading offsets.
+        let mut replacement = original_bytes.clone();
+        for b in replacement.iter_mut() {
+            *b = b.wrapping_add(1);
+        }
+        let rc = unsafe {
+            crimson_save_set_inline_bytes_field(
+                handle,
+                block_idx,
+                ptr::null(),
+                0,
+                field_idx,
+                replacement.as_ptr(),
+                replacement.len(),
+            )
+        };
+        assert_eq!(rc, error::OK, "set_inline_bytes_field failed rc={rc}");
+        let after_write = unsafe { (*handle).save.body.clone() };
+        assert_ne!(
+            after_write, original_body,
+            "body should differ after the in-place inline_bytes overwrite"
+        );
+
+        // Restore exactly. Round-trip must match the original body
+        // byte-for-byte once the encoder canonicalisation settles.
+        let rc = unsafe {
+            crimson_save_set_inline_bytes_field(
+                handle,
+                block_idx,
+                ptr::null(),
+                0,
+                field_idx,
+                original_bytes.as_ptr(),
+                original_bytes.len(),
+            )
+        };
+        assert_eq!(rc, error::OK, "second set_inline_bytes_field failed rc={rc}");
+        let after_restore = unsafe { (*handle).save.body.clone() };
+        assert_eq!(
+            after_restore, original_body,
+            "round-trip rewrite-to-original must reproduce the original body"
+        );
+
+        unsafe { crimson_save_free(handle) };
+    }
+
+    /// `set_inline_bytes_field` rejects fixed-size scalar fields with
+    /// `NOT_INLINE_BYTES` instead of corrupting them. Synthetic-no-save
+    /// rejection of mis-kind targets is the kind of regression test
+    /// that would have caught the case where a typo'd field index
+    /// pointed at a scalar.
+    #[test]
+    fn c_abi_set_inline_bytes_field_rejects_non_inline_bytes_kind() {
+        let Some(path) = find_save() else {
+            eprintln!(
+                "skipping c_abi_set_inline_bytes_field_rejects_non_inline_bytes_kind: no live save"
+            );
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let mut handle: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle) },
+            error::OK
+        );
+
+        // Find any fixed-size scalar (meta_kind 0 or 2) in any block.
+        let target = unsafe {
+            let h = &*handle;
+            let mut chosen = None;
+            'outer: for (b_idx, block) in h.blocks.iter().enumerate() {
+                for (f_idx, field) in block.fields.iter().enumerate() {
+                    if matches!(field.meta_kind, 0 | 2) && field.meta_size > 0 {
+                        chosen = Some((b_idx as u32, f_idx as u32));
+                        break 'outer;
+                    }
+                }
+            }
+            chosen
+        };
+        let Some((block_idx, field_idx)) = target else {
+            eprintln!(
+                "skipping c_abi_set_inline_bytes_field_rejects_non_inline_bytes_kind: no scalar"
+            );
+            unsafe { crimson_save_free(handle) };
+            return;
+        };
+
+        let rc = unsafe {
+            crimson_save_set_inline_bytes_field(
+                handle,
+                block_idx,
+                ptr::null(),
+                0,
+                field_idx,
+                [0u8; 4].as_ptr(),
+                4,
+            )
+        };
+        assert_eq!(
+            rc,
+            error::NOT_INLINE_BYTES,
+            "scalar field must be rejected with NOT_INLINE_BYTES (got rc={rc})"
+        );
+
+        unsafe { crimson_save_free(handle) };
+    }
+
+    /// NULL-pointer arguments to `set_inline_bytes_field` must return
+    /// `NULL_ARG` cleanly, not segfault.
+    #[test]
+    fn c_abi_set_inline_bytes_field_null_args() {
+        // Handle null.
+        let rc = unsafe {
+            crimson_save_set_inline_bytes_field(ptr::null_mut(), 0, ptr::null(), 0, 0, ptr::null(), 0)
+        };
+        assert_eq!(rc, error::NULL_ARG);
+
+        // path null but path_len > 0.
+        let Some(path) = find_save() else {
+            eprintln!("skipping c_abi_set_inline_bytes_field_null_args path-len: no live save");
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let mut handle: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle) },
+            error::OK
+        );
+        let rc = unsafe {
+            crimson_save_set_inline_bytes_field(handle, 0, ptr::null(), 1, 0, ptr::null(), 0)
+        };
+        assert_eq!(rc, error::NULL_ARG);
+
+        // bytes null but len > 0.
+        let rc = unsafe {
+            crimson_save_set_inline_bytes_field(handle, 0, ptr::null(), 0, 0, ptr::null(), 4)
+        };
+        assert_eq!(rc, error::NULL_ARG);
 
         unsafe { crimson_save_free(handle) };
     }
