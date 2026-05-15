@@ -35,6 +35,14 @@ pub struct CrimsonItemInfoHandle {
     /// hash) per item key. Items with no icon list aren't inserted —
     /// the lookup returns `NOT_FOUND` instead of writing 0.
     icon_path_by_key: HashMap<u32, u32>,
+    /// Per-item `look_detail_mission_info` (a `MissionKey` u32). Only
+    /// items with a non-zero value are inserted — that maps cleanly to
+    /// the editor's "does this artifact item belong to a catalog
+    /// challenge?" predicate. Quest-reward items (most notably the
+    /// Sealed Abyss Artifact series) point at the catalog mission key
+    /// of the challenge that rewards them; regular items leave this
+    /// field at 0 and don't show up in the map.
+    look_detail_mission_by_key: HashMap<u32, u32>,
     /// `(key, string_key)` in file order so the caller can enumerate
     /// via [`crimson_iteminfo_get_entry`].
     entries: Vec<(u32, String)>,
@@ -49,6 +57,7 @@ impl CrimsonItemInfoHandle {
         let mut entries: Vec<(u32, String)> = Vec::new();
         let mut max_stack_by_key: HashMap<u32, u64> = HashMap::new();
         let mut icon_path_by_key: HashMap<u32, u32> = HashMap::new();
+        let mut look_detail_mission_by_key: HashMap<u32, u32> = HashMap::new();
         while offset < data.len() {
             let item = ItemInfo::read_from(data, &mut offset)?;
             entries.push((item.key.0, item.string_key.data.to_owned()));
@@ -62,6 +71,13 @@ impl CrimsonItemInfoHandle {
                 if hash != 0 {
                     icon_path_by_key.insert(item.key.0, hash);
                 }
+            }
+            // 0 means "no associated mission" and is the overwhelming
+            // majority case (vanilla items / weapons / consumables).
+            // Skip those so the lookup's NOT_FOUND signal is meaningful.
+            if item.look_detail_mission_info.0 != 0 {
+                look_detail_mission_by_key
+                    .insert(item.key.0, item.look_detail_mission_info.0);
             }
         }
         if offset != data.len() {
@@ -79,6 +95,7 @@ impl CrimsonItemInfoHandle {
             by_key,
             max_stack_by_key,
             icon_path_by_key,
+            look_detail_mission_by_key,
             entries,
         })
     }
@@ -311,6 +328,41 @@ pub unsafe extern "C" fn crimson_iteminfo_lookup_max_stack(
             return error::NOT_FOUND;
         };
         unsafe { *out_max_stack = *max };
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Look up the `look_detail_mission_info` (a `MissionKey` u32) for a
+/// given `ItemKey (u32)` and write it into `*out_mission_key`. Returns
+/// `NOT_FOUND` when the key isn't in the loaded table OR the item ships
+/// without a mission link (the field is 0). On `NOT_FOUND`,
+/// `*out_mission_key` is set to 0.
+///
+/// Use case: the editor's "Mark Challenge Complete" UI only enables when
+/// the in-focus catalog `MissionStateData` challenge has a corresponding
+/// quest-reward item (e.g. a Sealed Abyss Artifact) currently in the
+/// player's inventory. Walking inventory + matching this lookup is the
+/// fast path for that gate.
+///
+/// # Safety
+/// `handle` and `out_mission_key` must be non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_iteminfo_lookup_look_detail_mission_info(
+    handle: *const CrimsonItemInfoHandle,
+    item_key: u32,
+    out_mission_key: *mut u32,
+) -> i32 {
+    if handle.is_null() || out_mission_key.is_null() {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_mission_key = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let Some(mk) = h.look_detail_mission_by_key.get(&item_key) else {
+            return error::NOT_FOUND;
+        };
+        unsafe { *out_mission_key = *mk };
         error::OK
     }))
     .unwrap_or(error::PANIC)
