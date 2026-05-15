@@ -27,29 +27,39 @@
 > 166 tests with `c_abi`, 69 without (+1 ignored cross-version probe).
 > Clippy clean both modes.
 >
-> **Remaining (optional follow-ons only)**: knowledge group breadcrumb
-> (would need `knowledge_group_info` sibling bridge + row-body parse),
-> quest chapter rollup ("Prologue: Dead of Night" et al. — never
-> located), lo32=0x490 mission-variant meaning (Q4, partially
-> overshadowed by the knowledge work), broader PALOC namespace coverage
-> for CharacterKey (the 78% sample-bias miss path — different save
-> samples touching named field NPCs would pin more ground-truth), and
-> a **`CharacterAppearanceIndexKey` (u64)** bridge for NPC outfit /
-> customisation resolution (newly surfaced by the 2026-05-15 live-save
-> probe; see §6 "Unbridged key types").
+> **Remaining (optional follow-ons only)**:
+> - **`CharacterAppearanceIndexKey`** — investigated 2026-05-15.
+>   `characterappearanceindexinfo.pabgb` + `.pabgh` located in
+>   `0008/gamedata/binary__/client/bin/`, schema pinned, save→pabgh
+>   transform verified. **Bridge deferred** — only 9/122 distinct save
+>   values map to the pabgh table, and entry bodies are 21-byte binary
+>   blobs with no string fields. See §9 for the full picture and the
+>   two open RE questions (where the 87% miss path resolves, and the
+>   21-byte body schema). Resume from `_probe_character_appearance_index`
+>   in `src/c_abi/character_info.rs`.
+> - Knowledge group breadcrumb (would need `knowledge_group_info`
+>   sibling bridge + row-body parse).
+> - Quest chapter rollup ("Prologue: Dead of Night" et al. — never
+>   located).
+> - lo32=0x490 mission-variant meaning (Q4, partially overshadowed
+>   by the knowledge work).
+> - Broader PALOC namespace coverage for CharacterKey (the 78%
+>   sample-bias miss path — different save samples touching named
+>   field NPCs would pin more ground-truth).
 >
 > **2026-05-15 verification pass**: the live 1.07 `slot0/save.save` was
 > parsed end-to-end through `Save::parse + Body::decode_blocks`,
-> confirming the §6 verdict on both keys empirically — `_characterKey`
-> is exactly the `0xCC_LLLLLL` cat-byte u32 the bridge expects, and
-> `_gimmickInfoKey` is the flat u32 the gimmick bridge expects. The
-> probe lives at `_probe_live_save_field_blocks` in
-> `src/c_abi/character_info.rs` (`#[ignore]`, diagnostic only).
+> confirming the §6 verdict on both `_characterKey` and `_gimmickInfoKey`
+> empirically. Same pass surfaced `CharacterAppearanceIndexKey` as the
+> last unbridged save-side type; investigation findings are in §9.
+> Probes live at `_probe_live_save_field_blocks` and
+> `_probe_character_appearance_index` in `src/c_abi/character_info.rs`
+> (`#[ignore]`'d, diagnostic only).
 >
-> **First concrete next action**: pick up an "Optional follow-on" from
-> the list above. `CharacterAppearanceIndexKey` is the highest-signal
-> new bridge target — the data is clearly there in saves; the work is
-> locating the right `.pabgb` table.
+> **First concrete next action**: depends on user direction. The
+> `CharacterAppearanceIndexKey` work has the most signal-per-effort
+> upside (clear scope, well-defined gaps) but the body-schema RE step
+> needs either an IDA pass or a save-diff dataset to unlock.
 >
 > Extracted `.pabgb` baselines for this work live in
 > `out/baselines/1.06/` (gitignored). Re-extract with
@@ -97,7 +107,7 @@ chain.
 | **GimmickInfoKey** *(via FieldGimmickSaveData._gimmickInfoKey)* | 530 unique (6,666 occurrences) | `gimmickinfo.pabgb` + PALOC u64 | ✅ | ✅ `src/c_abi/gimmick_info.rs` | A — gamedata table (**no hash hop**; identity key into PALOC, default lo32=0x200), 99.4% coverage |
 | **FieldNPCSaveDataKey** | 103 | save-internal (spawn-slot index) | n/a | n/a | save-internal *(verified — see §6)* |
 | **FieldGimmickSaveDataKey** | 4,363 | save-internal (spawn-slot index) | n/a | n/a | save-internal — real bridge is sibling `_gimmickInfoKey` above |
-| **CharacterAppearanceIndexKey** *(via FieldNPCSaveData._nudeAppearanceIndexKey + _customizationAppearanceIndexKey)* | ~ tens | likely `characterappearance_*.pabgb` (not located) | ✗ | ✗ | Unbridged. Surfaced by the 2026-05-15 live-save probe — see §6 "Unbridged key types". u64 keys. Would resolve NPC outfit / customization selection. |
+| **CharacterAppearanceIndexKey** *(via FieldNPCSaveData._nudeAppearanceIndexKey + _customizationAppearanceIndexKey)* | 122 distinct (228 samples) | `characterappearanceindexinfo.pabgb` + `.pabgh` (located, but only 7% of save values hit the table) | ✗ (deferred) | ✗ (deferred) | u64 key. PABGH/PABGB pair (`u32 count + (u64 key, u32 offset)`). Save→pabgh transform pinned (byte-3 sign-ext + lo24). **Bridge deferred** — only 9/122 distinct save values map to a pabgh entry, and entry bodies are 21-byte binary blobs with no string field. See §9 for full investigation + the resume plan. |
 | **SubLevelKey** | 7 | `sublevelinfo.pabgb` | ✅ | ✅ `src/c_abi/sub_level_info.rs` | A — gamedata table (**no hash hop, no PALOC**; sub-levels not localized) |
 | **ItemKey** | 669 | `iteminfo.pabgb` (parser ahead of save) | ✅ | ✅ | A — gamedata table |
 | **Hash hop helper** | n/a | `crypto::checksum::calculate_checksum` | ✅ | ✅ `src/c_abi/checksum.rs` | exposed for editor-side chain composition |
@@ -985,6 +995,120 @@ for this bridge.
 
 5 tests added (4 c_abi plumbing + 1 parser live-integration). 129
 total with `c_abi`, 67 without. Clippy clean both modes.
+
+---
+
+## 9. CharacterAppearanceIndexKey — INVESTIGATED, bridge deferred (2026-05-15)
+
+Surfaced as a new key type by the live-save probe in §6 (live-save
+verification pass). `FieldNPCSaveData._nudeAppearanceIndexKey` and
+`_customizationAppearanceIndexKey` are both `CharacterAppearanceIndexKey
+(u64)`. The user asked to ship a resolver bridge; the investigation
+revealed a structural gap that makes a useful bridge premature.
+**Probe lives at `_probe_character_appearance_index` in
+[`src/c_abi/character_info.rs`](../src/c_abi/character_info.rs)
+(`#[ignore]`)**. Resume work from there + this section.
+
+### What's pinned
+
+**File location**: `0008/gamedata/binary__/client/bin/`
+- `characterappearanceindexinfo.pabgb` (236 KB) — entry bodies
+- `characterappearanceindexinfo.pabgh` (97 KB) — index
+
+PABGH/PABGB pair pattern (same shape as `skill.pabgh` + `skill.pabgb`).
+
+**PABGH schema** (verified — file size matches exactly):
+
+```text
+[u32 count = 8143]
+[count × (u64 key, u32 offset)]
+```
+
+**PABGB entry layout** (uniform across all observed entries):
+
+```text
+[u64 key (matches the pabgh key verbatim)]
+[21 bytes opaque body]   ← layer / color / asset IDs, no strings
+```
+
+Entries are all 29 bytes (8 + 21). Body schema **not RE'd** — bytes
+are dense binary parameters with no string fields. Would require
+either IDA decompilation of the appearance loader or cross-version
+diff against a save with known cosmetic changes to crack.
+
+**Save → PABGH transform** (verified end-to-end):
+
+```rust
+// save_u64 bytes (LE): [b0, b1, b2, b3, b4, b5, b6, b7]
+//   - bytes 0..2 = appearance ID (lo24)
+//   - byte 3     = category, signed i8
+//   - bytes 4..6 = sign-extension padding of byte 3 (all 0xff or 0x00)
+//   - byte 7     = variant marker — DROP, not part of the lookup
+let b3   = ((save >> 24) & 0xFF) as i8;
+let lo24 = save & 0x00FF_FFFF;
+let pabgh_key = (u64::from((b3 as i32) as u32) << 32) | lo24;
+```
+
+Example: `0xeeffffff_fe00000b → 0xfffffffe_0000000b` (variant byte
+`0xee` stripped; signed-byte `0xfe` sign-extends to hi32 = `0xfffffffe`).
+
+### Why the bridge wasn't shipped — the 87% miss path
+
+Of the 122 distinct `CharacterAppearanceIndexKey` values in the
+sample save's 228 `FieldNPCSaveData` blocks, **only 9 (7%) map to a
+PABGH entry** via the canonical transform:
+
+| Category byte | Distinct save values | PABGH hits |
+|---|---:|---:|
+| `0xfe`        | 112 | 9 |
+| `0x01`, `0x02`, `0x06`, `0x11`, `0x13`, `0x33`, `0x57`, `0x60` | 10 (1-2 each) | 0 |
+
+The PABGH's `0xfffffffe` bucket (7,027 of 8,143 entries) has lo32 ∈
+`{1, 2, 4, 6, 100, 400-459, 3914, 3919, …}` — sparsely populated with
+named-character + mercenary appearance templates. The save uses
+lo24 = 11, 12, 13, 14, 15, 16, 18, 21, 36, 50, 57 (`0x0b`–`0x39`) —
+all in gaps the PABGH skips.
+
+The non-`0xfe` categories (`0x01`, `0x02`, etc.) have zero hits.
+Those categories exist in the PABGH (hi32 = 1, 2, 3, …, 0x14 each
+have 11–113 entries) but our save's lo24 values for those categories
+don't land on real entries either.
+
+**Conclusion**: the other 87% likely reference a procedural /
+template-generated appearance system that isn't in this `.pabgh`
+file. Without locating that source (and without the 21-byte body
+schema), shipping a 7%-coverage validation-only bridge wouldn't earn
+its keep.
+
+### Open RE questions
+
+1. **Where do the other 87% appearance refs resolve?** Candidate
+   guesses: a sibling table in 0008 we haven't located, a runtime
+   procedural appearance system not exposed via gamedata, or maybe
+   a separate per-category mini-table per `b3` value. Worth scanning
+   0008 for files with names like `*appearance*` / `*npccustomization*`
+   / `*defaultappearance*`.
+2. **21-byte body schema.** IDA decompile the appearance loader (look
+   for code that reads `characterappearanceindexinfo.pabgb` — the
+   factory function should reveal the field layout). Likely fields:
+   outfit ID, color IDs (maybe 3-4 of them), accessory flags.
+3. **Variant byte (save byte 7) semantics.** Is it a per-NPC instance
+   seed for procedural variation, a faction marker, or something
+   else? Multiple NPCs share `(b3, lo24)` = `(0xfe, 0x0b)` with
+   different variant bytes — could be the same template "colored"
+   differently per spawn.
+
+### When this work resumes
+
+1. Run the probe with `--nocapture` to refresh the data points.
+2. Triangulate the 87% miss source (Q1 above).
+3. Decide whether a bridge that surfaces the canonical key + raw
+   21-byte body is useful even without body schema (it would let the
+   editor diff appearance keys between saves, even if it can't show
+   the user "Hair: long, Color: brown").
+4. If yes, mirror the `skill_info` parser pattern for the
+   PABGH+PABGB pair, add a C ABI surface with `load_from_bytes`,
+   `lookup_offset`, `get_body_bytes`.
 
 ---
 
