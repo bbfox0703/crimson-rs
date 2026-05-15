@@ -160,6 +160,56 @@ pub struct CrimsonScalarBatchOp {
     pub bytes_len: usize,
 }
 
+/// One element of a scalar-presence batch mutation, passed to
+/// [`crimson_save_set_scalar_fields_present_batch`].
+///
+/// Each op fully describes one mask-bit toggle: target block, descent
+/// path, leaf field index, the new presence flag, and (when making the
+/// field present) the initialization bytes for the scalar value. The
+/// path and byte buffers are borrowed for the duration of the batch
+/// call only — the caller owns and keeps them alive across the FFI
+/// boundary.
+///
+/// Layout matches the argument list of
+/// [`crimson_save_set_scalar_field_present`] so the same caller-side
+/// validation rules apply per-op. `make_present` is non-zero to make
+/// the field present, zero to make it absent. When zero, `bytes` /
+/// `bytes_len` are ignored and may be NULL / 0.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct CrimsonScalarPresentBatchOp {
+    pub block_idx: u32,
+    pub field_idx: u32,
+    pub path: *const CrimsonPathStep,
+    pub path_len: usize,
+    pub make_present: i32,
+    pub bytes: *const u8,
+    pub bytes_len: usize,
+}
+
+/// One element of a list-element removal batch, passed to
+/// [`crimson_save_list_remove_elements_batch`].
+///
+/// Each op fully describes one removal: target block, descent path,
+/// leaf list field index, and the element index to drop. Same per-op
+/// validation rules as [`crimson_save_list_remove_element`].
+///
+/// **Caller is responsible for pre-sorting** ops targeting the same
+/// list by descending `element_idx` so that earlier removes don't
+/// shift later ones out from under their indexes. Ops are applied in
+/// input order; if a later op's `element_idx` is out of range after
+/// earlier removes, that op fails with `OUT_OF_RANGE` and the whole
+/// batch is rolled back.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct CrimsonListRemoveBatchOp {
+    pub block_idx: u32,
+    pub field_idx: u32,
+    pub path: *const CrimsonPathStep,
+    pub path_len: usize,
+    pub element_idx: u32,
+}
+
 // ── Load / free ────────────────────────────────────────────────────────────
 
 /// Load and fully decode a `.save` file.
@@ -1022,6 +1072,133 @@ pub unsafe extern "C" fn crimson_save_list_remove_element(
     .unwrap_or(error::PANIC)
 }
 
+/// Drop many `object_list` elements in one FFI round trip, sharing a
+/// single post-batch re-emit + re-decode. Each op describes one removal
+/// in the same shape as [`crimson_save_list_remove_element`].
+///
+/// Semantics:
+/// 1. **Apply ops in input order.** Each op is validated and applied
+///    against the freshly-mutated tree, exactly as if the caller had
+///    run N sequential single-op removes. Earlier removes shift later
+///    indexes in the same list, so the caller is expected to pre-sort
+///    ops targeting the same list by descending `element_idx`.
+/// 2. **All-or-nothing on failure.** On the first op that fails any
+///    of the same checks as the single-op API (`NOT_SCALAR` /
+///    `OUT_OF_RANGE` / `LIST_VARIANT_UNSUPPORTED` / `NOT_NAVIGABLE`),
+///    the in-memory body is rolled back to its pre-batch state and
+///    the call returns that op's index via `out_failed_op_index`.
+/// 3. **One re-emit + re-decode at the end.** The body is serialized
+///    via [`Body::write`] exactly once after the last successful
+///    removal — a single cost regardless of `op_count`. This is the
+///    high-throughput path for bulk drops (e.g. trimming dozens of
+///    quest-reward items in one Tools-menu action).
+///
+/// `out_failed_op_index` (optional, may be NULL):
+/// - On error, written with the index of the failing op.
+/// - On success, written with `usize::MAX` as a "no failure" sentinel.
+///
+/// # Safety
+/// `handle` must be a live, exclusive handle. `ops` must point to
+/// `op_count` readable [`CrimsonListRemoveBatchOp`] values for the
+/// duration of the call. Each op's `path` pointer must point to
+/// `path_len` readable [`CrimsonPathStep`] values (or be NULL with
+/// `path_len == 0`). `out_failed_op_index` may be NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_list_remove_elements_batch(
+    handle: *mut CrimsonSaveHandle,
+    ops: *const CrimsonListRemoveBatchOp,
+    op_count: usize,
+    out_failed_op_index: *mut usize,
+) -> i32 {
+    if handle.is_null() {
+        return error::NULL_ARG;
+    }
+    if ops.is_null() && op_count != 0 {
+        return error::NULL_ARG;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        if op_count == 0 {
+            if !out_failed_op_index.is_null() {
+                unsafe {
+                    *out_failed_op_index = usize::MAX;
+                }
+            }
+            return error::OK;
+        }
+
+        let ops_slice: &[CrimsonListRemoveBatchOp] =
+            unsafe { std::slice::from_raw_parts(ops, op_count) };
+
+        // Per-op NULL_ARG pre-check (path pointer). Mirrors the
+        // single-op API's invariants before we begin mutating.
+        for (i, op) in ops_slice.iter().enumerate() {
+            if op.path.is_null() && op.path_len != 0 {
+                if !out_failed_op_index.is_null() {
+                    unsafe {
+                        *out_failed_op_index = i;
+                    }
+                }
+                return error::NULL_ARG;
+            }
+        }
+
+        let h = unsafe { &mut *handle };
+        let mut failed_op: Option<usize> = None;
+        let rc = apply_length_changing_mutation(h, |blocks| {
+            for (i, op) in ops_slice.iter().enumerate() {
+                let steps: &[CrimsonPathStep] = if op.path_len == 0 {
+                    &[]
+                } else {
+                    unsafe { std::slice::from_raw_parts(op.path, op.path_len) }
+                };
+                if let Err(code) =
+                    remove_one_list_element_in_place(blocks, op.block_idx, steps, op.field_idx, op.element_idx)
+                {
+                    failed_op = Some(i);
+                    return Err(code);
+                }
+            }
+            Ok(())
+        });
+
+        if !out_failed_op_index.is_null() {
+            unsafe {
+                *out_failed_op_index = failed_op.unwrap_or(usize::MAX);
+            }
+        }
+        rc
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Shared mutator for both the single-op and batch list-remove entry
+/// points. Resolves the list field, bounds-checks `element_idx`, drops
+/// the element, and rewrites the variant header's count.
+fn remove_one_list_element_in_place(
+    blocks: &mut [ObjectBlock],
+    block_idx: u32,
+    path: &[CrimsonPathStep],
+    field_idx: u32,
+    element_idx: u32,
+) -> Result<(), i32> {
+    let field = navigate_mut_to_field(blocks, block_idx, path, field_idx)?;
+    let FieldValue::ObjectList {
+        count,
+        header_variant,
+        header_bytes,
+        elements,
+    } = &mut field.value
+    else {
+        return Err(error::NOT_SCALAR);
+    };
+    if (element_idx as usize) >= elements.len() {
+        return Err(error::OUT_OF_RANGE);
+    }
+    elements.remove(element_idx as usize);
+    *count = elements.len() as u32;
+    update_object_list_count_in_header(header_bytes, header_variant, *count)
+}
+
 /// Clone element `src_element_idx` of an `object_list` and insert the
 /// copy at `dst_element_idx`. The list's `count` is incremented and the
 /// variant header's count bytes are rewritten.
@@ -1169,57 +1346,214 @@ pub unsafe extern "C" fn crimson_save_set_scalar_field_present(
             Vec::new()
         };
         apply_length_changing_mutation(h, |blocks| {
-            let parent = navigate_mut_to_parent(blocks, block_idx, steps)?;
-            let target_idx = field_idx as usize;
-            let Some(field) = parent.fields.get(target_idx) else {
-                return Err(error::OUT_OF_RANGE);
-            };
-            let meta_kind = field.meta_kind;
-            let meta_size = field.meta_size as usize;
-            let type_name = field.type_name.clone();
-            if !matches!(meta_kind, 0 | 2) || meta_size == 0 {
-                return Err(error::NOT_SCALAR_FIELD_KIND);
-            }
-            if make_present && init.len() != meta_size {
-                return Err(error::LENGTH_MISMATCH);
-            }
+            toggle_one_scalar_presence_in_place(blocks, block_idx, steps, field_idx, make_present, &init)
+        })
+    }))
+    .unwrap_or(error::PANIC)
+}
 
-            // Toggle the mask bit at `target_idx`.
-            let byte_idx = target_idx / 8;
-            let bit_idx = target_idx % 8;
-            if byte_idx >= parent.mask_bytes.len() {
-                return Err(error::OUT_OF_RANGE);
-            }
-            if make_present {
-                parent.mask_bytes[byte_idx] |= 1 << bit_idx;
-            } else {
-                parent.mask_bytes[byte_idx] &= !(1 << bit_idx);
-            }
+/// Shared mutator for both the single-op and batch
+/// `set_scalar_field_present` entry points. Validates the field, flips
+/// the mask bit, sets `kind` / `value` to reflect the new presence,
+/// and runs the FixedPrefix/FixedSuffix classification rule for the
+/// "make present" case.
+fn toggle_one_scalar_presence_in_place(
+    blocks: &mut [ObjectBlock],
+    block_idx: u32,
+    path: &[CrimsonPathStep],
+    field_idx: u32,
+    make_present: bool,
+    init_bytes: &[u8],
+) -> Result<(), i32> {
+    let parent = navigate_mut_to_parent(blocks, block_idx, path)?;
+    let target_idx = field_idx as usize;
+    let Some(field) = parent.fields.get(target_idx) else {
+        return Err(error::OUT_OF_RANGE);
+    };
+    let meta_kind = field.meta_kind;
+    let meta_size = field.meta_size as usize;
+    let type_name = field.type_name.clone();
+    if !matches!(meta_kind, 0 | 2) || meta_size == 0 {
+        return Err(error::NOT_SCALAR_FIELD_KIND);
+    }
+    if make_present && init_bytes.len() != meta_size {
+        return Err(error::LENGTH_MISMATCH);
+    }
 
-            // Decide forward vs reverse classification for the new state.
-            let new_kind = if make_present {
-                classify_scalar_after_mask_toggle(parent, target_idx)
-            } else {
-                FieldKind::Absent
-            };
+    // Toggle the mask bit at `target_idx`.
+    let byte_idx = target_idx / 8;
+    let bit_idx = target_idx % 8;
+    if byte_idx >= parent.mask_bytes.len() {
+        return Err(error::OUT_OF_RANGE);
+    }
+    if make_present {
+        parent.mask_bytes[byte_idx] |= 1 << bit_idx;
+    } else {
+        parent.mask_bytes[byte_idx] &= !(1 << bit_idx);
+    }
 
-            // Patch the field's decoded shape. The encoder picks up these
-            // values on the next encode pass.
-            let field_mut = parent.fields.get_mut(target_idx).expect("field bounds checked above");
-            field_mut.present = make_present;
-            field_mut.kind = new_kind;
-            if make_present {
-                let value = crate::save::scalar_from_bytes(&init, &type_name, meta_size);
-                field_mut.value = FieldValue::Scalar(value);
-                // start/end are stale but the encoder ignores them for
-                // scalar emission; they'll be refreshed by the re-decode.
-            } else {
-                field_mut.value = FieldValue::None;
-                field_mut.start = 0;
-                field_mut.end = 0;
+    // Decide forward vs reverse classification for the new state.
+    let new_kind = if make_present {
+        classify_scalar_after_mask_toggle(parent, target_idx)
+    } else {
+        FieldKind::Absent
+    };
+
+    // Patch the field's decoded shape. The encoder picks up these
+    // values on the next encode pass.
+    let field_mut = parent
+        .fields
+        .get_mut(target_idx)
+        .expect("field bounds checked above");
+    field_mut.present = make_present;
+    field_mut.kind = new_kind;
+    if make_present {
+        let value = crate::save::scalar_from_bytes(init_bytes, &type_name, meta_size);
+        field_mut.value = FieldValue::Scalar(value);
+        // start/end are stale but the encoder ignores them for
+        // scalar emission; they'll be refreshed by the re-decode.
+    } else {
+        field_mut.value = FieldValue::None;
+        field_mut.start = 0;
+        field_mut.end = 0;
+    }
+    Ok(())
+}
+
+/// Apply many [`CrimsonScalarPresentBatchOp`] mutations in one FFI
+/// round trip, sharing a single post-batch re-emit + re-decode.
+///
+/// Semantics:
+/// 1. **Apply ops in input order.** Each op is validated and applied
+///    against the freshly-mutated tree, exactly as if the caller had
+///    run N sequential [`crimson_save_set_scalar_field_present`]
+///    calls. When multiple ops target the same parent block, each
+///    successive `classify_scalar_after_mask_toggle` call sees the
+///    earlier toggles reflected — same end state as running N single
+///    ops back-to-back.
+/// 2. **All-or-nothing on failure.** On the first op that fails any
+///    of the single-op API's checks (`NOT_SCALAR_FIELD_KIND` /
+///    `LENGTH_MISMATCH` / `OUT_OF_RANGE` / `NOT_NAVIGABLE`), the
+///    in-memory body is rolled back to its pre-batch state and the
+///    call returns that op's index via `out_failed_op_index`.
+/// 3. **One re-emit + re-decode at the end.** The body is serialized
+///    via [`Body::write`] exactly once after the last successful
+///    toggle. This is the high-throughput path for bulk presence
+///    flips — e.g. "promote `_completedTime` from absent to present
+///    on 1300 `MissionStateData` blocks", which would otherwise pay
+///    1300 × encode + decode cost (~20 minutes on a 1100-block save)
+///    and instead amortizes to a single re-emit (~seconds).
+///
+/// `out_failed_op_index` (optional, may be NULL):
+/// - On error, written with the index of the failing op.
+/// - On success, written with `usize::MAX` as a "no failure" sentinel.
+///
+/// # Safety
+/// `handle` must be a live, exclusive handle. `ops` must point to
+/// `op_count` readable [`CrimsonScalarPresentBatchOp`] values for the
+/// duration of the call. Each op's `path` and `bytes` pointers must
+/// point to `path_len` / `bytes_len` readable elements respectively
+/// for the duration of the call (NULL is allowed when the
+/// corresponding length is 0, and `bytes` is also allowed to be NULL
+/// when `make_present == 0`, in which case it is ignored).
+/// `out_failed_op_index` may be NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_set_scalar_fields_present_batch(
+    handle: *mut CrimsonSaveHandle,
+    ops: *const CrimsonScalarPresentBatchOp,
+    op_count: usize,
+    out_failed_op_index: *mut usize,
+) -> i32 {
+    if handle.is_null() {
+        return error::NULL_ARG;
+    }
+    if ops.is_null() && op_count != 0 {
+        return error::NULL_ARG;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        if op_count == 0 {
+            if !out_failed_op_index.is_null() {
+                unsafe {
+                    *out_failed_op_index = usize::MAX;
+                }
+            }
+            return error::OK;
+        }
+
+        let ops_slice: &[CrimsonScalarPresentBatchOp] =
+            unsafe { std::slice::from_raw_parts(ops, op_count) };
+
+        // Per-op NULL_ARG pre-check. `path` may be NULL only when
+        // `path_len == 0`; `bytes` may be NULL only when `bytes_len
+        // == 0` OR `make_present == 0` (in which case bytes are
+        // ignored entirely).
+        for (i, op) in ops_slice.iter().enumerate() {
+            if op.path.is_null() && op.path_len != 0 {
+                if !out_failed_op_index.is_null() {
+                    unsafe {
+                        *out_failed_op_index = i;
+                    }
+                }
+                return error::NULL_ARG;
+            }
+            if op.make_present != 0
+                && op.bytes.is_null()
+                && op.bytes_len != 0
+            {
+                if !out_failed_op_index.is_null() {
+                    unsafe {
+                        *out_failed_op_index = i;
+                    }
+                }
+                return error::NULL_ARG;
+            }
+        }
+
+        // Copy init bytes out of raw pointers up front so the closure
+        // below is fully owned and doesn't carry raw pointers across
+        // the encode boundary. For absent ops we keep an empty Vec.
+        let init_bufs: Vec<Vec<u8>> = ops_slice
+            .iter()
+            .map(|op| {
+                if op.make_present != 0 {
+                    unsafe { std::slice::from_raw_parts(op.bytes, op.bytes_len) }.to_vec()
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect();
+
+        let h = unsafe { &mut *handle };
+        let mut failed_op: Option<usize> = None;
+        let rc = apply_length_changing_mutation(h, |blocks| {
+            for (i, op) in ops_slice.iter().enumerate() {
+                let steps: &[CrimsonPathStep] = if op.path_len == 0 {
+                    &[]
+                } else {
+                    unsafe { std::slice::from_raw_parts(op.path, op.path_len) }
+                };
+                let make_present = op.make_present != 0;
+                if let Err(code) = toggle_one_scalar_presence_in_place(
+                    blocks,
+                    op.block_idx,
+                    steps,
+                    op.field_idx,
+                    make_present,
+                    &init_bufs[i],
+                ) {
+                    failed_op = Some(i);
+                    return Err(code);
+                }
             }
             Ok(())
-        })
+        });
+
+        if !out_failed_op_index.is_null() {
+            unsafe {
+                *out_failed_op_index = failed_op.unwrap_or(usize::MAX);
+            }
+        }
+        rc
     }))
     .unwrap_or(error::PANIC)
 }
@@ -3534,6 +3868,506 @@ mod tests {
                 "scalar bytes must match the overwrite value"
             );
         }
+
+        unsafe { crimson_save_free(handle) };
+    }
+
+    // ── Length-changing batch entry points (Phase B.5) ─────────────────────
+
+    /// Collect up to `cap` (block_idx, field_idx, original_bytes) triples
+    /// of present scalar fields suitable for an absent→present round-trip
+    /// test. Each entry is on a distinct parent block to keep the
+    /// classification rule from coupling ops together — for the bulk
+    /// challenge-completion use case the real ops are also one per block.
+    fn collect_present_scalars(
+        handle: *mut CrimsonSaveHandle,
+        cap: usize,
+    ) -> Vec<(u32, u32, Vec<u8>)> {
+        let mut out = Vec::new();
+        unsafe {
+            let h = &*handle;
+            for (b_idx, block) in h.blocks.iter().enumerate() {
+                for (f_idx, field) in block.fields.iter().enumerate() {
+                    if !field.present
+                        || !matches!(field.meta_kind, 0 | 2)
+                        || field.meta_size == 0
+                    {
+                        continue;
+                    }
+                    if field.end <= field.start || field.end > h.save.body.len() {
+                        continue;
+                    }
+                    let bytes = h.save.body[field.start..field.end].to_vec();
+                    out.push((b_idx as u32, f_idx as u32, bytes));
+                    break; // one per block keeps classification independent
+                }
+                if out.len() >= cap {
+                    break;
+                }
+            }
+        }
+        out
+    }
+
+    /// Equivalence: clearing N scalar fields via the batch entry point
+    /// produces the byte-identical body that running N single-op
+    /// `set_scalar_field_present(make_present=0)` calls would. Locks the
+    /// "batch is a perf shortcut, not a behavior change" invariant.
+    #[test]
+    fn c_abi_set_scalar_fields_present_batch_matches_single_op() {
+        let Some(path) = find_save() else {
+            eprintln!("skipping c_abi_set_scalar_fields_present_batch_matches_single_op: no live save");
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+
+        let mut handle_batch: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle_batch) },
+            error::OK
+        );
+        let mut handle_single: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle_single) },
+            error::OK
+        );
+
+        let targets = collect_present_scalars(handle_batch, 30);
+        if targets.is_empty() {
+            eprintln!("skipping: no present scalar fields available");
+            unsafe { crimson_save_free(handle_batch) };
+            unsafe { crimson_save_free(handle_single) };
+            return;
+        }
+
+        // Build clear-all batch (make_present = 0, bytes ignored).
+        let ops: Vec<CrimsonScalarPresentBatchOp> = targets
+            .iter()
+            .map(|(b, f, _)| CrimsonScalarPresentBatchOp {
+                block_idx: *b,
+                field_idx: *f,
+                path: ptr::null(),
+                path_len: 0,
+                make_present: 0,
+                bytes: ptr::null(),
+                bytes_len: 0,
+            })
+            .collect();
+        let mut failed_idx: usize = 0;
+        assert_eq!(
+            unsafe {
+                crimson_save_set_scalar_fields_present_batch(
+                    handle_batch,
+                    ops.as_ptr(),
+                    ops.len(),
+                    &mut failed_idx,
+                )
+            },
+            error::OK
+        );
+        assert_eq!(failed_idx, usize::MAX);
+
+        // Same ops via the single-op API on handle B.
+        for (b, f, _) in &targets {
+            assert_eq!(
+                unsafe {
+                    crimson_save_set_scalar_field_present(
+                        handle_single,
+                        *b,
+                        ptr::null(),
+                        0,
+                        *f,
+                        0,
+                        ptr::null(),
+                        0,
+                    )
+                },
+                error::OK
+            );
+        }
+
+        let body_batch: &[u8] = unsafe { &(*handle_batch).save.body };
+        let body_single: &[u8] = unsafe { &(*handle_single).save.body };
+        assert_eq!(
+            body_batch.len(),
+            body_single.len(),
+            "body lengths must match between batch and single-op handles"
+        );
+        assert!(
+            body_batch == body_single,
+            "batch body must be byte-identical to N × single-op body"
+        );
+
+        unsafe { crimson_save_free(handle_batch) };
+        unsafe { crimson_save_free(handle_single) };
+    }
+
+    /// Round-trip: clear N scalar fields via the batch entry point, then
+    /// re-promote them to present with their original bytes via a second
+    /// batch. The body must end byte-identical to the pre-batch original.
+    #[test]
+    fn c_abi_set_scalar_fields_present_batch_clear_then_restore_roundtrip() {
+        let Some(path) = find_save() else {
+            eprintln!("skipping clear_then_restore_roundtrip: no live save");
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+
+        let mut handle: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle) },
+            error::OK
+        );
+        let original_body = unsafe { (*handle).save.body.clone() };
+
+        let targets = collect_present_scalars(handle, 20);
+        if targets.is_empty() {
+            eprintln!("skipping: no present scalar fields available");
+            unsafe { crimson_save_free(handle) };
+            return;
+        }
+
+        // Phase 1: clear all targets in one batch.
+        let clear_ops: Vec<CrimsonScalarPresentBatchOp> = targets
+            .iter()
+            .map(|(b, f, _)| CrimsonScalarPresentBatchOp {
+                block_idx: *b,
+                field_idx: *f,
+                path: ptr::null(),
+                path_len: 0,
+                make_present: 0,
+                bytes: ptr::null(),
+                bytes_len: 0,
+            })
+            .collect();
+        let mut failed_idx: usize = 0;
+        assert_eq!(
+            unsafe {
+                crimson_save_set_scalar_fields_present_batch(
+                    handle,
+                    clear_ops.as_ptr(),
+                    clear_ops.len(),
+                    &mut failed_idx,
+                )
+            },
+            error::OK
+        );
+        let after_clear = unsafe { (*handle).save.body.clone() };
+        assert!(
+            after_clear.len() < original_body.len(),
+            "clearing scalar fields should shrink the body"
+        );
+
+        // Phase 2: restore all targets in one batch with original bytes.
+        let restore_ops: Vec<CrimsonScalarPresentBatchOp> = targets
+            .iter()
+            .map(|(b, f, bytes)| CrimsonScalarPresentBatchOp {
+                block_idx: *b,
+                field_idx: *f,
+                path: ptr::null(),
+                path_len: 0,
+                make_present: 1,
+                bytes: bytes.as_ptr(),
+                bytes_len: bytes.len(),
+            })
+            .collect();
+        let mut failed_idx2: usize = 0;
+        assert_eq!(
+            unsafe {
+                crimson_save_set_scalar_fields_present_batch(
+                    handle,
+                    restore_ops.as_ptr(),
+                    restore_ops.len(),
+                    &mut failed_idx2,
+                )
+            },
+            error::OK
+        );
+        let after_restore = unsafe { (*handle).save.body.clone() };
+        assert_eq!(
+            after_restore, original_body,
+            "clear-then-restore-with-original-bytes must be byte-identical"
+        );
+
+        unsafe { crimson_save_free(handle) };
+    }
+
+    /// All-or-nothing: a batch with one bad op (LENGTH_MISMATCH on
+    /// make_present=1 with the wrong byte count) must leave the body
+    /// byte-identical and surface the failing op index via
+    /// `out_failed_op_index`. None of the earlier valid ops should be
+    /// observable in the body.
+    #[test]
+    fn c_abi_set_scalar_fields_present_batch_atomicity() {
+        let Some(path) = find_save() else {
+            eprintln!("skipping set_scalar_fields_present_batch_atomicity: no live save");
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+
+        let mut handle: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle) },
+            error::OK
+        );
+        let body_before = unsafe { (*handle).save.body.clone() };
+
+        let targets = collect_present_scalars(handle, 3);
+        if targets.len() < 2 {
+            eprintln!("skipping: need ≥2 present scalar fields for atomicity test");
+            unsafe { crimson_save_free(handle) };
+            return;
+        }
+
+        // Op 0: valid clear. Op 1: make_present=1 with a deliberately
+        // wrong byte count → LENGTH_MISMATCH.
+        let (b0, f0, _) = &targets[0];
+        let (b1, f1, ref orig1) = targets[1];
+        let bad_bytes = vec![0u8; orig1.len() + 1];
+        let ops = [
+            CrimsonScalarPresentBatchOp {
+                block_idx: *b0,
+                field_idx: *f0,
+                path: ptr::null(),
+                path_len: 0,
+                make_present: 0,
+                bytes: ptr::null(),
+                bytes_len: 0,
+            },
+            CrimsonScalarPresentBatchOp {
+                block_idx: b1,
+                field_idx: f1,
+                path: ptr::null(),
+                path_len: 0,
+                make_present: 1,
+                bytes: bad_bytes.as_ptr(),
+                bytes_len: bad_bytes.len(),
+            },
+        ];
+        let mut failed_idx: usize = 0;
+        let rc = unsafe {
+            crimson_save_set_scalar_fields_present_batch(
+                handle,
+                ops.as_ptr(),
+                ops.len(),
+                &mut failed_idx,
+            )
+        };
+        assert_eq!(rc, error::LENGTH_MISMATCH);
+        assert_eq!(failed_idx, 1);
+        let body_after = unsafe { &(*handle).save.body };
+        assert_eq!(
+            body_after.len(),
+            body_before.len(),
+            "body length must not change on failed batch"
+        );
+        assert!(
+            body_after == &body_before,
+            "body must be byte-identical to pre-batch on validation failure"
+        );
+
+        // Empty-batch sanity: zero ops returns OK + writes the sentinel.
+        let mut sentinel_slot: usize = 0;
+        assert_eq!(
+            unsafe {
+                crimson_save_set_scalar_fields_present_batch(
+                    handle,
+                    ptr::null(),
+                    0,
+                    &mut sentinel_slot,
+                )
+            },
+            error::OK
+        );
+        assert_eq!(sentinel_slot, usize::MAX);
+
+        unsafe { crimson_save_free(handle) };
+    }
+
+    /// Equivalence: removing N list elements in descending index order
+    /// via the batch entry point yields the byte-identical body as
+    /// running the same N removes through the single-op
+    /// `crimson_save_list_remove_element`. Mirrors the
+    /// `set_scalar_fields_batch_matches_single_op` invariant for the
+    /// list-shrink case.
+    #[test]
+    fn c_abi_list_remove_elements_batch_matches_single_op() {
+        let Some(path) = find_save() else {
+            eprintln!("skipping list_remove_elements_batch_matches_single_op: no live save");
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+
+        let mut handle_batch: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle_batch) },
+            error::OK
+        );
+        let mut handle_single: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle_single) },
+            error::OK
+        );
+
+        let (block_idx, field_idx, list_len) = unsafe {
+            let h = &*handle_batch;
+            let (b_idx, f_idx) = find_object_list(&h.blocks)
+                .expect("expected a zero1_count_u24 object_list");
+            let len = match &h.blocks[b_idx as usize].fields[f_idx as usize].value {
+                FieldValue::ObjectList { elements, .. } => elements.len(),
+                _ => unreachable!(),
+            };
+            (b_idx, f_idx, len)
+        };
+        // Drop up to the last 3 elements (descending order). Skip the
+        // test if the list is too small to remove 2+ elements.
+        if list_len < 3 {
+            eprintln!("skipping: list too small for multi-remove (len={list_len})");
+            unsafe { crimson_save_free(handle_batch) };
+            unsafe { crimson_save_free(handle_single) };
+            return;
+        }
+        let to_drop = [(list_len - 1) as u32, (list_len - 2) as u32, (list_len - 3) as u32];
+
+        // Batch on handle A.
+        let ops: Vec<CrimsonListRemoveBatchOp> = to_drop
+            .iter()
+            .map(|el| CrimsonListRemoveBatchOp {
+                block_idx,
+                field_idx,
+                path: ptr::null(),
+                path_len: 0,
+                element_idx: *el,
+            })
+            .collect();
+        let mut failed_idx: usize = 0;
+        assert_eq!(
+            unsafe {
+                crimson_save_list_remove_elements_batch(
+                    handle_batch,
+                    ops.as_ptr(),
+                    ops.len(),
+                    &mut failed_idx,
+                )
+            },
+            error::OK
+        );
+        assert_eq!(failed_idx, usize::MAX);
+
+        // Same removes one-at-a-time on handle B.
+        for el in to_drop {
+            assert_eq!(
+                unsafe {
+                    crimson_save_list_remove_element(
+                        handle_single,
+                        block_idx,
+                        ptr::null(),
+                        0,
+                        field_idx,
+                        el,
+                    )
+                },
+                error::OK
+            );
+        }
+
+        let body_batch: &[u8] = unsafe { &(*handle_batch).save.body };
+        let body_single: &[u8] = unsafe { &(*handle_single).save.body };
+        assert_eq!(body_batch.len(), body_single.len());
+        assert!(
+            body_batch == body_single,
+            "batch list-remove body must be byte-identical to N × single-op body"
+        );
+
+        unsafe { crimson_save_free(handle_batch) };
+        unsafe { crimson_save_free(handle_single) };
+    }
+
+    /// All-or-nothing: a list-remove batch with one bad op (OUT_OF_RANGE
+    /// via an element_idx past the current list length) must leave the
+    /// body byte-identical and report the failing op index. The earlier
+    /// valid removes must NOT be visible.
+    #[test]
+    fn c_abi_list_remove_elements_batch_atomicity() {
+        let Some(path) = find_save() else {
+            eprintln!("skipping list_remove_elements_batch_atomicity: no live save");
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+
+        let mut handle: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle) },
+            error::OK
+        );
+        let body_before = unsafe { (*handle).save.body.clone() };
+
+        let (block_idx, field_idx, list_len) = unsafe {
+            let h = &*handle;
+            let (b_idx, f_idx) = find_object_list(&h.blocks)
+                .expect("expected a zero1_count_u24 object_list");
+            let len = match &h.blocks[b_idx as usize].fields[f_idx as usize].value {
+                FieldValue::ObjectList { elements, .. } => elements.len(),
+                _ => unreachable!(),
+            };
+            (b_idx, f_idx, len)
+        };
+        if list_len < 2 {
+            eprintln!("skipping: list too small for atomicity test");
+            unsafe { crimson_save_free(handle) };
+            return;
+        }
+
+        // Op 0: valid remove of the tail. Op 1: bogus element_idx way
+        // past the current end → OUT_OF_RANGE. The valid op 0 mutation
+        // must be rolled back.
+        let ops = [
+            CrimsonListRemoveBatchOp {
+                block_idx,
+                field_idx,
+                path: ptr::null(),
+                path_len: 0,
+                element_idx: (list_len - 1) as u32,
+            },
+            CrimsonListRemoveBatchOp {
+                block_idx,
+                field_idx,
+                path: ptr::null(),
+                path_len: 0,
+                element_idx: 0xFFFF_FFFF,
+            },
+        ];
+        let mut failed_idx: usize = 0;
+        let rc = unsafe {
+            crimson_save_list_remove_elements_batch(
+                handle,
+                ops.as_ptr(),
+                ops.len(),
+                &mut failed_idx,
+            )
+        };
+        assert_eq!(rc, error::OUT_OF_RANGE);
+        assert_eq!(failed_idx, 1);
+        let body_after = unsafe { &(*handle).save.body };
+        assert!(
+            body_after == &body_before,
+            "body must be byte-identical to pre-batch on OUT_OF_RANGE"
+        );
+
+        // Empty-batch sanity.
+        let mut sentinel_slot: usize = 0;
+        assert_eq!(
+            unsafe {
+                crimson_save_list_remove_elements_batch(
+                    handle,
+                    ptr::null(),
+                    0,
+                    &mut sentinel_slot,
+                )
+            },
+            error::OK
+        );
+        assert_eq!(sentinel_slot, usize::MAX);
 
         unsafe { crimson_save_free(handle) };
     }
