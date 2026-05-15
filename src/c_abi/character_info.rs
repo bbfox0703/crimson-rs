@@ -1016,6 +1016,273 @@ mod tests {
         assert!(ch.is_null());
     }
 
+    /// `CharacterAppearanceIndexKey` investigation probe — RE was
+    /// suspended after this probe surfaced a structural gap, so the
+    /// bridge is **not** shipped. The probe is kept here so the next
+    /// session can pick the work up without redoing the discovery.
+    ///
+    /// What this probe pins (verified 2026-05-15 against the live
+    /// 1.07 `slot0/save.save` + `0008/gamedata/binary__/client/bin/`):
+    ///
+    /// 1. **File location**: `characterappearanceindexinfo.pabgb`
+    ///    (236 KB) + `.pabgh` (97 KB) sibling. PABGH/PABGB pair
+    ///    pattern — same shape as `skill.pabgh` + `skill.pabgb`.
+    /// 2. **PABGH schema**:
+    ///    ```text
+    ///    [u32 count = 8143]
+    ///    [count × (u64 key, u32 offset)]
+    ///    ```
+    /// 3. **PABGB entry layout**: each entry = 8-byte key (matches
+    ///    the pabgh key verbatim) + **21-byte opaque body**. All
+    ///    entries observed are 29 bytes total. Body bytes are
+    ///    dense binary parameters with no string fields — likely
+    ///    layer / color / asset IDs that need IDA RE before they
+    ///    can be exposed semantically.
+    /// 4. **Save → PABGH transform** (verified):
+    ///    ```rust
+    ///    let b3   = ((save >> 24) & 0xFF) as i8;       // category, signed i8
+    ///    let lo24 = save & 0x00FF_FFFF;                // appearance ID
+    ///    let pabgh_key = ((b3 as i32) as u64) << 32 | lo24;
+    ///    // byte 7 of save (top byte) is a variant marker — drop it
+    ///    // bytes 4..=6 of save mirror byte 3's sign (sign-ext padding)
+    ///    ```
+    /// 5. **Why the bridge wasn't shipped**: of 122 distinct save-side
+    ///    appearance keys in the sample, **only 16 (13%) map to a
+    ///    PABGH entry**. The PABGH's `0xfffffffe` bucket (7,027 of
+    ///    its 8,143 entries) contains lo32 ∈ {1, 2, 4, 6, 100,
+    ///    400-459, …} — sparsely populated. The save uses lo24 = 11,
+    ///    12, 13, 14, … which fall in gaps the PABGH skips. The
+    ///    other 87% of save values likely reference a procedural
+    ///    / template-generated appearance system that isn't in this
+    ///    file. Shipping a 13%-coverage bridge with no body schema
+    ///    (and therefore no human-readable output) wouldn't earn
+    ///    its keep.
+    ///
+    /// Open RE questions when this work resumes — see §10 of
+    /// `docs/save-editor-keys-plan.md`:
+    /// - Where do the other 87% appearance refs resolve? Probably a
+    ///   sibling table in 0008 we haven't located, or a runtime
+    ///   procedural system not exposed to gamedata.
+    /// - Body 21-byte schema — IDA-RE the appearance loader to
+    ///   identify field layout (likely outfit IDs, color values,
+    ///   accessory flags).
+    ///
+    /// Probe behaviour: validates the file location, pabgh schema,
+    /// and the canonical save→pabgh transform end-to-end. Prints
+    /// total / distinct save values, hit count, and per-category
+    /// breakdown. Skips cleanly when the live save or game install
+    /// is missing.
+    #[test]
+    #[ignore = "investigation only — appearance bridge RE deferred"]
+    fn _probe_character_appearance_index() {
+        use crate::binary::pamt::PackMeta;
+        use crate::binary::paz;
+        use crate::save::{Body, FieldValue, ScalarValue, Save};
+
+        // ── Locate the live save ────────────────────────────────────
+        let save_path = std::env::var_os("CRIMSON_LIVE_SAVE")
+            .map(PathBuf::from)
+            .or_else(|| {
+                let appdata = std::env::var_os("LOCALAPPDATA")?;
+                let root = PathBuf::from(appdata)
+                    .join("Pearl Abyss")
+                    .join("CD")
+                    .join("save");
+                std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
+                    let p = entry.path().join("slot0").join("save.save");
+                    p.is_file().then_some(p)
+                })
+            });
+        let Some(save_path) = save_path else {
+            eprintln!("skipping: no live save");
+            return;
+        };
+        eprintln!("save:  {}", save_path.display());
+
+        // ── Locate the appearance index file ────────────────────────
+        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
+            });
+        let pamt_path = game_root.join("0008").join("0.pamt");
+        let Ok(pamt_bytes) = std::fs::read(&pamt_path) else {
+            eprintln!("skipping: no {}", pamt_path.display());
+            return;
+        };
+        let pamt = PackMeta::parse(&pamt_bytes, None).expect("parse PAMT");
+        let dir = pamt
+            .directories
+            .iter()
+            .find(|d| d.path == "gamedata/binary__/client/bin")
+            .expect("dir");
+        let pabgh_file = dir
+            .files
+            .iter()
+            .find(|f| f.name == "characterappearanceindexinfo.pabgh")
+            .expect("pabgh entry missing — has PA renamed the file?");
+        let pabgh_bytes = paz::extract_file(
+            &game_root.join("0008"),
+            pabgh_file,
+            "gamedata/binary__/client/bin",
+            &pamt.header.encrypt_info.encrypt_info,
+        )
+        .expect("extract pabgh");
+        eprintln!("pabgh: {} bytes", pabgh_bytes.len());
+
+        // ── Parse the pabgh: u32 count + (u64 key, u32 offset) ──────
+        assert!(pabgh_bytes.len() >= 4, "pabgh truncated");
+        let count = u32::from_le_bytes([
+            pabgh_bytes[0], pabgh_bytes[1], pabgh_bytes[2], pabgh_bytes[3],
+        ]) as usize;
+        let expected = 4 + count * 12;
+        assert_eq!(
+            pabgh_bytes.len(),
+            expected,
+            "pabgh size mismatch — schema may have drifted (count={count}, expected {expected})"
+        );
+        let mut pabgh_by_key: std::collections::HashMap<u64, u32> =
+            std::collections::HashMap::with_capacity(count);
+        for i in 0..count {
+            let off = 4 + i * 12;
+            let key = u64::from_le_bytes([
+                pabgh_bytes[off], pabgh_bytes[off + 1], pabgh_bytes[off + 2], pabgh_bytes[off + 3],
+                pabgh_bytes[off + 4], pabgh_bytes[off + 5], pabgh_bytes[off + 6], pabgh_bytes[off + 7],
+            ]);
+            let offset = u32::from_le_bytes([
+                pabgh_bytes[off + 8],
+                pabgh_bytes[off + 9],
+                pabgh_bytes[off + 10],
+                pabgh_bytes[off + 11],
+            ]);
+            pabgh_by_key.insert(key, offset);
+        }
+        eprintln!("pabgh entries: {count}");
+
+        // ── Decode the save + collect appearance keys ───────────────
+        let raw = std::fs::read(&save_path).expect("read save");
+        let save = Save::parse(&raw).expect("parse save");
+        let body = Body::parse(&save.body).expect("parse body");
+        let blocks = body.decode_blocks(&save.body);
+
+        let mut npc_blocks: Vec<&crate::save::ObjectBlock> = Vec::new();
+        for b in &blocks {
+            if b.class_name == "FieldNPCSaveData" {
+                npc_blocks.push(b);
+            }
+            walk(b, &mut npc_blocks);
+        }
+        fn walk<'a>(b: &'a crate::save::ObjectBlock, out: &mut Vec<&'a crate::save::ObjectBlock>) {
+            for f in &b.fields {
+                if let FieldValue::ObjectList { elements, .. } = &f.value {
+                    for e in elements {
+                        if e.class_name == "FieldNPCSaveData" {
+                            out.push(e);
+                        }
+                        walk(e, out);
+                    }
+                } else if let FieldValue::Locator { child: Some(c), .. } = &f.value {
+                    walk(c, out);
+                }
+            }
+        }
+
+        let appearance_field_names = ["_nudeAppearanceIndexKey", "_customizationAppearanceIndexKey"];
+        let mut all_values: Vec<u64> = Vec::new();
+        for b in &npc_blocks {
+            for f in &b.fields {
+                if !f.present || !appearance_field_names.contains(&f.name.as_str()) {
+                    continue;
+                }
+                if let FieldValue::Scalar(ScalarValue::U64(x)) = &f.value {
+                    all_values.push(*x);
+                }
+            }
+        }
+        let distinct: std::collections::HashSet<u64> = all_values.iter().copied().collect();
+        eprintln!(
+            "appearance keys: {} samples, {} distinct, {} npc blocks",
+            all_values.len(),
+            distinct.len(),
+            npc_blocks.len()
+        );
+
+        // ── Apply the canonical transform + measure hit rate ────────
+        let mut total_hits = 0u32;
+        let mut per_cat: std::collections::BTreeMap<i8, (u32, u32)> = Default::default();
+        for v in &distinct {
+            let b3 = ((v >> 24) & 0xFF) as i8;
+            let lo24 = *v & 0x00FF_FFFF;
+            let pabgh_key = (u64::from((b3 as i32) as u32) << 32) | lo24;
+            let entry = per_cat.entry(b3).or_insert((0, 0));
+            entry.0 += 1;
+            if pabgh_by_key.contains_key(&pabgh_key) {
+                entry.1 += 1;
+                total_hits += 1;
+            }
+        }
+        eprintln!(
+            "save→pabgh transform: {}/{} distinct values hit",
+            total_hits,
+            distinct.len()
+        );
+        eprintln!("per-category (byte 3 / hits / total):");
+        for (b3, (tot, hit)) in &per_cat {
+            eprintln!("  0x{:02x}: {hit}/{tot}", *b3 as u8);
+        }
+
+        // Sanity: the transform's output for known-named-character
+        // appearance IDs (e.g. lo24=1, 2, 4, 6 in the fe bucket)
+        // should ALWAYS hit. Pin a couple to catch regressions.
+        let pinned: &[(u64, bool)] = &[
+            // (save_value, should_hit)
+            (0xffff_ffff_fe00_0001, true),  // canonical fe-cat ID=1
+            (0xffff_ffff_fe00_0002, true),  // canonical fe-cat ID=2
+            (0x0000_0000_fe00_0001, true),  // variant byte stripped, still hits
+        ];
+        for (v, want) in pinned {
+            let b3 = ((v >> 24) & 0xFF) as i8;
+            let lo24 = *v & 0x00FF_FFFF;
+            let pabgh_key = (u64::from((b3 as i32) as u32) << 32) | lo24;
+            let got = pabgh_by_key.contains_key(&pabgh_key);
+            assert_eq!(
+                got, *want,
+                "pinned transform check failed for save=0x{v:016x} → pabgh=0x{pabgh_key:016x}"
+            );
+        }
+    }
+
+    /// Investigation probe: list every `*appearance*` file in 0008's
+    /// PAMT so we can see what tables the engine ships under that
+    /// naming. Run once when starting RE on a new key type.
+    #[test]
+    #[ignore = "investigation only — appearance file discovery"]
+    fn _scan_0008_appearance_files() {
+        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
+            });
+        let pamt_path = game_root.join("0008").join("0.pamt");
+        if !pamt_path.is_file() {
+            eprintln!("skipping: no {}", pamt_path.display());
+            return;
+        }
+        let pamt_bytes = std::fs::read(&pamt_path).expect("read 0.pamt");
+        let pamt = crate::binary::pamt::PackMeta::parse(&pamt_bytes, None).expect("parse PAMT");
+        for d in &pamt.directories {
+            for f in &d.files {
+                let lower = f.name.to_ascii_lowercase();
+                if lower.contains("appearance") || lower.contains("appearence") {
+                    eprintln!(
+                        "{}/{}  ({}c / {}u)",
+                        d.path, f.name, f.file.compressed_size, f.file.uncompressed_size
+                    );
+                }
+            }
+        }
+    }
+
     /// Cross-version investigation probe: loads a live Crimson Desert
     /// save, walks every `FieldNPCSaveData` and `FieldGimmickSaveData`
     /// block, dumps the actual field shapes. The 2026-05-15 run against
