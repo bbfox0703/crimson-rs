@@ -1015,4 +1015,279 @@ mod tests {
         assert_eq!(rc, error::IO);
         assert!(ch.is_null());
     }
+
+    /// Cross-version investigation probe: loads a live Crimson Desert
+    /// save, walks every `FieldNPCSaveData` and `FieldGimmickSaveData`
+    /// block, dumps the actual field shapes. The 2026-05-15 run against
+    /// a 1.07 `slot0/save.save` empirically confirmed:
+    ///
+    /// - `FieldNPCSaveData._characterKey` IS a flat u32 of shape
+    ///   `0xCC_LLLLLL` (cat-byte hi + 24-bit lo) exactly as §6 of
+    ///   `docs/save-editor-keys-plan.md` documented. 228 instances,
+    ///   222 distinct values, 90+ distinct cat-byte values (0x06–0xfe).
+    ///   The shipped `crimson_characterinfo_*` bridge is correct.
+    /// - `FieldGimmickSaveData._gimmickInfoKey` IS a flat u32 with no
+    ///   cat-byte, matching the shipped `crimson_gimmickinfo_*` bridge.
+    ///   4264 instances across 549 distinct keys; slot-key range
+    ///   `[131, 957806]` (slightly wider than §6's `[1788, 953478]`).
+    ///
+    /// What the probe ALSO revealed (and §6 didn't capture in detail):
+    /// `FieldNPCSaveData` ships with 12 fields, not 4 — `_friendly` is
+    /// a `Locator<ExperienceLevelSaveData>` (not a bool), plus
+    /// `_nudeAppearanceIndexKey` / `_customizationAppearanceIndexKey`
+    /// (both `CharacterAppearanceIndexKey` u64 — an unbridged key
+    /// type), `_armorDyeAppearanceIndexKey` (u8), `_touchID` (u64),
+    /// and a `_memoryOfTargetList` sublist. `FieldGimmickSaveData`
+    /// ships 43 fields including `_saveRootFieldGimmickSaveDataKey`
+    /// (parent-gimmick reference), `_ownerLevelName`, `_stageKey`,
+    /// `_originSpawnTransform`, and many sub-lists.
+    ///
+    /// Run with:
+    /// ```text
+    /// cargo test --lib --features c_abi \
+    ///   _probe_live_save_field_blocks -- --ignored --nocapture
+    /// ```
+    ///
+    /// Picks up the save from `%LOCALAPPDATA%\Pearl Abyss\CD\save\
+    /// <account>\slot0\save.save` by default — override via
+    /// `CRIMSON_LIVE_SAVE`. `#[ignore]` so it never runs in the
+    /// default suite (this is a diagnostic, not a regression gate —
+    /// the shipped tests cover the bridge contract).
+    #[test]
+    #[ignore = "investigation only — uses the user's live save file"]
+    fn _probe_live_save_field_blocks() {
+        use crate::save::{Body, FieldValue, ScalarValue, Save};
+
+        let save_path = std::env::var_os("CRIMSON_LIVE_SAVE")
+            .map(PathBuf::from)
+            .or_else(|| {
+                // Default: walk `%LOCALAPPDATA%\Pearl Abyss\CD\save\` and
+                // pick the first `<account>/slot0/save.save` we find.
+                // The account directory is per-Steam-account so we don't
+                // hardcode it.
+                let appdata = std::env::var_os("LOCALAPPDATA")?;
+                let root = PathBuf::from(appdata)
+                    .join("Pearl Abyss")
+                    .join("CD")
+                    .join("save");
+                let entries = std::fs::read_dir(&root).ok()?;
+                for entry in entries.flatten() {
+                    let candidate = entry.path().join("slot0").join("save.save");
+                    if candidate.is_file() {
+                        return Some(candidate);
+                    }
+                }
+                None
+            });
+        let Some(save_path) = save_path else {
+            eprintln!(
+                "skipping _probe_live_save_field_blocks: no Crimson Desert save file found \
+                (set CRIMSON_LIVE_SAVE or play the game once to create %LOCALAPPDATA%\\Pearl Abyss\\CD\\save\\…\\slot0\\save.save)"
+            );
+            return;
+        };
+        if !save_path.is_file() {
+            eprintln!("skipping _probe_live_save_field_blocks: no {}", save_path.display());
+            return;
+        }
+        eprintln!("probing live save: {}", save_path.display());
+        let raw = std::fs::read(&save_path).expect("read save");
+        let save = Save::parse(&raw).expect("parse save");
+        let body = Body::parse(&save.body).expect("parse body");
+        let blocks = body.decode_blocks(&save.body);
+        eprintln!("decoded {} top-level blocks", blocks.len());
+
+        // ── Locate the class indices for the two save-data classes ──
+        let mut npc_blocks: Vec<&_> = Vec::new();
+        let mut gimmick_blocks: Vec<&_> = Vec::new();
+        for b in &blocks {
+            match b.class_name.as_str() {
+                "FieldNPCSaveData" => npc_blocks.push(b),
+                "FieldGimmickSaveData" => gimmick_blocks.push(b),
+                _ => {}
+            }
+        }
+        // Also scan nested ObjectList elements — these classes might
+        // appear there too, depending on schema.
+        let mut nested_npc: Vec<&_> = Vec::new();
+        let mut nested_gimmick: Vec<&_> = Vec::new();
+        for b in &blocks {
+            walk_object_list(b, &mut nested_npc, &mut nested_gimmick);
+        }
+        eprintln!(
+            "top-level: {} FieldNPCSaveData, {} FieldGimmickSaveData",
+            npc_blocks.len(),
+            gimmick_blocks.len()
+        );
+        eprintln!(
+            "nested:    {} FieldNPCSaveData, {} FieldGimmickSaveData",
+            nested_npc.len(),
+            nested_gimmick.len()
+        );
+
+        // Choose whichever location has data.
+        let npc_set: Vec<&crate::save::ObjectBlock> = if !npc_blocks.is_empty() {
+            npc_blocks
+        } else {
+            nested_npc
+        };
+        let gimmick_set: Vec<&crate::save::ObjectBlock> = if !gimmick_blocks.is_empty() {
+            gimmick_blocks
+        } else {
+            nested_gimmick
+        };
+
+        // ── FieldNPCSaveData dump ──────────────────────────────────
+        eprintln!("\n=== FieldNPCSaveData ({} instances) ===", npc_set.len());
+        if let Some(sample) = npc_set.first() {
+            eprintln!("Field layout (from first block):");
+            for f in &sample.fields {
+                eprintln!(
+                    "  [{:2}] present={} kind={:?} type={} name={} meta_size={}",
+                    f.field_index, f.present, f.kind, f.type_name, f.name, f.meta_size
+                );
+            }
+        }
+        // Histogram of _characterKey values + cat-byte distribution.
+        let mut cat_byte_hist: std::collections::BTreeMap<u8, u32> = Default::default();
+        let mut all_npc_charkeys: Vec<u32> = Vec::new();
+        let mut sibling_dumps = 0usize;
+        for b in &npc_set {
+            for f in &b.fields {
+                if f.name != "_characterKey" {
+                    continue;
+                }
+                let Some(val) = scalar_u32(&f.value) else {
+                    eprintln!(
+                        "  WARN: _characterKey not Scalar(U32) — actual: {:?}",
+                        f.value
+                    );
+                    continue;
+                };
+                all_npc_charkeys.push(val);
+                *cat_byte_hist.entry((val >> 24) as u8).or_insert(0) += 1;
+                if sibling_dumps < 6 {
+                    eprintln!(
+                        "\n  sample NPC block #{sibling_dumps}: _characterKey = 0x{val:08x} (cat=0x{:02x}, lo24=0x{:06x})",
+                        val >> 24,
+                        val & 0xFF_FFFF
+                    );
+                    for sf in &b.fields {
+                        if sf.present {
+                            eprintln!(
+                                "    {} = {}",
+                                sf.name,
+                                short_field_value(&sf.value)
+                            );
+                        }
+                    }
+                    sibling_dumps += 1;
+                }
+            }
+        }
+        eprintln!("\nFieldNPC summary:");
+        eprintln!("  total _characterKey samples: {}", all_npc_charkeys.len());
+        eprintln!("  distinct values:             {}",
+            all_npc_charkeys.iter().collect::<std::collections::HashSet<_>>().len());
+        eprintln!("  cat-byte distribution:");
+        for (cat, n) in &cat_byte_hist {
+            eprintln!("    0x{cat:02x}: {n}");
+        }
+
+        // ── FieldGimmickSaveData dump ──────────────────────────────
+        eprintln!("\n=== FieldGimmickSaveData ({} instances) ===", gimmick_set.len());
+        if let Some(sample) = gimmick_set.first() {
+            eprintln!("Field layout (from first block):");
+            for f in &sample.fields {
+                eprintln!(
+                    "  [{:2}] present={} kind={:?} type={} name={} meta_size={}",
+                    f.field_index, f.present, f.kind, f.type_name, f.name, f.meta_size
+                );
+            }
+        }
+        let mut all_gimmickinfo_keys: Vec<u32> = Vec::new();
+        let mut all_gimmick_slot_keys: Vec<u32> = Vec::new();
+        let mut gimmick_dumps = 0usize;
+        for b in &gimmick_set {
+            let mut gimmick_info_key: Option<u32> = None;
+            let mut slot_key: Option<u32> = None;
+            for f in &b.fields {
+                if let Some(v) = scalar_u32(&f.value) {
+                    if f.name == "_gimmickInfoKey" {
+                        gimmick_info_key = Some(v);
+                    }
+                    if f.name == "_fieldGimmickSaveDataKey" {
+                        slot_key = Some(v);
+                    }
+                }
+            }
+            if let Some(v) = gimmick_info_key {
+                all_gimmickinfo_keys.push(v);
+            }
+            if let Some(v) = slot_key {
+                all_gimmick_slot_keys.push(v);
+            }
+            if gimmick_dumps < 3 {
+                eprintln!(
+                    "\n  sample Gimmick block #{gimmick_dumps}: _gimmickInfoKey = {:?}, _fieldGimmickSaveDataKey = {:?}",
+                    gimmick_info_key, slot_key
+                );
+                gimmick_dumps += 1;
+            }
+        }
+        eprintln!("\nFieldGimmick summary:");
+        eprintln!("  total _gimmickInfoKey samples:           {}", all_gimmickinfo_keys.len());
+        eprintln!("  distinct _gimmickInfoKey values:         {}",
+            all_gimmickinfo_keys.iter().collect::<std::collections::HashSet<_>>().len());
+        eprintln!("  total _fieldGimmickSaveDataKey samples:  {}", all_gimmick_slot_keys.len());
+        eprintln!("  distinct _fieldGimmickSaveDataKey:       {}",
+            all_gimmick_slot_keys.iter().collect::<std::collections::HashSet<_>>().len());
+        if let (Some(min), Some(max)) = (
+            all_gimmick_slot_keys.iter().min(),
+            all_gimmick_slot_keys.iter().max(),
+        ) {
+            eprintln!("  slot-key range: [{min}, {max}]");
+        }
+
+        fn walk_object_list<'a>(
+            b: &'a crate::save::ObjectBlock,
+            npc: &mut Vec<&'a crate::save::ObjectBlock>,
+            gimmick: &mut Vec<&'a crate::save::ObjectBlock>,
+        ) {
+            for f in &b.fields {
+                if let FieldValue::ObjectList { elements, .. } = &f.value {
+                    for e in elements {
+                        match e.class_name.as_str() {
+                            "FieldNPCSaveData" => npc.push(e),
+                            "FieldGimmickSaveData" => gimmick.push(e),
+                            _ => {}
+                        }
+                        walk_object_list(e, npc, gimmick);
+                    }
+                } else if let FieldValue::Locator { child: Some(c), .. } = &f.value {
+                    walk_object_list(c, npc, gimmick);
+                }
+            }
+        }
+
+        fn scalar_u32(v: &FieldValue) -> Option<u32> {
+            match v {
+                FieldValue::Scalar(ScalarValue::U32(x)) => Some(*x),
+                _ => None,
+            }
+        }
+
+        fn short_field_value(v: &FieldValue) -> String {
+            match v {
+                FieldValue::Scalar(s) => format!("{s:?}"),
+                FieldValue::None => "<absent>".into(),
+                FieldValue::InlineBytes { count, .. } => format!("InlineBytes[{count}]"),
+                FieldValue::DynamicArray { count, .. } => format!("DynamicArray[{count}]"),
+                FieldValue::Locator { child_type_name, child, .. } => {
+                    format!("Locator<{child_type_name}>{}", if child.is_some() { " resolved" } else { "" })
+                }
+                FieldValue::ObjectList { count, .. } => format!("ObjectList[{count}]"),
+            }
+        }
+    }
 }

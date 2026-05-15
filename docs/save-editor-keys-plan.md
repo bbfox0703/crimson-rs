@@ -33,13 +33,23 @@
 > located), lo32=0x490 mission-variant meaning (Q4, partially
 > overshadowed by the knowledge work), broader PALOC namespace coverage
 > for CharacterKey (the 78% sample-bias miss path — different save
-> samples touching named field NPCs would pin more ground-truth).
+> samples touching named field NPCs would pin more ground-truth), and
+> a **`CharacterAppearanceIndexKey` (u64)** bridge for NPC outfit /
+> customisation resolution (newly surfaced by the 2026-05-15 live-save
+> probe; see §6 "Unbridged key types").
+>
+> **2026-05-15 verification pass**: the live 1.07 `slot0/save.save` was
+> parsed end-to-end through `Save::parse + Body::decode_blocks`,
+> confirming the §6 verdict on both keys empirically — `_characterKey`
+> is exactly the `0xCC_LLLLLL` cat-byte u32 the bridge expects, and
+> `_gimmickInfoKey` is the flat u32 the gimmick bridge expects. The
+> probe lives at `_probe_live_save_field_blocks` in
+> `src/c_abi/character_info.rs` (`#[ignore]`, diagnostic only).
 >
 > **First concrete next action**: pick up an "Optional follow-on" from
-> the list above, or extend the portrait matcher with additional
-> signals (mesh / customisation tokens, the way CrimsonForge does it
-> via `meshparam_*` filenames) if false-negatives on the 22% display
-> chain become a real concern.
+> the list above. `CharacterAppearanceIndexKey` is the highest-signal
+> new bridge target — the data is clearly there in saves; the work is
+> locating the right `.pabgb` table.
 >
 > Extracted `.pabgb` baselines for this work live in
 > `out/baselines/1.06/` (gitignored). Re-extract with
@@ -87,6 +97,7 @@ chain.
 | **GimmickInfoKey** *(via FieldGimmickSaveData._gimmickInfoKey)* | 530 unique (6,666 occurrences) | `gimmickinfo.pabgb` + PALOC u64 | ✅ | ✅ `src/c_abi/gimmick_info.rs` | A — gamedata table (**no hash hop**; identity key into PALOC, default lo32=0x200), 99.4% coverage |
 | **FieldNPCSaveDataKey** | 103 | save-internal (spawn-slot index) | n/a | n/a | save-internal *(verified — see §6)* |
 | **FieldGimmickSaveDataKey** | 4,363 | save-internal (spawn-slot index) | n/a | n/a | save-internal — real bridge is sibling `_gimmickInfoKey` above |
+| **CharacterAppearanceIndexKey** *(via FieldNPCSaveData._nudeAppearanceIndexKey + _customizationAppearanceIndexKey)* | ~ tens | likely `characterappearance_*.pabgb` (not located) | ✗ | ✗ | Unbridged. Surfaced by the 2026-05-15 live-save probe — see §6 "Unbridged key types". u64 keys. Would resolve NPC outfit / customization selection. |
 | **SubLevelKey** | 7 | `sublevelinfo.pabgb` | ✅ | ✅ `src/c_abi/sub_level_info.rs` | A — gamedata table (**no hash hop, no PALOC**; sub-levels not localized) |
 | **ItemKey** | 669 | `iteminfo.pabgb` (parser ahead of save) | ✅ | ✅ | A — gamedata table |
 | **Hash hop helper** | n/a | `crypto::checksum::calculate_checksum` | ✅ | ✅ `src/c_abi/checksum.rs` | exposed for editor-side chain composition |
@@ -630,7 +641,7 @@ score 100, live-test verified).**
 
 Earlier text framed FieldNPCSaveDataKey as a *spawn template ID* that
 resolves through a separate lookup into a real CharacterKey. The
-handoff data disproves that framing:
+handoff data disproves that framing — the original §6 sketch:
 
 ```
 FieldNPCSaveData {
@@ -649,6 +660,92 @@ FieldNPCSaveData {
   `_gimmickInfoKey` (which IS the real game-data key for the gimmick).
 - The **real bridge target** is the `_characterKey` u32 sibling, not
   the `*SaveDataKey` itself.
+
+### 2026-05-15 empirical confirmation against a live 1.07 save
+
+Re-verified the verdict directly by parsing a 1.07 `slot0/save.save`
+through the shipped `Save::parse + Body::decode_blocks` pipeline. Probe
+lives at `_probe_live_save_field_blocks` in
+[`src/c_abi/character_info.rs`](../src/c_abi/character_info.rs)
+(`#[ignore]`, run with `--ignored --nocapture`).
+
+**Results — the original verdict stands, but the field-level schema
+is richer than the 4-field sketch above suggested:**
+
+```
+FieldNPCSaveData {                                          // 12 fields total
+  [ 0] _spawnFieldInfoKey:                FieldInfoKey u32
+  [ 1] _fieldNpcSaveDataKey:              u32                  ← slot index (1..228 in sample)
+  [ 2] _friendly:                         Locator<ExperienceLevelSaveData>
+                                                              ← NOT a bool — has an
+                                                                experience-level child block
+  [ 3] _nudeAppearanceIndexKey:           CharacterAppearanceIndexKey u64
+                                                              ← unbridged key type!
+  [ 4] _customizationAppearanceIndexKey:  CharacterAppearanceIndexKey u64
+  [ 5] _armorDyeAppearanceIndexKey:       u8
+  [ 6] _characterKey:                     CharacterKey u32     ← 0xCC_LLLLLL as documented
+  [ 7] _touchID:                          u64
+  [ 8] _nextFeedTime:                     u64       (often absent)
+  [ 9] _prevFeedTime:                     u64       (often absent)
+  [10] _isGiftRewardGranted:              bool      (often absent)
+  [11] _memoryOfTargetList:               ReflectObject sublist
+}
+```
+
+`_characterKey` empirical samples from the 228 instances:
+- `0x07000002` (cat=0x07, lo24=2) → "Yann" ✓
+- `0x08000002`, `0x0a000002`, `0x0b000002` → also "Yann" (same character,
+  different cat-byte — confirms the cat-byte is a variant marker, the
+  lo24 is the real identifier)
+- `0x09000f4d` (cat=0x09, lo24=0xf4d) → "Noble" ✓
+- 228 samples / 222 distinct values / 90+ distinct cat-bytes
+  (range 0x06–0xfe). The shipped `crimson_characterinfo_*` bridge
+  resolves these correctly.
+
+```
+FieldGimmickSaveData {                                      // 43 fields total
+  [ 0] _fieldGimmickSaveDataKey:          u32      ← slot index, range [131, 957806]
+  [ 1] _fieldSaveDataReason:              u8
+  [ 2] _saveRootFieldGimmickSaveDataKey:  u32      ← parent-gimmick reference
+                                                     (gimmicks form a tree!)
+  [ 4] _ownerLevelName:                   string (InlineBytes)
+  [ 5] _stageKey:                         StageKey u32        (often absent)
+  [ 6] _levelOriginSceneObjectUuid:       uint4 (16 bytes)
+  [ 7] _item:                             Locator<ReflectObject>
+  [ 8] _autoSpawnOwnerData:               Locator<ReflectObject>
+  [ 9] _gimmickInfoKey:                   GimmickInfoKey u32  ← the real bridge target
+                                                                (4264 instances, 549 distinct)
+  [12] _originSpawnTransform:             Transform (40 bytes)
+  [13] _initStateNameHash:                HashCode32 u32
+  [23] _spawnStyle:                       SpawnStyle u8
+  [37] _fieldGimmickSaveData_ConstraintList:    ObjectList
+  [39] _fieldGimmickSaveData_TargetedConstraintList:    DynamicArray<u32>
+  [41] _fieldGimmickSocketIndex:                DynamicArray<u32>
+  (+ ~26 mostly-absent flags / sub-lists / timers)
+}
+```
+
+Slot range `[131, 957806]` slightly wider than the handoff's
+`[1788, 953478]` but same shape — save-internal index, no gamedata
+table. The shipped `crimson_gimmickinfo_*` bridge resolves all 4264
+sample `_gimmickInfoKey` values via the no-hash-hop chain at
+`lo32 = 0x200`.
+
+### Unbridged key types surfaced by the 2026-05-15 probe
+
+- **`CharacterAppearanceIndexKey` (u64)** — appears as
+  `FieldNPCSaveData._nudeAppearanceIndexKey` and
+  `_customizationAppearanceIndexKey`. Unbridged. Likely indexes into
+  `characterappearance_*.pabgb` (or similar) in `0008/gamedata/binary__/client/bin/`.
+  Would resolve NPC outfit / customisation selection.
+- **`_friendly: Locator<ExperienceLevelSaveData>`** — non-trivial
+  nested block per NPC carrying friendliness / experience progression.
+  Decoded by the existing save body parser; no separate bridge needed
+  unless the editor wants typed accessors.
+- **`_saveRootFieldGimmickSaveDataKey`** — gimmicks reference parent
+  gimmicks via this field. Useful for reconstructing gimmick
+  hierarchies (e.g. a container's contents). Same key space as the
+  slot index; no separate bridge needed beyond walking the save.
 
 ### CharacterKey investigation — what was probed
 
@@ -684,7 +781,9 @@ FieldNPCSaveData {
 
 ### Cat byte (hi-byte of save's `_characterKey`)
 
-- Range 0x02–0xfe, 90+ distinct values across the 221 sample.
+- Range 0x02–0xfe, 90+ distinct values across the 221 sample, *and*
+  re-verified against the 1.07 live save (228 samples) — the
+  distribution shape is unchanged.
 - Same lo24 appears under multiple cat bytes:
   `0x07000002 / 0x08000002 / 0x0a000002 / 0x0b000002` all resolve to
   `lo24=2 → "Yann"`.
@@ -707,19 +806,26 @@ crimson_characterinfo_lookup_display_name(handle, paloc_handle, charkey, lo32)
 
 ### Open decisions for the next session
 
-- Whether 22% coverage is shippable as-is or whether `npcinfo.pabgb`
-  is worth re-probing with a different schema model (it's 46 KB —
-  maybe a header-prefixed indexed table, not the standard
-  `(key, name, body)` shape). If `npcinfo` is the missing link, lifts
-  coverage closer to 100%.
-- Whether to also expose a standalone `crimson_paloc_lookup_character`
+- **CharacterKey display-chain 78% miss**: still sample-bias rather
+  than missing data. The 2026-05-15 re-probe against a 1.07 save
+  showed the same distribution. Lifting coverage requires either
+  re-probing `npcinfo.pabgb` with a different schema model (it's
+  still flagged as "not a row table"), or a wider sample of saves
+  that touch named field NPCs whose entries currently aren't in the
+  221-key set.
+- **`CharacterAppearanceIndexKey` (u64)** — newly surfaced by the
+  2026-05-15 probe. Unbridged. Probably indexes into a
+  `characterappearance*.pabgb` file in `0008/gamedata/binary__/client/bin/`
+  but that hasn't been located yet. Would resolve NPC outfit /
+  customisation selection.
+- Whether to expose a standalone `crimson_paloc_lookup_character`
   helper (no characterinfo handle needed — pure PALOC arithmetic) so
   the editor can resolve display names without parsing characterinfo.
   Cheaper but loses the internal-name fallback for the 78%.
-- FieldGimmickSaveDataKey: same save-internal verdict as
-  FieldNPCSaveDataKey. The real bridge target would be the
-  `_gimmickInfoKey` sibling → `gimmickinfo.pabgb` (54 KB+ neighbor in
-  the same dir, not yet probed).
+- FieldGimmickSaveDataKey verdict: **empirically confirmed
+  save-internal** (slot range `[131, 957806]` in the 1.07 sample). No
+  bridge target other than the already-shipped sibling
+  `_gimmickInfoKey` chain.
 
 ### Scratch artifact
 
