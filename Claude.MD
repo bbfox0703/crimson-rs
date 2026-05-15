@@ -24,9 +24,9 @@ Rust library with Python bindings (via PyO3/maturin) for reading, writing, and m
 # When picking up the next session
 Two active workstreams — read the relevant one first, then proceed:
 
-1. **Save Editor key resolver bridges** (active as of 2026-05-14). Nine bridges shipped: SkillKey, MissionKey, QuestKey, StageKey, KnowledgeKey, QuestGaugeKey, SubLevelKey, GimmickInfoKey + `crimson_calculate_checksum` extern "C" wrapper. 134 tests with `c_abi`, 67 without; clippy clean both modes. The Jenkins hash hop transform that drives Mission/Quest/Stage/Knowledge title resolution is cracked and pinned. **Start at the "🎯 New session pickup" callout at the top of [`docs/save-editor-keys-plan.md`](docs/save-editor-keys-plan.md).** **CharacterKey (#6) is the only outstanding work** — investigation surfaced that the save's `FieldNPCSaveDataKey` is just a slot index (real key is the sibling `_characterKey`); bridge prototyped to 22% coverage but not shipped — full findings in §6. Next concrete work depends on user direction: resume §6 (re-probe `npcinfo.pabgb` or gather a save with named NPCs), or pick up an optional follow-on (knowledge group breadcrumb, quest chapter rollup). [`docs/save-editor-keys-reference.md`](docs/save-editor-keys-reference.md) is the regression-baseline ground truth.
+1. **Save Editor key resolver bridges** (active as of 2026-05-15). **Ten bridges shipped**: SkillKey, MissionKey, QuestKey, StageKey, KnowledgeKey, QuestGaugeKey, SubLevelKey, GimmickInfoKey, **CharacterKey** + `crimson_calculate_checksum` extern "C" wrapper. Plus a PAZ-layer `crimson_paz_list_npc_portraits` enumerator and a high-level `crimson_characterinfo_resolve_portrait` matcher that chains CharacterKey → PALOC display name → fuzzy match → NPC head-shot DDS path. 166 tests with `c_abi`, 69 without (+1 ignored cross-version portrait-naming probe); clippy clean both modes. The Jenkins hash hop transform that drives Mission/Quest/Stage/Knowledge title resolution is cracked and pinned. **Start at the "🎯 New session pickup" callout at the top of [`docs/save-editor-keys-plan.md`](docs/save-editor-keys-plan.md).** CharacterKey ships at the 22% display-name coverage §6 predicted plus a full-coverage `lookup_string_key` internal-name fallback. Remaining work is **optional follow-ons only**: knowledge group breadcrumb, quest chapter rollup ("Prologue: Dead of Night" et al.), broader CharacterKey PALOC namespaces with a save sample that touches more named NPCs, or extending the portrait matcher with mesh / customisation tokens à la CrimsonForge. [`docs/save-editor-keys-reference.md`](docs/save-editor-keys-reference.md) is the regression-baseline ground truth.
 
-2. **New game patch breaks parsing** (the longstanding fallback workstream). Core parsers (iteminfo + skill) are byte-perfect across every version probed; if a patch drifts, follow the diagnostic flow in `scripts/CLAUDE.md` ("On a new game patch"). CI gates the lint+test invariants. The 7 new save-editor bridges have similar version-drift risk — their tests skip cleanly when the live game install isn't present, so cross-version verification is `cargo test --lib --features c_abi` with the appropriate game install hooked up.
+2. **New game patch breaks parsing** (the longstanding fallback workstream). Core parsers (iteminfo + skill) are byte-perfect across every version probed; if a patch drifts, follow the diagnostic flow in `scripts/CLAUDE.md` ("On a new game patch"). CI gates the lint+test invariants. The 8 save-editor bridges (mission/quest/stage/knowledge/questgauge/sublevel/gimmick/character) have similar version-drift risk — their tests skip cleanly when the live game install isn't present, so cross-version verification is `cargo test --lib --features c_abi` with the appropriate game install hooked up. The portrait list / matcher also has a `#[ignore]`'d cross-version probe (`_scan_all_groups_for_portrait_like_names` in `src/c_abi/paz.rs`) for spotting Pearl Abyss reorganising NPC asset paths in a new patch.
 
 # Rules
 - Ask before adding new dependencies to Cargo.toml
@@ -47,7 +47,7 @@ Two active workstreams — read the relevant one first, then proceed:
 ```
 src/
 ├── lib.rs                   # Crate root (mission/quest/stage/knowledge/questgauge/
-│                            #   sub_level/gimmick modules gated behind #[cfg(feature = "c_abi")])
+│                            #   sub_level/gimmick/character modules gated behind #[cfg(feature = "c_abi")])
 ├── python.rs                # PyO3 bindings
 ├── binary/                  # Container formats
 │   ├── pamt.rs, papgt.rs    # PAMT / PAPGT parse + write
@@ -61,6 +61,7 @@ src/
 ├── skill_info/              # skill.pabgb + skill.pabgh parser (byte-roundtrip,
 │                            #   BuffData tail-size brute-force probe)
 ├── string_info/             # u32 hash → string bridge (PAS string tables)
+├── character_info/          # characterinfo.pabgb anchor-scan (24-bit row keys)
 ├── save/                    # Save file format (header + crypto + body)
 └── c_abi/                   # extern "C" surface (feature-gated)
     ├── checksum.rs          # crimson_calculate_checksum (Jenkins hash hop helper)
@@ -68,14 +69,16 @@ src/
     ├── skill_info.rs        # SkillKey → entry name
     ├── paloc.rs             # PALOC handle + length-prefixed lookup
     ├── string_info.rs       # u32 hash → string
-    ├── paz.rs               # crimson_paz_extract_file
+    ├── paz.rs               # crimson_paz_extract_file + list_npc_portraits
     ├── mission_info.rs      # MissionKey → name + display title (hash hop)
     ├── quest_info.rs        # QuestKey → name + arc heading (hash hop, lo32=0x100)
     ├── stage_info.rs        # StageKey → name + title (hash hop, lo32=0x101/0x102)
     ├── knowledge_info.rs    # KnowledgeKey → name + title (hash hop, lo32=0x490)
     ├── quest_gauge_info.rs  # QuestGaugeKey → name only (no PALOC chain)
     ├── sub_level_info.rs    # SubLevelKey → name only (no PALOC chain)
-    └── gimmick_info.rs      # GimmickInfoKey → name + display label (PALOC, NO hash hop, lo32=0x200)
+    ├── gimmick_info.rs      # GimmickInfoKey → name + display label (PALOC, NO hash hop, lo32=0x200)
+    └── character_info.rs    # CharacterKey → name + display (cat-byte strip, NO hash hop, lo32=0x30)
+                             #   + resolve_portrait: fuzzy match against list_npc_portraits output
 
 # Lossy anchor-scan parsers used by the c_abi bridges live alongside in
 # src/<table>_info/mod.rs. Each parser is feature-gated to the c_abi
