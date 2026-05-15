@@ -115,6 +115,51 @@ To reconstruct a full string, walk parent pointers to root and concatenate.
 
 ---
 
+## PABGB / PABGH (Game Data Tables — `0008/gamedata/binary__/client/bin/*.pabg{b,h}`)
+
+PAPGT / PAMT / PAZ are the **archive layer**. The files actually packed inside the archives — `iteminfo.pabgb`, `missioninfo.pabgb`, `skill.pabgb` + `skill.pabgh`, `characterappearanceindexinfo.pabgb` + `.pabgh`, etc. — are the **game-data layer** and share a couple of well-trodden patterns documented here.
+
+### Two layouts
+
+Some `.pabgb` files ship alone with **anchor-scannable rows**:
+
+```text
+[u32 key][u32 name_len][name_len bytes ASCII identifier][...variable body]
+[u32 key][u32 name_len][name_len bytes ASCII identifier][...variable body]
+...
+```
+
+Used by `iteminfo`, `missioninfo`, `questinfo`, `stageinfo`, `gimmickinfo`, `characterinfo`, `sublevelinfo`, `knowledgeinfo`, `questgaugeinfo`. Parsers under `src/<table>_info/mod.rs` walk these byte-by-byte with validation rules:
+
+- `key != 0 && (key >> 24) == 0` (some tables loosen this — see `gimmick_info` for the `< 0x10` variant covering cat-byte rows)
+- `name_len ∈ [2, 128]`
+- name bytes ASCII alphanumeric / `_` / ` ` / UTF-8 high bytes
+- name parses as valid UTF-8
+- some tables add table-specific filters (e.g. characterinfo rejects all-digit names — those are embedded stringinfo refs)
+
+Other `.pabgb` files ship a **PABGH index sibling** for offset-based lookup:
+
+```text
+foo.pabgh:  [count][count × (key, offset)]            ← index
+foo.pabgb:  [entry_0 bytes][entry_1 bytes][...]      ← bodies at the offsets the index points to
+```
+
+Two header shapes observed so far:
+
+| Pattern | Used by | Where |
+|---|---|---|
+| `[u16 count][count × (u32 key, u32 offset)]` | `skill.pabgh` | `src/skill_info/pabgh.rs` |
+| `[u32 count][count × (u64 key, u32 offset)]` | `characterappearanceindexinfo.pabgh` | Pinned 2026-05-15 in `docs/save-editor-keys-plan.md` §9; **bridge not yet shipped** — investigation deferred until the 21-byte PABGB body schema is RE'd and the 87% save-side miss path is located |
+
+PABGB entry bodies have **no standard layout** — each table's body is schema-per-file. The PABGH variant exists for tables where bodies are variable-size and need offset indexing (skill.pabgb's BuffData tail-size drift across versions, for example) or where the lookup key is wider than u32 (CharacterAppearanceIndexKey's u64).
+
+### When to use which
+
+- **Anchor-scan parser** when the rows are uniform-shape `[key, name, body]` and a byte-by-byte scan can find them reliably (every standalone `.pabgb` we've shipped a bridge for so far).
+- **PABGH-indexed parser** when (a) bodies are variable-size and you need O(1) lookup, or (b) the key type is wider than u32 and anchor-scan's u32 key constraints don't fit.
+
+---
+
 ## Checksum
 
 Jenkins hashlittle2 with constant seed `0xDEBA1DCD`.
