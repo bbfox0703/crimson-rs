@@ -25,6 +25,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use crate::save::{Body, DecodedField, FieldKind, FieldValue, ObjectBlock, Save, SaveError, ScalarValue};
 
+pub mod character_info;
 pub mod checksum;
 pub mod gimmick_info;
 pub mod iteminfo;

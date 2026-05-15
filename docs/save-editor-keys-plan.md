@@ -2,53 +2,44 @@
 
 > **🎯 New session pickup — start here.**
 >
-> **Where we are (frozen 2026-05-14)**: 9 of 9 original execution-order
-> items either shipped or replaced. All save-side key types that the
-> editor's `QuestSaveData` block surfaces resolve to localized display
-> titles through one-shot FFI calls; `SubLevelSaveData` and
-> `AlertHistorySaveData` entries resolve through the sub_level bridge
-> (no-PALOC); `FieldGimmickSaveData` entries resolve via the new
-> `gimmick_info` bridge against the `_gimmickInfoKey` sibling (the
-> save-side `FieldGimmickSaveDataKey` itself is save-internal). The
-> only remaining gap is CharacterKey (#6), still at the prototype
-> stage. The Jenkins hash hop transform is verified and pinned. See
-> "Verified hash transform" below for the architecture and
+> **Where we are (updated 2026-05-15)**: 10 of 10 originally-scoped key
+> resolvers shipped. All save-side key types that the editor's
+> `QuestSaveData` / `SubLevelSaveData` / `AlertHistorySaveData` /
+> `FieldGimmickSaveData` / `FieldNPCSaveData` blocks surface resolve
+> through one-shot FFI calls. CharacterKey is the latest addition
+> (2026-05-15) — landed at the same 22% display-name coverage §6
+> predicted, plus a full-coverage `lookup_string_key` fallback for the
+> 78% of values that have a `characterinfo.pabgb` row but no PALOC
+> display string, plus a high-level
+> [`crimson_characterinfo_resolve_portrait`](../src/c_abi/character_info.rs)
+> that chains display lookup with a fuzzy match against
+> [`crimson_paz_list_npc_portraits`](../src/c_abi/paz.rs) to land NPC
+> head-shots. The Jenkins hash hop transform stays verified and pinned.
+> See "Verified hash transform" below for the architecture and
 > [`save-editor-keys-reference.md`](./save-editor-keys-reference.md) for
 > the 1.06 ground-truth comparison set.
 >
 > **Shipped so far**: `mission_info`, `quest_info`, `stage_info`,
 > `quest_gauge_info`, `knowledge_info`, `sub_level_info`,
-> `gimmick_info` bridges + `checksum` extern "C" wrapper + the
-> legacy `skill_info` bridge. 134 tests with `c_abi`, 67 without.
+> `gimmick_info`, `character_info` bridges + `checksum` extern "C"
+> wrapper + the legacy `skill_info` bridge + the
+> `crimson_paz_list_npc_portraits` PAZ-layer NPC-portrait enumerator.
+> 166 tests with `c_abi`, 69 without (+1 ignored cross-version probe).
 > Clippy clean both modes.
 >
-> **Remaining**:
-> - **#6 CharacterKey** — **PAUSED** after investigation. The earlier
->   "FieldNPCSaveDataKey → real CharacterKey" framing was wrong:
->   FieldNPCSaveDataKey is a save-internal slot index (values 3–233);
->   the save already stores the real `_characterKey` as a sibling.
->   CharacterKey bridge prototyped — uses Pattern A no-hash chain
->   (`(charkey & 0xFFFFFF) << 32 | 0x30`) and hits 22% (49/221) of
->   the sample save's unresolved keys. Full findings in §6. Resume
->   when either (a) `npcinfo.pabgb` gets re-probed for the 78%
->   missing characters, or (b) a different save sample shows the
->   named NPCs the user listed (Peddler / Finley / Bruna's Assistant)
->   and we can pin live ground-truth.
-> - **Optional follow-ons** (recorded in "Open RE questions" + section
->   #2 of this doc): knowledge group breadcrumb (would need
->   `knowledge_group_info` sibling bridge + row-body parse), quest
->   chapter rollup ("Prologue: Dead of Night" et al. — never located),
->   lo32=0x490 mission-variant meaning (Q4, partially overshadowed by
->   the knowledge work).
+> **Remaining (optional follow-ons only)**: knowledge group breadcrumb
+> (would need `knowledge_group_info` sibling bridge + row-body parse),
+> quest chapter rollup ("Prologue: Dead of Night" et al. — never
+> located), lo32=0x490 mission-variant meaning (Q4, partially
+> overshadowed by the knowledge work), broader PALOC namespace coverage
+> for CharacterKey (the 78% sample-bias miss path — different save
+> samples touching named field NPCs would pin more ground-truth).
 >
-> **First concrete next action**: depends on user direction. Either
-> resume §6 CharacterKey investigation (re-probe `npcinfo.pabgb` with
-> a header-prefixed schema model, or gather a save sample containing
-> named NPCs to pin ground-truth against), or pick up an "Optional
-> follow-on" from the list above. With gimmick_info + sub_level_info
-> shipped, every handoff-bundle key type from the live save now has a
-> deterministic path to a useful name except for the 78% of
-> CharacterKey values that don't appear in PALOC at lo32=0x30.
+> **First concrete next action**: pick up an "Optional follow-on" from
+> the list above, or extend the portrait matcher with additional
+> signals (mesh / customisation tokens, the way CrimsonForge does it
+> via `meshparam_*` filenames) if false-negatives on the 22% display
+> chain become a real concern.
 >
 > Extracted `.pabgb` baselines for this work live in
 > `out/baselines/1.06/` (gitignored). Re-extract with
@@ -92,7 +83,7 @@ chain.
 | **QuestKey** | 6 | `questinfo.pabgb` + PALOC u64 | ✅ | ✅ `src/c_abi/quest_info.rs` | **A + hash hop (shipped)** |
 | **QuestGaugeKey** | 0 (rare) | `questgaugeinfo.pabgb` | ✅ | ✅ `src/c_abi/quest_gauge_info.rs` | A — gamedata table (**no hash hop**; gauges aren't in PALOC) |
 | **StageKey** | 36,613 | `stageinfo.pabgb` + PALOC u64 | ✅ | ✅ `src/c_abi/stage_info.rs` | **A + hash hop (shipped)** |
-| **CharacterKey** *(via FieldNPCSaveData._characterKey)* | 221 | `characterinfo.pabgb` + PALOC u64 | ✗ (probed, 22% coverage prototype, not shipped) | ✗ | A — gamedata table (cat byte strip + lo32=0x30 PALOC), 78% miss path needs investigation |
+| **CharacterKey** *(via FieldNPCSaveData._characterKey)* | 221 | `characterinfo.pabgb` + PALOC u64 | ✅ | ✅ `src/c_abi/character_info.rs` | A — gamedata table (cat byte strip + lo32=0x30 PALOC, **no hash hop**); display chain 22% sample coverage, internal-name fallback 100%, plus `resolve_portrait` high-level matcher |
 | **GimmickInfoKey** *(via FieldGimmickSaveData._gimmickInfoKey)* | 530 unique (6,666 occurrences) | `gimmickinfo.pabgb` + PALOC u64 | ✅ | ✅ `src/c_abi/gimmick_info.rs` | A — gamedata table (**no hash hop**; identity key into PALOC, default lo32=0x200), 99.4% coverage |
 | **FieldNPCSaveDataKey** | 103 | save-internal (spawn-slot index) | n/a | n/a | save-internal *(verified — see §6)* |
 | **FieldGimmickSaveDataKey** | 4,363 | save-internal (spawn-slot index) | n/a | n/a | save-internal — real bridge is sibling `_gimmickInfoKey` above |
@@ -620,9 +611,20 @@ bridge's minimum surface doesn't need byte-roundtrip.
 
 ## 6. FieldNPC / FieldGimmick / CharacterKey — investigation findings (2026-05-14)
 
-**Status: PAUSED after investigation pivot. CharacterKey bridge
-prototyped but not shipped — 22% coverage on the sample save; the
-remaining 78% need a different table that hasn't been located.**
+**Status (updated 2026-05-15): CharacterKey bridge SHIPPED. Resolution
+chain is verbatim what §6 originally documented (cat-byte strip → PALOC
+at `lo32=0x30`, NO hash hop). Coverage stays at the 22% sample-bias
+figure; the bridge surfaces a miss as `NOT_FOUND` so the caller can
+fall back to the `lookup_string_key` internal-name surface — that
+surface lights up the full 100% of CharacterKeys that have a row in
+`characterinfo.pabgb`. A high-level
+[`crimson_characterinfo_resolve_portrait`](../src/c_abi/character_info.rs)
+also ships, chaining the display-name lookup with a fuzzy match
+against the
+[`crimson_paz_list_npc_portraits`](../src/c_abi/paz.rs) output to land
+the right DDS for named NPCs (`0x0a000001 → "Kliff" →
+ui/texture/image/portraitimage/cd_portraitimage_chracter_kliff.dds`,
+score 100, live-test verified).**
 
 ### What the earlier plan got wrong
 
@@ -723,8 +725,31 @@ crimson_characterinfo_lookup_display_name(handle, paloc_handle, charkey, lo32)
 
 The investigation probe lived at `src/c_abi/_probe_characterinfo.rs`
 behind `#[cfg(test)] #[ignore]`. Deleted after the findings were
-folded into this doc. Re-create from this section's chain spec if
-the work resumes.
+folded into this doc. The bridge was re-built from this section's
+chain spec on 2026-05-15 — see `src/character_info/mod.rs` (parser)
+and `src/c_abi/character_info.rs` (bridge + portrait matcher).
+
+### Shipped surface (2026-05-15)
+
+```text
+src/character_info/mod.rs            # anchor-scan parser
+src/c_abi/character_info.rs          # C ABI bridge + portrait matcher
+
+crimson_characterinfo_load_from_bytes / _load_from_file / _free
+crimson_characterinfo_entry_count
+crimson_characterinfo_lookup_string_key    # internal name fallback (full coverage)
+crimson_characterinfo_lookup_display_name  # PALOC chain @ lo32=0x30 (22% coverage)
+crimson_characterinfo_get_entry            # enumeration
+crimson_characterinfo_resolve_portrait     # high-level CharacterKey → DDS
+```
+
+The portrait matcher (`resolve_portrait`) tokenises filenames from
+the six recognised NPC-portrait prefixes, normalises against
+CrimsonForge's `_normalize_lookup_key` rule (`[^a-z0-9]+ → _`, strip),
+and scores via a five-tier ladder (exact 100 → boundary 80 →
+word-bounded mid 65 → raw substring 45 → collapsed substring 25).
+Display name carries full weight; internal name half — the caller
+can apply their own threshold on the optional `out_score`.
 
 ---
 

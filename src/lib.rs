@@ -1,4 +1,6 @@
 mod binary;
+#[cfg(feature = "c_abi")]
+mod character_info;
 mod crypto;
 #[cfg(feature = "c_abi")]
 mod gimmick_info;
