@@ -38,6 +38,7 @@ The game keeps the itemKey table in process memory as a packed `[u32 itemKey][u3
 |---|---|---|
 | 1.04 | Not preserved — older CE-table flow read `items.jsonl` directly | — |
 | 1.05 | 6,236 keys | [`keys-1.05.01.txt`](keys-1.05.01.txt) (frozen 2026-05) |
-| **1.06** | **6,253 keys** | [`keys.txt`](keys.txt) (current) |
+| 1.06 | 6,253 keys | [`keys-1.06.txt`](keys-1.06.txt) (byte-identical to `keys.txt` and `keys-1.07.txt`) |
+| **1.07** | **6,253 keys** | [`keys.txt`](keys.txt) (current) + [`keys-1.07.txt`](keys-1.07.txt) snapshot |
 
-When 1.07 ships and reorders keys, snapshot the current file to `keys-1.06.txt` before overwriting.
+1.07 shipped without reordering the item key list — `keys-1.06.txt`, `keys-1.07.txt`, and `keys.txt` are all byte-identical. When 1.08 ships and (potentially) reorders keys, snapshot the current file to `keys-1.07.txt` before overwriting; the existing 1.07 snapshot will still match if the 1.08 dump is unchanged.

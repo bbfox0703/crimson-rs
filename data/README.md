@@ -4,7 +4,9 @@ Bundled inputs that travel with the repo so the iteminfo export pipeline runs ou
 
 | File | What it is | Source | Size |
 |---|---|---|---|
-| `keys.txt` | Current-version Crimson Desert itemKey list (one decimal key per line, in in-game order). Tracks the latest game patch — currently **1.06** with 6,253 keys. | Dumped from `CrimsonDesert.exe` process memory via Cheat Engine (see Generation below) | ~53 KB |
+| `keys.txt` | Current-version Crimson Desert itemKey list (one decimal key per line, in in-game order). Tracks the latest game patch — currently **1.06 / 1.07** with 6,253 keys (1.07 ships an identical key list to 1.06; the same `keys.txt` covers both). | Dumped from `CrimsonDesert.exe` process memory via Cheat Engine (see Generation below) | ~53 KB |
+| `keys-1.07.txt` | Snapshot dumped against the live 1.07 install. Byte-identical to `keys.txt` — kept so a future patch that *does* reorder keys can still be diffed back against the 1.07 baseline. | Frozen from the live 1.07 dump | ~53 KB |
+| `keys-1.06.txt` | Snapshot of the 1.06 keys file kept for cross-version reference / saved-CE-table compatibility. Byte-identical to `keys.txt` and `keys-1.07.txt`. | Frozen alongside the 1.07 snapshot | ~53 KB |
 | `keys-1.05.01.txt` | Snapshot of the 1.05 keys file kept for cross-version reference / saved-CE-table compatibility. Do not regenerate. | Frozen from `keys.txt` before the 1.06 refresh | ~53 KB |
 
 ## How `keys.txt` is used
@@ -32,7 +34,7 @@ The game ships an updated `iteminfo.pabgb` with each patch and may add/remove/re
    outgoing version as `keys-<previous-patch>.txt` next to the new one (the bundled
    `keys-1.05.01.txt` is an example of this pattern).
 
-The format is plain text, one decimal `uint32` per line. A clean dump has exactly N lines for N in-game items (e.g. 6,253 in 1.06). If the file contains trailing `4294967295` sentinels or other garbage past the real array end, `export_for_ce.py`'s anchor scanner will emit `no_anchor` fallback records for those — visible in the parser-status line — but the pipeline still produces aligned output. Cleaner is better; if you see `no_anchor > 0`, re-run the Lua or hand-trim.
+The format is plain text, one decimal `uint32` per line. A clean dump has exactly N lines for N in-game items (e.g. 6,253 in 1.06 and 1.07). If the file contains trailing `4294967295` sentinels or other garbage past the real array end, `export_for_ce.py`'s anchor scanner will emit `no_anchor` fallback records for those — visible in the parser-status line — but the pipeline still produces aligned output. Cleaner is better; if you see `no_anchor > 0`, re-run the Lua or hand-trim.
 
 ## Why this is committed (the only piece of game-derived data that is)
 

@@ -3,16 +3,20 @@
 [![Platform](https://img.shields.io/badge/Platform-Windows%20x64-0078D4)](https://www.microsoft.com/windows)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Built with Claude Code](https://img.shields.io/badge/Built%20with-Claude%20Code-CC785C?logo=claude)](https://claude.ai/code)
-[![Game Version](https://img.shields.io/badge/Game-Crimson%20Desert%201.05%20%2F%201.06-D63B3B)](https://www.playcrimsondesert.com/)
+[![Game Version](https://img.shields.io/badge/Game-Crimson%20Desert%201.05%20%2F%201.06%20%2F%201.07-D63B3B)](https://www.playcrimsondesert.com/)
+
+> **Personal playground.** This fork is where I poke at Crimson Desert internals at my own pace; the work here isn't intended to flow back upstream. Use it as you like, but don't expect upstream PRs from this branch.
 
 ## Overview
 
-This library is a poor man attempts and assembling various tools to explore and understand Crimson Desert game files.
+A Rust library (with Python bindings via PyO3) that pulls together the tools I use to read, modify, and re-pack Crimson Desert game files.
 
-It is a work in progress and currently supports:
-- Extracting and parsing .paz files (game archives)
-- Parsing and editing iteminfo binary data via Python
-- **Crimson Desert 1.05 / 1.06**: byte-perfect parse on the live game iteminfo binary — 6,236 items in 1.05, 6,253 items in 1.06 (no schema drift between the two; same parser handles both). `serialize_iteminfo` roundtrips every item. See [`docs/1.05-parser-history.md`](docs/1.05-parser-history.md) for the RE story and [`scripts/CLAUDE.md`](scripts/CLAUDE.md) for the next-session pickup notes (including the cross-patch validation table).
+Currently supports:
+- Extracting and parsing `.paz` archives, plus PAPGT / PAMT / PALOC containers
+- Parsing, editing, and byte-perfect roundtripping `iteminfo.pabgb` from Python
+- Save-file (`save.save`) read / write — ChaCha20 + HMAC + LZ4 header, full body decoder and encoder; idempotent full-body roundtrip on every live save tested
+- C-ABI key resolvers used by the save editor (Skill / Mission / Quest / Stage / Knowledge / QuestGauge / SubLevel / GimmickInfo + checksum)
+- **Crimson Desert 1.05 / 1.06 / 1.07**: byte-perfect parse on the live game `iteminfo.pabgb` — 6,236 items in 1.05, 6,253 items in 1.06 and 1.07 (1.07 ships the same item key list as 1.06; no schema drift, same parser). `serialize_iteminfo` roundtrips every item. See [`docs/1.05-parser-history.md`](docs/1.05-parser-history.md) for the RE story and [`scripts/CLAUDE.md`](scripts/CLAUDE.md) for the cross-patch validation table.
 - Generating Cheat Engine dropdown lists (item id → name) covering every in-game item key
 
 ## One-shot CE table data export
@@ -23,9 +27,9 @@ It is a work in progress and currently supports:
 python scripts\export_for_ce.py
 ```
 
-That single command writes everything `Generate_item_id_list.ps1` needs to `out/`. The script auto-discovers every `localizationstring_<lang>.paloc` the game ships (typically 14 languages — eng, jpn, kor, zho-tw, zho-cn, …) and emits one `paloc_<lang>.json` plus one CE dropdown file per language. Counts below are for **1.06** (1.05 was 6,236 / 6,389 — see [`scripts/CLAUDE.md`](scripts/CLAUDE.md) for the cross-patch table):
+That single command writes everything `Generate_item_id_list.ps1` needs to `out/`. The script auto-discovers every `localizationstring_<lang>.paloc` the game ships (typically 14 languages — eng, jpn, kor, zho-tw, zho-cn, …) and emits one `paloc_<lang>.json` plus one CE dropdown file per language. Counts below are for **1.06 / 1.07** (1.07 ships the same item key list as 1.06; 1.05 was 6,236 / 6,389 — see [`scripts/CLAUDE.md`](scripts/CLAUDE.md) for the cross-patch table):
 
-| File | Contents | 1.06 coverage |
+| File | Contents | 1.06 / 1.07 coverage |
 |---|---|---|
 | `iteminfo.pabgb` | Raw decompressed binary from group 0008 | — |
 | `items.jsonl` | One item per line; `key` + `string_key` always populated, parsed fields when the parser succeeds | 6,253 (100%) |
@@ -137,9 +141,9 @@ with open("items.csv", "w", newline="") as f:
         w.writerow([item["key"], item["string_key"], item["item_type"], item["item_tier"]])
 ```
 
-### 1.05 / 1.06 parser
+### 1.05 / 1.06 / 1.07 parser
 
-`parse_iteminfo_from_bytes` parses 1.05 and 1.06 binaries to 100% (6,236 / 6,236 items in 1.05 and 6,253 / 6,253 items in 1.06, byte-perfect roundtrip via `serialize_iteminfo` on both). The same parser handles both versions — no schema drift was introduced in 1.06. Two helper modes are also available for diagnostic / recovery work:
+`parse_iteminfo_from_bytes` parses 1.05, 1.06, and 1.07 binaries to 100% (6,236 / 6,236 items in 1.05; 6,253 / 6,253 items in 1.06 and 1.07; byte-perfect roundtrip via `serialize_iteminfo` on all three). The same parser handles every version — no schema drift was introduced in 1.06 or 1.07. Two helper modes are also available for diagnostic / recovery work:
 
 ```python
 # Tracked mode — returns byte-range metadata for each parsed field; used by
@@ -161,8 +165,10 @@ See [docs/api.md](docs/api.md) for the full Python API documentation.
 
 # Credit
 
-Thanks to [LukeFZ](https://github.com/LukeFZ)
-Reference:
-- [pycrimson](https://github.com/LukeFZ/pycrimson)
-- [potter420/crimson-rs](https://github.com/potter420/crimson-rs) — upstream
+Thanks to [LukeFZ](https://github.com/LukeFZ).
+
+This is a personal-playground fork. The repos below are where the real upstream work happens — if you're looking for a maintained crimson-rs to build on, start there, not here:
+
+- [pycrimson](https://github.com/LukeFZ/pycrimson) — the original Python reference implementation
+- [potter420/crimson-rs](https://github.com/potter420/crimson-rs) — the Rust upstream this fork branched from
 - [NattKh/crimson-rs](https://github.com/NattKh/crimson-rs) — fork with April-2026 game-update patches
