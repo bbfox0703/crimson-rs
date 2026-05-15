@@ -4,8 +4,8 @@ Engineering notes for the next session. User-facing docs live in [`README.md`](R
 
 ## Status
 
-- **ItemInfo parser**: byte-perfect on **1.05** (6,236 items) and **1.06** (6,253 items). No schema drift between the two — the same parser handles both. `serialize_iteminfo` roundtrips every item; the pipeline (`scripts\export_for_ce.py`) runs end-to-end clean on both versions.
-- **Skill parser** (`src/skill_info/`): byte-perfect roundtrip on 1.03 / 1.04 / 1.05 (raw-fallback counts and format flag match the GameMods Python parser exactly). 1.06 has not yet been re-probed; the brute-force BuffData subclass-tail probe absorbs size drift, so unless the format flag flips, no change is expected. The brute-force probe is essential — cross-version probing in May 2026 showed 11 `type_id` sizes drift between 1.03–1.05, so the size table cannot be hardcoded.
+- **ItemInfo parser**: byte-perfect on **1.05** (6,236 items), **1.06** (6,253 items) and **1.07** (6,253 items — identical item key list to 1.06). No schema drift across the three — the same parser handles all of them. `serialize_iteminfo` roundtrips every item; the pipeline (`scripts\export_for_ce.py`) runs end-to-end clean on every version.
+- **Skill parser** (`src/skill_info/`): byte-perfect roundtrip on 1.03 / 1.04 / 1.05; the `c_abi_skillinfo_live_roundtrip` test runs against the live install and is green on 1.07 (so 1.06 / 1.07 are covered too, even without a dedicated re-probe). The brute-force BuffData subclass-tail probe absorbs size drift, so unless the format flag flips, no change is expected. The brute-force probe is essential — cross-version probing in May 2026 showed 11 `type_id` sizes drift between 1.03–1.05, so the size table cannot be hardcoded.
 - **CI gate** (`.github/workflows/ci.yml`): every push to `main`/`dev` and every PR runs `cargo clippy --all-targets --lib -- -D warnings` + `cargo test --lib` on Ubuntu. Branch protection on `main` requires the check before merge.
 
 The most likely trigger for the next session of work is a new game patch — see "On a new game patch" below.
@@ -27,7 +27,8 @@ The fastest "did Pearl Abyss break anything?" loop:
 | 1.03 | — | byte-perfect | byte-perfect | baseline for skill cross-version drift table |
 | 1.04 | — | byte-perfect | byte-perfect | |
 | 1.05 | 6,236 | 100% ok | byte-perfect | first version where iteminfo was fully RE'd |
-| **1.06** | **6,253** | **100% ok** | not re-probed (no format-flag flip expected) | +17 items vs 1.05; no schema drift |
+| 1.06 | 6,253 | 100% ok | live-roundtrip test green (no dedicated re-probe) | +17 items vs 1.05; no schema drift |
+| **1.07** | **6,253** | **100% ok** | live-roundtrip test green | identical item key list to 1.06; save format unchanged (v2 / flags 0x0080); slot100 + slot105 full-body roundtrip idempotent |
 
 ## Sanity-check on a fresh checkout / new patch
 
@@ -35,7 +36,7 @@ The fastest "did Pearl Abyss break anything?" loop:
 python scripts\export_for_ce.py
 ```
 
-Expect `parser status: ok=<N>  leftover=0  fail=0  no_anchor=0` where `N` matches the line count of `data\keys.txt` (the in-game item-key dump). For 1.06 the expected line is `ok=6,253  leftover=0  fail=0  no_anchor=0`. A non-zero `no_anchor` means `keys.txt` has entries past the real array end — see the "keys.txt structure" section below.
+Expect `parser status: ok=<N>  leftover=0  fail=0  no_anchor=0` where `N` matches the line count of `data\keys.txt` (the in-game item-key dump). For 1.06 / 1.07 the expected line is `ok=6,253  leftover=0  fail=0  no_anchor=0`. A non-zero `no_anchor` means `keys.txt` has entries past the real array end — see the "keys.txt structure" section below.
 
 For a finer-grained per-cluster view if anything breaks:
 
