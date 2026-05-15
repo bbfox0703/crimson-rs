@@ -1767,6 +1767,295 @@ fn build_empty_element_bytes(class_index: u32, body: &Body) -> Result<Vec<u8>, i
 
 /// Serialize the in-memory save back to `path` using the original nonce.
 ///
+/// Wholesale-replace the contents of a `dynamic_array<u32>` field. The
+/// existing element bytes are dropped and replaced with
+/// `[new_elements[0..new_count]]` (each element written little-endian);
+/// the variant header's count slot is rewritten to match. Body re-emit
+/// + re-decode runs once at the end.
+///
+/// Use cases:
+/// - Append/insert tags: read the current elements, build the desired
+///   sequence in the caller, hand the whole sequence in.
+/// - Empty an array: pass `new_count = 0`.
+///
+/// Validation:
+/// - The leaf field must be `FieldKind::DynamicArray`; else `NOT_SCALAR`.
+/// - The field's `meta_size` must be 4 (u32 element); else
+///   `LENGTH_MISMATCH`. (Other element widths can be added when a real
+///   need surfaces.)
+/// - The header's `header_variant` must be one of the known fixed-shape
+///   variants (`prefix_00xx0100` / `marker_prefix` / `compact` /
+///   `generic`); else `BODY_PARSE`.
+/// - `new_count` must fit the variant's count slot
+///   (`< 0x10000` for `compact` / `prefix_00xx0100` / `marker_prefix`;
+///   `<= u32::MAX` for `generic`); else `OUT_OF_RANGE`.
+///
+/// # Safety
+/// `handle` must be a live, exclusive handle. `path` must point to
+/// `path_len` readable [`CrimsonPathStep`] values for the duration of
+/// the call (or be NULL with `path_len == 0`). `new_elements` must
+/// point to `new_count` readable `u32` values for the duration of the
+/// call (or be NULL with `new_count == 0`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_dynamic_array_set_u32_elements(
+    handle: *mut CrimsonSaveHandle,
+    block_idx: u32,
+    path: *const CrimsonPathStep,
+    path_len: usize,
+    field_idx: u32,
+    new_elements: *const u32,
+    new_count: usize,
+) -> i32 {
+    if handle.is_null() {
+        return error::NULL_ARG;
+    }
+    if path.is_null() && path_len != 0 {
+        return error::NULL_ARG;
+    }
+    if new_elements.is_null() && new_count != 0 {
+        return error::NULL_ARG;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &mut *handle };
+        let steps: &[CrimsonPathStep] = if path_len == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(path, path_len) }
+        };
+        // Snapshot the new elements out of the raw pointer up front so the
+        // closure below is fully owned and doesn't carry raw pointers
+        // across the encode boundary.
+        let new_elems: Vec<u32> = if new_count == 0 {
+            Vec::new()
+        } else {
+            unsafe { std::slice::from_raw_parts(new_elements, new_count) }.to_vec()
+        };
+        if new_elems.len() > u32::MAX as usize {
+            return error::OUT_OF_RANGE;
+        }
+        let new_count_u32 = new_elems.len() as u32;
+
+        apply_length_changing_mutation(h, |blocks| {
+            let field = navigate_mut_to_field(blocks, block_idx, steps, field_idx)?;
+            if !matches!(field.kind, FieldKind::DynamicArray) {
+                return Err(error::NOT_SCALAR);
+            }
+            // Restrict to u32 element width for now. Other widths can be
+            // added by mirroring this function for u8/u16/u64 if needed.
+            if field.meta_size != 4 {
+                return Err(error::LENGTH_MISMATCH);
+            }
+            let FieldValue::DynamicArray {
+                count,
+                bytes,
+                header_variant,
+                header_bytes,
+                ..
+            } = &mut field.value
+            else {
+                return Err(error::NOT_SCALAR);
+            };
+            update_dynamic_array_count_in_header(header_bytes, header_variant, new_count_u32)?;
+            // Replace the data bytes with the new elements (LE).
+            let mut new_bytes = Vec::with_capacity(new_elems.len() * 4);
+            for &e in &new_elems {
+                new_bytes.extend_from_slice(&e.to_le_bytes());
+            }
+            *bytes = new_bytes;
+            *count = new_count_u32;
+            Ok(())
+        })
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Read the contents of a `dynamic_array<u32>` field as a flat
+/// little-endian `u32` sequence. Uses the standard two-call buffer
+/// pattern: pass `out_buf = NULL, buf_len = 0` to learn the required
+/// element count via `out_required`, then allocate and call again.
+///
+/// Validation:
+/// - The leaf field must be `FieldKind::DynamicArray`; else `NOT_SCALAR`.
+/// - The field's `meta_size` must be 4 (u32 element); else
+///   `LENGTH_MISMATCH`.
+///
+/// `out_required` is always populated (when non-NULL) with the
+/// element count, regardless of whether the buffer was big enough.
+/// Returns `BUFFER_TOO_SMALL` when the caller's buffer can't fit
+/// every element.
+///
+/// # Safety
+/// `handle` must be a live handle. `path` must point to `path_len`
+/// readable [`CrimsonPathStep`] values for the duration of the call
+/// (or be NULL with `path_len == 0`). When non-NULL, `out_buf` must be
+/// writable for at least `buf_len` `u32` values. `out_required` may
+/// be NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_dynamic_array_get_u32_elements(
+    handle: *const CrimsonSaveHandle,
+    block_idx: u32,
+    path: *const CrimsonPathStep,
+    path_len: usize,
+    field_idx: u32,
+    out_buf: *mut u32,
+    buf_len: usize,
+    out_required: *mut usize,
+) -> i32 {
+    if handle.is_null() {
+        return error::NULL_ARG;
+    }
+    if path.is_null() && path_len != 0 {
+        return error::NULL_ARG;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let steps: &[CrimsonPathStep] = if path_len == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(path, path_len) }
+        };
+        // Read-only navigation reuses the schema-aware `resolve_leaf_range`
+        // path used by other read-side getters, but here we need the
+        // FieldValue, not just byte offsets. Walk a borrowed view of
+        // h.blocks instead.
+        let parent = match navigate_to_parent_ref(&h.blocks, block_idx, steps) {
+            Ok(b) => b,
+            Err(code) => return code,
+        };
+        let field = match parent.fields.get(field_idx as usize) {
+            Some(f) => f,
+            None => return error::OUT_OF_RANGE,
+        };
+        if !matches!(field.kind, FieldKind::DynamicArray) {
+            return error::NOT_SCALAR;
+        }
+        if field.meta_size != 4 {
+            return error::LENGTH_MISMATCH;
+        }
+        let FieldValue::DynamicArray { bytes, count, .. } = &field.value else {
+            return error::NOT_SCALAR;
+        };
+        let elem_count = *count as usize;
+        // Sanity: bytes.len() should equal elem_count * 4.
+        if bytes.len() != elem_count * 4 {
+            return error::BODY_PARSE;
+        }
+        if !out_required.is_null() {
+            unsafe {
+                *out_required = elem_count;
+            }
+        }
+        if out_buf.is_null() || buf_len < elem_count {
+            return error::BUFFER_TOO_SMALL;
+        }
+        // Write each element as native-host u32 (LE on x86/ARM little).
+        // The on-disk bytes are LE; copy directly via from_le_bytes.
+        for i in 0..elem_count {
+            let off = i * 4;
+            let v = u32::from_le_bytes([
+                bytes[off],
+                bytes[off + 1],
+                bytes[off + 2],
+                bytes[off + 3],
+            ]);
+            unsafe {
+                *out_buf.add(i) = v;
+            }
+        }
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Read-only counterpart to [`navigate_mut_to_parent`]. Walks the
+/// `path[]` from the top-level block at `block_idx` and returns a
+/// `&ObjectBlock` to the deepest reachable block, threading borrows
+/// instead of mutable references so multiple read paths can call it
+/// concurrently.
+fn navigate_to_parent_ref<'a>(
+    blocks: &'a [ObjectBlock],
+    block_idx: u32,
+    path: &[CrimsonPathStep],
+) -> Result<&'a ObjectBlock, i32> {
+    let mut current = blocks
+        .get(block_idx as usize)
+        .ok_or(error::OUT_OF_RANGE)?;
+    for step in path {
+        let field = current
+            .fields
+            .get(step.field_idx as usize)
+            .ok_or(error::OUT_OF_RANGE)?;
+        current = match &field.value {
+            FieldValue::Locator { child: Some(child), .. } => child.as_ref(),
+            FieldValue::ObjectList { elements, .. } => elements
+                .get(step.element_idx as usize)
+                .ok_or(error::OUT_OF_RANGE)?,
+            _ => return Err(error::NOT_NAVIGABLE),
+        };
+    }
+    Ok(current)
+}
+
+/// Patch the count slot in a dynamic-array `header_bytes` blob to
+/// `new_count`, dispatched by `header_variant`. Mirrors the layouts the
+/// decoder produces in [`super::super::save::body::decoder::decode_dynamic_array`].
+fn update_dynamic_array_count_in_header(
+    header_bytes: &mut [u8],
+    header_variant: &str,
+    new_count: u32,
+) -> Result<(), i32> {
+    match header_variant {
+        // 9 bytes: `00 00 XX 01 00 <u32 count LE>`. Count constrained
+        // to `< 0x10000` by the decoder's matcher.
+        "prefix_00xx0100" => {
+            if header_bytes.len() != 9 {
+                return Err(error::BODY_PARSE);
+            }
+            if new_count >= 0x10000 {
+                return Err(error::OUT_OF_RANGE);
+            }
+            header_bytes[5..9].copy_from_slice(&new_count.to_le_bytes());
+            Ok(())
+        }
+        // Variable: `01..01 00 <u32 count LE>` (N markers + 0 + count).
+        // Decoder constrains count to `< 0x10000`.
+        "marker_prefix" => {
+            let zero_pos = header_bytes
+                .iter()
+                .position(|&b| b == 0)
+                .ok_or(error::BODY_PARSE)?;
+            if header_bytes.len() < zero_pos + 5 {
+                return Err(error::BODY_PARSE);
+            }
+            if new_count >= 0x10000 {
+                return Err(error::OUT_OF_RANGE);
+            }
+            header_bytes[zero_pos + 1..zero_pos + 5]
+                .copy_from_slice(&new_count.to_le_bytes());
+            Ok(())
+        }
+        // 6 bytes: `00 00 <u16 count LE> 00 00`.
+        "compact" => {
+            if header_bytes.len() != 6 {
+                return Err(error::BODY_PARSE);
+            }
+            let count_u16: u16 = new_count.try_into().map_err(|_| error::OUT_OF_RANGE)?;
+            header_bytes[2..4].copy_from_slice(&count_u16.to_le_bytes());
+            Ok(())
+        }
+        // 5 bytes: `<u8 prefix> <u32 count LE>`. No count limit beyond
+        // u32 itself.
+        "generic" => {
+            if header_bytes.len() != 5 {
+                return Err(error::BODY_PARSE);
+            }
+            header_bytes[1..5].copy_from_slice(&new_count.to_le_bytes());
+            Ok(())
+        }
+        _ => Err(error::BODY_PARSE),
+    }
+}
+
 /// Uses `Save::write_with_nonce` so the on-disk layout matches what the
 /// game produced — HMAC re-computed, ChaCha20 re-applied. The header's
 /// `uncompressed_size` and `payload_size` get patched to match the
