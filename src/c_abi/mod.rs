@@ -46,6 +46,7 @@ pub mod quest_gauge_info;
 pub mod quest_info;
 pub mod skill_info;
 pub mod stage_info;
+pub mod store_info;
 pub mod string_info;
 pub mod sub_level_info;
 

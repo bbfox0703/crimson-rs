@@ -30,6 +30,8 @@ mod save;
 mod skill_info;
 #[cfg(feature = "c_abi")]
 mod stage_info;
+#[cfg(feature = "c_abi")]
+mod store_info;
 mod string_info;
 #[cfg(feature = "c_abi")]
 mod sub_level_info;
