@@ -3,12 +3,18 @@ mod binary;
 mod character_info;
 mod crypto;
 #[cfg(feature = "c_abi")]
+mod dye_color_group_info;
+#[cfg(feature = "c_abi")]
 mod gimmick_info;
 mod item_info;
 #[cfg(feature = "c_abi")]
 mod knowledge_info;
 #[cfg(feature = "c_abi")]
 mod mission_info;
+#[cfg(feature = "c_abi")]
+mod part_prefab_dye_slot_info;
+#[cfg(feature = "c_abi")]
+mod part_prefab_dye_texture_pallete_info;
 mod python;
 #[cfg(feature = "c_abi")]
 mod quest_gauge_info;

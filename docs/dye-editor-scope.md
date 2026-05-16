@@ -6,10 +6,18 @@ reference editor at
 already implements this; this doc records what the in-house C# editor
 needs and what crimson-rs needs to ship (or not ship).
 
-> Status (2026-05-15): Schema verified. **No new C ABI required for v1**
-> (edit-existing-dye scenario). Gamedata-side parsing of `dye*.pabgb`
-> tables — deferred to next session — would replace the PyQt5 reference
-> editor's hand-maintained `dye_slot_counts.json`.
+> Status (2026-05-16): Save schema verified **and** all three
+> gamedata-side `dye*.pabgb` tables RE'd + bridged behind C ABI.
+> Parsers + bridges shipped in
+> [`src/dye_color_group_info/`](../src/dye_color_group_info/),
+> [`src/part_prefab_dye_texture_pallete_info/`](../src/part_prefab_dye_texture_pallete_info/),
+> [`src/part_prefab_dye_slot_info/`](../src/part_prefab_dye_slot_info/)
+> with matching `c_abi/*.rs` bridges. **Replaces the PyQt5 reference
+> editor's hand-maintained `dye_slot_counts.json`** with gamedata-driven
+> data, plus per-slot default materials the JSON never carried.
+> Remaining work: `_itemKey → _partPrefabKey` cross-reference (lives
+> in `iteminfo.pabgb` or a sibling `partprefab*` table) — the C# editor
+> needs this linkage to actually look up slot counts by item.
 
 ---
 
@@ -71,18 +79,132 @@ bit lives in byte 1 bit 0).
 
 ## Gamedata baselines — `0008/gamedata/binary__/client/bin/`
 
-The probe scan turned up **three relevant `.pabgb` + `.pabgh` tables**.
-These are next-session gamedata RE work — see "Open RE" below.
+Three `.pabgb` + `.pabgh` tables, all RE'd against the live 1.07 install.
 
-| File | Size (cmp/unc) | Estimated rows | Maps |
-|---|---:|---:|---|
-| `dyecolorgroupinfo.pabgb` + `.pabgh` | 6 KB / 9 KB index 82 B | ~10 | `DyeColorGroupInfoKey (u32)` → color group definition (name + base RGB?). Save's `_dyeColorGroupInfoKey` references this. |
-| `partprefabdyeslotinfo.pabgb` + `.pabgh` | 86 KB / 370 KB, index 9 KB | **~730** | Per-prefab dye-slot configuration. **Replaces the PyQt5 editor's `dye_slot_counts.json`** — tells the editor how many dye slots an item supports without a hand-maintained database. |
-| `partprefabdyetexturepalleteinfo.pabgb` + `.pabgh` | 0.8 KB / 4 KB, index 68 B | ~5 | `PartPrefabDyeTexturePalleteKey (u16)` → material palette (Cloth / Metal / Leather / etc.). Save's `_texturePalleteKey` references this. |
+| File | Size (cmp/unc) | Rows in 1.07 | Maps | Parser / Bridge |
+|---|---:|---:|---|---|
+| `dyecolorgroupinfo.pabgb` + `.pabgh` | 6 KB / 9 KB, index 82 B | **10** | `DyeColorGroupInfoKey (u32)` → color group name (`"Her_Color_Group_I"`, …) + 109-record RGBA gradient palette. Save's `_dyeColorGroupInfoKey` references this. | [`dye_color_group_info`](../src/dye_color_group_info/mod.rs) / [`c_abi/dye_color_group_info.rs`](../src/c_abi/dye_color_group_info.rs) |
+| `partprefabdyeslotinfo.pabgb` + `.pabgh` | 86 KB / 370 KB, index 9 KB | **1,105** | `PartPrefabKey (u32)` → prefab internal name + per-slot detail (3 material indices, 3 default-material names, 3 mask bytes, next-prefab / `.pac` tail per slot). Replaces `dye_slot_counts.json`. | [`part_prefab_dye_slot_info`](../src/part_prefab_dye_slot_info/mod.rs) / [`c_abi/part_prefab_dye_slot_info.rs`](../src/c_abi/part_prefab_dye_slot_info.rs) |
+| `partprefabdyetexturepalleteinfo.pabgb` + `.pabgh` | 0.8 KB / 4 KB, index 68 B | **11** (keys 0..=10) | `PartPrefabDyeTexturePalleteKey (u16)` → palette tier with 2–3 sub-records (material name + icon DDS + texture DDS + optional variant name & strength). Save's `_texturePalleteKey` references this. | [`part_prefab_dye_texture_pallete_info`](../src/part_prefab_dye_texture_pallete_info/mod.rs) / [`c_abi/part_prefab_dye_texture_pallete_info.rs`](../src/c_abi/part_prefab_dye_texture_pallete_info.rs) |
 
 The `binarygimmickchart__` `*dye*` / `dyewater` `.binarygimmick` files
 in the scan output are decorative gimmicks (basecamp props, fabric
 deco), NOT item-dye gamedata — ignore those.
+
+### Verified row schemas (2026-05-16, live 1.07)
+
+**`dyecolorgroupinfo.pabgb`** — standard PABGH (`u16 count + (u32 key, u32 offset)*`):
+
+```text
+Row {
+    u32 key,
+    u32 name_len,
+    u8 name[name_len],              // "Her_Color_Group_I", "Dem_Color_Group_I/II/III", etc.
+    u8 flag,                        // always 0
+    u32 color_count,                // always 109
+    u8 color_data[8 * color_count], // RGBA + 4-byte gradient channel per record
+    // 37-byte trailer:
+    u8 trailer_marker[5],           // 23 31 02 00 00 — constant across rows
+    u32 key_copy,                   // = key
+    u32 numeric_id_len,             // always 20
+    u8 numeric_id[20],              // u64 hash serialized as ASCII decimal
+    u8 trailing_hash[4],            // per-row
+}
+```
+
+**`partprefabdyetexturepalleteinfo.pabgb`** — **custom** 6-byte PABGH
+entries (`u16 count + (u16 key, u32 offset)*`):
+
+```text
+Row {
+    u32 key,                 // PABGH key extended to u32 (high bits always 0)
+    u8 pad[3],
+    u32 key_copy,
+    u32 sub_count,           // 2 for key=0, 3 for key=1..10
+    Sub sub[sub_count],
+}
+Sub {
+    CString material_name,   // "cloth" / "leather" / "metal" / "wool" / "velvet" / "silk"
+    CString icon_path,       // "ui/.../itemicon_*.dds" — for key=0 this duplicates texture_path
+    CString texture_path,    // "character/texture/cd_texturelayer_*.dds"
+    CString variant_name,    // empty by default, or "wool" / "velvet" / "silk"
+    f32 variant_value,       // -1.0 default; positive (~0.1..0.4) when variant_name set
+}
+```
+
+**`partprefabdyeslotinfo.pabgb`** — standard PABGH:
+
+```text
+Row {
+    u32 key,
+    u8 pad[5],
+    u32 slot_count,           // 1..N
+    CString row_prefab_name,  // e.g. "cd_phm_00_lb_00_0054"
+    Slot slot[slot_count],
+}
+Slot {
+    u8 mat_indices[3],        // material indices for this slot
+    CString material_a / b / c, // 3 default material names (often empty)
+    u8 mask[3],               // active/visible flags
+    CString tail_name,        // next sub-prefab name; for the LAST slot in a row,
+                              //   the full .pac asset path
+}
+```
+
+`CString` here is `[u32 len][len bytes]` with NO trailing NUL — same
+shape iteminfo.pabgb uses.
+
+---
+
+## C ABI surface (for `CrimsonAtomtic`)
+
+All three bridges live under `src/c_abi/`. Loaders take both `.pabgb`
++ `.pabgh` (the index is required for row offsets). Lookups follow the
+standard project pattern: scalar getters use out-params; string getters
+use the two-call buffer pattern.
+
+### `dye_color_group_info`
+
+| Function | Purpose |
+|---|---|
+| `crimson_dye_color_group_info_load_from_file(pabgb_path, pabgh_path, *out)` | Load from disk. |
+| `crimson_dye_color_group_info_load_from_bytes(pabgb, pabgb_len, pabgh, pabgh_len, *out)` | Load from memory. |
+| `crimson_dye_color_group_info_free(handle)` | Free a handle. |
+| `crimson_dye_color_group_info_entry_count(handle, *out_count)` | Total rows. |
+| `crimson_dye_color_group_info_lookup_name(handle, color_group_key, buf, buf_len, *required)` | Resolve `_dyeColorGroupInfoKey` → internal name. |
+| `crimson_dye_color_group_info_get_entry(handle, idx, *out_key, buf, buf_len, *required)` | Enumerate. |
+
+### `part_prefab_dye_texture_pallete_info`
+
+| Function | Purpose |
+|---|---|
+| `crimson_part_prefab_dye_texture_pallete_load_from_file` / `_load_from_bytes` / `_free` | Standard. |
+| `crimson_part_prefab_dye_texture_pallete_entry_count(handle, *out_count)` | Total palette rows (11 in 1.07). |
+| `crimson_part_prefab_dye_texture_pallete_lookup_sub_count(handle, palette_key, *out_count)` | Number of sub-records inside `palette_key`. |
+| `crimson_part_prefab_dye_texture_pallete_lookup_sub_material_name(handle, palette_key, sub_idx, buf, ...)` | Material name. |
+| `_lookup_sub_icon_path` / `_lookup_sub_texture_path` / `_lookup_sub_variant_name` | Per-field strings. |
+| `crimson_part_prefab_dye_texture_pallete_lookup_sub_variant_value(handle, palette_key, sub_idx, *out_value)` | f32 variant strength. |
+| `crimson_part_prefab_dye_texture_pallete_get_entry_key(handle, idx, *out_key)` | Enumerate keys. |
+
+### `part_prefab_dye_slot_info`
+
+| Function | Purpose |
+|---|---|
+| `crimson_part_prefab_dye_slot_info_load_from_file` / `_load_from_bytes` / `_free` | Standard. |
+| `crimson_part_prefab_dye_slot_info_entry_count(handle, *out_count)` | Total prefabs (1,105 in 1.07). |
+| `crimson_part_prefab_dye_slot_info_lookup_slot_count(handle, prefab_key, *out_count)` | **Direct replacement for `dye_slot_counts.json[item_id]`** once the `_itemKey → _partPrefabKey` linkage is in place. |
+| `crimson_part_prefab_dye_slot_info_lookup_prefab_name(handle, prefab_key, buf, ...)` | Prefab internal name. |
+| `crimson_part_prefab_dye_slot_info_lookup_slot_default_material(handle, prefab_key, slot_idx, mat_idx, buf, ...)` | Per-slot default material (`mat_idx ∈ {0,1,2}`). |
+| `crimson_part_prefab_dye_slot_info_lookup_slot_tail_name(handle, prefab_key, slot_idx, buf, ...)` | Next-prefab / `.pac` path. |
+| `crimson_part_prefab_dye_slot_info_lookup_slot_mat_indices(handle, prefab_key, slot_idx, out_indices[3])` | Raw 3-byte indices. |
+| `crimson_part_prefab_dye_slot_info_lookup_slot_mask(handle, prefab_key, slot_idx, out_mask[3])` | Raw 3-byte mask. |
+| `crimson_part_prefab_dye_slot_info_get_entry_key(handle, idx, *out_key)` | Enumerate keys. |
+
+All bridges return `NULL_ARG` / `NOT_FOUND` / `OUT_OF_RANGE` /
+`BUFFER_TOO_SMALL` / `PANIC` per the standard `c_abi/mod.rs::error`
+codes. Live-install integration tests pin the row counts and a
+handful of `(key → value)` invariants per table; they skip cleanly
+when the game install isn't present.
 
 ---
 
@@ -145,27 +267,22 @@ other ObjectLists use). Defer until there's a concrete user demand.
 
 ## Open RE — next session
 
-**Parse the three `dye*.pabgb` tables to replace the PyQt5 reference
-editor's hand-maintained JSON catalog with gamedata-driven data.**
-Recommended order:
+**All three gamedata tables RE'd 2026-05-16 (this iteration).** The
+remaining blocker for the C# editor to consume slot counts is the
+**`_itemKey → _partPrefabKey` cross-reference** — needs to live in
+`iteminfo.pabgb` (or a sibling `partprefab*` table). Once that's
+bridged, the C# editor can drop `dye_slot_counts.json` entirely.
 
-1. **`dyecolorgroupinfo.pabgb`** (tiny — ~10 rows). Resolves
-   `_dyeColorGroupInfoKey` → group name. Pattern: probably an
-   anchor-scannable `[u32 key][u32 name_len][name][...body]` like
-   `gimmickinfo.pabgb`, but the `.pabgh` exists too so it might be
-   PABGH-indexed like `characterappearanceindexinfo`. Probe to
-   confirm.
-2. **`partprefabdyetexturepalleteinfo.pabgb`** (tiny — ~5 rows).
-   Resolves `_texturePalleteKey` → material name. Smallest table; do
-   this second to get the schema pattern right with a low-volume
-   sample.
-3. **`partprefabdyeslotinfo.pabgb`** (large — ~730 rows). Per-prefab
-   slot counts. Replaces `dye_slot_counts.json`. Will need the
-   `partprefab*` key type understood — see also `_partPrefabKey` in
-   `ItemSaveData` (if it exists) for the cross-reference.
+Diagnostic re-run (when a future patch may have changed the dye
+schemas):
 
-When these three are parsed, the C# editor can drop hand-maintained
-JSON entirely.
+```powershell
+cargo test --lib --features c_abi _probe_dye_gamedata_tables -- --ignored --nocapture
+cargo test --lib --features c_abi _probe_dye_gamedata_rows -- --ignored --nocapture
+```
+
+Both probes live in [`src/c_abi/character_info.rs`](../src/c_abi/character_info.rs)
+and write raw extracted bytes to `out/dye_probe/` for plcli inspection.
 
 ---
 

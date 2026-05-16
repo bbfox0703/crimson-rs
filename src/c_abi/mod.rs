@@ -27,11 +27,14 @@ use crate::save::{Body, DecodedField, FieldKind, FieldValue, ObjectBlock, Save, 
 
 pub mod character_info;
 pub mod checksum;
+pub mod dye_color_group_info;
 pub mod gimmick_info;
 pub mod iteminfo;
 pub mod knowledge_info;
 pub mod mission_info;
 pub mod paloc;
+pub mod part_prefab_dye_slot_info;
+pub mod part_prefab_dye_texture_pallete_info;
 pub mod paz;
 pub mod quest_gauge_info;
 pub mod quest_info;

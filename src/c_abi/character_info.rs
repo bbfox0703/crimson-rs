@@ -2403,4 +2403,403 @@ mod tests {
         }
     }
 
+    /// Dye gamedata schema probe — phase 1, smallest table first.
+    ///
+    /// Investigates the three `dye*.pabgb` + `.pabgh` tables surfaced
+    /// by `_probe_item_dye_data` to settle their on-disk layout so we
+    /// can ship anchor-scan / PABGH-indexed parsers + c_abi bridges
+    /// that replace the PyQt5 reference editor's hand-maintained
+    /// `dye_slot_counts.json`.
+    ///
+    /// Recommended order (see `docs/dye-editor-scope.md` §"Open RE"):
+    ///
+    /// 1. `dyecolorgroupinfo.pabgb` (~10 rows) — smallest, gets the
+    ///    schema right with a low-volume sample. Resolves
+    ///    `_dyeColorGroupInfoKey (u32)` → color group definition.
+    /// 2. `partprefabdyetexturepalleteinfo.pabgb` (~5 rows) — tiny
+    ///    sibling. Resolves `_texturePalleteKey (u16)` → material
+    ///    palette name (Cloth / Metal / Leather / etc.).
+    /// 3. `partprefabdyeslotinfo.pabgb` (~730 rows) — large, replaces
+    ///    the `dye_slot_counts.json` catalog. Per-prefab slot counts.
+    ///
+    /// What this probe dumps for each file:
+    ///
+    /// - Extracted size (sanity-check vs PAMT metadata)
+    /// - `.pabgh` parse via the standard skill_info layout
+    ///   (`u16 count + count × (u32 key, u32 offset)`) — fails open if
+    ///   the layout differs.
+    /// - For each PABGH entry: `(key, offset, body_len_to_next)` plus
+    ///   the first 64 hex bytes of the body. From this we can read
+    ///   the row schema by eye (look for `[u32 key][u32 name_len][name]`
+    ///   prefix, fixed-size structs, etc.).
+    /// - First 256 bytes of the raw PABGB as a fallback if no PABGH.
+    /// - Dumps the full extracted bytes to `out/dye_probe/<file>.bin`
+    ///   so `plcli + .hexpat` can be used for deeper inspection.
+    #[test]
+    #[ignore = "investigation only — dye gamedata schema (phase 1)"]
+    fn _probe_dye_gamedata_tables() {
+        use crate::binary::pamt::PackMeta;
+        use crate::binary::paz;
+
+        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
+            });
+        let pamt_path = game_root.join("0008").join("0.pamt");
+        let Ok(pamt_bytes) = std::fs::read(&pamt_path) else {
+            eprintln!("skipping: no {}", pamt_path.display());
+            return;
+        };
+        let pamt = PackMeta::parse(&pamt_bytes, None).expect("parse PAMT");
+        let dir = pamt
+            .directories
+            .iter()
+            .find(|d| d.path == "gamedata/binary__/client/bin")
+            .expect("missing gamedata/binary__/client/bin dir in 0008 PAMT");
+
+        let out_dir = PathBuf::from("out").join("dye_probe");
+        let _ = std::fs::create_dir_all(&out_dir);
+
+        // Three pairs in the recommended order: smallest first.
+        let targets: &[&str] = &[
+            "dyecolorgroupinfo",
+            "partprefabdyetexturepalleteinfo",
+            "partprefabdyeslotinfo",
+        ];
+
+        for stem in targets {
+            eprintln!("\n========================================");
+            eprintln!("=== {stem} ===");
+            eprintln!("========================================");
+
+            let pabgb_name = format!("{stem}.pabgb");
+            let pabgh_name = format!("{stem}.pabgh");
+
+            let pabgb_file = dir.files.iter().find(|f| f.name == pabgb_name);
+            let pabgh_file = dir.files.iter().find(|f| f.name == pabgh_name);
+
+            let Some(pabgb_file) = pabgb_file else {
+                eprintln!("  MISSING: {pabgb_name}");
+                continue;
+            };
+            eprintln!(
+                "  {pabgb_name}: compressed={}  uncompressed={}",
+                pabgb_file.file.compressed_size, pabgb_file.file.uncompressed_size,
+            );
+            let pabgb_bytes = match paz::extract_file(
+                &game_root.join("0008"),
+                pabgb_file,
+                "gamedata/binary__/client/bin",
+                &pamt.header.encrypt_info.encrypt_info,
+            ) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("  EXTRACT FAILED: {e}");
+                    continue;
+                }
+            };
+            eprintln!("  extracted .pabgb len = {} bytes", pabgb_bytes.len());
+
+            let _ = std::fs::write(out_dir.join(&pabgb_name), &pabgb_bytes);
+
+            // Try the standard PABGH layout.
+            let pabgh_bytes_opt: Option<Vec<u8>> = pabgh_file.and_then(|pabgh_file| {
+                eprintln!(
+                    "  {pabgh_name}: compressed={}  uncompressed={}",
+                    pabgh_file.file.compressed_size, pabgh_file.file.uncompressed_size,
+                );
+                paz::extract_file(
+                    &game_root.join("0008"),
+                    pabgh_file,
+                    "gamedata/binary__/client/bin",
+                    &pamt.header.encrypt_info.encrypt_info,
+                )
+                .ok()
+            });
+
+            if let Some(pabgh_bytes) = &pabgh_bytes_opt {
+                let _ = std::fs::write(out_dir.join(&pabgh_name), pabgh_bytes);
+                eprintln!("  extracted .pabgh len = {} bytes", pabgh_bytes.len());
+                eprintln!(
+                    "  .pabgh first 32 bytes: {:02x?}",
+                    &pabgh_bytes[..pabgh_bytes.len().min(32)],
+                );
+
+                // Standard layout attempt.
+                match crate::skill_info::parse_pabgh(pabgh_bytes) {
+                    Ok(entries) => {
+                        eprintln!(
+                            "  .pabgh parsed as standard layout: {} entries",
+                            entries.len()
+                        );
+                        // Build sorted-by-offset for end-range computation.
+                        let ranges = crate::skill_info::entry_ranges(
+                            &entries,
+                            pabgb_bytes.len(),
+                        );
+                        // Print all entries for small tables; cap at 20 for large.
+                        let n_show = if entries.len() <= 20 { entries.len() } else { 20 };
+                        eprintln!(
+                            "\n  showing first {n_show} of {} entries (key, offset, body_len, hex preview):",
+                            entries.len()
+                        );
+                        for i in 0..n_show {
+                            let (start, end) = ranges[i];
+                            let body_len = end.saturating_sub(start);
+                            let preview_end = (start + 64).min(end).min(pabgb_bytes.len());
+                            let preview = if start < pabgb_bytes.len() {
+                                &pabgb_bytes[start..preview_end]
+                            } else {
+                                &[][..]
+                            };
+                            eprintln!(
+                                "    [{:3}] key=0x{:08x}  off=0x{:08x}  body_len={:5}  hex[0..{}]={:02x?}",
+                                i,
+                                entries[i].key,
+                                entries[i].offset,
+                                body_len,
+                                preview.len(),
+                                preview,
+                            );
+                        }
+                        if entries.len() > n_show {
+                            eprintln!("    (+{} more)", entries.len() - n_show);
+                        }
+
+                        // Body-length distribution — fixed-size tells if rows
+                        // are flat structs vs variable-length anchor rows.
+                        let mut len_counts: std::collections::BTreeMap<usize, usize> =
+                            Default::default();
+                        for (s, e) in &ranges {
+                            *len_counts.entry(e.saturating_sub(*s)).or_insert(0) += 1;
+                        }
+                        eprintln!("\n  body-length histogram (len: count):");
+                        for (len, count) in len_counts.iter().take(20) {
+                            eprintln!("    {len:5} bytes: {count} rows");
+                        }
+                        if len_counts.len() > 20 {
+                            eprintln!("    (+{} more distinct lengths)", len_counts.len() - 20);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("  .pabgh standard-layout parse FAILED: {e}");
+                    }
+                }
+            } else {
+                eprintln!("  (no .pabgh extracted — anchor-scan-only file)");
+            }
+
+            // For files small enough, print the whole PABGB hex.
+            if pabgb_bytes.len() <= 4096 {
+                eprintln!("\n  .pabgb full hex dump ({} bytes):", pabgb_bytes.len());
+                for chunk_start in (0..pabgb_bytes.len()).step_by(32) {
+                    let chunk_end = (chunk_start + 32).min(pabgb_bytes.len());
+                    let chunk = &pabgb_bytes[chunk_start..chunk_end];
+                    let hex: String = chunk
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let ascii: String = chunk
+                        .iter()
+                        .map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '.' })
+                        .collect();
+                    eprintln!("    {chunk_start:06x}  {hex:<95}  {ascii}");
+                }
+            } else {
+                eprintln!(
+                    "\n  .pabgb first 256 bytes (file too large for full dump):"
+                );
+                for chunk_start in (0..256).step_by(32) {
+                    let chunk_end = (chunk_start + 32).min(pabgb_bytes.len());
+                    let chunk = &pabgb_bytes[chunk_start..chunk_end];
+                    let hex: String = chunk
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let ascii: String = chunk
+                        .iter()
+                        .map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '.' })
+                        .collect();
+                    eprintln!("    {chunk_start:06x}  {hex:<95}  {ascii}");
+                }
+            }
+        }
+
+        eprintln!(
+            "\n.pabgb / .pabgh raw bytes written to {} for plcli inspection",
+            out_dir.display()
+        );
+    }
+
+    /// Focused phase-2 probe: dump full per-row bytes + ASCII strings for the
+    /// small tables, and the post-name region of partprefabdyeslotinfo so we
+    /// can pin the slot-count field placement.
+    #[test]
+    #[ignore = "investigation only — dye gamedata schema (phase 2, focused)"]
+    fn _probe_dye_gamedata_rows() {
+        use crate::binary::pamt::PackMeta;
+        use crate::binary::paz;
+
+        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
+            });
+        let pamt_path = game_root.join("0008").join("0.pamt");
+        let Ok(pamt_bytes) = std::fs::read(&pamt_path) else {
+            eprintln!("skipping: no {}", pamt_path.display());
+            return;
+        };
+        let pamt = PackMeta::parse(&pamt_bytes, None).expect("parse PAMT");
+        let dir = pamt
+            .directories
+            .iter()
+            .find(|d| d.path == "gamedata/binary__/client/bin")
+            .expect("missing dir");
+
+        let extract = |name: &str| {
+            let f = dir.files.iter().find(|f| f.name == name).expect("missing");
+            paz::extract_file(
+                &game_root.join("0008"),
+                f,
+                "gamedata/binary__/client/bin",
+                &pamt.header.encrypt_info.encrypt_info,
+            )
+            .expect("extract")
+        };
+
+        // ── partprefabdyetexturepalleteinfo: custom PABGH (u16 key, u32 off) ─
+        let pal_pabgb = extract("partprefabdyetexturepalleteinfo.pabgb");
+        let pal_pabgh = extract("partprefabdyetexturepalleteinfo.pabgh");
+        eprintln!("\n=== partprefabdyetexturepalleteinfo ===");
+        eprintln!("pabgh len={}", pal_pabgh.len());
+        // Parse custom layout
+        let count = u16::from_le_bytes([pal_pabgh[0], pal_pabgh[1]]) as usize;
+        eprintln!("count u16 = {count}");
+        let mut entries: Vec<(u16, u32)> = Vec::new();
+        for i in 0..count {
+            let o = 2 + i * 6;
+            let key = u16::from_le_bytes([pal_pabgh[o], pal_pabgh[o + 1]]);
+            let off = u32::from_le_bytes([
+                pal_pabgh[o + 2],
+                pal_pabgh[o + 3],
+                pal_pabgh[o + 4],
+                pal_pabgh[o + 5],
+            ]);
+            entries.push((key, off));
+        }
+        eprintln!("entries: {:?}", entries);
+        // Sort by offset to compute body ranges
+        let mut by_offset: Vec<usize> = (0..entries.len()).collect();
+        by_offset.sort_by_key(|&i| entries[i].1);
+        let mut ends = vec![pal_pabgb.len(); entries.len()];
+        for win in by_offset.windows(2) {
+            ends[win[0]] = entries[win[1]].1 as usize;
+        }
+
+        for i in 0..entries.len() {
+            let (key, off) = entries[i];
+            let end = ends[i];
+            let body = &pal_pabgb[off as usize..end];
+            eprintln!(
+                "\n  -- row key={key} (off=0x{off:x}, len={}) --",
+                body.len()
+            );
+            // Hex+ascii in 32-byte chunks
+            for cs in (0..body.len()).step_by(32) {
+                let ce = (cs + 32).min(body.len());
+                let chunk = &body[cs..ce];
+                let hex: String = chunk
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let ascii: String = chunk
+                    .iter()
+                    .map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '.' })
+                    .collect();
+                eprintln!("    {cs:04x}  {hex:<95}  {ascii}");
+            }
+            // Extract all ASCII strings (>=3 printable chars)
+            let mut strs: Vec<String> = Vec::new();
+            let mut cur = String::new();
+            for &b in body {
+                if (0x20..0x7f).contains(&b) {
+                    cur.push(b as char);
+                } else {
+                    if cur.len() >= 3 {
+                        strs.push(cur.clone());
+                    }
+                    cur.clear();
+                }
+            }
+            if cur.len() >= 3 {
+                strs.push(cur);
+            }
+            eprintln!("    strings (>=3 chars): {:?}", strs);
+        }
+
+        // ── dyecolorgroupinfo: dump full body of first 2 rows ──────────
+        let dcg_pabgb = extract("dyecolorgroupinfo.pabgb");
+        let dcg_pabgh = extract("dyecolorgroupinfo.pabgh");
+        eprintln!("\n=== dyecolorgroupinfo (first 2 rows full hex) ===");
+        let dcg_entries = crate::skill_info::parse_pabgh(&dcg_pabgh).expect("parse pabgh");
+        let dcg_ranges = crate::skill_info::entry_ranges(&dcg_entries, dcg_pabgb.len());
+        for i in 0..2 {
+            let (s, e) = dcg_ranges[i];
+            let body = &dcg_pabgb[s..e];
+            eprintln!(
+                "\n  -- row {i} key=0x{:08x} (off=0x{:x}, len={}) --",
+                dcg_entries[i].key, s, body.len()
+            );
+            for cs in (0..body.len()).step_by(32) {
+                let ce = (cs + 32).min(body.len());
+                let chunk = &body[cs..ce];
+                let hex: String = chunk
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let ascii: String = chunk
+                    .iter()
+                    .map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '.' })
+                    .collect();
+                eprintln!("    {cs:04x}  {hex:<95}  {ascii}");
+            }
+        }
+
+        // ── partprefabdyeslotinfo: dump full body of a few rows ────────
+        let pps_pabgb = extract("partprefabdyeslotinfo.pabgb");
+        let pps_pabgh = extract("partprefabdyeslotinfo.pabgh");
+        eprintln!("\n=== partprefabdyeslotinfo (full hex of a low-slot, mid-slot, high-slot row) ===");
+        let pps_entries = crate::skill_info::parse_pabgh(&pps_pabgh).expect("parse pabgh");
+        let pps_ranges = crate::skill_info::entry_ranges(&pps_entries, pps_pabgb.len());
+        // Print rows 0 (count=1), 5 (count=10), 9 (count=8) per the phase-1 dump
+        for &i in &[0usize, 5, 9, 13] {
+            let (s, e) = pps_ranges[i];
+            let body = &pps_pabgb[s..e];
+            eprintln!(
+                "\n  -- row {i} key=0x{:08x} (off=0x{:x}, len={}) --",
+                pps_entries[i].key, s, body.len()
+            );
+            for cs in (0..body.len()).step_by(32) {
+                let ce = (cs + 32).min(body.len());
+                let chunk = &body[cs..ce];
+                let hex: String = chunk
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let ascii: String = chunk
+                    .iter()
+                    .map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '.' })
+                    .collect();
+                eprintln!("    {cs:04x}  {hex:<95}  {ascii}");
+            }
+        }
+    }
+
 }
