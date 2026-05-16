@@ -1699,6 +1699,240 @@ mod tests {
         eprintln!("  grand total: {grand_total}");
     }
 
+    /// Schema probe for `ItemSaveData._itemDyeDataList`. Walks every
+    /// `InventorySaveData` block in the live save, finds items whose
+    /// `_itemDyeDataList` is present (non-absent), and dumps the
+    /// first dye element's field tree. The schema baseline + sample
+    /// values are reference data for CrimsonAtomtic's Dye editor.
+    ///
+    /// What this confirms (verified 2026-05-15 against the 1.07
+    /// `slot0/save.save`):
+    ///
+    /// - `_itemDyeDataList` is field 14 of `ItemSaveData`, type
+    ///   `ReflectObject`, `meta_size=0`. When present, it decodes as
+    ///   `FieldValue::ObjectList<ItemDyeSaveData>`.
+    /// - Per-element schema (from PyQt5 reference editor's RE work in
+    ///   `D:\Github\CRIMSON-DESERT-SAVE-EDITOR-AND-GAME-MODS\
+    ///   CrimsonSaveEditor\parc_inserter3.py:1740-1785`):
+    ///
+    ///   | Mask | Field                     | Type    |
+    ///   |------|---------------------------|---------|
+    ///   | 0x01 | `_dyeSlotNo`              | u8      |
+    ///   | 0x02 | `_dyeColorR`              | u8      |
+    ///   | 0x04 | `_dyeColorG`              | u8      |
+    ///   | 0x08 | `_dyeColorB`              | u8      |
+    ///   | 0x10 | `_dyeColorA`              | u8      |
+    ///   | 0x20 | `_grimeOpacity`           | i8      |
+    ///   | 0x40 | `_dyeColorGroupInfoKey`   | u32 LE  |
+    ///   | 0x80 | `_texturePalleteKey`      | u16/u32 |
+    ///
+    /// Also scans `0008/0.pamt` for `*dye*` files — the next-session
+    /// task is to parse the gamedata-side dye table (`dyeinfo.pabgb`
+    /// or similar) so per-item slot counts come from gamedata
+    /// directly rather than the PyQt5 reference editor's
+    /// hand-maintained `dye_slot_counts.json`. The CrimsonAtomtic
+    /// Dye editor v1 can still ship with the JSON approach while
+    /// this gamedata RE is in flight.
+    #[test]
+    #[ignore = "investigation only — ItemDyeSaveData schema + dyeinfo file discovery"]
+    fn _probe_item_dye_data() {
+        use crate::binary::pamt::PackMeta;
+        use crate::save::{Body, FieldValue, ScalarValue, Save};
+
+        // ── Locate live save ───────────────────────────────────────
+        let save_path = std::env::var_os("CRIMSON_LIVE_SAVE")
+            .map(PathBuf::from)
+            .or_else(|| {
+                let appdata = std::env::var_os("LOCALAPPDATA")?;
+                let root = PathBuf::from(appdata)
+                    .join("Pearl Abyss")
+                    .join("CD")
+                    .join("save");
+                std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
+                    let p = entry.path().join("slot0").join("save.save");
+                    p.is_file().then_some(p)
+                })
+            });
+        let Some(save_path) = save_path else {
+            eprintln!("skipping: no live save");
+            return;
+        };
+        let raw = std::fs::read(&save_path).expect("read save");
+        let save = Save::parse(&raw).expect("parse save");
+        let body = Body::parse(&save.body).expect("parse body");
+        let blocks = body.decode_blocks(&save.body);
+
+        // ── Find InventorySaveData → walk every ItemSaveData ────────
+        let mut total_items = 0usize;
+        let mut items_with_dye = 0usize;
+        let mut dye_entries_total = 0usize;
+        let mut first_dump_done = false;
+        let mut sample_paths: Vec<(u32, u32, u32, String, u32)> = Vec::new();
+
+        for (block_idx, block) in blocks.iter().enumerate() {
+            if block.class_name != "InventorySaveData" {
+                continue;
+            }
+            for inv_list_field in &block.fields {
+                if !inv_list_field.name.eq_ignore_ascii_case("_inventorylist") {
+                    continue;
+                }
+                let FieldValue::ObjectList { elements: containers, .. } = &inv_list_field.value
+                else {
+                    continue;
+                };
+                for (inv_idx, container) in containers.iter().enumerate() {
+                    let inv_key: u16 = container
+                        .fields
+                        .iter()
+                        .find(|f| f.name.eq_ignore_ascii_case("_inventoryKey"))
+                        .and_then(|f| match &f.value {
+                            FieldValue::Scalar(ScalarValue::U16(v)) => Some(*v),
+                            _ => None,
+                        })
+                        .unwrap_or(0);
+
+                    for f in &container.fields {
+                        if !f.name.eq_ignore_ascii_case("_itemList") {
+                            continue;
+                        }
+                        let FieldValue::ObjectList { elements: items, .. } = &f.value else {
+                            continue;
+                        };
+                        for (item_idx, item) in items.iter().enumerate() {
+                            total_items += 1;
+                            // Pull the item key for the dump.
+                            let item_key = item
+                                .fields
+                                .iter()
+                                .find(|f| f.name == "_itemKey")
+                                .and_then(|f| match &f.value {
+                                    FieldValue::Scalar(ScalarValue::U32(v)) => Some(*v),
+                                    _ => None,
+                                })
+                                .unwrap_or(0);
+                            // Look at _itemDyeDataList — field 14.
+                            let Some(dye_field) = item
+                                .fields
+                                .iter()
+                                .find(|f| f.name == "_itemDyeDataList")
+                            else {
+                                continue;
+                            };
+                            if !dye_field.present {
+                                continue;
+                            }
+                            let FieldValue::ObjectList { count, elements: dye_elems, .. } =
+                                &dye_field.value
+                            else {
+                                eprintln!(
+                                    "  WARN: item key={item_key} _itemDyeDataList present but \
+                                     not ObjectList — got {:?}",
+                                    dye_field.value
+                                );
+                                continue;
+                            };
+                            items_with_dye += 1;
+                            dye_entries_total += *count as usize;
+
+                            // Record the path for the C# editor.
+                            sample_paths.push((
+                                block_idx as u32,
+                                inv_idx as u32,
+                                item_idx as u32,
+                                format!(
+                                    "InventorySaveData[{}]._inventorylist[{}].fields[2 _itemList][{}]._itemDyeDataList",
+                                    block_idx, inv_idx, item_idx,
+                                ),
+                                inv_key as u32,
+                            ));
+
+                            // Dump the FIRST dye element's full schema once
+                            // — that's the reference the C# editor uses.
+                            if !first_dump_done {
+                                eprintln!(
+                                    "\n=== sample dyed item ===\nblock_idx={block_idx} inv_idx={inv_idx} \
+                                     inv_key=0x{inv_key:04x} item_idx={item_idx} item_key={item_key}"
+                                );
+                                eprintln!(
+                                    "_itemDyeDataList field present, ObjectList count={count}"
+                                );
+                                if let Some(dye_elem) = dye_elems.first() {
+                                    eprintln!(
+                                        "\nfirst dye element class={}, {} fields, mask_bytes={:02x?}:",
+                                        dye_elem.class_name, dye_elem.fields.len(), dye_elem.mask_bytes,
+                                    );
+                                    for df in &dye_elem.fields {
+                                        let val_str = match &df.value {
+                                            FieldValue::Scalar(ScalarValue::U8(v)) => format!("U8({v})"),
+                                            FieldValue::Scalar(ScalarValue::I8(v)) => format!("I8({v})"),
+                                            FieldValue::Scalar(ScalarValue::U16(v)) => format!("U16({v})"),
+                                            FieldValue::Scalar(ScalarValue::U32(v)) => format!("U32(0x{v:08x})"),
+                                            FieldValue::None => "<absent>".into(),
+                                            _ => format!("{:?}", df.value),
+                                        };
+                                        eprintln!(
+                                            "  [{:2}] present={} kind={:?} type={} name={} meta_size={} value={}",
+                                            df.field_index, df.present, df.kind, df.type_name,
+                                            df.name, df.meta_size, val_str,
+                                        );
+                                    }
+                                }
+                                first_dump_done = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        eprintln!("\n— inventory summary —");
+        eprintln!("  total items walked:        {total_items}");
+        eprintln!("  items with dye data:       {items_with_dye}");
+        eprintln!("  total dye entries:         {dye_entries_total}");
+        eprintln!("\nfirst 10 dyed items (block, inv, item, path, inv_key):");
+        for (b, i, k, p, ik) in sample_paths.iter().take(10) {
+            eprintln!("  block={b} inv={i} item={k} inv_key=0x{ik:04x}");
+            eprintln!("    path = {p}");
+        }
+        if sample_paths.len() > 10 {
+            eprintln!("  (+{} more)", sample_paths.len() - 10);
+        }
+
+        // ── Scan 0008 for *dye* files (next-session gamedata work) ──
+        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
+            });
+        let pamt_path = game_root.join("0008").join("0.pamt");
+        if let Ok(pamt_bytes) = std::fs::read(&pamt_path) {
+            let pamt = PackMeta::parse(&pamt_bytes, None).expect("parse 0008 PAMT");
+            eprintln!("\n— 0008 *dye* / *color* / *palette* files —");
+            let mut hit_count = 0;
+            for d in &pamt.directories {
+                for f in &d.files {
+                    let lower = f.name.to_ascii_lowercase();
+                    if lower.contains("dye")
+                        || lower.contains("palette")
+                        || lower.contains("pallete")
+                        || lower.contains("texturepalle")
+                        || lower.contains("colorgroup")
+                    {
+                        eprintln!(
+                            "  {}/{} ({}c / {}u)",
+                            d.path, f.name, f.file.compressed_size, f.file.uncompressed_size
+                        );
+                        hit_count += 1;
+                    }
+                }
+            }
+            if hit_count == 0 {
+                eprintln!("  (no dye-related files found in 0008 — try other groups)");
+            }
+        }
+    }
+
     /// Abyss-gate per-gate mapping probe — Path B (`CrimsonAtomtic`) input.
     ///
     /// CrimsonAtomtic wants to replace the bulk "unlock all abyss gates"
