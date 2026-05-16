@@ -43,6 +43,48 @@ pub struct CrimsonItemInfoHandle {
     /// of the challenge that rewards them; regular items leave this
     /// field at 0 and don't show up in the map.
     look_detail_mission_by_key: HashMap<u32, u32>,
+    /// Per-item gamedata socket caps:
+    /// `(use_socket, socket_valid_count)`.
+    /// - `use_socket = 0` → item is not socket-capable in vanilla.
+    /// - `use_socket != 0` → socket-capable; `socket_valid_count` is
+    ///   the in-game max number of sockets the item supports.
+    ///
+    /// Every item key is inserted (even non-socket items) so callers
+    /// can distinguish "item exists but not socket-capable" from
+    /// "item key not in iteminfo at all".
+    ///
+    /// Source: [`crate::item_info::structs::DropDefaultData`] (parsed
+    /// from `iteminfo.pabgb`, field `socket_valid_count` and
+    /// `use_socket`).
+    socket_caps_by_key: HashMap<u32, (u8, u8)>,
+    /// Per-item allowed-gem itemkey list (from
+    /// `DropDefaultData::socket_item_list`). Only items with a
+    /// non-empty list are inserted — non-socket items have empty
+    /// lists and don't show up here, so the editor surfaces "no
+    /// allowed gems" as `count = 0`. The list preserves on-disk
+    /// order so enumerators are deterministic.
+    socket_allowed_gems_by_key: HashMap<u32, Vec<u32>>,
+    /// The "canonical gem set" — sorted-ascending list of every
+    /// itemkey whose iteminfo row has `item_type == 74` AND
+    /// `category_info == CategoryKey(2501)`. This is the gamedata's
+    /// own definition of a gem (verified against the user's slot104
+    /// reference set — all 43 observed gems match this rule; the
+    /// two host items 1000316/1002285 do not).
+    ///
+    /// **Why not "union of all socket_item_list"?** Because
+    /// `DropDefaultData::socket_item_list` is the per-weapon
+    /// VENDOR / CRAFTING display list — it's a narrow subset of the
+    /// gems the engine will actually accept in that weapon's
+    /// socket. The classification `(item_type=74, category=2501)` is
+    /// the engine's gem-row marker and captures the full gem
+    /// catalog.
+    ///
+    /// Computed once at handle-load time. The editor is free to
+    /// ignore this list and let the user pick any u32 itemkey in
+    /// CE-style freeform mode — see
+    /// [`crimson_iteminfo_socket_allows_gem`] for the per-weapon
+    /// advisory.
+    canonical_gem_list: Vec<u32>,
     /// `(key, string_key)` in file order so the caller can enumerate
     /// via [`crimson_iteminfo_get_entry`].
     entries: Vec<(u32, String)>,
@@ -58,6 +100,12 @@ impl CrimsonItemInfoHandle {
         let mut max_stack_by_key: HashMap<u32, u64> = HashMap::new();
         let mut icon_path_by_key: HashMap<u32, u32> = HashMap::new();
         let mut look_detail_mission_by_key: HashMap<u32, u32> = HashMap::new();
+        let mut socket_caps_by_key: HashMap<u32, (u8, u8)> = HashMap::new();
+        let mut socket_allowed_gems_by_key: HashMap<u32, Vec<u32>> = HashMap::new();
+        // Accumulate gem itemkeys: any row with item_type=74 +
+        // category_info=2501 is a gem in the gamedata's own sense.
+        let mut canonical_gems_set: std::collections::BTreeSet<u32> =
+            std::collections::BTreeSet::new();
         while offset < data.len() {
             let item = ItemInfo::read_from(data, &mut offset)?;
             entries.push((item.key.0, item.string_key.data.to_owned()));
@@ -79,6 +127,42 @@ impl CrimsonItemInfoHandle {
                 look_detail_mission_by_key
                     .insert(item.key.0, item.look_detail_mission_info.0);
             }
+            // Socket caps — insert for every item so non-socket items
+            // round-trip through the lookup with `use_socket=0` rather
+            // than `NOT_FOUND`. The editor needs to distinguish
+            // "item missing from iteminfo" (NOT_FOUND) from "item
+            // exists but is not socket-capable" (`use_socket=0`).
+            let dd = &item.drop_default_data;
+            socket_caps_by_key.insert(item.key.0, (dd.use_socket, dd.socket_valid_count));
+            // Allowed-gem list = union of `socket_item_list` (explicit
+            // allow list, often used for vendor/crafting display) and
+            // `add_socket_material_item_list` (the broader set of
+            // gem-shaped materials the item's socket slot will accept
+            // at insertion time — captures gems missed by the
+            // explicit list, including 1002979 "爆走的力量審判").
+            // Insertion-order is preserved via Vec; duplicates are
+            // de-duplicated with a tracking set so the per-weapon
+            // enumeration stays clean.
+            let mut union: Vec<u32> = Vec::new();
+            let mut seen: std::collections::HashSet<u32> = Default::default();
+            for k in &dd.socket_item_list.items {
+                if seen.insert(k.0) {
+                    union.push(k.0);
+                }
+            }
+            for m in &dd.add_socket_material_item_list.items {
+                if seen.insert(m.item.0) {
+                    union.push(m.item.0);
+                }
+            }
+            if !union.is_empty() {
+                socket_allowed_gems_by_key.insert(item.key.0, union);
+            }
+            // Gem classifier: verified across the user's 43-gem
+            // slot104 reference set. Both fields must match.
+            if item.item_type == 74 && item.category_info.0 == 2501 {
+                canonical_gems_set.insert(item.key.0);
+            }
         }
         if offset != data.len() {
             return Err(io::Error::new(
@@ -91,11 +175,17 @@ impl CrimsonItemInfoHandle {
             ));
         }
         let by_key = entries.iter().cloned().collect();
+        // Canonical gem set is the (item_type=74, category=2501) bucket
+        // — collected during the parse loop above.
+        let canonical_gem_list: Vec<u32> = canonical_gems_set.into_iter().collect();
         Ok(CrimsonItemInfoHandle {
             by_key,
             max_stack_by_key,
             icon_path_by_key,
             look_detail_mission_by_key,
+            socket_caps_by_key,
+            socket_allowed_gems_by_key,
+            canonical_gem_list,
             entries,
         })
     }
@@ -363,6 +453,241 @@ pub unsafe extern "C" fn crimson_iteminfo_lookup_look_detail_mission_info(
             return error::NOT_FOUND;
         };
         unsafe { *out_mission_key = *mk };
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+// ── Socket caps + gem-allow cross-check (advisory) ─────────────────────────
+//
+// These four entry points expose gamedata facts the save's
+// `_socketSaveDataList` cannot tell on its own. They are PURE QUERIES
+// — the editor decides how to surface violations (warn / red flag /
+// log) and is **always free to write any mutation regardless**.
+// CE-modified saves with `_validSocketCount > socket_valid_count`,
+// or gems outside the allowed list, load cleanly in the game (just
+// with some NPC-UI quirks) — the ABI mirrors that permissiveness.
+
+/// Look up the gamedata socket caps for `item_key`. Writes
+/// `*out_use_socket` (0 = non-socket item, non-zero = socket-capable)
+/// and `*out_valid_count` (the in-game max number of sockets the
+/// item supports — only meaningful when `use_socket != 0`).
+///
+/// Returns `OK` if the item exists in iteminfo (regardless of
+/// socket-capability), `NOT_FOUND` if `item_key` is not in the
+/// loaded table. The editor compares the returned `out_valid_count`
+/// against the save's `_validSocketCount` to detect CE-bumped
+/// overflows (`save_valid > gamedata_valid`).
+///
+/// # Safety
+/// `handle`, `out_use_socket`, and `out_valid_count` must be non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_iteminfo_lookup_socket_caps(
+    handle: *const CrimsonItemInfoHandle,
+    item_key: u32,
+    out_use_socket: *mut u8,
+    out_valid_count: *mut u8,
+) -> i32 {
+    if handle.is_null() || out_use_socket.is_null() || out_valid_count.is_null() {
+        return error::NULL_ARG;
+    }
+    unsafe {
+        *out_use_socket = 0;
+        *out_valid_count = 0;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let Some((use_flag, valid)) = h.socket_caps_by_key.get(&item_key) else {
+            return error::NOT_FOUND;
+        };
+        unsafe {
+            *out_use_socket = *use_flag;
+            *out_valid_count = *valid;
+        }
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Check whether `gem_key` is in `item_key`'s gamedata-defined
+/// allowed-gem list (`DropDefaultData::socket_item_list`). Writes
+/// `*out_allowed` as 1 if allowed, 0 if not.
+///
+/// **Advisory only**: returns `OK` in both the allowed and
+/// not-allowed cases — the editor decides whether to warn the user.
+/// CE-bypassed gem placements (gem not in the list) load cleanly in
+/// the game; some NPC interfaces may not display them correctly.
+///
+/// Returns `NOT_FOUND` only when `item_key` itself is missing from
+/// iteminfo. An `item_key` that exists but is non-socket-capable
+/// (or has an empty allowed-gem list) returns `OK` with
+/// `*out_allowed = 0` — the caller should pair this with
+/// [`crimson_iteminfo_lookup_socket_caps`] to distinguish "no sockets
+/// at all" from "wrong gem for an otherwise socket-capable item".
+///
+/// # Safety
+/// `handle` and `out_allowed` must be non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_iteminfo_socket_allows_gem(
+    handle: *const CrimsonItemInfoHandle,
+    item_key: u32,
+    gem_key: u32,
+    out_allowed: *mut u8,
+) -> i32 {
+    if handle.is_null() || out_allowed.is_null() {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_allowed = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        // Validate that the item exists at all so the caller can tell
+        // "no iteminfo row" from "iteminfo says no allowed gems".
+        if !h.by_key.contains_key(&item_key) {
+            return error::NOT_FOUND;
+        }
+        let allowed = h
+            .socket_allowed_gems_by_key
+            .get(&item_key)
+            .is_some_and(|list| list.contains(&gem_key));
+        unsafe { *out_allowed = u8::from(allowed) };
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Number of entries in `item_key`'s gamedata allowed-gem list.
+/// Items that aren't socket-capable (or are missing from the
+/// allowed-gem index entirely) return `OK` with `*out_count = 0`.
+///
+/// Returns `NOT_FOUND` only when `item_key` is missing from iteminfo.
+///
+/// # Safety
+/// `handle` and `out_count` must be non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_iteminfo_socket_allowed_gem_count(
+    handle: *const CrimsonItemInfoHandle,
+    item_key: u32,
+    out_count: *mut u32,
+) -> i32 {
+    if handle.is_null() || out_count.is_null() {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_count = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        if !h.by_key.contains_key(&item_key) {
+            return error::NOT_FOUND;
+        }
+        let c = h
+            .socket_allowed_gems_by_key
+            .get(&item_key)
+            .map_or(0, |v| v.len() as u32);
+        unsafe { *out_count = c };
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Read the allowed-gem itemkey at insertion index `idx` for
+/// `item_key`. Order matches `DropDefaultData::socket_item_list` on
+/// disk so enumerations are deterministic.
+///
+/// Returns `NOT_FOUND` when `item_key` is missing from iteminfo,
+/// `OUT_OF_RANGE` when `idx >= allowed_gem_count(item_key)`,
+/// `OK` otherwise.
+///
+/// # Safety
+/// `handle` and `out_gem_key` must be non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_iteminfo_socket_allowed_gem_at(
+    handle: *const CrimsonItemInfoHandle,
+    item_key: u32,
+    idx: u32,
+    out_gem_key: *mut u32,
+) -> i32 {
+    if handle.is_null() || out_gem_key.is_null() {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_gem_key = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        if !h.by_key.contains_key(&item_key) {
+            return error::NOT_FOUND;
+        }
+        let Some(list) = h.socket_allowed_gems_by_key.get(&item_key) else {
+            return error::OUT_OF_RANGE;
+        };
+        let Some(g) = list.get(idx as usize) else {
+            return error::OUT_OF_RANGE;
+        };
+        unsafe { *out_gem_key = *g };
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+// ── Canonical gem set (the gem-picker dropdown source) ─────────────────────
+//
+// The "canonical gem set" = sorted-ascending union of every item's
+// `socket_item_list`. Every itemkey that ANY weapon accepts as a gem
+// is a gem by this definition. Computed once at handle-load time,
+// available as a flat enumeration so the C# editor can drive a
+// gem-picker dropdown without reinventing the gem catalog itself.
+//
+// The editor is free to:
+// - Show this list as the default gem picker (sensible vanilla UX),
+// - Filter it further (e.g. only gems the focused weapon accepts via
+//   the per-weapon `socket_allowed_gem_count/_at` advisory),
+// - Or skip it entirely and let the user enter any u32 itemkey for
+//   CE-style freeform mode (the save format and runtime accept it).
+
+/// Number of itemkeys in the canonical gem set (sorted-ascending
+/// union of every item's `socket_item_list`).
+///
+/// Returns `OK` (always — empty iteminfo just gives 0).
+///
+/// # Safety
+/// `handle` and `out_count` must be non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_iteminfo_canonical_gem_count(
+    handle: *const CrimsonItemInfoHandle,
+    out_count: *mut u32,
+) -> i32 {
+    if handle.is_null() || out_count.is_null() {
+        return error::NULL_ARG;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        unsafe { *out_count = h.canonical_gem_list.len() as u32 };
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Read the canonical gem itemkey at sorted-ascending index `idx`.
+/// Indexes are stable for the lifetime of a single handle (re-sorted
+/// only on re-load).
+///
+/// Returns `OUT_OF_RANGE` when `idx >= canonical_gem_count`.
+///
+/// # Safety
+/// `handle` and `out_gem_key` must be non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_iteminfo_canonical_gem_at(
+    handle: *const CrimsonItemInfoHandle,
+    idx: u32,
+    out_gem_key: *mut u32,
+) -> i32 {
+    if handle.is_null() || out_gem_key.is_null() {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_gem_key = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let Some(g) = h.canonical_gem_list.get(idx as usize) else {
+            return error::OUT_OF_RANGE;
+        };
+        unsafe { *out_gem_key = *g };
         error::OK
     }))
     .unwrap_or(error::PANIC)
@@ -702,5 +1027,629 @@ mod tests {
         let rc = unsafe { crimson_iteminfo_load_from_file(bad.as_ptr(), &mut handle) };
         assert_eq!(rc, error::IO);
         assert!(handle.is_null());
+    }
+
+    /// Live-install integration test for the socket cross-check ABIs.
+    /// Asserts the contract (advisory only — never blocks), then
+    /// dumps the gamedata socket caps for the user's CE-modified
+    /// reference items (1002285 / 1002284 / 1000316) so a regression
+    /// in either the parser or our HashMap population is caught
+    /// immediately. Skips cleanly when no game install is present.
+    #[test]
+    fn c_abi_iteminfo_socket_caps_and_gem_allow_live() {
+        let Some(pamt_path) = find_pamt_for_iteminfo() else {
+            eprintln!("skipping c_abi_iteminfo_socket_caps_live: no game install");
+            return;
+        };
+        let pamt = CString::new(pamt_path.to_str().unwrap()).unwrap();
+        let bytes = extract_iteminfo_bytes(pamt.as_c_str());
+
+        let mut handle: *mut CrimsonItemInfoHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_iteminfo_load_from_bytes(bytes.as_ptr(), bytes.len(), &mut handle) },
+            error::OK
+        );
+        assert!(!handle.is_null());
+
+        // ── Lookup the 3 user-flagged CE-modified items. Print their
+        // vanilla socket caps so the editor's allow/deny prompts can
+        // contrast against the CE-mutated save state.
+        let ce_items: &[(u32, &str)] = &[
+            (1002285, "嘟嘟鳥放電盔甲 (armor)"),
+            (1002284, "嘟嘟鳥馬羅尼雷射頭盔 (helmet)"),
+            (1000316, "嘟嘟鳥里西的鞋子 (shoes)"),
+        ];
+        for &(key, label) in ce_items {
+            let mut use_socket: u8 = 99;
+            let mut valid_count: u8 = 99;
+            let rc = unsafe {
+                crimson_iteminfo_lookup_socket_caps(
+                    handle, key, &mut use_socket, &mut valid_count,
+                )
+            };
+            assert_eq!(rc, error::OK, "key {key} ({label}) must be in iteminfo");
+            let mut gem_count: u32 = 0;
+            assert_eq!(
+                unsafe {
+                    crimson_iteminfo_socket_allowed_gem_count(
+                        handle, key, &mut gem_count,
+                    )
+                },
+                error::OK
+            );
+            eprintln!(
+                "  {} (key={}): use_socket={} valid_count={} allowed_gems={}",
+                label, key, use_socket, valid_count, gem_count,
+            );
+        }
+
+        // ── Find any item key that IS socket-capable and has a
+        // non-empty allowed-gem list. Use it to exercise the
+        // allow/disallow paths. We don't pin a specific item key here
+        // because the table changes per patch.
+        let mut socket_item_key: Option<u32> = None;
+        let mut socket_allowed_gem: Option<u32> = None;
+        unsafe {
+            let h = &*handle;
+            for (k, gems) in &h.socket_allowed_gems_by_key {
+                if let Some(g) = gems.first() {
+                    socket_item_key = Some(*k);
+                    socket_allowed_gem = Some(*g);
+                    break;
+                }
+            }
+        }
+        let Some(item_with_gems) = socket_item_key else {
+            eprintln!(
+                "no item with a non-empty allowed-gem list found — \
+                 cannot exercise allow/disallow paths"
+            );
+            unsafe { crimson_iteminfo_free(handle) };
+            return;
+        };
+        let allowed_gem = socket_allowed_gem.unwrap();
+        eprintln!(
+            "allow/deny exemplar: item_key={item_with_gems} allowed_gem={allowed_gem}",
+        );
+
+        // socket_allows_gem: allowed gem → out=1.
+        let mut out_allowed: u8 = 99;
+        let rc = unsafe {
+            crimson_iteminfo_socket_allows_gem(
+                handle, item_with_gems, allowed_gem, &mut out_allowed,
+            )
+        };
+        assert_eq!(rc, error::OK);
+        assert_eq!(out_allowed, 1, "the gem we pulled from the list MUST report as allowed");
+
+        // socket_allows_gem: definitely-not-allowed gem → out=0,
+        // but still OK (advisory). Use u32::MAX which can't be a real
+        // gem itemkey.
+        let mut out_disallowed: u8 = 99;
+        let rc = unsafe {
+            crimson_iteminfo_socket_allows_gem(
+                handle, item_with_gems, u32::MAX, &mut out_disallowed,
+            )
+        };
+        assert_eq!(rc, error::OK, "disallowed gem must still return OK — advisory only");
+        assert_eq!(out_disallowed, 0);
+
+        // socket_allowed_gem_count + _at: enumerate the allowed list,
+        // confirm each entry maps back through socket_allows_gem.
+        let mut count: u32 = 0;
+        assert_eq!(
+            unsafe {
+                crimson_iteminfo_socket_allowed_gem_count(
+                    handle, item_with_gems, &mut count,
+                )
+            },
+            error::OK
+        );
+        assert!(count > 0, "allow-list should be non-empty");
+        for i in 0..count {
+            let mut g: u32 = 0;
+            assert_eq!(
+                unsafe {
+                    crimson_iteminfo_socket_allowed_gem_at(
+                        handle, item_with_gems, i, &mut g,
+                    )
+                },
+                error::OK
+            );
+            let mut a: u8 = 0;
+            assert_eq!(
+                unsafe {
+                    crimson_iteminfo_socket_allows_gem(
+                        handle, item_with_gems, g, &mut a,
+                    )
+                },
+                error::OK
+            );
+            assert_eq!(a, 1, "enumerated gem {g} must report as allowed");
+        }
+        // OUT_OF_RANGE past the end.
+        let mut g: u32 = 0;
+        assert_eq!(
+            unsafe {
+                crimson_iteminfo_socket_allowed_gem_at(
+                    handle, item_with_gems, count, &mut g,
+                )
+            },
+            error::OUT_OF_RANGE
+        );
+
+        // ── NOT_FOUND: every entry point on a missing item key.
+        let mut use_s: u8 = 0;
+        let mut vc: u8 = 0;
+        assert_eq!(
+            unsafe {
+                crimson_iteminfo_lookup_socket_caps(
+                    handle, u32::MAX, &mut use_s, &mut vc,
+                )
+            },
+            error::NOT_FOUND
+        );
+        let mut a: u8 = 0;
+        assert_eq!(
+            unsafe {
+                crimson_iteminfo_socket_allows_gem(
+                    handle, u32::MAX, allowed_gem, &mut a,
+                )
+            },
+            error::NOT_FOUND
+        );
+        let mut c: u32 = 0;
+        assert_eq!(
+            unsafe {
+                crimson_iteminfo_socket_allowed_gem_count(
+                    handle, u32::MAX, &mut c,
+                )
+            },
+            error::NOT_FOUND
+        );
+        let mut g2: u32 = 0;
+        assert_eq!(
+            unsafe {
+                crimson_iteminfo_socket_allowed_gem_at(
+                    handle, u32::MAX, 0, &mut g2,
+                )
+            },
+            error::NOT_FOUND
+        );
+
+        // ── Non-socket-capable item: lookup_socket_caps returns OK
+        // with use_socket=0. socket_allows_gem returns OK with
+        // out_allowed=0. socket_allowed_gem_count returns OK with 0.
+        // Find any item with use_socket=0.
+        let mut non_socket_key: Option<u32> = None;
+        unsafe {
+            let h = &*handle;
+            for (k, (use_flag, _)) in &h.socket_caps_by_key {
+                if *use_flag == 0 {
+                    non_socket_key = Some(*k);
+                    break;
+                }
+            }
+        }
+        if let Some(k) = non_socket_key {
+            let mut us: u8 = 99;
+            let mut vc: u8 = 99;
+            assert_eq!(
+                unsafe {
+                    crimson_iteminfo_lookup_socket_caps(handle, k, &mut us, &mut vc)
+                },
+                error::OK
+            );
+            assert_eq!(us, 0, "use_socket should be 0 for non-socket items");
+
+            let mut a: u8 = 99;
+            assert_eq!(
+                unsafe {
+                    crimson_iteminfo_socket_allows_gem(handle, k, allowed_gem, &mut a)
+                },
+                error::OK
+            );
+            assert_eq!(a, 0, "non-socket items disallow every gem");
+
+            let mut c: u32 = 99;
+            assert_eq!(
+                unsafe {
+                    crimson_iteminfo_socket_allowed_gem_count(handle, k, &mut c)
+                },
+                error::OK
+            );
+            assert_eq!(c, 0, "non-socket items have empty allowed-gem list");
+        }
+
+        // NULL_ARG paths.
+        let mut us: u8 = 0;
+        let mut vc: u8 = 0;
+        assert_eq!(
+            unsafe {
+                crimson_iteminfo_lookup_socket_caps(ptr::null(), 0, &mut us, &mut vc)
+            },
+            error::NULL_ARG
+        );
+        assert_eq!(
+            unsafe {
+                crimson_iteminfo_socket_allows_gem(ptr::null(), 0, 0, &mut a)
+            },
+            error::NULL_ARG
+        );
+        assert_eq!(
+            unsafe {
+                crimson_iteminfo_socket_allowed_gem_count(ptr::null(), 0, &mut c)
+            },
+            error::NULL_ARG
+        );
+        assert_eq!(
+            unsafe {
+                crimson_iteminfo_socket_allowed_gem_at(ptr::null(), 0, 0, &mut g2)
+            },
+            error::NULL_ARG
+        );
+
+        unsafe { crimson_iteminfo_free(handle) };
+    }
+
+    /// Diagnostic — dumps the iteminfo fields for known gem itemkeys
+    /// to figure out which field reliably marks something as a gem.
+    /// Items investigated: 1002979 (爆走的力量審判, durability gem
+    /// the user verified), 1002972/3/4 (the gem trio in 嘟嘟鳥盔甲),
+    /// 1002815 + 1002848 (no-durability gems in the same armor),
+    /// 1000316 (one of the host items, for contrast).
+    #[test]
+    #[ignore = "investigation only — find the iteminfo field that classifies a gem"]
+    fn _probe_iteminfo_gem_classification() {
+        use crate::binary::BinaryRead;
+        use crate::item_info::ItemInfo;
+
+        let Some(pamt_path) = find_pamt_for_iteminfo() else {
+            eprintln!("skipping: no game install");
+            return;
+        };
+        let pamt = CString::new(pamt_path.to_str().unwrap()).unwrap();
+        let bytes = extract_iteminfo_bytes(pamt.as_c_str());
+
+        // Targets: known gems + a host item for contrast.
+        let targets: std::collections::HashSet<u32> = [
+            1002979, // 爆走的力量審判 (durability gem)
+            1002972, 1002973, 1002974, // gem trio in helmet/armor/shoes
+            1002815, 1002848, // no-durability gems in armor
+            1000316, // shoes (host item)
+            1002285, // armor (host item)
+        ].into_iter().collect();
+
+        let mut offset = 0usize;
+        let mut found = std::collections::HashMap::<u32, ItemInfo>::new();
+        while offset < bytes.len() {
+            let item = ItemInfo::read_from(&bytes, &mut offset).unwrap();
+            if targets.contains(&item.key.0) {
+                found.insert(item.key.0, item);
+            }
+        }
+
+        eprintln!("\n=== iteminfo field dump for target items ===");
+        for key in [
+            1002979u32, 1002972, 1002973, 1002974, 1002815, 1002848, 1000316, 1002285,
+        ] {
+            let Some(item) = found.get(&key) else {
+                eprintln!("  key {key}: NOT FOUND");
+                continue;
+            };
+            eprintln!(
+                "\n  key={} string_key={:?}",
+                key, item.string_key.data
+            );
+            eprintln!("    item_type={}", item.item_type);
+            eprintln!("    category_info={:?}", item.category_info);
+            eprintln!("    equip_type_info={:?}", item.equip_type_info);
+            eprintln!("    item_tier={}", item.item_tier);
+            eprintln!("    filter_type={:?}", item.filter_type.data);
+            eprintln!("    item_tag_list={:?}", item.item_tag_list.items);
+            eprintln!("    is_dyeable={} is_destroy_when_broken={}",
+                item.is_dyeable, item.is_destroy_when_broken);
+            eprintln!("    max_stack={} apply_max_stack_cap={}",
+                item.max_stack_count, item.apply_max_stack_cap);
+            eprintln!(
+                "    drop_default_data: use_socket={} valid_count={} \
+                 socket_item_list_count={} add_socket_material_item_list_count={}",
+                item.drop_default_data.use_socket,
+                item.drop_default_data.socket_valid_count,
+                item.drop_default_data.socket_item_list.items.len(),
+                item.drop_default_data.add_socket_material_item_list.items.len(),
+            );
+        }
+    }
+
+    /// Live-install test for the canonical gem-set ABIs. Confirms the
+    /// list is non-empty, strictly sorted ascending, every entry
+    /// appears in at least one weapon's allowed-gem list, and the 43
+    /// gem itemkeys we observed in slot104's saves are all present.
+    /// Also dumps the first 20 entries for visibility.
+    #[test]
+    fn c_abi_iteminfo_canonical_gem_set_live() {
+        let Some(pamt_path) = find_pamt_for_iteminfo() else {
+            eprintln!("skipping c_abi_iteminfo_canonical_gem_set_live: no game install");
+            return;
+        };
+        let pamt = CString::new(pamt_path.to_str().unwrap()).unwrap();
+        let bytes = extract_iteminfo_bytes(pamt.as_c_str());
+
+        let mut handle: *mut CrimsonItemInfoHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_iteminfo_load_from_bytes(bytes.as_ptr(), bytes.len(), &mut handle) },
+            error::OK
+        );
+
+        let mut count: u32 = 0;
+        assert_eq!(
+            unsafe { crimson_iteminfo_canonical_gem_count(handle, &mut count) },
+            error::OK
+        );
+        assert!(count > 30, "expected >30 canonical gems, got {count}");
+
+        // Walk + assert sorted-ascending.
+        let mut prev: u32 = 0;
+        let mut all: Vec<u32> = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let mut g: u32 = 0;
+            assert_eq!(
+                unsafe { crimson_iteminfo_canonical_gem_at(handle, i, &mut g) },
+                error::OK
+            );
+            assert!(
+                g > prev,
+                "canonical_gem_list must be strictly ascending; got {prev} then {g}"
+            );
+            prev = g;
+            all.push(g);
+        }
+        eprintln!(
+            "canonical gem count: {} | first 20: {:?}",
+            count,
+            &all[..20.min(all.len())]
+        );
+
+        // OUT_OF_RANGE past the end.
+        let mut g: u32 = 0;
+        assert_eq!(
+            unsafe { crimson_iteminfo_canonical_gem_at(handle, count, &mut g) },
+            error::OUT_OF_RANGE
+        );
+
+        // Cross-check: pin the 43 gem itemkeys observed in slot104's
+        // saves — every one of them MUST be in the canonical set.
+        // (If a future patch drops a gem from all allowed lists, the
+        // canonical set would shrink — this test surfaces that.)
+        const SLOT104_GEMS: &[u32] = &[
+            1001426, 1002467, 1002499, 1002509, 1002523, 1002539, 1002548, 1002552,
+            1002554, 1002569, 1002580, 1002751, 1002785, 1002791, 1002794, 1002796,
+            1002797, 1002807, 1002810, 1002815, 1002848, 1002862, 1002898, 1002907,
+            1002913, 1002953, 1002969, 1002970, 1002972, 1002973, 1002974, 1002976,
+            1002977, 1002978, 1002979, 1002980, 1003290, 1003686, 1003702, 1003714,
+            1003718, 1003761, 1003767,
+        ];
+        let gem_set: std::collections::HashSet<u32> = all.iter().copied().collect();
+        let mut missing: Vec<u32> = Vec::new();
+        for &g in SLOT104_GEMS {
+            if !gem_set.contains(&g) {
+                missing.push(g);
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "{} gems observed in slot104 are missing from the canonical set: {:?}",
+            missing.len(),
+            missing,
+        );
+
+        // Cross-check #2: the canonical set must be a SUPERSET of the
+        // union of per-weapon socket_item_list + add_socket_material_item_list
+        // (every itemkey shown as "vendor allowed" must also be
+        // gem-classified in iteminfo — otherwise the schema would be
+        // self-inconsistent). The reverse isn't true: many gems exist
+        // in the canonical set that no specific weapon's vendor list
+        // names.
+        let canonical_set: std::collections::HashSet<u32> = all.iter().copied().collect();
+        let union_from_lists: std::collections::HashSet<u32> = unsafe {
+            (*handle)
+                .socket_allowed_gems_by_key
+                .values()
+                .flatten()
+                .copied()
+                .collect()
+        };
+        let vendor_not_canonical: Vec<u32> =
+            union_from_lists.difference(&canonical_set).copied().collect();
+        // Allow a small slack: vendor lists sometimes include
+        // pseudo-itemkeys (like literal `1`) that aren't real gems.
+        // We tolerate up to a handful of these; the important
+        // invariant is "almost-every vendor entry is gem-classified".
+        let slack = (union_from_lists.len() / 20).max(5);
+        assert!(
+            vendor_not_canonical.len() <= slack,
+            "{} per-weapon vendor entries are not in the canonical gem set \
+             (slack threshold = {}): {:?}",
+            vendor_not_canonical.len(),
+            slack,
+            vendor_not_canonical,
+        );
+
+        // NULL_ARG paths.
+        let mut c: u32 = 0;
+        assert_eq!(
+            unsafe { crimson_iteminfo_canonical_gem_count(ptr::null(), &mut c) },
+            error::NULL_ARG
+        );
+        let mut g2: u32 = 0;
+        assert_eq!(
+            unsafe { crimson_iteminfo_canonical_gem_at(ptr::null(), 0, &mut g2) },
+            error::NULL_ARG
+        );
+
+        unsafe { crimson_iteminfo_free(handle) };
+    }
+
+    /// Validates the full editor-side pipeline for the gem-picker:
+    /// `canonical_gem_count/_at → iteminfo string_key → PALOC display
+    /// name at lo32=0x70`. Asserts every one of the 190 canonical
+    /// gems resolves to a non-empty display name (so the C# editor
+    /// can build the entire gem-picker dropdown end-to-end at startup
+    /// without any hardcoded mapping).
+    ///
+    /// Cross-references a handful of (itemkey, expected display name)
+    /// pairs from the user's hand-verified gem list so a regression
+    /// in either iteminfo classification or PALOC lookup gets caught
+    /// immediately.
+    #[test]
+    fn c_abi_iteminfo_canonical_gems_resolve_to_paloc_display_names() {
+        let Some(pamt_path) = find_pamt_for_iteminfo() else {
+            eprintln!(
+                "skipping c_abi_iteminfo_canonical_gems_resolve_to_paloc_display_names: no game install"
+            );
+            return;
+        };
+        let pamt = CString::new(pamt_path.to_str().unwrap()).unwrap();
+        let bytes = extract_iteminfo_bytes(pamt.as_c_str());
+
+        let mut iteminfo_handle: *mut CrimsonItemInfoHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_iteminfo_load_from_bytes(bytes.as_ptr(), bytes.len(), &mut iteminfo_handle) },
+            error::OK
+        );
+
+        // ── Pull eng PALOC from 0020/0.pamt
+        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
+            });
+        let paloc_pamt = game_root.join("0020").join("0.pamt");
+        let Some(paloc_pamt) = paloc_pamt.is_file().then_some(paloc_pamt) else {
+            eprintln!("skipping: no 0020/0.pamt for PALOC");
+            unsafe { crimson_iteminfo_free(iteminfo_handle) };
+            return;
+        };
+        let paloc_pamt_c = CString::new(paloc_pamt.to_str().unwrap()).unwrap();
+        let paloc_dir = CString::new("gamedata/stringtable/binary__").unwrap();
+        let paloc_name = CString::new("localizationstring_eng.paloc").unwrap();
+        let mut needed: usize = 0;
+        let _ = unsafe {
+            crimson_paz_extract_file(
+                paloc_pamt_c.as_ptr(),
+                paloc_dir.as_ptr(),
+                paloc_name.as_ptr(),
+                ptr::null_mut(),
+                0,
+                &mut needed,
+            )
+        };
+        let mut paloc_buf = vec![0u8; needed];
+        assert_eq!(
+            unsafe {
+                crimson_paz_extract_file(
+                    paloc_pamt_c.as_ptr(),
+                    paloc_dir.as_ptr(),
+                    paloc_name.as_ptr(),
+                    paloc_buf.as_mut_ptr(),
+                    paloc_buf.len(),
+                    &mut needed,
+                )
+            },
+            error::OK
+        );
+        paloc_buf.truncate(needed);
+
+        use crate::c_abi::paloc::{CrimsonPalocHandle, crimson_paloc_free, crimson_paloc_load_from_bytes};
+        let mut paloc_handle: *mut CrimsonPalocHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                crimson_paloc_load_from_bytes(paloc_buf.as_ptr(), paloc_buf.len(), &mut paloc_handle)
+            },
+            error::OK
+        );
+
+        // ── Walk every canonical gem; resolve display via PALOC.
+        let mut gem_count: u32 = 0;
+        assert_eq!(
+            unsafe { crimson_iteminfo_canonical_gem_count(iteminfo_handle, &mut gem_count) },
+            error::OK
+        );
+
+        let paloc = unsafe { &*paloc_handle };
+        let mut resolved = 0u32;
+        let mut missing: Vec<u32> = Vec::new();
+        let mut sample: Vec<(u32, String)> = Vec::new();
+        for i in 0..gem_count {
+            let mut gem_key: u32 = 0;
+            assert_eq!(
+                unsafe {
+                    crimson_iteminfo_canonical_gem_at(iteminfo_handle, i, &mut gem_key)
+                },
+                error::OK
+            );
+            let paloc_u64 = (u64::from(gem_key) << 32) | 0x70u64;
+            let decimal = format!("{paloc_u64}");
+            match paloc.lookup_str(&decimal) {
+                Some(display) if !display.is_empty() => {
+                    resolved += 1;
+                    if sample.len() < 5 {
+                        sample.push((gem_key, display.to_owned()));
+                    }
+                }
+                _ => missing.push(gem_key),
+            }
+        }
+
+        eprintln!(
+            "\ncanonical gem PALOC pipeline: {}/{} resolved",
+            resolved, gem_count
+        );
+        eprintln!("  sample: {:?}", sample);
+        if !missing.is_empty() {
+            eprintln!("  missing display names ({}): {:?}", missing.len(), missing);
+        }
+        // Pin: every canonical gem MUST resolve through PALOC. If a
+        // future patch adds a gem-classified item with no display
+        // name, that's worth catching as a heads-up (the C# editor
+        // would show an empty row in the dropdown).
+        assert_eq!(
+            missing.len(), 0,
+            "{} canonical gems have no eng PALOC display name — \
+             editor's gem-picker would show blank rows for these",
+            missing.len(),
+        );
+
+        // Cross-check a handful of (itemkey, display_name) from the
+        // user's hand-verified list. If PA renames a gem, this
+        // catches it.
+        let pins: &[(u32, &str)] = &[
+            (1002785, "Destruction I"),
+            (1002787, "Destruction III"),
+            (1002796, "Fortification III"),
+            (1002979, "Greater Malicebane"),
+            (1002972, "Greater Flameward"),
+            (1002862, "Greater Destruction"),
+            (1001424, "Flameward I"),
+            (1001426, "Flameward III"),
+            (1003290, "Spirit Transference"),
+            (1001067, "Relentless"),
+        ];
+        for &(key, expected) in pins {
+            let paloc_u64 = (u64::from(key) << 32) | 0x70u64;
+            let decimal = format!("{paloc_u64}");
+            let display = paloc.lookup_str(&decimal)
+                .unwrap_or_else(|| panic!("gem {key} ({expected}) has no PALOC entry"));
+            assert_eq!(
+                display, expected,
+                "gem {key} display name drifted (PA renamed?)",
+            );
+        }
+
+        unsafe {
+            crimson_paloc_free(paloc_handle);
+            crimson_iteminfo_free(iteminfo_handle);
+        }
     }
 }

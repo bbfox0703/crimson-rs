@@ -2802,4 +2802,1004 @@ mod tests {
         }
     }
 
+    /// Socket / gem schema probe — targets slot104 specifically.
+    ///
+    /// The user populated slot104 with 5 instances of "North Wind Trident"
+    /// (itemkey 310031) configured to exercise every socket-state
+    /// permutation we need for the C# socket editor:
+    ///
+    /// | Weapon | Max sockets | Opened | Filled positions | Note |
+    /// |---|---:|---:|---|---|
+    /// | 1 | 5 | 5 | 1,2,3,4,5 (all distinct gems) | baseline: all opened, all filled |
+    /// | 2 | 5 | 4 | 1,2 (1002979); 3,4 empty; 5 closed | tests "opened but empty" + "not yet opened" |
+    /// | 3 | 5 | 5 | 1..5 all 1002979 | all opened, all filled, same gem |
+    /// | 4 | 5 | 5 | 1,3,5 (1002979); 2,4 empty | tests sparse-filled pattern |
+    /// | 5 | 5 | 5 | 2,4 (1002979); 1,3,5 empty | tests inverse sparse pattern |
+    ///
+    /// Item 1002979 ("爆走的力量審判") is a high-durability gem
+    /// (~100 endurance per the user). Vanilla gems are durability-less.
+    ///
+    /// What this dumps for each of the 5 weapons:
+    ///
+    /// 1. ItemSaveData top-level field tree — including `_endurance`
+    ///    (the u16 the PyQt5 reference editor parses as
+    ///    `endurance_low = durability`, `endurance_high = socket_count`)
+    ///    and whichever ObjectList field carries the per-socket data.
+    /// 2. The socket-list field's name, count, and per-element schema.
+    /// 3. Per-element values: socket slot number, gem item key,
+    ///    gem-side endurance / sharpness (if present), and any other
+    ///    scalars — so we can spot the absent / opened-empty / filled
+    ///    encoding.
+    /// 4. Cross-check: scan a few random items with `_endurance` set
+    ///    to confirm the lo-byte=durability / hi-byte=socket-count
+    ///    interpretation and check how non-socket items (e.g.
+    ///    standalone gems in the inventory) encode their own endurance.
+    #[test]
+    #[ignore = "investigation only — ItemSocketSaveData schema via slot104"]
+    fn _probe_item_socket_data() {
+        use crate::save::{Body, FieldValue, ScalarValue, Save};
+
+        // ── Locate slot104 specifically ────────────────────────────
+        let save_path = std::env::var_os("CRIMSON_SOCKET_PROBE_SAVE")
+            .map(PathBuf::from)
+            .or_else(|| {
+                let appdata = std::env::var_os("LOCALAPPDATA")?;
+                let root = PathBuf::from(appdata)
+                    .join("Pearl Abyss")
+                    .join("CD")
+                    .join("save");
+                std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
+                    let p = entry.path().join("slot104").join("save.save");
+                    p.is_file().then_some(p)
+                })
+            });
+        let Some(save_path) = save_path else {
+            eprintln!("skipping: no slot104/save.save");
+            return;
+        };
+        eprintln!("probing {}", save_path.display());
+
+        let raw = std::fs::read(&save_path).expect("read save");
+        let save = Save::parse(&raw).expect("parse save");
+        let body = Body::parse(&save.body).expect("parse body");
+        let blocks = body.decode_blocks(&save.body);
+
+        const WEAPON_KEY: u32 = 310031; // North Wind Trident
+        const GEM_KEY: u32 = 1002979;   // 爆走的力量審判
+
+        // ── First pass: walk every item; collect tridents + record
+        // ── distribution of endurance values for cross-check.
+        let mut tridents: Vec<(usize, usize, usize, &crate::save::ObjectBlock)> = Vec::new();
+        let mut gem_standalone: Vec<&crate::save::ObjectBlock> = Vec::new();
+        let mut endurance_hist: std::collections::BTreeMap<u16, u32> = Default::default();
+        let mut item_count: u32 = 0;
+
+        for (block_idx, block) in blocks.iter().enumerate() {
+            if block.class_name != "InventorySaveData" {
+                continue;
+            }
+            for inv_list_field in &block.fields {
+                if !inv_list_field.name.eq_ignore_ascii_case("_inventorylist") {
+                    continue;
+                }
+                let FieldValue::ObjectList { elements: containers, .. } =
+                    &inv_list_field.value
+                else { continue };
+                for (inv_idx, container) in containers.iter().enumerate() {
+                    for f in &container.fields {
+                        if !f.name.eq_ignore_ascii_case("_itemList") {
+                            continue;
+                        }
+                        let FieldValue::ObjectList { elements: items, .. } = &f.value
+                        else { continue };
+                        for (item_idx, item) in items.iter().enumerate() {
+                            item_count += 1;
+                            let item_key = item
+                                .fields
+                                .iter()
+                                .find(|f| f.name == "_itemKey")
+                                .and_then(|f| match &f.value {
+                                    FieldValue::Scalar(ScalarValue::U32(v)) => Some(*v),
+                                    _ => None,
+                                })
+                                .unwrap_or(0);
+                            // record endurance
+                            if let Some(endurance) = item.fields.iter().find(|f| {
+                                f.name.eq_ignore_ascii_case("_endurance")
+                                    && f.present
+                            }) && let FieldValue::Scalar(ScalarValue::U16(v)) = &endurance.value
+                            {
+                                *endurance_hist.entry(*v).or_insert(0) += 1;
+                            }
+                            if item_key == WEAPON_KEY {
+                                tridents.push((block_idx, inv_idx, item_idx, item));
+                            } else if item_key == GEM_KEY {
+                                gem_standalone.push(item);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        eprintln!(
+            "scanned {} items across {} blocks; {} tridents, {} standalone gems",
+            item_count,
+            blocks.len(),
+            tridents.len(),
+            gem_standalone.len()
+        );
+
+        if tridents.is_empty() {
+            eprintln!("no North Wind Trident (key={WEAPON_KEY}) found in slot104 — \
+                       cannot dump socket schema");
+            return;
+        }
+
+        // ── For each trident, dump the full ItemSaveData schema +
+        // focus on the socket list field.
+        for (n, (block_idx, inv_idx, item_idx, item)) in tridents.iter().enumerate() {
+            eprintln!(
+                "\n\n========================================\n\
+                 === Weapon {} (block={}, inv={}, item={}) ===\n\
+                 ========================================",
+                n + 1, block_idx, inv_idx, item_idx,
+            );
+            eprintln!(
+                "class={} mask={:02x?} data_size={}",
+                item.class_name, item.mask_bytes, item.data_size,
+            );
+
+            // Full field dump
+            for f in &item.fields {
+                let val_str = match &f.value {
+                    FieldValue::Scalar(ScalarValue::U8(v)) => format!("U8({v})"),
+                    FieldValue::Scalar(ScalarValue::I8(v)) => format!("I8({v})"),
+                    FieldValue::Scalar(ScalarValue::U16(v)) => {
+                        format!("U16({v} = 0x{v:04x}, hi=0x{:02x} lo=0x{:02x})", v >> 8, v & 0xff)
+                    }
+                    FieldValue::Scalar(ScalarValue::U32(v)) => format!("U32(0x{v:08x} = {v})"),
+                    FieldValue::Scalar(ScalarValue::U64(v)) => format!("U64({v})"),
+                    FieldValue::Scalar(ScalarValue::I64(v)) => format!("I64({v})"),
+                    FieldValue::Scalar(ScalarValue::Bool(v)) => format!("Bool({v})"),
+                    FieldValue::None => "<absent>".into(),
+                    FieldValue::ObjectList { count, elements, .. } => {
+                        format!("ObjectList count={count} elements_parsed={}", elements.len())
+                    }
+                    _ => format!("{:?}", f.value),
+                };
+                eprintln!(
+                    "  [{:2}] present={} kind={:?} type={} name={} meta_size={} value={}",
+                    f.field_index, f.present, f.kind, f.type_name, f.name, f.meta_size, val_str,
+                );
+            }
+
+            // Drill into any ObjectList field whose name mentions
+            // "socket" / "gem" / "option" / etc. — the candidate set
+            // is small enough to just iterate.
+            for f in &item.fields {
+                let lname = f.name.to_ascii_lowercase();
+                let interesting = lname.contains("socket")
+                    || lname.contains("gem")
+                    || lname.contains("option")
+                    || lname.contains("seal")
+                    || lname.contains("enchant");
+                if !interesting || !f.present {
+                    continue;
+                }
+                if let FieldValue::ObjectList { count, elements, .. } = &f.value {
+                    eprintln!(
+                        "\n  ── socket-candidate field {} (count={count}) ──",
+                        f.name
+                    );
+                    for (sub_idx, sub) in elements.iter().enumerate() {
+                        eprintln!(
+                            "    [{:2}] class={} mask={:02x?} data_size={}",
+                            sub_idx, sub.class_name, sub.mask_bytes, sub.data_size,
+                        );
+                        for sf in &sub.fields {
+                            let val = match &sf.value {
+                                FieldValue::Scalar(ScalarValue::U8(v)) => format!("U8({v})"),
+                                FieldValue::Scalar(ScalarValue::I8(v)) => format!("I8({v})"),
+                                FieldValue::Scalar(ScalarValue::U16(v)) => format!(
+                                    "U16({v} = 0x{v:04x}, hi=0x{:02x} lo=0x{:02x})",
+                                    v >> 8, v & 0xff
+                                ),
+                                FieldValue::Scalar(ScalarValue::U32(v)) => {
+                                    format!("U32(0x{v:08x} = {v})")
+                                }
+                                FieldValue::Scalar(ScalarValue::U64(v)) => format!("U64({v})"),
+                                FieldValue::Scalar(ScalarValue::I64(v)) => format!("I64({v})"),
+                                FieldValue::Scalar(ScalarValue::Bool(v)) => format!("Bool({v})"),
+                                FieldValue::None => "<absent>".into(),
+                                _ => format!("{:?}", sf.value),
+                            };
+                            eprintln!(
+                                "       [{:2}] present={} kind={:?} type={} name={} meta_size={} val={}",
+                                sf.field_index, sf.present, sf.kind, sf.type_name,
+                                sf.name, sf.meta_size, val,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Cross-check: dump a couple of standalone gem 1002979
+        // ── items (if any in inventory) to see their endurance shape.
+        if !gem_standalone.is_empty() {
+            eprintln!("\n\n=== standalone gem (key={GEM_KEY}) — first 2 of {} ===",
+                gem_standalone.len());
+            for (n, item) in gem_standalone.iter().take(2).enumerate() {
+                eprintln!("\n  -- gem instance #{} --", n + 1);
+                for f in &item.fields {
+                    if !f.present { continue; }
+                    let val = match &f.value {
+                        FieldValue::Scalar(ScalarValue::U8(v)) => format!("U8({v})"),
+                        FieldValue::Scalar(ScalarValue::U16(v)) => {
+                            format!("U16({v}=0x{v:04x} hi=0x{:02x} lo=0x{:02x})",
+                                v >> 8, v & 0xff)
+                        }
+                        FieldValue::Scalar(ScalarValue::U32(v)) => format!("U32({v})"),
+                        FieldValue::Scalar(ScalarValue::U64(v)) => format!("U64({v})"),
+                        FieldValue::Scalar(ScalarValue::I64(v)) => format!("I64({v})"),
+                        FieldValue::Scalar(ScalarValue::Bool(v)) => format!("Bool({v})"),
+                        _ => format!("{:?}", f.value),
+                    };
+                    eprintln!("    [{:2}] {} = {}", f.field_index, f.name, val);
+                }
+            }
+        }
+
+        // ── Endurance histogram across the whole save.
+        eprintln!("\n\n=== _endurance histogram (top 30, raw u16) ===");
+        let mut sorted: Vec<_> = endurance_hist.iter().collect();
+        sorted.sort_by(|a, b| b.1.cmp(a.1));
+        for (val, count) in sorted.iter().take(30) {
+            let v = **val;
+            eprintln!(
+                "  {:5} (0x{:04x}, hi=0x{:02x} lo=0x{:02x}): {} items",
+                v, v, v >> 8, v & 0xff, count,
+            );
+        }
+    }
+
+    /// Phase-4 socket probe — finds **every block (in any class)**
+    /// across slot104 that has a present `_socketSaveDataList`, then
+    /// dumps the full schema of any item the user specifies via the
+    /// `CRIMSON_SOCKET_TARGET_KEYS` env var (comma-separated u32
+    /// itemkeys). Targets the EquipmentSaveData blocks that the
+    /// InventorySaveData-only walker missed.
+    ///
+    /// Default targets if no env var: 1002285 / 1002284 / 1000316
+    /// (嘟嘟鳥放電盔甲 / 嘟嘟鳥馬羅尼雷射頭盔 / 嘟嘟鳥里西的鞋子 —
+    /// user's CE-modified examples with stuffed-beyond-vanilla sockets).
+    ///
+    /// Re-run with:
+    ///   cargo test --lib --features c_abi _probe_item_socket_data_anywhere -- --ignored --nocapture
+    #[test]
+    #[ignore = "investigation only — walk every block for socket data, including EquipmentSaveData"]
+    fn _probe_item_socket_data_anywhere() {
+        use crate::save::{Body, FieldValue, ScalarValue, Save};
+
+        let save_path = std::env::var_os("CRIMSON_SOCKET_PROBE_SAVE")
+            .map(PathBuf::from)
+            .or_else(|| {
+                let appdata = std::env::var_os("LOCALAPPDATA")?;
+                let root = PathBuf::from(appdata)
+                    .join("Pearl Abyss")
+                    .join("CD")
+                    .join("save");
+                std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
+                    let p = entry.path().join("slot104").join("save.save");
+                    p.is_file().then_some(p)
+                })
+            });
+        let Some(save_path) = save_path else {
+            eprintln!("skipping: no slot104/save.save");
+            return;
+        };
+        eprintln!("probing {}", save_path.display());
+
+        // Targets — default to the 3 user-flagged CE-modified items.
+        let targets: std::collections::BTreeSet<u32> = std::env::var("CRIMSON_SOCKET_TARGET_KEYS")
+            .ok()
+            .map(|s| s.split(',').filter_map(|x| x.trim().parse::<u32>().ok()).collect())
+            .unwrap_or_else(|| {
+                let mut s = std::collections::BTreeSet::new();
+                s.insert(1002285u32); // 嘟嘟鳥放電盔甲
+                s.insert(1002284u32); // 嘟嘟鳥馬羅尼雷射頭盔
+                s.insert(1000316u32); // 嘟嘟鳥里西的鞋子
+                s
+            });
+        eprintln!("targets: {:?}", targets);
+
+        let raw = std::fs::read(&save_path).expect("read save");
+        let save = Save::parse(&raw).expect("parse save");
+        let body = Body::parse(&save.body).expect("parse body");
+        let blocks = body.decode_blocks(&save.body);
+
+        // ── Walk the entire decoded tree depth-first, recording every
+        // place a _socketSaveDataList lives. Captures the parent class
+        // so we can see EquipmentSaveData / ItemSaveData / others.
+        struct Hit<'a> {
+            path_label: String,
+            parent_class: String,
+            parent_item_key: Option<u32>,
+            parent_item_no: Option<u64>,
+            parent_max_socket: Option<u8>,
+            parent_valid_socket: Option<u8>,
+            socket_field: &'a crate::save::DecodedField,
+        }
+        let mut hits: Vec<Hit> = Vec::new();
+        let mut class_hist: std::collections::BTreeMap<String, u32> = Default::default();
+
+        fn walk<'a>(
+            block: &'a crate::save::ObjectBlock,
+            path: &str,
+            out: &mut Vec<Hit<'a>>,
+            class_hist: &mut std::collections::BTreeMap<String, u32>,
+        ) {
+            // Pull scalars we care about from this block.
+            let pull_u32 = |name: &str| {
+                block.fields.iter()
+                    .find(|f| f.name == name)
+                    .and_then(|f| match &f.value {
+                        FieldValue::Scalar(ScalarValue::U32(v)) => Some(*v),
+                        _ => None,
+                    })
+            };
+            let pull_u64 = |name: &str| {
+                block.fields.iter()
+                    .find(|f| f.name == name)
+                    .and_then(|f| match &f.value {
+                        FieldValue::Scalar(ScalarValue::U64(v)) => Some(*v),
+                        _ => None,
+                    })
+            };
+            let pull_u8 = |name: &str| {
+                block.fields.iter()
+                    .find(|f| f.name == name && f.present)
+                    .and_then(|f| match &f.value {
+                        FieldValue::Scalar(ScalarValue::U8(v)) => Some(*v),
+                        _ => None,
+                    })
+            };
+
+            // Does this block itself carry a present _socketSaveDataList?
+            for f in &block.fields {
+                if f.name == "_socketSaveDataList" && f.present {
+                    *class_hist.entry(block.class_name.clone()).or_insert(0) += 1;
+                    out.push(Hit {
+                        path_label: path.to_string(),
+                        parent_class: block.class_name.clone(),
+                        parent_item_key: pull_u32("_itemKey"),
+                        parent_item_no: pull_u64("_itemNo"),
+                        parent_max_socket: pull_u8("_maxSocketCount"),
+                        parent_valid_socket: pull_u8("_validSocketCount"),
+                        socket_field: f,
+                    });
+                }
+            }
+
+            // Recurse into list / locator children.
+            for f in &block.fields {
+                match &f.value {
+                    FieldValue::ObjectList { elements, .. } => {
+                        for (i, e) in elements.iter().enumerate() {
+                            let sub = format!("{path}.{}[{i}]", f.name);
+                            walk(e, &sub, out, class_hist);
+                        }
+                    }
+                    FieldValue::Locator { child: Some(c), .. } => {
+                        let sub = format!("{path}.{}<child>", f.name);
+                        walk(c, &sub, out, class_hist);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        for (i, block) in blocks.iter().enumerate() {
+            let root_label = format!("toc[{i}]:{}", block.class_name);
+            walk(block, &root_label, &mut hits, &mut class_hist);
+        }
+
+        eprintln!("\n=== _socketSaveDataList host classes ===");
+        for (cls, c) in &class_hist {
+            eprintln!("  {cls}: {} occurrences", c);
+        }
+
+        // ── Targeted dump: every hit whose itemKey is in `targets`.
+        eprintln!("\n=== targeted dumps (matching itemKeys) ===");
+        let mut found_count = 0u32;
+        for hit in &hits {
+            let Some(item_key) = hit.parent_item_key else { continue };
+            if !targets.contains(&item_key) {
+                continue;
+            }
+            found_count += 1;
+            let FieldValue::ObjectList { count, elements: sockets, .. } = &hit.socket_field.value
+            else { continue };
+            let filled = sockets.iter().filter(|s| {
+                s.fields.iter().any(|sf| sf.name == "_itemKey" && sf.present)
+            }).count();
+            let mut tags: Vec<&str> = Vec::new();
+            if let (Some(max), Some(valid)) = (hit.parent_max_socket, hit.parent_valid_socket) {
+                if (filled as u32) > u32::from(valid) { tags.push("FILLED>VALID"); }
+                if (filled as u32) > u32::from(max)   { tags.push("FILLED>MAX"); }
+            }
+            eprintln!(
+                "\n  itemKey={} itemNo={:?} class={} path={}",
+                item_key, hit.parent_item_no, hit.parent_class, hit.path_label,
+            );
+            eprintln!(
+                "    max={:?} valid={:?} list_count={} filled={}{}",
+                hit.parent_max_socket,
+                hit.parent_valid_socket,
+                count,
+                filled,
+                if tags.is_empty() { String::new() } else { format!(" tags=[{}]", tags.join(",")) },
+            );
+            for (sidx, socket) in sockets.iter().enumerate() {
+                let gem = socket.fields.iter()
+                    .find(|sf| sf.name == "_itemKey" && sf.present)
+                    .and_then(|sf| match &sf.value {
+                        FieldValue::Scalar(ScalarValue::U32(v)) => Some(*v),
+                        _ => None,
+                    });
+                let end = socket.fields.iter()
+                    .find(|sf| sf.name == "_currentEndurance" && sf.present)
+                    .and_then(|sf| match &sf.value {
+                        FieldValue::Scalar(ScalarValue::U16(v)) => Some(*v),
+                        _ => None,
+                    });
+                eprintln!(
+                    "    slot[{}] mask={:02x?} data_size={} gem={:?} endurance={:?}",
+                    sidx, socket.mask_bytes, socket.data_size, gem, end,
+                );
+            }
+        }
+
+        if found_count == 0 {
+            eprintln!(
+                "  (none of the {} target itemKeys were found in slot104 — \
+                 they might be in a different slot or not in the inventory now)",
+                targets.len(),
+            );
+        }
+
+        // ── Anomaly summary across ALL hits (now including EquipmentSaveData).
+        let mut anomalies_all = 0u32;
+        for hit in &hits {
+            let FieldValue::ObjectList { elements: sockets, .. } = &hit.socket_field.value
+            else { continue };
+            let filled = sockets.iter().filter(|s| {
+                s.fields.iter().any(|sf| sf.name == "_itemKey" && sf.present)
+            }).count() as u32;
+            if let Some(valid) = hit.parent_valid_socket
+                && filled > u32::from(valid)
+            {
+                anomalies_all += 1;
+            }
+        }
+        eprintln!("\n=== global summary ===");
+        eprintln!("  total _socketSaveDataList occurrences: {}", hits.len());
+        eprintln!("  hits with filled > _validSocketCount:  {}", anomalies_all);
+    }
+
+    /// Phase-3 socket probe — scans **every save slot under
+    /// %LOCALAPPDATA%\Pearl Abyss\CD\save\<user>\slot*\** for items
+    /// with anomalous socket data. Reuses the per-item invariant logic
+    /// of `_probe_item_socket_data_full_scan` but aggregates across
+    /// the whole user save tree to surface CE-modified items
+    /// (`filled > _validSocketCount`) wherever they live.
+    ///
+    /// Re-run with:
+    ///   cargo test --lib --features c_abi _probe_item_socket_data_all_slots -- --ignored --nocapture
+    #[test]
+    #[ignore = "investigation only — scan every slot for socket anomalies"]
+    fn _probe_item_socket_data_all_slots() {
+        use crate::save::{Body, FieldValue, ScalarValue, Save};
+
+        let Some(local) = std::env::var_os("LOCALAPPDATA") else {
+            eprintln!("skipping: no LOCALAPPDATA");
+            return;
+        };
+        let root = PathBuf::from(local).join("Pearl Abyss/CD/save");
+        let Ok(users) = std::fs::read_dir(&root) else {
+            eprintln!("skipping: cannot read {}", root.display());
+            return;
+        };
+
+        let mut slot_paths: Vec<PathBuf> = Vec::new();
+        for u in users.flatten() {
+            let up = u.path();
+            if !up.is_dir() { continue; }
+            let Ok(entries) = std::fs::read_dir(&up) else { continue };
+            for e in entries.flatten() {
+                let p = e.path();
+                if !p.is_dir() { continue; }
+                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if !name.starts_with("slot") { continue; }
+                let save_path = p.join("save.save");
+                if save_path.is_file() {
+                    slot_paths.push(save_path);
+                }
+            }
+        }
+        slot_paths.sort();
+        eprintln!("scanning {} save files", slot_paths.len());
+
+        let mut grand_total_items = 0u32;
+        let mut grand_total_anomalies = 0u32;
+        let mut anomalies_by_slot: std::collections::BTreeMap<String, Vec<String>> =
+            Default::default();
+        let mut all_mask_histogram: std::collections::BTreeMap<Vec<u8>, u32> =
+            Default::default();
+        let mut all_max_socket_hist: std::collections::BTreeMap<u8, u32> =
+            Default::default();
+
+        for save_path in &slot_paths {
+            let raw = match std::fs::read(save_path) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("  skip {}: {e}", save_path.display());
+                    continue;
+                }
+            };
+            let save = match Save::parse(&raw) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("  parse error {}: {e}", save_path.display());
+                    continue;
+                }
+            };
+            let body = match Body::parse(&save.body) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("  body error {}: {e}", save_path.display());
+                    continue;
+                }
+            };
+            let blocks = body.decode_blocks(&save.body);
+
+            let slot_label = save_path
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or("?")
+                .to_string();
+
+            let mut slot_anomalies: Vec<String> = Vec::new();
+            let mut slot_item_count = 0u32;
+
+            for block in &blocks {
+                if block.class_name != "InventorySaveData" { continue; }
+                for inv_list_field in &block.fields {
+                    if !inv_list_field.name.eq_ignore_ascii_case("_inventorylist") {
+                        continue;
+                    }
+                    let FieldValue::ObjectList { elements: containers, .. } =
+                        &inv_list_field.value
+                    else { continue };
+                    for (inv_idx, container) in containers.iter().enumerate() {
+                        for f in &container.fields {
+                            if !f.name.eq_ignore_ascii_case("_itemList") { continue; }
+                            let FieldValue::ObjectList { elements: items_in_list, .. } = &f.value
+                            else { continue };
+                            for (item_idx, item) in items_in_list.iter().enumerate() {
+                                let Some(socket_field) = item.fields.iter()
+                                    .find(|f| f.name == "_socketSaveDataList" && f.present)
+                                else { continue };
+                                let FieldValue::ObjectList { count, elements: sockets, .. } =
+                                    &socket_field.value
+                                else { continue };
+                                if *count == 0 { continue; }
+                                slot_item_count += 1;
+
+                                let item_key = item.fields.iter()
+                                    .find(|f| f.name == "_itemKey")
+                                    .and_then(|f| match &f.value {
+                                        FieldValue::Scalar(ScalarValue::U32(v)) => Some(*v),
+                                        _ => None,
+                                    }).unwrap_or(0);
+                                let item_no = item.fields.iter()
+                                    .find(|f| f.name == "_itemNo")
+                                    .and_then(|f| match &f.value {
+                                        FieldValue::Scalar(ScalarValue::U64(v)) => Some(*v),
+                                        _ => None,
+                                    }).unwrap_or(0);
+                                let max_socket = item.fields.iter()
+                                    .find(|f| f.name == "_maxSocketCount" && f.present)
+                                    .and_then(|f| match &f.value {
+                                        FieldValue::Scalar(ScalarValue::U8(v)) => Some(*v),
+                                        _ => None,
+                                    }).unwrap_or(0);
+                                let valid_socket = item.fields.iter()
+                                    .find(|f| f.name == "_validSocketCount" && f.present)
+                                    .and_then(|f| match &f.value {
+                                        FieldValue::Scalar(ScalarValue::U8(v)) => Some(*v),
+                                        _ => None,
+                                    }).unwrap_or(0);
+                                *all_max_socket_hist.entry(max_socket).or_insert(0) += 1;
+
+                                let mut filled = 0u32;
+                                let mut unusual_count = 0u32;
+                                let mut per_slot: Vec<String> = Vec::new();
+                                for (sidx, socket) in sockets.iter().enumerate() {
+                                    let mask = socket.mask_bytes.clone();
+                                    *all_mask_histogram.entry(mask.clone()).or_insert(0) += 1;
+                                    let m = mask.first().copied().unwrap_or(0);
+                                    let is_filled = socket.fields.iter().any(|sf| {
+                                        sf.name == "_itemKey" && sf.present
+                                    });
+                                    if is_filled { filled += 1; }
+                                    if m != 0x00 && m != 0x03 {
+                                        unusual_count += 1;
+                                    }
+                                    let gem_key = socket.fields.iter()
+                                        .find(|sf| sf.name == "_itemKey" && sf.present)
+                                        .and_then(|sf| match &sf.value {
+                                            FieldValue::Scalar(ScalarValue::U32(v)) => Some(*v),
+                                            _ => None,
+                                        });
+                                    let gem_end = socket.fields.iter()
+                                        .find(|sf| sf.name == "_currentEndurance" && sf.present)
+                                        .and_then(|sf| match &sf.value {
+                                            FieldValue::Scalar(ScalarValue::U16(v)) => Some(*v),
+                                            _ => None,
+                                        });
+                                    if m != 0x00 || gem_key.is_some() || gem_end.is_some() {
+                                        per_slot.push(format!(
+                                            "    slot[{sidx}] mask={:02x?} gem={:?} end={:?}",
+                                            mask, gem_key, gem_end
+                                        ));
+                                    }
+                                }
+
+                                let mut tags: Vec<&str> = Vec::new();
+                                if *count != u32::from(max_socket) { tags.push("LIST≠MAX"); }
+                                if filled > u32::from(valid_socket) { tags.push("FILLED>VALID"); }
+                                if filled > u32::from(max_socket) { tags.push("FILLED>MAX"); }
+                                if unusual_count > 0 { tags.push("BAD_MASK"); }
+                                if !tags.is_empty() {
+                                    let msg = format!(
+                                        "  inv={inv_idx} item={item_idx} itemKey={item_key} itemNo={item_no} \
+                                         max={max_socket} valid={valid_socket} list={count} filled={filled} \
+                                         tags=[{}]\n{}",
+                                        tags.join(","),
+                                        per_slot.join("\n"),
+                                    );
+                                    slot_anomalies.push(msg);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            grand_total_items += slot_item_count;
+            if !slot_anomalies.is_empty() {
+                grand_total_anomalies += slot_anomalies.len() as u32;
+                eprintln!("\n=== {} ({} items, {} anomalies) ===",
+                    slot_label, slot_item_count, slot_anomalies.len());
+                for a in &slot_anomalies {
+                    eprintln!("{a}");
+                }
+                anomalies_by_slot.insert(slot_label, slot_anomalies);
+            }
+        }
+
+        eprintln!("\n\n=== GRAND SUMMARY ===");
+        eprintln!("  slots scanned:                 {}", slot_paths.len());
+        eprintln!("  items with sockets (all slots): {}", grand_total_items);
+        eprintln!("  anomalous items (all slots):    {}", grand_total_anomalies);
+        eprintln!("  slots with anomalies:           {}", anomalies_by_slot.len());
+
+        eprintln!("\n  global _maxSocketCount histogram:");
+        for (max, c) in &all_max_socket_hist {
+            eprintln!("    max={:3} : {} items", max, c);
+        }
+        eprintln!("\n  global mask byte histogram:");
+        for (mask, c) in &all_mask_histogram {
+            eprintln!("    {:02x?} : {} elements", mask, c);
+        }
+    }
+
+    /// Phase-2 socket probe — scans **every** item in slot104 with a
+    /// present `_socketSaveDataList`, validates the schema invariants
+    /// observed on the 5 reference tridents, and flags anomalies.
+    ///
+    /// What the previous probe (`_probe_item_socket_data`) established:
+    ///
+    /// - `_socketSaveDataList.count == _maxSocketCount` (always)
+    /// - Each `ItemSocketSaveData` has exactly 2 fields + 1 mask byte
+    /// - mask=[0x03] = filled, mask=[0x00] = empty (opened OR not-yet-opened)
+    /// - filled_count is normally ≤ `_validSocketCount`
+    ///
+    /// What this probe additionally checks:
+    ///
+    /// 1. Whether the invariants hold across ALL socket-bearing items
+    ///    (armour, accessories, other weapons — not just the 5 tridents).
+    /// 2. **CE-modified anomalies** the user flagged: filled_count >
+    ///    `_validSocketCount` (overfilled item). These work in-game but
+    ///    might break NPC-interface UIs.
+    /// 3. Any unusual mask bytes (e.g. [0x01], [0x02]) suggesting a
+    ///    partial-field gem state we haven't seen yet.
+    /// 4. `_maxSocketCount` distribution — does any item type cap above 5?
+    /// 5. Cross-reference: for filled sockets, the gem's `_itemKey` —
+    ///    is the value plausibly a gem itemkey (in the millions, not a
+    ///    weapon/armour key)?
+    ///
+    /// Output: a per-item table flagging which items are "vanilla"
+    /// (filled ≤ valid) vs CE-modified (filled > valid). Plus a
+    /// schema-invariant summary at the end.
+    #[test]
+    #[ignore = "investigation only — full slot104 socket scan + anomaly detection"]
+    fn _probe_item_socket_data_full_scan() {
+        use crate::save::{Body, FieldValue, ScalarValue, Save};
+
+        let save_path = std::env::var_os("CRIMSON_SOCKET_PROBE_SAVE")
+            .map(PathBuf::from)
+            .or_else(|| {
+                let appdata = std::env::var_os("LOCALAPPDATA")?;
+                let root = PathBuf::from(appdata)
+                    .join("Pearl Abyss")
+                    .join("CD")
+                    .join("save");
+                std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
+                    let p = entry.path().join("slot104").join("save.save");
+                    p.is_file().then_some(p)
+                })
+            });
+        let Some(save_path) = save_path else {
+            eprintln!("skipping: no slot104/save.save");
+            return;
+        };
+        eprintln!("probing {}", save_path.display());
+
+        let raw = std::fs::read(&save_path).expect("read save");
+        let save = Save::parse(&raw).expect("parse save");
+        let body = Body::parse(&save.body).expect("parse body");
+        let blocks = body.decode_blocks(&save.body);
+
+        #[derive(Debug)]
+        struct SocketItem {
+            inv_idx: u32,
+            item_idx: u32,
+            item_key: u32,
+            slot_no: u16,
+            item_no: u64,
+            max_socket: u8,
+            valid_socket: u8,
+            list_count: u32,
+            slots: Vec<(Vec<u8>, Option<u32>, Option<u16>)>, // (mask_bytes, gem_itemkey, gem_endurance)
+        }
+
+        let mut items: Vec<SocketItem> = Vec::new();
+
+        for block in &blocks {
+            if block.class_name != "InventorySaveData" {
+                continue;
+            }
+            for inv_list_field in &block.fields {
+                if !inv_list_field.name.eq_ignore_ascii_case("_inventorylist") {
+                    continue;
+                }
+                let FieldValue::ObjectList { elements: containers, .. } =
+                    &inv_list_field.value
+                else { continue };
+                for (inv_idx, container) in containers.iter().enumerate() {
+                    for f in &container.fields {
+                        if !f.name.eq_ignore_ascii_case("_itemList") {
+                            continue;
+                        }
+                        let FieldValue::ObjectList { elements: items_in_list, .. } = &f.value
+                        else { continue };
+                        for (item_idx, item) in items_in_list.iter().enumerate() {
+                            // Pull scalar fields we care about.
+                            let item_key = item.fields.iter()
+                                .find(|f| f.name == "_itemKey")
+                                .and_then(|f| match &f.value {
+                                    FieldValue::Scalar(ScalarValue::U32(v)) => Some(*v),
+                                    _ => None,
+                                }).unwrap_or(0);
+                            let slot_no = item.fields.iter()
+                                .find(|f| f.name == "_slotNo")
+                                .and_then(|f| match &f.value {
+                                    FieldValue::Scalar(ScalarValue::U16(v)) => Some(*v),
+                                    _ => None,
+                                }).unwrap_or(0);
+                            let item_no = item.fields.iter()
+                                .find(|f| f.name == "_itemNo")
+                                .and_then(|f| match &f.value {
+                                    FieldValue::Scalar(ScalarValue::U64(v)) => Some(*v),
+                                    _ => None,
+                                }).unwrap_or(0);
+                            let max_socket = item.fields.iter()
+                                .find(|f| f.name == "_maxSocketCount" && f.present)
+                                .and_then(|f| match &f.value {
+                                    FieldValue::Scalar(ScalarValue::U8(v)) => Some(*v),
+                                    _ => None,
+                                });
+                            let valid_socket = item.fields.iter()
+                                .find(|f| f.name == "_validSocketCount" && f.present)
+                                .and_then(|f| match &f.value {
+                                    FieldValue::Scalar(ScalarValue::U8(v)) => Some(*v),
+                                    _ => None,
+                                });
+                            let Some(socket_field) = item.fields.iter()
+                                .find(|f| f.name == "_socketSaveDataList" && f.present)
+                            else { continue };
+                            let FieldValue::ObjectList { count, elements: sockets, .. } =
+                                &socket_field.value
+                            else { continue };
+                            if *count == 0 {
+                                continue;
+                            }
+                            // Drill into each socket entry.
+                            let mut slot_records = Vec::with_capacity(sockets.len());
+                            for socket in sockets {
+                                let mask = socket.mask_bytes.clone();
+                                let gem_key = socket.fields.iter()
+                                    .find(|f| f.name == "_itemKey" && f.present)
+                                    .and_then(|f| match &f.value {
+                                        FieldValue::Scalar(ScalarValue::U32(v)) => Some(*v),
+                                        _ => None,
+                                    });
+                                let gem_end = socket.fields.iter()
+                                    .find(|f| f.name == "_currentEndurance" && f.present)
+                                    .and_then(|f| match &f.value {
+                                        FieldValue::Scalar(ScalarValue::U16(v)) => Some(*v),
+                                        _ => None,
+                                    });
+                                slot_records.push((mask, gem_key, gem_end));
+                            }
+                            items.push(SocketItem {
+                                inv_idx: inv_idx as u32,
+                                item_idx: item_idx as u32,
+                                item_key,
+                                slot_no,
+                                item_no,
+                                max_socket: max_socket.unwrap_or(0),
+                                valid_socket: valid_socket.unwrap_or(0),
+                                list_count: *count,
+                                slots: slot_records,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        eprintln!("\nfound {} items with non-empty _socketSaveDataList", items.len());
+
+        // ── Per-item table ──────────────────────────────────────────
+        eprintln!(
+            "\n{:>3}  {:>3}  {:>5}  {:>10}  {:>6}  {:>4}  {:>4}  {:>4}  {:>6}  status",
+            "inv", "itm", "slot", "itemKey", "itemNo", "max", "vld", "list", "filled"
+        );
+        eprintln!("{:-<100}", "");
+
+        // Track invariants across all items.
+        let mut bad_count_mismatch = 0u32;     // list_count != max_socket
+        let mut overfilled = 0u32;             // filled > valid (CE-modified)
+        let mut over_max = 0u32;               // filled > max (would be impossible if our model is right)
+        let mut unusual_mask = 0u32;           // mask not [0x00] or [0x03]
+        type PartialMaskExample = (u32, usize, Vec<u8>, Option<u32>, Option<u16>);
+        let mut partial_mask_examples: Vec<PartialMaskExample> = Vec::new();
+        let mut mask_histogram: std::collections::BTreeMap<Vec<u8>, u32> = Default::default();
+        let mut max_socket_hist: std::collections::BTreeMap<u8, u32> = Default::default();
+        let mut gem_itemkey_set: std::collections::BTreeSet<u32> = Default::default();
+
+        for it in &items {
+            let filled = it.slots.iter()
+                .filter(|(_, key, _)| key.is_some())
+                .count() as u32;
+            *max_socket_hist.entry(it.max_socket).or_insert(0) += 1;
+
+            // Anomaly flags
+            let mut tags: Vec<&str> = Vec::new();
+            if it.list_count != u32::from(it.max_socket) {
+                tags.push("LIST≠MAX");
+                bad_count_mismatch += 1;
+            }
+            if filled > u32::from(it.valid_socket) {
+                tags.push("FILLED>VALID");
+                overfilled += 1;
+            }
+            if filled > u32::from(it.max_socket) {
+                tags.push("FILLED>MAX");
+                over_max += 1;
+            }
+            for (sidx, (mask, key, end)) in it.slots.iter().enumerate() {
+                *mask_histogram.entry(mask.clone()).or_insert(0) += 1;
+                let m = mask.first().copied().unwrap_or(0);
+                if m != 0x00 && m != 0x03 {
+                    unusual_mask += 1;
+                    if partial_mask_examples.len() < 8 {
+                        partial_mask_examples.push((it.item_key, sidx, mask.clone(), *key, *end));
+                    }
+                }
+                if let Some(k) = key {
+                    gem_itemkey_set.insert(*k);
+                }
+            }
+            let status = if tags.is_empty() { "ok".to_string() } else { tags.join(",") };
+            eprintln!(
+                "{:>3}  {:>3}  {:>5}  {:>10}  {:>6}  {:>4}  {:>4}  {:>4}  {:>6}  {}",
+                it.inv_idx, it.item_idx, it.slot_no, it.item_key, it.item_no,
+                it.max_socket, it.valid_socket, it.list_count, filled, status,
+            );
+        }
+
+        // ── Detail dump for anomalous items ────────────────────────
+        let anomalies: Vec<&SocketItem> = items.iter()
+            .filter(|it| {
+                let filled = it.slots.iter().filter(|(_, k, _)| k.is_some()).count() as u32;
+                it.list_count != u32::from(it.max_socket)
+                    || filled > u32::from(it.valid_socket)
+                    || it.slots.iter().any(|(m, _, _)| {
+                        let mb = m.first().copied().unwrap_or(0);
+                        mb != 0x00 && mb != 0x03
+                    })
+            })
+            .collect();
+        if !anomalies.is_empty() {
+            eprintln!("\n=== anomalies: {} items ===", anomalies.len());
+            for it in anomalies.iter().take(20) {
+                let filled = it.slots.iter().filter(|(_, k, _)| k.is_some()).count();
+                eprintln!(
+                    "\n  itemKey={} itemNo={} inv={} item={} max={} valid={} list={} filled={}",
+                    it.item_key, it.item_no, it.inv_idx, it.item_idx,
+                    it.max_socket, it.valid_socket, it.list_count, filled,
+                );
+                for (sidx, (mask, key, end)) in it.slots.iter().enumerate() {
+                    eprintln!(
+                        "    slot[{}]: mask={:02x?} gem_key={:?} gem_endurance={:?}",
+                        sidx, mask, key, end,
+                    );
+                }
+            }
+        } else {
+            eprintln!("\n(no anomalies)");
+        }
+
+        // ── Summary ────────────────────────────────────────────────
+        eprintln!("\n=== schema-invariant summary ===");
+        eprintln!("  items with sockets:           {}", items.len());
+        eprintln!("  list_count != _maxSocketCount: {} (HARD invariant — should be 0)", bad_count_mismatch);
+        eprintln!("  filled > _validSocketCount:    {} (CE-modified — expected non-zero)", overfilled);
+        eprintln!("  filled > _maxSocketCount:      {} (would break the fixed-size model — should be 0)", over_max);
+        eprintln!("  socket entries with unusual mask (not 0x00/0x03): {}", unusual_mask);
+
+        eprintln!("\n  _maxSocketCount histogram:");
+        for (max, c) in &max_socket_hist {
+            eprintln!("    max={:3} : {} items", max, c);
+        }
+
+        eprintln!("\n  mask byte histogram (socket-list elements):");
+        for (mask, c) in &mask_histogram {
+            eprintln!("    {:02x?} : {} elements", mask, c);
+        }
+
+        if !partial_mask_examples.is_empty() {
+            eprintln!("\n  partial-mask examples (first 8):");
+            for (ik, sidx, mask, key, end) in &partial_mask_examples {
+                eprintln!(
+                    "    itemKey={} slot[{}]: mask={:02x?} gem_key={:?} endurance={:?}",
+                    ik, sidx, mask, key, end,
+                );
+            }
+        }
+
+        eprintln!("\n  distinct gem itemkeys seen ({}):", gem_itemkey_set.len());
+        let gems: Vec<u32> = gem_itemkey_set.iter().copied().collect();
+        for chunk in gems.chunks(10) {
+            let s: Vec<String> = chunk.iter().map(|k| format!("{k}")).collect();
+            eprintln!("    {}", s.join(", "));
+        }
+    }
+
 }

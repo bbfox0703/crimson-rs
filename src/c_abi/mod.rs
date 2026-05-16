@@ -4654,6 +4654,506 @@ mod tests {
         unsafe { crimson_save_free(handle) };
     }
 
+    /// Locate slot104 specifically — used by the socket round-trip test.
+    /// The user populated it with 5 North Wind Tridents in a specific
+    /// gem-distribution pattern so this test has a known data shape to
+    /// drive without false-positives from arbitrary content.
+    fn find_slot104_save() -> Option<PathBuf> {
+        let local = std::env::var_os("LOCALAPPDATA")?;
+        let root = PathBuf::from(local).join("Pearl Abyss/CD/save");
+        std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
+            let p = entry.path().join("slot104").join("save.save");
+            p.is_file().then_some(p)
+        })
+    }
+
+    /// Insert a gem into an empty socket slot via
+    /// `set_scalar_fields_present_batch`, then remove it. Body MUST be
+    /// byte-identical to the pre-mutation state after the remove.
+    ///
+    /// This is the validation that the existing C ABI surface already
+    /// supports the "absent → insert gem" and "gem → absent" cases the
+    /// CrimsonAtomtic socket editor needs — without any new primitive.
+    ///
+    /// Schema being exercised (verified via `_probe_item_socket_data` in
+    /// `src/c_abi/character_info.rs`):
+    ///
+    /// - `ItemSaveData._socketSaveDataList` is an ObjectList of
+    ///   `ItemSocketSaveData` whose count is fixed to `_maxSocketCount`.
+    /// - Each `ItemSocketSaveData` has 2 fields: `_currentEndurance` (u16)
+    ///   + `_itemKey` (u32) and a 1-byte mask.
+    /// - mask=[0x00] = empty slot (opened-empty OR not-yet-opened);
+    ///   mask=[0x03] = filled slot.
+    /// - Insert gem = flip both mask bits via two
+    ///   `set_scalar_field_present(make_present=true)` ops with the
+    ///   gem's endurance + itemkey as init bytes.
+    /// - Remove gem = flip both mask bits via two
+    ///   `set_scalar_field_present(make_present=false)` ops.
+    ///
+    /// Runs only when slot104 is present on the developer's machine.
+    #[test]
+    fn c_abi_socket_insert_then_remove_roundtrip_slot104() {
+        let Some(path) = find_slot104_save() else {
+            eprintln!(
+                "skipping c_abi_socket_insert_then_remove_roundtrip_slot104: \
+                 no slot104/save.save under %LOCALAPPDATA%"
+            );
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let mut handle: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle) },
+            error::OK
+        );
+        let original_body = unsafe { (*handle).save.body.clone() };
+
+        // ── Find the first ItemSaveData with itemkey 310031 and at
+        // least one mask=[0x00] socket among its first `_validSocketCount`
+        // entries (i.e. an opened-empty slot we can fill).
+        const WEAPON_KEY: u32 = 310031;
+        let found = unsafe {
+            let h = &*handle;
+            let mut hit = None;
+            'outer: for (block_idx, block) in h.blocks.iter().enumerate() {
+                if block.class_name != "InventorySaveData" {
+                    continue;
+                }
+                let Some(inv_list) = block
+                    .fields
+                    .iter()
+                    .find(|f| f.name.eq_ignore_ascii_case("_inventorylist"))
+                else { continue };
+                let FieldValue::ObjectList { elements: containers, .. } = &inv_list.value
+                else { continue };
+                for container in containers {
+                    let Some(item_list_field) = container
+                        .fields
+                        .iter()
+                        .find(|f| f.name.eq_ignore_ascii_case("_itemList"))
+                    else { continue };
+                    let item_list_field_idx = item_list_field.field_index;
+                    let inv_list_field_idx = inv_list.field_index;
+                    let inv_idx = containers.iter().position(|c| std::ptr::eq(c, container)).unwrap();
+                    let FieldValue::ObjectList { elements: items, .. } = &item_list_field.value
+                    else { continue };
+                    for (item_idx, item) in items.iter().enumerate() {
+                        let item_key = item
+                            .fields
+                            .iter()
+                            .find(|f| f.name == "_itemKey")
+                            .and_then(|f| match &f.value {
+                                FieldValue::Scalar(ScalarValue::U32(v)) => Some(*v),
+                                _ => None,
+                            })
+                            .unwrap_or(0);
+                        if item_key != WEAPON_KEY {
+                            continue;
+                        }
+                        let valid_count = item
+                            .fields
+                            .iter()
+                            .find(|f| f.name == "_validSocketCount")
+                            .and_then(|f| match &f.value {
+                                FieldValue::Scalar(ScalarValue::U8(v)) => Some(*v),
+                                _ => None,
+                            })
+                            .unwrap_or(0) as usize;
+                        let Some(socket_field) = item.fields.iter().find(|f| {
+                            f.name == "_socketSaveDataList"
+                        }) else { continue };
+                        let socket_field_idx = socket_field.field_index;
+                        let FieldValue::ObjectList { elements: sockets, .. } = &socket_field.value
+                        else { continue };
+                        for (socket_idx, socket) in sockets.iter().enumerate() {
+                            if socket_idx >= valid_count {
+                                break; // only consider opened slots
+                            }
+                            if socket.mask_bytes.first().copied() == Some(0x00) {
+                                hit = Some((
+                                    block_idx as u32,
+                                    inv_list_field_idx,
+                                    inv_idx as u32,
+                                    item_list_field_idx,
+                                    item_idx as u32,
+                                    socket_field_idx,
+                                    socket_idx as u32,
+                                ));
+                                break 'outer;
+                            }
+                        }
+                    }
+                }
+            }
+            hit
+        };
+        let Some((
+            block_idx,
+            inv_field_idx,
+            inv_elem_idx,
+            item_field_idx,
+            item_elem_idx,
+            socket_field_idx,
+            socket_elem_idx,
+        )) = found else {
+            eprintln!(
+                "skipping: no trident (key=310031) with an empty opened socket found in slot104"
+            );
+            unsafe { crimson_save_free(handle) };
+            return;
+        };
+        eprintln!(
+            "round-trip target: block={block_idx} inv_field={inv_field_idx} \
+             inv_elem={inv_elem_idx} item_field={item_field_idx} item_elem={item_elem_idx} \
+             socket_field={socket_field_idx} socket_elem={socket_elem_idx}"
+        );
+
+        // ── Build the descent path: InventorySaveData → _inventorylist[N]
+        //    → _itemList[M] → _socketSaveDataList[K]. The leaf step
+        //    targets a scalar inside the socket element, so the path
+        //    has 3 descents (the socket field itself is named in
+        //    field_idx, with element_idx pointing at K).
+        let path = [
+            CrimsonPathStep { field_idx: inv_field_idx, element_idx: inv_elem_idx },
+            CrimsonPathStep { field_idx: item_field_idx, element_idx: item_elem_idx },
+            CrimsonPathStep { field_idx: socket_field_idx, element_idx: socket_elem_idx },
+        ];
+
+        // Test gem: itemkey 1002979, endurance 88 (chosen to NOT match
+        // the existing 99/100 values in the save so we can verify the
+        // value made it in cleanly).
+        const GEM_ITEM_KEY: u32 = 1002979;
+        const GEM_ENDURANCE: u16 = 88;
+        let endurance_bytes = GEM_ENDURANCE.to_le_bytes();
+        let itemkey_bytes = GEM_ITEM_KEY.to_le_bytes();
+
+        // ── Insert: set both _currentEndurance (field 0, u16) and
+        //    _itemKey (field 1, u32) to present, with init bytes.
+        let insert_ops = [
+            CrimsonScalarPresentBatchOp {
+                block_idx,
+                field_idx: 0, // _currentEndurance
+                path: path.as_ptr(),
+                path_len: path.len(),
+                make_present: 1,
+                bytes: endurance_bytes.as_ptr(),
+                bytes_len: endurance_bytes.len(),
+            },
+            CrimsonScalarPresentBatchOp {
+                block_idx,
+                field_idx: 1, // _itemKey
+                path: path.as_ptr(),
+                path_len: path.len(),
+                make_present: 1,
+                bytes: itemkey_bytes.as_ptr(),
+                bytes_len: itemkey_bytes.len(),
+            },
+        ];
+        let mut failed_idx: usize = 0;
+        let rc = unsafe {
+            crimson_save_set_scalar_fields_present_batch(
+                handle,
+                insert_ops.as_ptr(),
+                insert_ops.len(),
+                &mut failed_idx,
+            )
+        };
+        assert_eq!(rc, error::OK, "insert batch failed with rc={rc} at op {failed_idx}");
+
+        // ── Verify: the socket element now reports mask=[0x03] with
+        //    the right values.
+        unsafe {
+            let h = &*handle;
+            let inv_field = &h.blocks[block_idx as usize].fields[inv_field_idx as usize];
+            let FieldValue::ObjectList { elements: containers, .. } = &inv_field.value
+            else { panic!("inv field wrong shape") };
+            let item_field = &containers[inv_elem_idx as usize].fields[item_field_idx as usize];
+            let FieldValue::ObjectList { elements: items, .. } = &item_field.value
+            else { panic!("item field wrong shape") };
+            let socket_field = &items[item_elem_idx as usize].fields[socket_field_idx as usize];
+            let FieldValue::ObjectList { elements: sockets, .. } = &socket_field.value
+            else { panic!("socket field wrong shape") };
+            let socket = &sockets[socket_elem_idx as usize];
+            assert_eq!(
+                socket.mask_bytes.as_slice(),
+                &[0x03],
+                "after insert, socket mask must be [0x03]"
+            );
+            let end_field = &socket.fields[0];
+            let key_field = &socket.fields[1];
+            assert!(end_field.present);
+            assert!(key_field.present);
+            if let FieldValue::Scalar(ScalarValue::U16(v)) = &end_field.value {
+                assert_eq!(*v, GEM_ENDURANCE);
+            } else {
+                panic!("_currentEndurance wrong type after insert");
+            }
+            if let FieldValue::Scalar(ScalarValue::U32(v)) = &key_field.value {
+                assert_eq!(*v, GEM_ITEM_KEY);
+            } else {
+                panic!("_itemKey wrong type after insert");
+            }
+        }
+
+        // Body must have grown by exactly 6 bytes (u16 + u32).
+        let after_insert_len = unsafe { (*handle).save.body.len() };
+        assert_eq!(
+            after_insert_len,
+            original_body.len() + 6,
+            "insert should grow body by 6 bytes (u16 + u32)"
+        );
+
+        // ── Remove: set both fields back to absent.
+        let remove_ops = [
+            CrimsonScalarPresentBatchOp {
+                block_idx,
+                field_idx: 0,
+                path: path.as_ptr(),
+                path_len: path.len(),
+                make_present: 0,
+                bytes: std::ptr::null(),
+                bytes_len: 0,
+            },
+            CrimsonScalarPresentBatchOp {
+                block_idx,
+                field_idx: 1,
+                path: path.as_ptr(),
+                path_len: path.len(),
+                make_present: 0,
+                bytes: std::ptr::null(),
+                bytes_len: 0,
+            },
+        ];
+        let rc = unsafe {
+            crimson_save_set_scalar_fields_present_batch(
+                handle,
+                remove_ops.as_ptr(),
+                remove_ops.len(),
+                &mut failed_idx,
+            )
+        };
+        assert_eq!(rc, error::OK, "remove batch failed with rc={rc} at op {failed_idx}");
+
+        // ── Verify: byte-identical to original. This is the core
+        // contract — insert then remove must be a no-op.
+        let after_remove = unsafe { (*handle).save.body.clone() };
+        assert_eq!(
+            after_remove.len(),
+            original_body.len(),
+            "after remove, body length must match original"
+        );
+        assert_eq!(
+            after_remove, original_body,
+            "after insert+remove, body bytes must be byte-identical to original"
+        );
+
+        unsafe { crimson_save_free(handle) };
+    }
+
+    /// EquipmentSaveData socket round-trip: the currently-equipped
+    /// items live nested in `EquipmentSaveData._list[N]._item<child>`
+    /// (a Locator wrapping an `ItemSaveData`), not at the top of an
+    /// `InventorySaveData`. Confirms the C ABI path-descent handles
+    /// the Locator-then-ObjectList chain cleanly via the same
+    /// `set_scalar_fields_present_batch` entry point.
+    ///
+    /// Strategy: find any equipped item with a FILLED socket, snapshot
+    /// the gem's endurance + itemkey, remove → re-insert with the
+    /// same values, assert byte-identical to original. Works whether
+    /// the user has empty opened slots or not (the user's CE-stuffed
+    /// 1002285/1002284/1000316 are all full, but they still have
+    /// filled slots we can round-trip on).
+    #[test]
+    fn c_abi_socket_remove_then_reinsert_roundtrip_equipment_slot104() {
+        let Some(path) = find_slot104_save() else {
+            eprintln!(
+                "skipping c_abi_socket_remove_then_reinsert_roundtrip_equipment_slot104: \
+                 no slot104/save.save"
+            );
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let mut handle: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle) },
+            error::OK
+        );
+        let original_body = unsafe { (*handle).save.body.clone() };
+
+        // Find the first EquipmentSaveData._list[N]._item<child>.ItemSaveData
+        // whose _socketSaveDataList has a FILLED socket. Capture the
+        // gem's endurance + itemkey so we can re-insert the same values.
+        type Target = (u32, u32, u32, u32, u32, u32, u16, u32);
+        let found: Option<Target> = unsafe {
+            let h = &*handle;
+            let mut hit: Option<Target> = None;
+            'outer: for (block_idx, block) in h.blocks.iter().enumerate() {
+                if block.class_name != "EquipmentSaveData" {
+                    continue;
+                }
+                let Some(list_field) = block.fields.iter().find(|f| f.name == "_list")
+                else { continue };
+                let list_field_idx = list_field.field_index;
+                let FieldValue::ObjectList { elements: slots, .. } = &list_field.value
+                else { continue };
+                for (slot_idx, slot) in slots.iter().enumerate() {
+                    let Some(item_field) = slot.fields.iter().find(|f| f.name == "_item")
+                    else { continue };
+                    let item_field_idx = item_field.field_index;
+                    let FieldValue::Locator { child: Some(item), .. } = &item_field.value
+                    else { continue };
+                    let Some(socket_field) = item
+                        .fields
+                        .iter()
+                        .find(|f| f.name == "_socketSaveDataList" && f.present)
+                    else { continue };
+                    let socket_field_idx = socket_field.field_index;
+                    let FieldValue::ObjectList { elements: sockets, .. } = &socket_field.value
+                    else { continue };
+                    for (socket_idx, socket) in sockets.iter().enumerate() {
+                        if socket.mask_bytes.first().copied() != Some(0x03) {
+                            continue;
+                        }
+                        let end = socket.fields.iter()
+                            .find(|sf| sf.name == "_currentEndurance" && sf.present)
+                            .and_then(|sf| match &sf.value {
+                                FieldValue::Scalar(ScalarValue::U16(v)) => Some(*v),
+                                _ => None,
+                            });
+                        let key = socket.fields.iter()
+                            .find(|sf| sf.name == "_itemKey" && sf.present)
+                            .and_then(|sf| match &sf.value {
+                                FieldValue::Scalar(ScalarValue::U32(v)) => Some(*v),
+                                _ => None,
+                            });
+                        if let (Some(e), Some(k)) = (end, key) {
+                            hit = Some((
+                                block_idx as u32,
+                                list_field_idx,
+                                slot_idx as u32,
+                                item_field_idx,
+                                socket_field_idx,
+                                socket_idx as u32,
+                                e,
+                                k,
+                            ));
+                            break 'outer;
+                        }
+                    }
+                }
+            }
+            hit
+        };
+        let Some((
+            block_idx,
+            list_field_idx,
+            slot_idx,
+            item_field_idx,
+            socket_field_idx,
+            socket_elem_idx,
+            saved_endurance,
+            saved_gem_key,
+        )) = found else {
+            eprintln!(
+                "skipping: no EquipmentSaveData slot with a filled socket — \
+                 user has nothing equipped with gems in slot104"
+            );
+            unsafe { crimson_save_free(handle) };
+            return;
+        };
+        eprintln!(
+            "EquipmentSaveData round-trip: block={block_idx} list_field={list_field_idx} \
+             slot={slot_idx} item_field={item_field_idx} socket_field={socket_field_idx} \
+             socket_elem={socket_elem_idx} endurance={saved_endurance} gem={saved_gem_key}"
+        );
+
+        // Path: EquipmentSaveData → _list[N] → _item<Locator child> → _socketSaveDataList[K]
+        // The Locator step uses element_idx=0 (Locator has no array dimension —
+        // navigate_mut_to_parent dereferences the single child).
+        let path = [
+            CrimsonPathStep { field_idx: list_field_idx, element_idx: slot_idx },
+            CrimsonPathStep { field_idx: item_field_idx, element_idx: 0 },
+            CrimsonPathStep { field_idx: socket_field_idx, element_idx: socket_elem_idx },
+        ];
+
+        // ── Remove: clear both fields.
+        let remove_ops = [
+            CrimsonScalarPresentBatchOp {
+                block_idx,
+                field_idx: 0,
+                path: path.as_ptr(),
+                path_len: path.len(),
+                make_present: 0,
+                bytes: std::ptr::null(),
+                bytes_len: 0,
+            },
+            CrimsonScalarPresentBatchOp {
+                block_idx,
+                field_idx: 1,
+                path: path.as_ptr(),
+                path_len: path.len(),
+                make_present: 0,
+                bytes: std::ptr::null(),
+                bytes_len: 0,
+            },
+        ];
+        let mut failed_idx: usize = 0;
+        let rc = unsafe {
+            crimson_save_set_scalar_fields_present_batch(
+                handle,
+                remove_ops.as_ptr(),
+                remove_ops.len(),
+                &mut failed_idx,
+            )
+        };
+        assert_eq!(rc, error::OK, "equipment remove failed rc={rc} at op {failed_idx}");
+        let after_remove_len = unsafe { (*handle).save.body.len() };
+        assert_eq!(after_remove_len, original_body.len() - 6, "remove should shrink by 6 bytes");
+
+        // ── Re-insert with the original values: write back endurance + itemkey.
+        let end_bytes = saved_endurance.to_le_bytes();
+        let key_bytes = saved_gem_key.to_le_bytes();
+        let reinsert_ops = [
+            CrimsonScalarPresentBatchOp {
+                block_idx,
+                field_idx: 0,
+                path: path.as_ptr(),
+                path_len: path.len(),
+                make_present: 1,
+                bytes: end_bytes.as_ptr(),
+                bytes_len: end_bytes.len(),
+            },
+            CrimsonScalarPresentBatchOp {
+                block_idx,
+                field_idx: 1,
+                path: path.as_ptr(),
+                path_len: path.len(),
+                make_present: 1,
+                bytes: key_bytes.as_ptr(),
+                bytes_len: key_bytes.len(),
+            },
+        ];
+        let rc = unsafe {
+            crimson_save_set_scalar_fields_present_batch(
+                handle,
+                reinsert_ops.as_ptr(),
+                reinsert_ops.len(),
+                &mut failed_idx,
+            )
+        };
+        assert_eq!(rc, error::OK, "equipment reinsert failed rc={rc} at op {failed_idx}");
+
+        let after_reinsert = unsafe { (*handle).save.body.clone() };
+        assert_eq!(
+            after_reinsert, original_body,
+            "EquipmentSaveData remove+reinsert-with-original-values must be byte-identical \
+             — proves the Locator-then-ObjectList descent + scalar present-toggle cycle \
+             is fully reversible"
+        );
+
+        unsafe { crimson_save_free(handle) };
+    }
+
     // ── Length-changing batch entry points (Phase B.5) ─────────────────────
 
     /// Collect up to `cap` (block_idx, field_idx, original_bytes) triples
