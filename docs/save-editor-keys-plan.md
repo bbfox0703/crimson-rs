@@ -4,11 +4,35 @@
 >
 > **Where we are (updated 2026-05-16)**: every save-side key the C# Save
 > Editor currently surfaces resolves through a shipped C ABI bridge.
-> **16 bridges shipped + the deferred-redecode batch ABI.** Test suite:
-> **200** with `c_abi`, **69** without, **20** `#[ignore]`'d diagnostic
+> **19 bridges shipped + the deferred-redecode batch ABI.** Test suite:
+> **211** with `c_abi`, **69** without, **24** `#[ignore]`'d diagnostic
 > probes. Clippy clean both modes.
 >
 > ### What landed in the last sessions (2026-05-16)
+>
+> 0. **StoreKey + MercenaryKey + `_itemKey → _partPrefabKey`** — three
+>    new bridges from the latest pass.
+>    - **`store_info`** (`StoreKey` u16-widened → "Store_Her_General"
+>      etc., 292 rows). PABGH `u16 count + (u16 key, u32 offset)*` —
+>      same as factionrelationgroup. Bridge surface: name-only, no
+>      PALOC chain (deferred). Replaces the bulk "store #3101"
+>      placeholder display in the Save Editor's store browser.
+>    - **`mercenary_info`** (`MercenaryKey` u8-widened → "Mercenary_Main"
+>      / "Vehicle_Horse" / … 18 rows). **NEW PABGH variant** —
+>      `u16 count + (u8 key, u32 offset)*` (5-byte entries), first
+>      occurrence in the codebase. Surfaces the template lineage for
+>      the Save Editor's "Rename Mercenary" UI (distinct from per-save
+>      `MercenaryNo`).
+>    - **`item_part_prefab`** — combined handle that joins iteminfo +
+>      stringinfo + partprefabdyeslotinfo to resolve
+>      `ItemKey → Vec<PartPrefabKey>`. The linkage chain isn't a direct
+>      field; it's `iteminfo.prefab_data_list[].prefab_names[]` →
+>      stringinfo → string → partprefab `prefab_name` → row key. The
+>      bridge precomputes the join at load and exposes
+>      `lookup_count` / `lookup_key_at` / `lookup_prefab_name_at` on the
+>      item side. Closes the long-standing dye-editor blocker —
+>      [`dye-editor-scope.md`](./dye-editor-scope.md) "Open RE" is now
+>      resolved.
 >
 > 1. **Three dye gamedata bridges** — `dye_color_group_info` /
 >    `part_prefab_dye_texture_pallete_info` / `part_prefab_dye_slot_info`.
@@ -37,15 +61,17 @@
 >    one (~0.1s). Full design + C# usage pattern in
 >    [`save-deferred-redecode.md`](./save-deferred-redecode.md).
 >
-> ### Full bridge inventory (16)
+> ### Full bridge inventory (19)
 >
 > `mission_info`, `quest_info`, `stage_info`, `quest_gauge_info`,
 > `knowledge_info`, `sub_level_info`, `gimmick_info`,
 > `character_info` (+ `resolve_portrait` matcher), `skill_info`,
 > `dye_color_group_info`, `part_prefab_dye_texture_pallete_info`,
 > `part_prefab_dye_slot_info`, `faction_node_info`,
-> `faction_spawn_data_info`, `faction_relation_group_info` +
-> `checksum` extern "C" wrapper. Plus the PAZ-layer
+> `faction_spawn_data_info`, `faction_relation_group_info`,
+> **`store_info`**, **`mercenary_info`**, **`item_part_prefab`** (the
+> combined iteminfo+stringinfo+partprefab join) + `checksum`
+> extern "C" wrapper. Plus the PAZ-layer
 > `crimson_paz_list_npc_portraits` enumerator. Save-handle
 > utilities: `list_inventory_items`, `get_mutation_version`,
 > `begin_deferred_redecode` / `end_*` / `abort_*` / `is_*_open`.
@@ -61,12 +87,11 @@
 >   two open RE questions (where the 87% miss path resolves, and the
 >   21-byte body schema). Resume from `_probe_character_appearance_index`
 >   in `src/c_abi/character_info.rs`.
-> - **`_itemKey → _partPrefabKey` cross-reference** — the last
->   dye-editor blocker. Lives in `iteminfo.pabgb` or a sibling
->   `partprefab*` table. Once bridged, the C# editor can drop
->   `dye_slot_counts.json` entirely. See
->   [`dye-editor-scope.md`](./dye-editor-scope.md) "Open RE — next
->   session".
+> - ~~**`_itemKey → _partPrefabKey` cross-reference**~~ — **shipped
+>   2026-05-16**. The linkage is a 3-table join (iteminfo →
+>   stringinfo → partprefabdyeslotinfo), exposed via the new
+>   `crimson_item_part_prefab_*` bridge. C# editor can drop
+>   `dye_slot_counts.json` entirely.
 > - Knowledge group breadcrumb (would need `knowledge_group_info`
 >   sibling bridge + row-body parse).
 > - Quest chapter rollup ("Prologue: Dead of Night" et al. — never
@@ -91,10 +116,12 @@
 > If you're picking this up cold:
 >
 > 1. Read this callout end-to-end.
-> 2. **If the user asks "what's next?"** — recommend the
->    `_itemKey → _partPrefabKey` work (small scope, clear blocker for
->    the C# dye editor) or `CharacterAppearanceIndexKey` (larger
->    scope, needs an IDA pass for the body schema).
+> 2. **If the user asks "what's next?"** — recommend
+>    `CharacterAppearanceIndexKey` (larger scope, needs an IDA pass
+>    for the body schema), a PALOC chain probe for StoreKey /
+>    MercenaryKey if a downstream editor wants localized display
+>    names, or RE'ing storeinfo's per-row body (price / item lists)
+>    if the editor expands beyond name surfacing.
 > 3. **If `cargo test --lib --features c_abi` fails on a fresh
 >    checkout against a new game patch**, follow the
 >    `scripts/CLAUDE.md` "On a new game patch" runbook. CI gates
