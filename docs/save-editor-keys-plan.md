@@ -2,52 +2,56 @@
 
 > **🎯 New session pickup — start here.**
 >
-> **Where we are (updated 2026-05-15)**: 10 of 10 originally-scoped key
-> resolvers shipped. All save-side key types that the editor's
-> `QuestSaveData` / `SubLevelSaveData` / `AlertHistorySaveData` /
-> `FieldGimmickSaveData` / `FieldNPCSaveData` blocks surface resolve
-> through one-shot FFI calls. CharacterKey is the latest addition
-> (2026-05-15) — landed at the same 22% display-name coverage §6
-> predicted, plus a full-coverage `lookup_string_key` fallback for the
-> 78% of values that have a `characterinfo.pabgb` row but no PALOC
-> display string, plus a high-level
-> [`crimson_characterinfo_resolve_portrait`](../src/c_abi/character_info.rs)
-> that chains display lookup with a fuzzy match against
-> [`crimson_paz_list_npc_portraits`](../src/c_abi/paz.rs) to land NPC
-> head-shots. The Jenkins hash hop transform stays verified and pinned.
-> See "Verified hash transform" below for the architecture and
-> [`save-editor-keys-reference.md`](./save-editor-keys-reference.md) for
-> the 1.06 ground-truth comparison set.
+> **Where we are (updated 2026-05-16)**: every save-side key the C# Save
+> Editor currently surfaces resolves through a shipped C ABI bridge.
+> **16 bridges shipped + the deferred-redecode batch ABI.** Test suite:
+> **200** with `c_abi`, **69** without, **20** `#[ignore]`'d diagnostic
+> probes. Clippy clean both modes.
 >
-> **Shipped so far**: `mission_info`, `quest_info`, `stage_info`,
-> `quest_gauge_info`, `knowledge_info`, `sub_level_info`,
-> `gimmick_info`, `character_info` bridges + `checksum` extern "C"
-> wrapper + the legacy `skill_info` bridge + the
-> `crimson_paz_list_npc_portraits` PAZ-layer NPC-portrait enumerator.
-> **Three follow-on dye gamedata bridges shipped 2026-05-16**:
+> ### What landed in the last sessions (2026-05-16)
+>
+> 1. **Three dye gamedata bridges** — `dye_color_group_info` /
+>    `part_prefab_dye_texture_pallete_info` / `part_prefab_dye_slot_info`.
+>    Replace the PyQt5 reference editor's hand-maintained
+>    `dye_slot_counts.json` with gamedata-driven slot counts +
+>    per-slot material defaults + named color-group + palette-tier
+>    resolvers. See [`dye-editor-scope.md`](./dye-editor-scope.md).
+> 2. **Three faction gamedata bridges** — `faction_node_info` (1,158
+>    rows, `FactionNodeKey → "Node_*"`), `faction_spawn_data_info`
+>    (117 rows, `FactionSpawnDataKey → "FactionSpawn_*"`),
+>    `faction_relation_group_info` (5 rows, `FactionRelationGroupKey →
+>    "Graymane" / "FriendlyCombat" / "HostileCombat" / "NPC_Common" /
+>    "Monster_Common"` + per-row sibling-reference list via
+>    `_lookup_related_count` / `_lookup_related_at`). The exhaustive
+>    PALOC probe (`_probe_faction_paloc_chains` in
+>    `src/c_abi/character_info.rs`) returned only coincidental
+>    collisions across every namespace — these tables follow the
+>    QuestGauge / SubLevel pattern: **no `lookup_display_name`
+>    surface**, internal name is the only resolution.
+> 3. **Deferred-redecode batch ABI** — `crimson_save_begin_*` /
+>    `_end_*` / `_abort_*` / `_is_*_open`. Suspends the per-call
+>    `decode_blocks` for every mutation entry point; the matching
+>    `end_*` runs **one** encode + parse + decode pass for the whole
+>    batch. Cuts CrimsonAtomtic's "Complete All held sealed abyss
+>    artifact challenges" workflow from ~423 re-decodes (~10s) to
+>    one (~0.1s). Full design + C# usage pattern in
+>    [`save-deferred-redecode.md`](./save-deferred-redecode.md).
+>
+> ### Full bridge inventory (16)
+>
+> `mission_info`, `quest_info`, `stage_info`, `quest_gauge_info`,
+> `knowledge_info`, `sub_level_info`, `gimmick_info`,
+> `character_info` (+ `resolve_portrait` matcher), `skill_info`,
 > `dye_color_group_info`, `part_prefab_dye_texture_pallete_info`,
-> `part_prefab_dye_slot_info` — replace the PyQt5 reference editor's
-> hand-maintained `dye_slot_counts.json` with gamedata-driven data.
-> See [`dye-editor-scope.md`](./dye-editor-scope.md).
-> **Three follow-on faction gamedata bridges shipped 2026-05-16**:
-> `faction_node_info` (1,158 rows, `FactionNodeKey → "Node_*"`),
-> `faction_spawn_data_info` (117 rows, `FactionSpawnDataKey →
-> "FactionSpawn_*"`), `faction_relation_group_info` (5 rows,
-> `FactionRelationGroupKey → "Graymane" / "FriendlyCombat" /
-> "HostileCombat" / "NPC_Common" / "Monster_Common"` + per-row
-> sibling-reference list via `_lookup_related_count` /
-> `_lookup_related_at`). The exhaustive PALOC probe at
-> `_probe_faction_paloc_chains` returned only coincidental collisions
-> across every namespace — these tables follow the QuestGauge /
-> SubLevel pattern: **no `lookup_display_name` surface**, internal
-> name is the only resolution.
-> 200 tests with `c_abi`, 69 without (+20 ignored diagnostic probes).
-> Clippy clean both modes. **Deferred-redecode batch ABI shipped
-> 2026-05-16** — `begin` / `end` / `abort` / `is_open` cut bulk-edit
-> workflows from O(N) re-decodes to one. See
-> [`docs/save-deferred-redecode.md`](./save-deferred-redecode.md).
+> `part_prefab_dye_slot_info`, `faction_node_info`,
+> `faction_spawn_data_info`, `faction_relation_group_info` +
+> `checksum` extern "C" wrapper. Plus the PAZ-layer
+> `crimson_paz_list_npc_portraits` enumerator. Save-handle
+> utilities: `list_inventory_items`, `get_mutation_version`,
+> `begin_deferred_redecode` / `end_*` / `abort_*` / `is_*_open`.
 >
-> **Remaining (optional follow-ons only)**:
+> ### Remaining (optional follow-ons only)
+>
 > - **`CharacterAppearanceIndexKey`** — investigated 2026-05-15.
 >   `characterappearanceindexinfo.pabgb` + `.pabgh` located in
 >   `0008/gamedata/binary__/client/bin/`, schema pinned, save→pabgh
@@ -57,6 +61,12 @@
 >   two open RE questions (where the 87% miss path resolves, and the
 >   21-byte body schema). Resume from `_probe_character_appearance_index`
 >   in `src/c_abi/character_info.rs`.
+> - **`_itemKey → _partPrefabKey` cross-reference** — the last
+>   dye-editor blocker. Lives in `iteminfo.pabgb` or a sibling
+>   `partprefab*` table. Once bridged, the C# editor can drop
+>   `dye_slot_counts.json` entirely. See
+>   [`dye-editor-scope.md`](./dye-editor-scope.md) "Open RE — next
+>   session".
 > - Knowledge group breadcrumb (would need `knowledge_group_info`
 >   sibling bridge + row-body parse).
 > - Quest chapter rollup ("Prologue: Dead of Night" et al. — never
@@ -66,20 +76,43 @@
 > - Broader PALOC namespace coverage for CharacterKey (the 78%
 >   sample-bias miss path — different save samples touching named
 >   field NPCs would pin more ground-truth).
+> - PALOC template-resolver — only needed if a consumer expands
+>   beyond title namespaces into descriptions / dialogue. See
+>   [`paloc-template-survey.md`](./paloc-template-survey.md) for the
+>   recommended build-out order.
+> - PA's `HashCode32` algorithm — needed to decode `_initStateNameHash`
+>   state names into human-readable labels for the abyss-gate Path B
+>   editor. Phase 1 (per-gate mapping) is complete; Phase 2 (hash →
+>   name) needs an IDA pass. See
+>   [`abyss-gate-map.md`](./abyss-gate-map.md).
 >
-> **2026-05-15 verification pass**: the live 1.07 `slot0/save.save` was
-> parsed end-to-end through `Save::parse + Body::decode_blocks`,
-> confirming the §6 verdict on both `_characterKey` and `_gimmickInfoKey`
-> empirically. Same pass surfaced `CharacterAppearanceIndexKey` as the
-> last unbridged save-side type; investigation findings are in §9.
-> Probes live at `_probe_live_save_field_blocks` and
-> `_probe_character_appearance_index` in `src/c_abi/character_info.rs`
-> (`#[ignore]`'d, diagnostic only).
+> ### Where to start a new session
 >
-> **First concrete next action**: depends on user direction. The
-> `CharacterAppearanceIndexKey` work has the most signal-per-effort
-> upside (clear scope, well-defined gaps) but the body-schema RE step
-> needs either an IDA pass or a save-diff dataset to unlock.
+> If you're picking this up cold:
+>
+> 1. Read this callout end-to-end.
+> 2. **If the user asks "what's next?"** — recommend the
+>    `_itemKey → _partPrefabKey` work (small scope, clear blocker for
+>    the C# dye editor) or `CharacterAppearanceIndexKey` (larger
+>    scope, needs an IDA pass for the body schema).
+> 3. **If `cargo test --lib --features c_abi` fails on a fresh
+>    checkout against a new game patch**, follow the
+>    `scripts/CLAUDE.md` "On a new game patch" runbook. CI gates
+>    `clippy + cargo test --lib` on `main` so regressions surface
+>    quickly.
+> 4. **If a downstream editor reports a perf issue** on bulk
+>    mutations, wrap the workflow in
+>    `crimson_save_begin_deferred_redecode` / `_end_*` — see
+>    [`save-deferred-redecode.md`](./save-deferred-redecode.md) for
+>    the C# `RunDeferred` helper.
+>
+> ### Verification anchor
+>
+> The Jenkins hash hop transform that drives Mission/Quest/Stage/
+> Knowledge title resolution is cracked and pinned (see "Verified
+> hash transform" below). [`save-editor-keys-reference.md`](./save-editor-keys-reference.md)
+> is the frozen 1.06 ground-truth comparison set — use as the
+> regression baseline when a future patch breaks key resolution.
 >
 > Extracted `.pabgb` baselines for this work live in
 > `out/baselines/1.06/` (gitignored). Re-extract with
