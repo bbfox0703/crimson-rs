@@ -28,6 +28,9 @@ use crate::save::{Body, DecodedField, FieldKind, FieldValue, ObjectBlock, Save, 
 pub mod character_info;
 pub mod checksum;
 pub mod dye_color_group_info;
+pub mod faction_node_info;
+pub mod faction_relation_group_info;
+pub mod faction_spawn_data_info;
 pub mod gimmick_info;
 pub mod iteminfo;
 pub mod knowledge_info;

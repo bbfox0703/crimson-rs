@@ -29,7 +29,19 @@
 > `part_prefab_dye_slot_info` — replace the PyQt5 reference editor's
 > hand-maintained `dye_slot_counts.json` with gamedata-driven data.
 > See [`dye-editor-scope.md`](./dye-editor-scope.md).
-> 188 tests with `c_abi`, 69 without (+16 ignored diagnostic probes).
+> **Three follow-on faction gamedata bridges shipped 2026-05-16**:
+> `faction_node_info` (1,158 rows, `FactionNodeKey → "Node_*"`),
+> `faction_spawn_data_info` (117 rows, `FactionSpawnDataKey →
+> "FactionSpawn_*"`), `faction_relation_group_info` (5 rows,
+> `FactionRelationGroupKey → "Graymane" / "FriendlyCombat" /
+> "HostileCombat" / "NPC_Common" / "Monster_Common"` + per-row
+> sibling-reference list via `_lookup_related_count` /
+> `_lookup_related_at`). The exhaustive PALOC probe at
+> `_probe_faction_paloc_chains` returned only coincidental collisions
+> across every namespace — these tables follow the QuestGauge /
+> SubLevel pattern: **no `lookup_display_name` surface**, internal
+> name is the only resolution.
+> 196 tests with `c_abi`, 69 without (+20 ignored diagnostic probes).
 > Clippy clean both modes.
 >
 > **Remaining (optional follow-ons only)**:

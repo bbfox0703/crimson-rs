@@ -3802,4 +3802,576 @@ mod tests {
         }
     }
 
+    /// Investigation probe: extract the three faction `.pabgh` + `.pabgb`
+    /// pairs (factionnode, factionrelationgroup, factionspawndatainfo) and
+    /// dump the first ~64 bytes of each to identify the PABGH header
+    /// shape and the row prefix.
+    #[test]
+    #[ignore = "investigation only — faction pabgh shape probe"]
+    fn _probe_faction_pabgh_shapes() {
+        use crate::binary::pamt::PackMeta;
+        use crate::binary::paz;
+        use std::fmt::Write;
+
+        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
+            });
+        let pamt_path = game_root.join("0008").join("0.pamt");
+        let Ok(pamt_bytes) = std::fs::read(&pamt_path) else {
+            eprintln!("skipping: no {}", pamt_path.display());
+            return;
+        };
+        let pamt = PackMeta::parse(&pamt_bytes, None).expect("parse PAMT");
+        let dir = pamt
+            .directories
+            .iter()
+            .find(|d| d.path == "gamedata/binary__/client/bin")
+            .expect("missing gamedata/binary__/client/bin dir in 0008 PAMT");
+
+        let out_dir = std::path::PathBuf::from("out/faction_probe");
+        std::fs::create_dir_all(&out_dir).ok();
+
+        let targets = &[
+            "factionnode",
+            "factionrelationgroup",
+            "factionspawndatainfo",
+            // Bonus: also dump the sibling tables so we know what's there.
+            "faction",
+            "factiongroup",
+            "factionnodespawninfo",
+            "factionwaypoint",
+            "allygroupinfo",
+            "tribeinfo",
+        ];
+
+        let mut summary = String::new();
+        for stem in targets {
+            let pabgb_name = format!("{stem}.pabgb");
+            let pabgh_name = format!("{stem}.pabgh");
+            let pabgb_file = dir.files.iter().find(|f| f.name == pabgb_name);
+            let pabgh_file = dir.files.iter().find(|f| f.name == pabgh_name);
+            let Some(pabgb_file) = pabgb_file else {
+                let _ = writeln!(summary, "\n=== {stem} ===  MISSING .pabgb");
+                continue;
+            };
+            let Some(pabgh_file) = pabgh_file else {
+                let _ = writeln!(summary, "\n=== {stem} ===  MISSING .pabgh");
+                continue;
+            };
+            let pabgh_bytes = match paz::extract_file(
+                &game_root.join("0008"),
+                pabgh_file,
+                "gamedata/binary__/client/bin",
+                &pamt.header.encrypt_info.encrypt_info,
+            ) {
+                Ok(b) => b,
+                Err(e) => {
+                    let _ = writeln!(summary, "{stem}.pabgh extract failed: {e}");
+                    continue;
+                }
+            };
+            let pabgb_bytes = match paz::extract_file(
+                &game_root.join("0008"),
+                pabgb_file,
+                "gamedata/binary__/client/bin",
+                &pamt.header.encrypt_info.encrypt_info,
+            ) {
+                Ok(b) => b,
+                Err(e) => {
+                    let _ = writeln!(summary, "{stem}.pabgb extract failed: {e}");
+                    continue;
+                }
+            };
+            std::fs::write(out_dir.join(format!("{stem}.pabgh")), &pabgh_bytes).ok();
+            std::fs::write(out_dir.join(format!("{stem}.pabgb")), &pabgb_bytes).ok();
+
+            let _ = writeln!(
+                summary,
+                "\n=== {stem} ===  pabgh={} B  pabgb={} B",
+                pabgh_bytes.len(),
+                pabgb_bytes.len()
+            );
+
+            match crate::skill_info::parse_pabgh(&pabgh_bytes) {
+                Ok(entries) => {
+                    let preview: Vec<_> = entries
+                        .iter()
+                        .take(4)
+                        .map(|e| (e.key, e.offset))
+                        .collect();
+                    let _ = writeln!(
+                        summary,
+                        "  standard u16+(u32,u32) PABGH OK  {} entries  first 4: {:?}",
+                        entries.len(),
+                        preview,
+                    );
+                    if let Some(first) = entries.first() {
+                        let start = first.offset as usize;
+                        let end = (start + 96).min(pabgb_bytes.len());
+                        let row = &pabgb_bytes[start..end];
+                        let _ = writeln!(
+                            summary,
+                            "  first row bytes ({} B at offset {}):",
+                            end - start,
+                            start,
+                        );
+                        let _ = writeln!(summary, "    {:02x?}", row);
+                        if row.len() >= 8 {
+                            let key =
+                                u32::from_le_bytes([row[0], row[1], row[2], row[3]]);
+                            let name_len = u32::from_le_bytes([
+                                row[4], row[5], row[6], row[7],
+                            ]) as usize;
+                            let _ = writeln!(
+                                summary,
+                                "    interpreted: key={} (=PABGH? {}) name_len={}",
+                                key,
+                                key == first.key,
+                                name_len,
+                            );
+                            if (1..=128).contains(&name_len)
+                                && row.len() >= 8 + name_len
+                                && let Ok(s) =
+                                    std::str::from_utf8(&row[8..8 + name_len])
+                            {
+                                let _ = writeln!(summary, "    name: {:?}", s);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    let _ = writeln!(
+                        summary,
+                        "  standard u16+(u32,u32) PABGH FAILED ({}). Header bytes:",
+                        e
+                    );
+                    let n = pabgh_bytes.len().min(64);
+                    let _ = writeln!(summary, "    {:02x?}", &pabgh_bytes[..n]);
+                    if pabgh_bytes.len() >= 2 {
+                        let cnt16 =
+                            u16::from_le_bytes([pabgh_bytes[0], pabgh_bytes[1]])
+                                as usize;
+                        if pabgh_bytes.len() == 2 + cnt16 * 6 {
+                            let _ = writeln!(
+                                summary,
+                                "  heuristic: u16 count + (u16 key, u32 offset)*  count={cnt16}",
+                            );
+                            for i in 0..cnt16.min(8) {
+                                let off = 2 + i * 6;
+                                let k = u16::from_le_bytes([
+                                    pabgh_bytes[off],
+                                    pabgh_bytes[off + 1],
+                                ]);
+                                let o = u32::from_le_bytes([
+                                    pabgh_bytes[off + 2],
+                                    pabgh_bytes[off + 3],
+                                    pabgh_bytes[off + 4],
+                                    pabgh_bytes[off + 5],
+                                ]);
+                                let _ = writeln!(
+                                    summary,
+                                    "    [{i}] key={k} offset={o}",
+                                );
+                            }
+                        } else if pabgh_bytes.len() == 2 + cnt16 * 12 {
+                            let _ = writeln!(
+                                summary,
+                                "  heuristic: u16 count + (u64 key, u32 offset)*  count={cnt16}",
+                            );
+                            for i in 0..cnt16.min(8) {
+                                let off = 2 + i * 12;
+                                let k = u64::from_le_bytes([
+                                    pabgh_bytes[off],
+                                    pabgh_bytes[off + 1],
+                                    pabgh_bytes[off + 2],
+                                    pabgh_bytes[off + 3],
+                                    pabgh_bytes[off + 4],
+                                    pabgh_bytes[off + 5],
+                                    pabgh_bytes[off + 6],
+                                    pabgh_bytes[off + 7],
+                                ]);
+                                let o = u32::from_le_bytes([
+                                    pabgh_bytes[off + 8],
+                                    pabgh_bytes[off + 9],
+                                    pabgh_bytes[off + 10],
+                                    pabgh_bytes[off + 11],
+                                ]);
+                                let _ = writeln!(
+                                    summary,
+                                    "    [{i}] key={k} offset={o}",
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let out_path = out_dir.join("pabgh_shapes.txt");
+        std::fs::write(&out_path, &summary).expect("write summary");
+        eprintln!("wrote {}", out_path.display());
+    }
+
+    /// Investigation probe: walk PALOC for each faction-bridge target
+    /// table's (key, name) pairs and report which namespaces / chain
+    /// shape (identity vs hash hop) light up.
+    #[test]
+    #[ignore = "investigation only — faction PALOC chain probe"]
+    fn _probe_faction_paloc_chains() {
+        use crate::binary::paloc::LocalizationFile;
+        use std::fmt::Write;
+
+        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
+            });
+        if !game_root.join("0020").join("0.pamt").is_file() {
+            eprintln!("skipping: no game install");
+            return;
+        }
+
+        // Extract English PALOC. The 0020 group ships the English
+        // localization table under gamedata/stringtable/binary__.
+        let pamt_bytes = std::fs::read(game_root.join("0020").join("0.pamt"))
+            .expect("read 0020 pamt");
+        let pamt = crate::binary::pamt::PackMeta::parse(&pamt_bytes, None).expect("parse 0020");
+        let dir = pamt
+            .directories
+            .iter()
+            .find(|d| d.path == "gamedata/stringtable/binary__")
+            .expect("missing stringtable dir");
+        let paloc_file = dir
+            .files
+            .iter()
+            .find(|f| f.name == "localizationstring_eng.paloc")
+            .expect("missing eng paloc");
+        let paloc_bytes = crate::binary::paz::extract_file(
+            &game_root.join("0020"),
+            paloc_file,
+            "gamedata/stringtable/binary__",
+            &pamt.header.encrypt_info.encrypt_info,
+        )
+        .expect("extract paloc");
+        let parsed = LocalizationFile::parse(&paloc_bytes).expect("parse paloc");
+
+        // PALOC keys are stored as ASCII decimal strings; the lookup
+        // table is keyed by string.
+        use std::collections::HashMap;
+        let mut numeric: HashMap<u64, String> = HashMap::new();
+        for e in &parsed.entries {
+            if let Ok(k) = e.string_key.data.parse::<u64>() {
+                numeric.insert(k, e.string_value.data.to_owned());
+            }
+        }
+        eprintln!("loaded {} numeric PALOC entries", numeric.len());
+
+        // Load each table from out/faction_probe.
+        let probe_dir = std::path::PathBuf::from("out/faction_probe");
+
+        struct Row {
+            key: u32,
+            name: String,
+        }
+        fn parse_standard(pabgh: &[u8], pabgb: &[u8]) -> Vec<Row> {
+            let Ok(entries) = crate::skill_info::parse_pabgh(pabgh) else {
+                return Vec::new();
+            };
+            let ranges = crate::skill_info::entry_ranges(&entries, pabgb.len());
+            let mut out = Vec::new();
+            for (e, (s, eo)) in entries.iter().zip(ranges.iter()) {
+                let body = &pabgb[*s..*eo];
+                if body.len() < 8 {
+                    continue;
+                }
+                let key = u32::from_le_bytes([body[0], body[1], body[2], body[3]]);
+                let nl = u32::from_le_bytes([body[4], body[5], body[6], body[7]]) as usize;
+                if !(1..=128).contains(&nl) || 8 + nl > body.len() {
+                    continue;
+                }
+                let Ok(s) = std::str::from_utf8(&body[8..8 + nl]) else {
+                    continue;
+                };
+                if key != e.key {
+                    continue;
+                }
+                out.push(Row {
+                    key,
+                    name: s.to_owned(),
+                });
+            }
+            out
+        }
+        fn parse_small_u16(pabgh: &[u8], pabgb: &[u8]) -> Vec<Row> {
+            // u16 count + (u16 key, u32 offset)*; row prefix [u16 key][u32 name_len][name].
+            if pabgh.len() < 2 {
+                return Vec::new();
+            }
+            let cnt = u16::from_le_bytes([pabgh[0], pabgh[1]]) as usize;
+            if pabgh.len() != 2 + cnt * 6 {
+                return Vec::new();
+            }
+            let mut out = Vec::new();
+            let mut offs: Vec<u32> = (0..cnt)
+                .map(|i| {
+                    u32::from_le_bytes([
+                        pabgh[2 + i * 6 + 2],
+                        pabgh[2 + i * 6 + 3],
+                        pabgh[2 + i * 6 + 4],
+                        pabgh[2 + i * 6 + 5],
+                    ])
+                })
+                .collect();
+            offs.push(pabgb.len() as u32);
+            offs.sort();
+            for i in 0..cnt {
+                let key16 =
+                    u16::from_le_bytes([pabgh[2 + i * 6], pabgh[2 + i * 6 + 1]]);
+                let off = u32::from_le_bytes([
+                    pabgh[2 + i * 6 + 2],
+                    pabgh[2 + i * 6 + 3],
+                    pabgh[2 + i * 6 + 4],
+                    pabgh[2 + i * 6 + 5],
+                ]) as usize;
+                let next = offs
+                    .iter()
+                    .find(|o| **o as usize > off)
+                    .copied()
+                    .unwrap_or(pabgb.len() as u32) as usize;
+                let body = &pabgb[off..next.min(pabgb.len())];
+                if body.len() < 6 {
+                    continue;
+                }
+                let body_key = u16::from_le_bytes([body[0], body[1]]);
+                if body_key != key16 {
+                    continue;
+                }
+                let nl = u32::from_le_bytes([body[2], body[3], body[4], body[5]]) as usize;
+                if !(1..=128).contains(&nl) || 6 + nl > body.len() {
+                    continue;
+                }
+                let Ok(s) = std::str::from_utf8(&body[6..6 + nl]) else {
+                    continue;
+                };
+                out.push(Row {
+                    key: u32::from(key16),
+                    name: s.to_owned(),
+                });
+            }
+            out
+        }
+
+        let factionnode = {
+            let pabgh = std::fs::read(probe_dir.join("factionnode.pabgh")).unwrap();
+            let pabgb = std::fs::read(probe_dir.join("factionnode.pabgb")).unwrap();
+            parse_standard(&pabgh, &pabgb)
+        };
+        let factionspawn = {
+            let pabgh =
+                std::fs::read(probe_dir.join("factionspawndatainfo.pabgh")).unwrap();
+            let pabgb =
+                std::fs::read(probe_dir.join("factionspawndatainfo.pabgb")).unwrap();
+            parse_standard(&pabgh, &pabgb)
+        };
+        let factionrel = {
+            let pabgh =
+                std::fs::read(probe_dir.join("factionrelationgroup.pabgh")).unwrap();
+            let pabgb =
+                std::fs::read(probe_dir.join("factionrelationgroup.pabgb")).unwrap();
+            parse_small_u16(&pabgh, &pabgb)
+        };
+
+        let tables: Vec<(&str, &Vec<Row>)> = vec![
+            ("factionnode", &factionnode),
+            ("factionspawndatainfo", &factionspawn),
+            ("factionrelationgroup", &factionrel),
+        ];
+
+        let mut out = String::new();
+        for (label, rows) in tables {
+            let _ = writeln!(out, "\n=== {label} ({} rows parsed) ===", rows.len());
+            if rows.is_empty() {
+                continue;
+            }
+
+            // Identity chain: (key << 32) | lo32
+            // Hash hop:       (hashlittle2(name) << 32) | lo32
+            // Try lo32 values we've seen for other tables.
+            let los: &[u32] = &[
+                0x00, 0x30, 0x60, 0x70, 0x71, 0x80, 0x90, 0xc1, 0x100, 0x101, 0x102,
+                0x190, 0x200, 0x202, 0x300, 0x400, 0x490, 0x491, 0x49d, 0x49e, 0x49f,
+                0x800, 0x890, 0x891, 0x892, 0x500, 0x501,
+            ];
+
+            let mut id_hits: HashMap<u32, (u32, String)> = HashMap::new();
+            let mut hash_hits: HashMap<u32, (u32, String)> = HashMap::new();
+
+            for row in rows.iter() {
+                let hi_hash = crate::crypto::checksum::calculate_checksum(row.name.as_bytes());
+                for &lo in los {
+                    // identity
+                    let pk = ((row.key as u64) << 32) | (lo as u64);
+                    if let Some(v) = numeric.get(&pk) {
+                        let entry =
+                            id_hits.entry(lo).or_insert((0, format!("{} -> {}", row.name, v)));
+                        entry.0 += 1;
+                    }
+                    let pk_h = ((hi_hash as u64) << 32) | (lo as u64);
+                    if let Some(v) = numeric.get(&pk_h) {
+                        let entry = hash_hits
+                            .entry(lo)
+                            .or_insert((0, format!("{} -> {}", row.name, v)));
+                        entry.0 += 1;
+                    }
+                }
+            }
+
+            let _ = writeln!(out, "  identity chain hits per lo32:");
+            let mut id_sorted: Vec<_> = id_hits.iter().collect();
+            id_sorted.sort_by_key(|(k, _)| **k);
+            for (lo, (count, sample)) in &id_sorted {
+                let _ = writeln!(
+                    out,
+                    "    0x{:03x} ({}): {} hits  sample: {}",
+                    lo, lo, count, sample
+                );
+            }
+            let _ = writeln!(out, "  hash-hop chain hits per lo32:");
+            let mut h_sorted: Vec<_> = hash_hits.iter().collect();
+            h_sorted.sort_by_key(|(k, _)| **k);
+            for (lo, (count, sample)) in &h_sorted {
+                let _ = writeln!(
+                    out,
+                    "    0x{:03x} ({}): {} hits  sample: {}",
+                    lo, lo, count, sample
+                );
+            }
+        }
+        std::fs::write(probe_dir.join("paloc_chains.txt"), &out).expect("write");
+        eprintln!("wrote out/faction_probe/paloc_chains.txt");
+    }
+
+    /// Investigation probe: dump the raw row bytes for `factionrelationgroup`
+    /// and `factiongroup` so we can identify the small u16-keyed row schema.
+    #[test]
+    #[ignore = "investigation only — faction small-table row dumps"]
+    fn _probe_faction_small_tables() {
+        use std::fmt::Write;
+        let probe_dir = std::path::PathBuf::from("out/faction_probe");
+        let mut out = String::new();
+        for stem in ["factionrelationgroup", "factiongroup"] {
+            let Ok(pabgh) = std::fs::read(probe_dir.join(format!("{stem}.pabgh"))) else {
+                let _ = writeln!(out, "{stem}.pabgh: not found");
+                continue;
+            };
+            let Ok(pabgb) = std::fs::read(probe_dir.join(format!("{stem}.pabgb"))) else {
+                let _ = writeln!(out, "{stem}.pabgb: not found");
+                continue;
+            };
+            let cnt = u16::from_le_bytes([pabgh[0], pabgh[1]]) as usize;
+            assert_eq!(pabgh.len(), 2 + cnt * 6, "{stem} pabgh shape mismatch");
+            let _ = writeln!(out, "\n=== {stem} ===  {cnt} rows, pabgb={} B", pabgb.len());
+            // Parse entries as (u16 key, u32 offset).
+            let mut entries: Vec<(u16, u32)> = (0..cnt)
+                .map(|i| {
+                    let off = 2 + i * 6;
+                    let k = u16::from_le_bytes([pabgh[off], pabgh[off + 1]]);
+                    let o = u32::from_le_bytes([
+                        pabgh[off + 2],
+                        pabgh[off + 3],
+                        pabgh[off + 4],
+                        pabgh[off + 5],
+                    ]);
+                    (k, o)
+                })
+                .collect();
+            // Sort by offset to compute end-of-row.
+            let mut by_off = entries.clone();
+            by_off.sort_by_key(|e| e.1);
+            for (i, (k, o)) in entries.iter().enumerate() {
+                let next_off = by_off
+                    .iter()
+                    .find(|(_, oo)| *oo > *o)
+                    .map(|(_, oo)| *oo as usize)
+                    .unwrap_or(pabgb.len());
+                let start = *o as usize;
+                let end = next_off.min(pabgb.len());
+                let body = &pabgb[start..end];
+                let _ = writeln!(
+                    out,
+                    "  [{i}] key={k}(0x{:04x}) @ offset={o}..{end} ({} B):",
+                    k,
+                    body.len()
+                );
+                let _ = writeln!(out, "      hex: {:02x?}", body);
+                // Try to extract ASCII strings within.
+                let mut s = String::new();
+                let mut printable = String::new();
+                for &b in body {
+                    if (0x20..=0x7e).contains(&b) {
+                        printable.push(b as char);
+                    } else {
+                        if printable.len() >= 3 {
+                            s.push_str(&printable);
+                            s.push_str(" | ");
+                        }
+                        printable.clear();
+                    }
+                }
+                if printable.len() >= 3 {
+                    s.push_str(&printable);
+                }
+                if !s.is_empty() {
+                    let _ = writeln!(out, "      strs: {s}");
+                }
+            }
+            // suppress unused-Vec warning in case the file is empty
+            entries.clear();
+        }
+        std::fs::write(probe_dir.join("small_tables.txt"), &out).expect("write");
+        eprintln!("wrote out/faction_probe/small_tables.txt");
+    }
+
+    /// Investigation probe: list every `*faction*` / `*ally*` / `*tribe*`
+    /// file in 0008's PAMT so we can see what tables the engine ships
+    /// for the faction-bridge work (FactionNodeKey, FactionRelationGroupKey,
+    /// FactionSpawnDataKey).
+    #[test]
+    #[ignore = "investigation only — faction file discovery"]
+    fn _scan_0008_faction_files() {
+        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
+            });
+        let pamt_path = game_root.join("0008").join("0.pamt");
+        if !pamt_path.is_file() {
+            eprintln!("skipping: no {}", pamt_path.display());
+            return;
+        }
+        let pamt_bytes = std::fs::read(&pamt_path).expect("read 0.pamt");
+        let pamt = crate::binary::pamt::PackMeta::parse(&pamt_bytes, None).expect("parse PAMT");
+        let mut hits = 0usize;
+        let mut out = String::new();
+        for d in &pamt.directories {
+            for f in &d.files {
+                let lower = f.name.to_ascii_lowercase();
+                if lower.contains("faction") || lower.contains("ally") || lower.contains("tribe") {
+                    use std::fmt::Write;
+                    let _ = writeln!(
+                        out,
+                        "{}/{}  ({}c / {}u)",
+                        d.path, f.name, f.file.compressed_size, f.file.uncompressed_size
+                    );
+                    hits += 1;
+                }
+            }
+        }
+        let out_dir = std::path::PathBuf::from("out/faction_probe");
+        std::fs::create_dir_all(&out_dir).ok();
+        let out_path = out_dir.join("file_list.txt");
+        std::fs::write(&out_path, &out).expect("write file_list");
+        eprintln!("wrote {} hits to {}", hits, out_path.display());
+    }
 }

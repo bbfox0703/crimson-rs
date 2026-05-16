@@ -5,6 +5,12 @@ mod crypto;
 #[cfg(feature = "c_abi")]
 mod dye_color_group_info;
 #[cfg(feature = "c_abi")]
+mod faction_node_info;
+#[cfg(feature = "c_abi")]
+mod faction_relation_group_info;
+#[cfg(feature = "c_abi")]
+mod faction_spawn_data_info;
+#[cfg(feature = "c_abi")]
 mod gimmick_info;
 mod item_info;
 #[cfg(feature = "c_abi")]
