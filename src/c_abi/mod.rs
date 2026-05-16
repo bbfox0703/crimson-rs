@@ -54,6 +54,7 @@ pub mod part_prefab_dye_texture_pallete_info;
 pub mod paz;
 pub mod quest_gauge_info;
 pub mod quest_info;
+pub mod reserve_slot_info;
 pub mod royal_supply_info;
 pub mod skill_info;
 pub mod stage_info;
