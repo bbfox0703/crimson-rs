@@ -45,6 +45,8 @@ mod quest_gauge_info;
 #[cfg(feature = "c_abi")]
 mod quest_info;
 #[cfg(feature = "c_abi")]
+mod region_info;
+#[cfg(feature = "c_abi")]
 mod reserve_slot_info;
 #[cfg(feature = "c_abi")]
 mod royal_supply_info;
