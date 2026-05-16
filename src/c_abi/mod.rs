@@ -55,6 +55,7 @@ pub mod stage_info;
 pub mod store_info;
 pub mod string_info;
 pub mod sub_level_info;
+pub mod trigger_region_info;
 
 /// Stable error codes returned by every fallible C entry point.
 ///

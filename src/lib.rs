@@ -45,6 +45,8 @@ mod store_info;
 mod string_info;
 #[cfg(feature = "c_abi")]
 mod sub_level_info;
+#[cfg(feature = "c_abi")]
+mod trigger_region_info;
 pub(crate) mod python_traits;
 
 #[cfg(feature = "c_abi")]
