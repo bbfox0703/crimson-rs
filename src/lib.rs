@@ -12,6 +12,8 @@ mod faction_relation_group_info;
 mod faction_spawn_data_info;
 #[cfg(feature = "c_abi")]
 mod gimmick_info;
+#[cfg(feature = "c_abi")]
+mod house_info;
 mod item_info;
 #[cfg(feature = "c_abi")]
 mod knowledge_info;

@@ -35,6 +35,7 @@ pub mod faction_node_info;
 pub mod faction_relation_group_info;
 pub mod faction_spawn_data_info;
 pub mod gimmick_info;
+pub mod house_info;
 pub mod item_part_prefab;
 pub mod iteminfo;
 pub mod knowledge_info;
@@ -120,6 +121,33 @@ pub mod error {
     /// is currently open. Pairing is begin → (end | abort).
     pub const BATCH_NOT_OPEN: i32 = -22;
     pub const PANIC: i32 = -99;
+}
+
+/// Shared two-call-pattern string writer. `required` always reports
+/// `src.len() + 1` (the NUL terminator) — callers query with
+/// `buf_len = 0` first, then provide a sized buffer.
+///
+/// # Safety
+/// `buf` may be null iff `buf_len == 0`. `required` must be non-null.
+/// The existing per-bridge helpers (in `faction_node_info`, `store_info`,
+/// etc.) predate this and remain inlined; new bridges should use this
+/// shared copy.
+pub(crate) fn write_str_to_buf(
+    src: &str,
+    buf: *mut u8,
+    buf_len: usize,
+    required: *mut usize,
+) -> i32 {
+    let needed = src.len() + 1;
+    unsafe { *required = needed };
+    if buf_len < needed {
+        return error::BUFFER_TOO_SMALL;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(src.as_ptr(), buf, src.len());
+        *buf.add(src.len()) = 0;
+    }
+    error::OK
 }
 
 /// Opaque handle handed out across the ABI boundary. C side only sees
