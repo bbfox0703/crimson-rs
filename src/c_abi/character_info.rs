@@ -1558,6 +1558,147 @@ mod tests {
         }
     }
 
+    /// Schema probe for `InventorySaveData`. Dumps the first
+    /// `InventorySaveData` block's field-by-field tree — top level,
+    /// first inventory container, first item inside that container —
+    /// so we can pin the exact field names + types before shipping
+    /// the `crimson_save_list_inventory_items` C ABI.
+    #[test]
+    #[ignore = "investigation only — InventorySaveData schema discovery"]
+    fn _probe_inventory_save_data_schema() {
+        use crate::save::{Body, FieldValue, ScalarValue, Save};
+
+        let save_path = std::env::var_os("CRIMSON_LIVE_SAVE")
+            .map(PathBuf::from)
+            .or_else(|| {
+                let appdata = std::env::var_os("LOCALAPPDATA")?;
+                let root = PathBuf::from(appdata).join("Pearl Abyss").join("CD").join("save");
+                std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
+                    let p = entry.path().join("slot0").join("save.save");
+                    p.is_file().then_some(p)
+                })
+            });
+        let Some(save_path) = save_path else {
+            eprintln!("skipping: no live save");
+            return;
+        };
+        let raw = std::fs::read(&save_path).expect("read save");
+        let save = Save::parse(&raw).expect("parse save");
+        let body = Body::parse(&save.body).expect("parse body");
+        let blocks = body.decode_blocks(&save.body);
+
+        let inv_block = blocks.iter().find(|b| b.class_name == "InventorySaveData");
+        let Some(inv_block) = inv_block else {
+            eprintln!("no InventorySaveData block in this save");
+            return;
+        };
+        eprintln!(
+            "InventorySaveData at block_idx (class={}): {} fields",
+            inv_block.class_name,
+            inv_block.fields.len()
+        );
+        for f in &inv_block.fields {
+            eprintln!(
+                "  [{:2}] present={} kind={:?} type={} name={} meta_size={}",
+                f.field_index, f.present, f.kind, f.type_name, f.name, f.meta_size
+            );
+        }
+
+        // Find _inventoryList field (whatever the exact spelling is).
+        let inv_list_field = inv_block.fields.iter().find(|f| {
+            f.name.eq_ignore_ascii_case("_inventoryList")
+                || f.name.eq_ignore_ascii_case("_inventorylist")
+        });
+        let Some(inv_list_field) = inv_list_field else {
+            eprintln!("no _inventoryList field found — check name");
+            return;
+        };
+        let FieldValue::ObjectList { count, elements, .. } = &inv_list_field.value else {
+            eprintln!("_inventoryList isn't ObjectList: {:?}", inv_list_field.value);
+            return;
+        };
+        eprintln!(
+            "\n_inventoryList (field {} \"{}\"): ObjectList with {} elements",
+            inv_list_field.field_index, inv_list_field.name, count
+        );
+
+        // Dump the first inventory container's full schema.
+        let Some(first) = elements.first() else {
+            eprintln!("_inventoryList is empty");
+            return;
+        };
+        eprintln!(
+            "\ninventory[0] class={}: {} fields",
+            first.class_name,
+            first.fields.len()
+        );
+        for f in &first.fields {
+            eprintln!(
+                "  [{:2}] present={} kind={:?} type={} name={} meta_size={}",
+                f.field_index, f.present, f.kind, f.type_name, f.name, f.meta_size
+            );
+        }
+
+        // Find _itemList in the container.
+        let item_list_field = first.fields.iter().find(|f| {
+            f.name.eq_ignore_ascii_case("_itemList")
+                || f.name.eq_ignore_ascii_case("_itemlist")
+        });
+        if let Some(item_list_field) = item_list_field
+            && let FieldValue::ObjectList { count, elements, .. } = &item_list_field.value
+        {
+            {
+                eprintln!(
+                    "\n_itemList (field {} \"{}\"): {} items in container[0]",
+                    item_list_field.field_index, item_list_field.name, count
+                );
+                if let Some(item) = elements.first() {
+                    eprintln!(
+                        "\nitem[0] class={}: {} fields",
+                        item.class_name,
+                        item.fields.len()
+                    );
+                    for f in &item.fields {
+                        let val_str = match &f.value {
+                            FieldValue::Scalar(ScalarValue::U32(v)) => format!("U32({v})"),
+                            FieldValue::Scalar(ScalarValue::U64(v)) => format!("U64({v})"),
+                            FieldValue::Scalar(ScalarValue::Bool(v)) => format!("Bool({v})"),
+                            _ => format!("{:?}", f.value),
+                        };
+                        eprintln!(
+                            "  [{:2}] present={} kind={:?} type={} name={} meta_size={} value={}",
+                            f.field_index, f.present, f.kind, f.type_name, f.name, f.meta_size, val_str,
+                        );
+                    }
+                }
+            }
+        }
+
+        // Quick totals: items per container + grand total.
+        eprintln!("\n— per-inventory item counts —");
+        let mut grand_total = 0u32;
+        for (i, container) in elements.iter().enumerate() {
+            let item_count = container
+                .fields
+                .iter()
+                .find(|f| {
+                    f.name.eq_ignore_ascii_case("_itemList")
+                        || f.name.eq_ignore_ascii_case("_itemlist")
+                })
+                .and_then(|f| {
+                    if let FieldValue::ObjectList { count, .. } = f.value {
+                        Some(count)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(0);
+            grand_total += item_count;
+            eprintln!("  inventory[{i:2}] ({:<28}) → {item_count} items", container.class_name);
+        }
+        eprintln!("  grand total: {grand_total}");
+    }
+
     /// Abyss-gate per-gate mapping probe — Path B (`CrimsonAtomtic`) input.
     ///
     /// CrimsonAtomtic wants to replace the bulk "unlock all abyss gates"
