@@ -28,6 +28,8 @@ mod global_game_event_group_info;
 mod global_game_event_info;
 #[cfg(feature = "c_abi")]
 mod house_info;
+#[cfg(feature = "c_abi")]
+mod item_group_info;
 mod item_info;
 #[cfg(feature = "c_abi")]
 mod knowledge_info;

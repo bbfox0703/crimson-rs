@@ -43,6 +43,7 @@ pub mod gimmick_info;
 pub mod global_game_event_group_info;
 pub mod global_game_event_info;
 pub mod house_info;
+pub mod item_group_info;
 pub mod item_part_prefab;
 pub mod iteminfo;
 pub mod knowledge_info;
