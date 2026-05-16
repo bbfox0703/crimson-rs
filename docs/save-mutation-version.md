@@ -145,3 +145,31 @@ handle:
 The `apply_length_changing_mutation` helper already bumps internally
 on the success path — any new function using it inherits the bump
 automatically.
+
+## Interaction with the deferred-redecode batch ABI
+
+[`save-deferred-redecode.md`](./save-deferred-redecode.md) introduces a
+transactional batch (`crimson_save_begin_deferred_redecode` →
+`_end_*` / `_abort_*`) that suspends the per-call `decode_blocks` on
+every mutation entry point. From the mutation-version reader's
+perspective:
+
+- **Mid-batch mutations DO NOT bump `mutation_version`**. The version
+  reflects "the on-disk-equivalent state changed"; while a batch is
+  open the disk-equivalent state is still the pre-begin image. The
+  in-memory tree is ahead of disk, but no observer outside the
+  current FFI call has seen it.
+- **A successful `end_*` bumps `mutation_version` exactly once** —
+  regardless of how many mutations ran inside. Snapshot readers
+  invalidate against this single bump, not against each in-batch
+  call.
+- **An aborted batch (`abort_*`) does not bump** — observationally
+  the state hasn't changed since `begin_*`. Snapshot readers see
+  the same version they did before the batch opened.
+- **A failed `end_*` (`MUTATION_INVALID`)** does not bump either —
+  the handle is rolled back to its pre-begin state, equivalent to
+  an abort.
+
+The snapshot-reader pattern from this doc keeps working unchanged
+under deferred batches. Each commit produces one bump; snapshots
+re-walk once per commit, not once per mutation.

@@ -41,8 +41,11 @@
 > across every namespace — these tables follow the QuestGauge /
 > SubLevel pattern: **no `lookup_display_name` surface**, internal
 > name is the only resolution.
-> 196 tests with `c_abi`, 69 without (+20 ignored diagnostic probes).
-> Clippy clean both modes.
+> 200 tests with `c_abi`, 69 without (+20 ignored diagnostic probes).
+> Clippy clean both modes. **Deferred-redecode batch ABI shipped
+> 2026-05-16** — `begin` / `end` / `abort` / `is_open` cut bulk-edit
+> workflows from O(N) re-decodes to one. See
+> [`docs/save-deferred-redecode.md`](./save-deferred-redecode.md).
 >
 > **Remaining (optional follow-ons only)**:
 > - **`CharacterAppearanceIndexKey`** — investigated 2026-05-15.

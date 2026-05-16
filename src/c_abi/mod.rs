@@ -23,7 +23,10 @@ use std::fmt::Write;
 use std::os::raw::c_char;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use crate::save::{Body, DecodedField, FieldKind, FieldValue, ObjectBlock, Save, SaveError, ScalarValue};
+use crate::save::{
+    Body, DecodedField, FieldKind, FieldValue, ObjectBlock, Save, SaveError, ScalarValue,
+    scalar_from_bytes,
+};
 
 pub mod character_info;
 pub mod checksum;
@@ -105,6 +108,14 @@ pub mod error {
     /// `crimson_save_set_scalar_field_present` (or
     /// `crimson_save_set_scalar_field`) for those.
     pub const NOT_INLINE_BYTES: i32 = -20;
+    /// A `crimson_save_begin_deferred_redecode` call would have nested,
+    /// or `crimson_save_write_to_file` was called while a deferred batch
+    /// was still open. The caller MUST end / abort the open batch first.
+    pub const BATCH_IN_PROGRESS: i32 = -21;
+    /// `crimson_save_end_deferred_redecode` /
+    /// `crimson_save_abort_deferred_redecode` was called but no batch
+    /// is currently open. Pairing is begin → (end | abort).
+    pub const BATCH_NOT_OPEN: i32 = -22;
     pub const PANIC: i32 = -99;
 }
 
@@ -132,6 +143,29 @@ pub struct CrimsonSaveHandle {
     /// purely defensive (584 years at 1 GHz of mutations). Initialised
     /// to 0 by [`crimson_save_load_from_file`].
     mutation_version: u64,
+    /// `Some` only between matched
+    /// [`crimson_save_begin_deferred_redecode`] +
+    /// [`crimson_save_end_deferred_redecode`] /
+    /// [`crimson_save_abort_deferred_redecode`] pairs. During a deferred
+    /// batch every mutation entry point skips the encode + re-parse +
+    /// decode_blocks tail; the cost lands once in `end_*`. The
+    /// snapshot captured here lets `abort_*` (and a failing `end_*`)
+    /// restore the pre-begin state.
+    ///
+    /// While a batch is open, `save.body` is the pre-begin byte image
+    /// and `blocks` is the in-progress in-memory tree — they're
+    /// intentionally inconsistent until `end_*` re-emits.
+    deferred_state: Option<DeferredState>,
+}
+
+/// Per-batch rollback snapshot for the deferred-redecode mode.
+///
+/// Only `blocks` is mutated during a batch (every mutation operates
+/// on the in-memory tree); `save.body` + `body` stay at their
+/// pre-batch state and don't need snapshotting until `end_*` re-emits.
+struct DeferredState {
+    blocks_backup: Vec<ObjectBlock>,
+    version_at_begin: u64,
 }
 
 impl CrimsonSaveHandle {
@@ -141,6 +175,14 @@ impl CrimsonSaveHandle {
     /// doesn't leak a phantom bump).
     fn bump_version(&mut self) {
         self.mutation_version = self.mutation_version.wrapping_add(1);
+    }
+
+    /// True while a [`crimson_save_begin_deferred_redecode`] batch is
+    /// open. Mutation entry points use this to skip their
+    /// `decode_blocks` tail; reads work as normal — `blocks` is always
+    /// the in-progress tree.
+    fn is_deferred(&self) -> bool {
+        self.deferred_state.is_some()
     }
 }
 
@@ -352,6 +394,7 @@ pub unsafe extern "C" fn crimson_save_load_from_file(
             body,
             blocks,
             mutation_version: 0,
+            deferred_state: None,
         });
         unsafe {
             *out_handle = Box::into_raw(boxed);
@@ -973,10 +1016,30 @@ fn navigate_mut_to_parent<'a>(
 /// left fully untouched — the closure mutates `h.blocks` in place, but
 /// if the re-emit fails we restore the original blocks from the
 /// pre-mutation snapshot.
+///
+/// **Deferred-redecode fast path**: when a
+/// [`crimson_save_begin_deferred_redecode`] batch is open, the
+/// per-call encode + re-parse + decode_blocks tail is skipped — the
+/// mutator just modifies `h.blocks` in place. The cost lands once in
+/// the matching `crimson_save_end_deferred_redecode`. A mutator that
+/// errors out mid-batch leaves the tree partially mutated; the caller
+/// is expected to call `crimson_save_abort_deferred_redecode` to roll
+/// back to the snapshot captured by `begin_*`.
 fn apply_length_changing_mutation<F>(h: &mut CrimsonSaveHandle, mutator: F) -> i32
 where
     F: FnOnce(&mut Vec<ObjectBlock>) -> Result<(), i32>,
 {
+    if h.is_deferred() {
+        // Deferred path: the begin_* snapshot already captured the
+        // pre-batch state, so we don't pay a per-op clone. A failed
+        // mutator leaves `h.blocks` partially mutated; abort_* will
+        // restore. Caller's contract.
+        return match mutator(&mut h.blocks) {
+            Ok(()) => error::OK,
+            Err(code) => code,
+        };
+    }
+
     // Snapshot for rollback. Cloning the blocks tree is O(N); acceptable
     // for the user-facing edit cadence (single-digit edits per second
     // tops), and saves us from leaving the handle in a half-baked state
@@ -1010,6 +1073,34 @@ where
     h.blocks = new_blocks;
     h.bump_version();
     error::OK
+}
+
+/// Update a fixed-size scalar field's `ScalarValue` inside the in-memory
+/// `blocks` tree, no byte-level patch + no `decode_blocks` refresh.
+///
+/// Used by the deferred-redecode path on scalar mutations: validates the
+/// same way `resolve_leaf_range` does, then converts `src` bytes into a
+/// `ScalarValue` via [`scalar_from_bytes`] and replaces the field's
+/// `value`. The encoder at `end_deferred_redecode` time reads the
+/// `ScalarValue` back, so the change persists across the batch commit.
+fn apply_scalar_mutation_in_blocks(
+    blocks: &mut [ObjectBlock],
+    block_idx: u32,
+    path: &[CrimsonPathStep],
+    field_idx: u32,
+    src: &[u8],
+) -> Result<(), i32> {
+    let field = navigate_mut_to_field(blocks, block_idx, path, field_idx)?;
+    if !matches!(field.kind, FieldKind::FixedPrefix | FieldKind::FixedSuffix) {
+        return Err(error::NOT_SCALAR);
+    }
+    let expected = field.end.saturating_sub(field.start);
+    if src.len() != expected {
+        return Err(error::LENGTH_MISMATCH);
+    }
+    let new_value = scalar_from_bytes(src, &field.type_name, field.meta_size as usize);
+    field.value = FieldValue::Scalar(new_value);
+    Ok(())
 }
 
 /// Rewrite the count bytes of an `object_list` variant header in place.
@@ -1133,12 +1224,28 @@ pub unsafe extern "C" fn crimson_save_set_scalar_field(
     }
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &mut *handle };
+        let src = unsafe { std::slice::from_raw_parts(bytes, bytes_len) };
+        if h.is_deferred() {
+            // Deferred path: update the field's ScalarValue in place;
+            // the encode at end_deferred_redecode emits the new bytes.
+            // No body patch, no decode_blocks, no version bump (the
+            // batch's end_* bumps once for the whole transaction).
+            return match apply_scalar_mutation_in_blocks(
+                &mut h.blocks,
+                block_idx,
+                &[],
+                field_idx,
+                src,
+            ) {
+                Ok(()) => error::OK,
+                Err(code) => code,
+            };
+        }
         let (dst_start, dst_end) =
             match resolve_leaf_range(&h.blocks, h.save.body.len(), block_idx, &[], field_idx, bytes_len) {
                 Ok(range) => range,
                 Err(code) => return code,
             };
-        let src = unsafe { std::slice::from_raw_parts(bytes, bytes_len) };
         h.save.body[dst_start..dst_end].copy_from_slice(src);
         // Refresh decoded blocks so consumers see the new value on the
         // next get_block_json. Re-parsing the body is cheap (schema/TOC
@@ -1208,12 +1315,24 @@ pub unsafe extern "C" fn crimson_save_set_scalar_field_path(
         } else {
             unsafe { std::slice::from_raw_parts(path, path_len) }
         };
+        let src = unsafe { std::slice::from_raw_parts(bytes, bytes_len) };
+        if h.is_deferred() {
+            return match apply_scalar_mutation_in_blocks(
+                &mut h.blocks,
+                block_idx,
+                steps,
+                field_idx,
+                src,
+            ) {
+                Ok(()) => error::OK,
+                Err(code) => code,
+            };
+        }
         let (dst_start, dst_end) =
             match resolve_leaf_range(&h.blocks, h.save.body.len(), block_idx, steps, field_idx, bytes_len) {
                 Ok(range) => range,
                 Err(code) => return code,
             };
-        let src = unsafe { std::slice::from_raw_parts(bytes, bytes_len) };
         h.save.body[dst_start..dst_end].copy_from_slice(src);
         h.blocks = h.body.decode_blocks(&h.save.body);
         h.bump_version();
@@ -1305,6 +1424,43 @@ pub unsafe extern "C" fn crimson_save_set_scalar_fields_batch(
                 }
                 return error::NULL_ARG;
             }
+        }
+
+        // Deferred path: each op updates the in-memory ScalarValue in
+        // turn; no body patch, no decode_blocks. Validation is per-op
+        // (same code as the single-op setter); the first failing op
+        // reports its index and leaves earlier ops applied — the
+        // batch's abort_* call will roll back if the caller wants
+        // all-or-nothing semantics.
+        if h.is_deferred() {
+            for (i, op) in ops_slice.iter().enumerate() {
+                let steps: &[CrimsonPathStep] = if op.path_len == 0 {
+                    &[]
+                } else {
+                    unsafe { std::slice::from_raw_parts(op.path, op.path_len) }
+                };
+                let src = unsafe { std::slice::from_raw_parts(op.bytes, op.bytes_len) };
+                if let Err(code) = apply_scalar_mutation_in_blocks(
+                    &mut h.blocks,
+                    op.block_idx,
+                    steps,
+                    op.field_idx,
+                    src,
+                ) {
+                    if !out_failed_op_index.is_null() {
+                        unsafe {
+                            *out_failed_op_index = i;
+                        }
+                    }
+                    return code;
+                }
+            }
+            if !out_failed_op_index.is_null() {
+                unsafe {
+                    *out_failed_op_index = usize::MAX;
+                }
+            }
+            return error::OK;
         }
 
         // Phase 1 — validate every op against the (immutable) decoded
@@ -2570,6 +2726,13 @@ pub unsafe extern "C" fn crimson_save_write_to_file(
     }
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &*handle };
+        if h.is_deferred() {
+            // Writing during an open batch would emit the pre-batch
+            // bytes (h.save.body hasn't been refreshed yet) — silently
+            // dropping every mutation in the batch. Force the caller
+            // to end or abort the batch first.
+            return error::BATCH_IN_PROGRESS;
+        }
         let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
             Ok(s) => s,
             Err(_) => return error::INVALID_PATH,
@@ -2583,6 +2746,188 @@ pub unsafe extern "C" fn crimson_save_write_to_file(
             Ok(()) => error::OK,
             Err(_) => error::WRITE_FAILED,
         }
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+// ── Deferred-redecode batch ────────────────────────────────────────────────
+
+/// Open a deferred-redecode batch on the save handle.
+///
+/// In normal mode every length-changing mutation
+/// (`crimson_save_list_insert_element`,
+/// `crimson_save_set_scalar_field_present`,
+/// `crimson_save_dynamic_array_set_u32_elements`, …) runs the
+/// `Body::write` + `Body::parse` + `decode_blocks` cycle (~25 ms on a
+/// typical 1.07 save). Each scalar mutation also runs `decode_blocks`.
+/// Workflows that need many mutations in sequence (e.g.
+/// "complete all 141 held abyss-artifact challenges", which fires
+/// **3 length-changing calls per challenge × 141 ≈ 423 re-decodes**)
+/// pay 10+ seconds of `decode_blocks` time.
+///
+/// While a batch is open, every mutation entry point mutates the
+/// in-memory `blocks` tree directly and skips the re-decode tail. The
+/// matching `crimson_save_end_deferred_redecode` runs a **single**
+/// `encode + parse + decode_blocks` pass for the whole batch.
+///
+/// Read entry points keep working — `blocks` is always the
+/// in-progress tree, so [`crimson_save_get_block_json`],
+/// [`crimson_save_list_inventory_items`], etc. see the latest state.
+/// `crimson_save_write_to_file` is rejected with `BATCH_IN_PROGRESS`
+/// while a batch is open (`h.save.body` is stale until end).
+///
+/// `mutation_version` is bumped exactly **once** by a successful
+/// `crimson_save_end_deferred_redecode` (regardless of how many
+/// mutations ran inside the batch). `crimson_save_abort_deferred_redecode`
+/// does not bump it.
+///
+/// Returns:
+/// - `OK` on success.
+/// - `BATCH_IN_PROGRESS` if a batch is already open. Pairing rule:
+///   one outstanding `begin_*` allowed; nest by ending the outer
+///   batch first.
+/// - `NULL_ARG` on null handle.
+///
+/// # Safety
+/// `handle` must be a live, exclusive handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_begin_deferred_redecode(
+    handle: *mut CrimsonSaveHandle,
+) -> i32 {
+    if handle.is_null() {
+        return error::NULL_ARG;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &mut *handle };
+        if h.is_deferred() {
+            return error::BATCH_IN_PROGRESS;
+        }
+        h.deferred_state = Some(DeferredState {
+            blocks_backup: h.blocks.clone(),
+            version_at_begin: h.mutation_version,
+        });
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Commit the deferred-redecode batch opened by
+/// [`crimson_save_begin_deferred_redecode`].
+///
+/// Runs **one** `Body::write` + `Body::parse` + `decode_blocks` pass
+/// across the accumulated in-memory tree. On success the handle's
+/// `save.body`, `body`, and `blocks` are replaced atomically and
+/// `mutation_version` bumps exactly once.
+///
+/// On encode / re-parse failure the batch is rolled back: `blocks` is
+/// restored from the snapshot captured by `begin_*`, the mutation
+/// counter is left at its pre-begin value, and the call returns
+/// `MUTATION_INVALID`. Callers that hit `MUTATION_INVALID` should
+/// treat the batch as if it had been aborted — `begin_*` again to
+/// retry with different ops.
+///
+/// Returns:
+/// - `OK` on success.
+/// - `BATCH_NOT_OPEN` if no batch is currently open.
+/// - `MUTATION_INVALID` if the accumulated tree fails to encode or
+///   re-parse; the handle is rolled back to its pre-batch state.
+/// - `NULL_ARG` on null handle.
+///
+/// # Safety
+/// `handle` must be a live, exclusive handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_end_deferred_redecode(
+    handle: *mut CrimsonSaveHandle,
+) -> i32 {
+    if handle.is_null() {
+        return error::NULL_ARG;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &mut *handle };
+        let Some(state) = h.deferred_state.take() else {
+            return error::BATCH_NOT_OPEN;
+        };
+        // Try to commit: encode_body(h.blocks) → fresh bytes → parse →
+        // decode. On any step's failure, restore blocks from the
+        // snapshot and surface MUTATION_INVALID.
+        let new_body = match h.body.write(&h.save.body, &h.blocks) {
+            Ok(b) => b,
+            Err(_) => {
+                h.blocks = state.blocks_backup;
+                return error::MUTATION_INVALID;
+            }
+        };
+        let new_body_parsed = match Body::parse(&new_body) {
+            Ok(b) => b,
+            Err(_) => {
+                h.blocks = state.blocks_backup;
+                return error::MUTATION_INVALID;
+            }
+        };
+        let new_blocks = new_body_parsed.decode_blocks(&new_body);
+        h.save.body = new_body;
+        h.body = new_body_parsed;
+        h.blocks = new_blocks;
+        h.bump_version();
+        let _ = state.version_at_begin; // captured but unused on the success path
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Abort the deferred-redecode batch opened by
+/// [`crimson_save_begin_deferred_redecode`], discarding every
+/// in-memory mutation since `begin_*` and restoring the snapshot.
+///
+/// `mutation_version` is reset to its pre-begin value (an aborted
+/// batch is observationally identical to one that never opened).
+///
+/// Returns:
+/// - `OK` on success.
+/// - `BATCH_NOT_OPEN` if no batch is open.
+/// - `NULL_ARG` on null handle.
+///
+/// # Safety
+/// `handle` must be a live, exclusive handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_abort_deferred_redecode(
+    handle: *mut CrimsonSaveHandle,
+) -> i32 {
+    if handle.is_null() {
+        return error::NULL_ARG;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &mut *handle };
+        let Some(state) = h.deferred_state.take() else {
+            return error::BATCH_NOT_OPEN;
+        };
+        h.blocks = state.blocks_backup;
+        h.mutation_version = state.version_at_begin;
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Returns `1` (in `*out_open`) if a deferred-redecode batch is
+/// currently open on the handle, `0` otherwise. Useful for editor
+/// code that re-enters from an event loop and needs to find out
+/// whether a partial batch is still around.
+///
+/// # Safety
+/// `handle` must be a live, exclusive handle. `out_open` must point
+/// at a writable `i32`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_is_deferred_redecode_open(
+    handle: *const CrimsonSaveHandle,
+    out_open: *mut i32,
+) -> i32 {
+    if handle.is_null() || out_open.is_null() {
+        return error::NULL_ARG;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        unsafe { *out_open = if h.is_deferred() { 1 } else { 0 } };
+        error::OK
     }))
     .unwrap_or(error::PANIC)
 }
@@ -6156,5 +6501,481 @@ mod tests {
         );
 
         unsafe { crimson_save_free(handle) };
+    }
+
+    // ── Deferred-redecode batch ────────────────────────────────────────────
+
+    /// Lifecycle smoke test: begin → mutate → end commits, version
+    /// bumps exactly once for the whole batch, byte image matches a
+    /// reference run of the same mutations in normal mode.
+    #[test]
+    fn c_abi_deferred_redecode_commits_and_matches_normal_mode() {
+        let Some(path) = find_save() else {
+            eprintln!("skipping c_abi_deferred_redecode_commits_and_matches_normal_mode: no live save");
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+
+        // ── Reference handle: run the mutations in normal mode ──────
+        let mut href: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut href) },
+            error::OK
+        );
+        let Some((block_idx, step, leaf_idx, original_u32, len)) =
+            find_nested_u32_scalar(href)
+        else {
+            unsafe { crimson_save_free(href) };
+            panic!("expected a u32 scalar in the live save; fixture drift");
+        };
+        assert_eq!(len, 4);
+        // Pick a sentinel that differs from the original so we can prove
+        // the mutation actually landed.
+        let sentinel: u32 = original_u32.wrapping_add(0x0FAD_BEEF);
+        let sentinel_bytes = sentinel.to_le_bytes();
+        let steps = [step];
+        // Normal mode: same 3 mutations, each triggers its own decode.
+        for _ in 0..3 {
+            assert_eq!(
+                unsafe {
+                    crimson_save_set_scalar_field_path(
+                        href,
+                        block_idx,
+                        steps.as_ptr(),
+                        steps.len(),
+                        leaf_idx,
+                        sentinel_bytes.as_ptr(),
+                        sentinel_bytes.len(),
+                    )
+                },
+                error::OK
+            );
+        }
+        let ref_body = unsafe { &*href }.save.body.clone();
+        let mut ref_version: u64 = 0;
+        unsafe { crimson_save_get_mutation_version(href, &mut ref_version) };
+        assert_eq!(ref_version, 3, "normal mode bumps once per call");
+        unsafe { crimson_save_free(href) };
+
+        // ── Batched handle: same 3 mutations, single end ───────────
+        let mut hb: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut hb) },
+            error::OK
+        );
+
+        // is_open getter starts false.
+        let mut open: i32 = -1;
+        assert_eq!(
+            unsafe { crimson_save_is_deferred_redecode_open(hb, &mut open) },
+            error::OK
+        );
+        assert_eq!(open, 0);
+
+        assert_eq!(
+            unsafe { crimson_save_begin_deferred_redecode(hb) },
+            error::OK
+        );
+        assert_eq!(
+            unsafe { crimson_save_is_deferred_redecode_open(hb, &mut open) },
+            error::OK
+        );
+        assert_eq!(open, 1);
+
+        // Nested begin rejected.
+        assert_eq!(
+            unsafe { crimson_save_begin_deferred_redecode(hb) },
+            error::BATCH_IN_PROGRESS
+        );
+
+        // write_to_file rejected while a batch is open.
+        let tmp_path = std::env::temp_dir().join("crimson_deferred_test.save");
+        let c_tmp = CString::new(tmp_path.to_str().unwrap()).unwrap();
+        assert_eq!(
+            unsafe { crimson_save_write_to_file(hb, c_tmp.as_ptr()) },
+            error::BATCH_IN_PROGRESS
+        );
+
+        // Three mutations inside the batch — same target, same bytes.
+        for _ in 0..3 {
+            assert_eq!(
+                unsafe {
+                    crimson_save_set_scalar_field_path(
+                        hb,
+                        block_idx,
+                        steps.as_ptr(),
+                        steps.len(),
+                        leaf_idx,
+                        sentinel_bytes.as_ptr(),
+                        sentinel_bytes.len(),
+                    )
+                },
+                error::OK
+            );
+        }
+        // Mid-batch the version must NOT have bumped — single bump on end.
+        let mut mid_version: u64 = u64::MAX;
+        unsafe { crimson_save_get_mutation_version(hb, &mut mid_version) };
+        assert_eq!(
+            mid_version, 0,
+            "mid-batch mutations must not bump the version counter"
+        );
+
+        // End commits.
+        assert_eq!(unsafe { crimson_save_end_deferred_redecode(hb) }, error::OK);
+
+        // Exactly one version bump for the whole batch.
+        let mut end_version: u64 = u64::MAX;
+        unsafe { crimson_save_get_mutation_version(hb, &mut end_version) };
+        assert_eq!(end_version, 1, "end_deferred_redecode bumps version once");
+
+        // Body image must equal the normal-mode reference (same ops,
+        // same target, same bytes — encoder is deterministic).
+        let batched_body = unsafe { &*hb }.save.body.clone();
+        assert_eq!(
+            batched_body, ref_body,
+            "batched body bytes must match the normal-mode reference"
+        );
+
+        // is_open now false again.
+        assert_eq!(
+            unsafe { crimson_save_is_deferred_redecode_open(hb, &mut open) },
+            error::OK
+        );
+        assert_eq!(open, 0);
+
+        // end / abort without a batch open returns BATCH_NOT_OPEN.
+        assert_eq!(
+            unsafe { crimson_save_end_deferred_redecode(hb) },
+            error::BATCH_NOT_OPEN
+        );
+        assert_eq!(
+            unsafe { crimson_save_abort_deferred_redecode(hb) },
+            error::BATCH_NOT_OPEN
+        );
+
+        unsafe { crimson_save_free(hb) };
+    }
+
+    /// Abort path: discards every mutation since begin, restores the
+    /// pre-begin tree + version. Subsequent reads see the original
+    /// scalar value, not the sentinel applied during the batch.
+    #[test]
+    fn c_abi_deferred_redecode_abort_restores_pre_begin() {
+        let Some(path) = find_save() else {
+            eprintln!("skipping c_abi_deferred_redecode_abort_restores_pre_begin: no live save");
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let mut handle: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle) },
+            error::OK
+        );
+        let Some((block_idx, step, leaf_idx, original_u32, _)) =
+            find_nested_u32_scalar(handle)
+        else {
+            unsafe { crimson_save_free(handle) };
+            panic!("expected a u32 scalar in the live save; fixture drift");
+        };
+
+        // Bump once outside the batch so we can prove abort restores
+        // to a non-zero version rather than just "version == 0".
+        let sentinel_outside: u32 = original_u32.wrapping_add(1);
+        let outside_bytes = sentinel_outside.to_le_bytes();
+        let steps = [step];
+        assert_eq!(
+            unsafe {
+                crimson_save_set_scalar_field_path(
+                    handle,
+                    block_idx,
+                    steps.as_ptr(),
+                    steps.len(),
+                    leaf_idx,
+                    outside_bytes.as_ptr(),
+                    outside_bytes.len(),
+                )
+            },
+            error::OK
+        );
+        let mut v_before: u64 = 0;
+        unsafe { crimson_save_get_mutation_version(handle, &mut v_before) };
+        assert_eq!(v_before, 1);
+
+        // Open a batch, apply a different sentinel, then abort.
+        assert_eq!(
+            unsafe { crimson_save_begin_deferred_redecode(handle) },
+            error::OK
+        );
+        let sentinel_inside: u32 = original_u32.wrapping_add(0xABCD);
+        let inside_bytes = sentinel_inside.to_le_bytes();
+        assert_eq!(
+            unsafe {
+                crimson_save_set_scalar_field_path(
+                    handle,
+                    block_idx,
+                    steps.as_ptr(),
+                    steps.len(),
+                    leaf_idx,
+                    inside_bytes.as_ptr(),
+                    inside_bytes.len(),
+                )
+            },
+            error::OK
+        );
+        assert_eq!(
+            unsafe { crimson_save_abort_deferred_redecode(handle) },
+            error::OK
+        );
+
+        // Version restored to its pre-begin value.
+        let mut v_after_abort: u64 = u64::MAX;
+        unsafe { crimson_save_get_mutation_version(handle, &mut v_after_abort) };
+        assert_eq!(
+            v_after_abort, v_before,
+            "abort_deferred_redecode must restore the pre-begin version"
+        );
+
+        // Walk the same nested scalar and confirm it still holds the
+        // outside-batch sentinel — the inside-batch mutation was rolled
+        // back.
+        let h = unsafe { &*handle };
+        let parent = match &h.blocks[block_idx as usize].fields[step.field_idx as usize].value {
+            FieldValue::Locator { child: Some(c), .. } => c.as_ref(),
+            FieldValue::ObjectList { elements, .. } => &elements[step.element_idx as usize],
+            _ => panic!("step doesn't navigate to a block"),
+        };
+        let leaf = &parent.fields[leaf_idx as usize];
+        let FieldValue::Scalar(ScalarValue::U32(actual)) = leaf.value else {
+            panic!("expected u32 scalar leaf");
+        };
+        assert_eq!(
+            actual, sentinel_outside,
+            "abort must restore the in-memory tree to its pre-begin state"
+        );
+
+        unsafe { crimson_save_free(handle) };
+    }
+
+    /// Mixed length-changing + scalar mutations inside a single batch
+    /// commit to the same body bytes as running them sequentially in
+    /// normal mode. Covers the real C# editor workflow shape
+    /// (ListCloneElement + SetScalarFieldPresent + scalar setters in
+    /// the same transaction).
+    #[test]
+    fn c_abi_deferred_redecode_mixed_length_change_matches_normal_mode() {
+        let Some(path) = find_save() else {
+            eprintln!("skipping c_abi_deferred_redecode_mixed_length_change_matches_normal_mode: no live save");
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+
+        // Locate a clonable list element + a sibling fixed-size u32
+        // scalar inside the same parent block so the test can chain
+        // a length-changing op and a scalar op against the same target.
+        // The simplest reliable shape: pick any block whose first list
+        // has at least one element with a scalar child.
+        let mut href: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut href) },
+            error::OK
+        );
+        let target = {
+            let h = unsafe { &*href };
+            let mut found: Option<(u32, u32, u32, u32, u32, u32)> = None;
+            'outer: for (bi, block) in h.blocks.iter().enumerate() {
+                for (fi, field) in block.fields.iter().enumerate() {
+                    if let FieldValue::ObjectList {
+                        elements,
+                        header_variant,
+                        ..
+                    } = &field.value
+                    {
+                        if *header_variant == "marker_run_plus_zeros" {
+                            // Insert is rejected on this variant —
+                            // pick another list.
+                            continue;
+                        }
+                        if let Some((eli, _el)) = elements.iter().enumerate().next() {
+                            // Within this element, find a u32 leaf.
+                            let el = &elements[eli];
+                            for (lf, leaf) in el.fields.iter().enumerate() {
+                                if matches!(
+                                    leaf.kind,
+                                    FieldKind::FixedPrefix | FieldKind::FixedSuffix
+                                ) && leaf.end - leaf.start == 4
+                                    && matches!(
+                                        leaf.value,
+                                        FieldValue::Scalar(ScalarValue::U32(_))
+                                    )
+                                {
+                                    let FieldValue::Scalar(ScalarValue::U32(orig)) = leaf.value
+                                    else {
+                                        continue;
+                                    };
+                                    found = Some((
+                                        bi as u32,
+                                        fi as u32,
+                                        eli as u32,
+                                        lf as u32,
+                                        orig,
+                                        elements.len() as u32,
+                                    ));
+                                    break 'outer;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            found
+        };
+        let Some((block_idx, list_fi, el_idx, leaf_fi, original_u32, list_len_before)) = target
+        else {
+            unsafe { crimson_save_free(href) };
+            eprintln!("skipping: no suitable list+scalar shape found in this save");
+            return;
+        };
+        assert!(list_len_before >= 1);
+        let sentinel: u32 = original_u32.wrapping_add(0xCAFE_F00D);
+        let sentinel_bytes = sentinel.to_le_bytes();
+
+        // ── Normal mode reference ──────────────────────────────────
+        // 1. Clone element 0; 2. Set the cloned element's scalar.
+        // dst_element_idx = list_len_before puts the clone at the
+        // current end of the list, regardless of which element we
+        // sourced from — keeps the path invariant for both the
+        // reference + batched runs.
+        let dst_idx = list_len_before;
+        assert_eq!(
+            unsafe {
+                crimson_save_list_clone_element(
+                    href,
+                    block_idx,
+                    ptr::null(),
+                    0,
+                    list_fi,
+                    el_idx,
+                    dst_idx,
+                )
+            },
+            error::OK
+        );
+        let clone_path = [CrimsonPathStep {
+            field_idx: list_fi,
+            element_idx: dst_idx,
+        }];
+        assert_eq!(
+            unsafe {
+                crimson_save_set_scalar_field_path(
+                    href,
+                    block_idx,
+                    clone_path.as_ptr(),
+                    clone_path.len(),
+                    leaf_fi,
+                    sentinel_bytes.as_ptr(),
+                    sentinel_bytes.len(),
+                )
+            },
+            error::OK
+        );
+        let ref_body = unsafe { &*href }.save.body.clone();
+        unsafe { crimson_save_free(href) };
+
+        // ── Batched run ─────────────────────────────────────────────
+        let mut hb: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut hb) },
+            error::OK
+        );
+        assert_eq!(
+            unsafe { crimson_save_begin_deferred_redecode(hb) },
+            error::OK
+        );
+        assert_eq!(
+            unsafe {
+                crimson_save_list_clone_element(
+                    hb,
+                    block_idx,
+                    ptr::null(),
+                    0,
+                    list_fi,
+                    el_idx,
+                    dst_idx,
+                )
+            },
+            error::OK
+        );
+        assert_eq!(
+            unsafe {
+                crimson_save_set_scalar_field_path(
+                    hb,
+                    block_idx,
+                    clone_path.as_ptr(),
+                    clone_path.len(),
+                    leaf_fi,
+                    sentinel_bytes.as_ptr(),
+                    sentinel_bytes.len(),
+                )
+            },
+            error::OK
+        );
+
+        // Mid-batch the in-memory tree already reflects the changes:
+        // the list has one more element, and the cloned leaf holds
+        // the sentinel.
+        {
+            let h = unsafe { &*hb };
+            let FieldValue::ObjectList { elements, .. } =
+                &h.blocks[block_idx as usize].fields[list_fi as usize].value
+            else {
+                panic!("list field disappeared");
+            };
+            assert_eq!(
+                elements.len() as u32,
+                list_len_before + 1,
+                "clone must extend the list in deferred mode"
+            );
+            let clone_leaf = &elements[dst_idx as usize].fields[leaf_fi as usize];
+            let FieldValue::Scalar(ScalarValue::U32(v)) = clone_leaf.value else {
+                panic!("clone leaf isn't u32");
+            };
+            assert_eq!(v, sentinel, "deferred scalar mutation must be visible in-tree");
+        }
+
+        assert_eq!(unsafe { crimson_save_end_deferred_redecode(hb) }, error::OK);
+
+        // Body image matches the normal-mode reference.
+        let batched_body = unsafe { &*hb }.save.body.clone();
+        assert_eq!(
+            batched_body, ref_body,
+            "batched body must match normal-mode reference byte-for-byte"
+        );
+
+        unsafe { crimson_save_free(hb) };
+    }
+
+    /// Null-arg paths for the new deferred-redecode entry points.
+    #[test]
+    fn c_abi_deferred_redecode_null_args() {
+        let mut sink: i32 = -1;
+        assert_eq!(
+            unsafe { crimson_save_begin_deferred_redecode(ptr::null_mut()) },
+            error::NULL_ARG
+        );
+        assert_eq!(
+            unsafe { crimson_save_end_deferred_redecode(ptr::null_mut()) },
+            error::NULL_ARG
+        );
+        assert_eq!(
+            unsafe { crimson_save_abort_deferred_redecode(ptr::null_mut()) },
+            error::NULL_ARG
+        );
+        assert_eq!(
+            unsafe {
+                crimson_save_is_deferred_redecode_open(ptr::null(), &mut sink)
+            },
+            error::NULL_ARG
+        );
     }
 }
