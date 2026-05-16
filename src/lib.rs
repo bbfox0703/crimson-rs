@@ -1,6 +1,10 @@
 mod binary;
 #[cfg(feature = "c_abi")]
 mod character_info;
+#[cfg(feature = "c_abi")]
+mod craft_tool_group_info;
+#[cfg(feature = "c_abi")]
+mod craft_tool_info;
 mod crypto;
 #[cfg(feature = "c_abi")]
 mod dye_color_group_info;

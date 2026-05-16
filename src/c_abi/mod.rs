@@ -30,6 +30,8 @@ use crate::save::{
 
 pub mod character_info;
 pub mod checksum;
+pub mod craft_tool_group_info;
+pub mod craft_tool_info;
 pub mod dye_color_group_info;
 pub mod faction_node_info;
 pub mod faction_relation_group_info;
@@ -149,6 +151,240 @@ pub(crate) fn write_str_to_buf(
         *buf.add(src.len()) = 0;
     }
     error::OK
+}
+
+/// Macro for the "name-only key resolver" bridge family — issues the
+/// standard handle struct + six `extern "C"` functions (load_from_file,
+/// load_from_bytes, free, entry_count, lookup_string_key, get_entry).
+///
+/// Used by the 2026-05-16 niche-bridge batch (HouseKey, RoyalSupplyKey,
+/// CraftToolKey, ... ). The earlier bridges (store_info, faction_node_info,
+/// etc.) predate the macro and remain hand-written; they can be migrated
+/// later if a cross-cutting ABI change ever lands.
+///
+/// Usage:
+///
+/// ```ignore
+/// crate::impl_name_only_bridge! {
+///     handle = CrimsonHouseInfoHandle,
+///     parser = crate::house_info::parse_house_info_lossy,
+///     entry_ty = crate::house_info::HouseInfoEntry,
+///     load_from_file = crimson_house_info_load_from_file,
+///     load_from_bytes = crimson_house_info_load_from_bytes,
+///     free = crimson_house_info_free,
+///     entry_count = crimson_house_info_entry_count,
+///     lookup_string_key = crimson_house_info_lookup_string_key,
+///     get_entry = crimson_house_info_get_entry,
+///     key_param = house_key,
+/// }
+/// ```
+#[macro_export]
+macro_rules! impl_name_only_bridge {
+    (
+        handle = $Handle:ident,
+        parser = $parse_fn:path,
+        entry_ty = $EntryTy:path,
+        load_from_file = $load_file:ident,
+        load_from_bytes = $load_bytes:ident,
+        free = $free:ident,
+        entry_count = $entry_count:ident,
+        lookup_string_key = $lookup:ident,
+        get_entry = $get_entry:ident,
+        key_param = $key_param:ident,
+    ) => {
+        #[repr(C)]
+        pub struct $Handle {
+            by_key: std::collections::HashMap<u32, String>,
+            entries: Vec<(u32, String)>,
+        }
+
+        impl $Handle {
+            fn from_bytes(pabgb: &[u8], pabgh: &[u8]) -> Self {
+                let raw: Vec<$EntryTy> = $parse_fn(pabgb, pabgh);
+                let mut by_key: std::collections::HashMap<u32, String> =
+                    std::collections::HashMap::with_capacity(raw.len());
+                let mut entries: Vec<(u32, String)> = Vec::with_capacity(raw.len());
+                for e in raw {
+                    if let std::collections::hash_map::Entry::Vacant(v) =
+                        by_key.entry(e.key)
+                    {
+                        v.insert(e.name.clone());
+                        entries.push((e.key, e.name));
+                    }
+                }
+                $Handle { by_key, entries }
+            }
+        }
+
+        /// # Safety
+        /// Both path arguments must be NUL-terminated UTF-8 strings.
+        /// `out_handle` must be non-null.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $load_file(
+            pabgb_path: *const std::os::raw::c_char,
+            pabgh_path: *const std::os::raw::c_char,
+            out_handle: *mut *mut $Handle,
+        ) -> i32 {
+            if pabgb_path.is_null() || pabgh_path.is_null() || out_handle.is_null() {
+                return $crate::c_abi::error::NULL_ARG;
+            }
+            unsafe { *out_handle = std::ptr::null_mut() };
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let pabgb_str =
+                    match unsafe { std::ffi::CStr::from_ptr(pabgb_path) }.to_str() {
+                        Ok(s) => s,
+                        Err(_) => return $crate::c_abi::error::INVALID_PATH,
+                    };
+                let pabgh_str =
+                    match unsafe { std::ffi::CStr::from_ptr(pabgh_path) }.to_str() {
+                        Ok(s) => s,
+                        Err(_) => return $crate::c_abi::error::INVALID_PATH,
+                    };
+                let pabgb = match std::fs::read(pabgb_str) {
+                    Ok(b) => b,
+                    Err(_) => return $crate::c_abi::error::IO,
+                };
+                let pabgh = match std::fs::read(pabgh_str) {
+                    Ok(b) => b,
+                    Err(_) => return $crate::c_abi::error::IO,
+                };
+                let handle = $Handle::from_bytes(&pabgb, &pabgh);
+                unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
+                $crate::c_abi::error::OK
+            }))
+            .unwrap_or($crate::c_abi::error::PANIC)
+        }
+
+        /// # Safety
+        /// `pabgb`/`pabgh` may be null iff length is 0; `out_handle`
+        /// must be non-null.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $load_bytes(
+            pabgb: *const u8,
+            pabgb_len: usize,
+            pabgh: *const u8,
+            pabgh_len: usize,
+            out_handle: *mut *mut $Handle,
+        ) -> i32 {
+            if out_handle.is_null() {
+                return $crate::c_abi::error::NULL_ARG;
+            }
+            if (pabgb.is_null() && pabgb_len != 0)
+                || (pabgh.is_null() && pabgh_len != 0)
+            {
+                return $crate::c_abi::error::NULL_ARG;
+            }
+            unsafe { *out_handle = std::ptr::null_mut() };
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let pabgb_slice = if pabgb_len == 0 {
+                    &[][..]
+                } else {
+                    unsafe { std::slice::from_raw_parts(pabgb, pabgb_len) }
+                };
+                let pabgh_slice = if pabgh_len == 0 {
+                    &[][..]
+                } else {
+                    unsafe { std::slice::from_raw_parts(pabgh, pabgh_len) }
+                };
+                let handle = $Handle::from_bytes(pabgb_slice, pabgh_slice);
+                unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
+                $crate::c_abi::error::OK
+            }))
+            .unwrap_or($crate::c_abi::error::PANIC)
+        }
+
+        /// # Safety
+        /// `handle` must be null or a pointer previously returned by
+        /// one of the loaders and not yet freed.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $free(handle: *mut $Handle) {
+            if handle.is_null() {
+                return;
+            }
+            unsafe {
+                let _ = Box::from_raw(handle);
+            }
+        }
+
+        /// # Safety
+        /// `handle` must be live; `out_count` must be non-null.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $entry_count(
+            handle: *const $Handle,
+            out_count: *mut u32,
+        ) -> i32 {
+            if handle.is_null() || out_count.is_null() {
+                return $crate::c_abi::error::NULL_ARG;
+            }
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let h = unsafe { &*handle };
+                unsafe { *out_count = h.entries.len() as u32 };
+                $crate::c_abi::error::OK
+            }))
+            .unwrap_or($crate::c_abi::error::PANIC)
+        }
+
+        /// # Safety
+        /// `handle` and `required` must be non-null; `buf` may be null
+        /// iff `buf_len == 0`.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $lookup(
+            handle: *const $Handle,
+            $key_param: u32,
+            buf: *mut u8,
+            buf_len: usize,
+            required: *mut usize,
+        ) -> i32 {
+            if handle.is_null() || required.is_null() {
+                return $crate::c_abi::error::NULL_ARG;
+            }
+            if buf.is_null() && buf_len != 0 {
+                return $crate::c_abi::error::NULL_ARG;
+            }
+            unsafe { *required = 0 };
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let h = unsafe { &*handle };
+                let Some(name) = h.by_key.get(&$key_param) else {
+                    return $crate::c_abi::error::NOT_FOUND;
+                };
+                $crate::c_abi::write_str_to_buf(name, buf, buf_len, required)
+            }))
+            .unwrap_or($crate::c_abi::error::PANIC)
+        }
+
+        /// # Safety
+        /// `handle`, `out_key`, and `required` must be non-null; `buf`
+        /// may be null iff `buf_len == 0`.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $get_entry(
+            handle: *const $Handle,
+            idx: u32,
+            out_key: *mut u32,
+            buf: *mut u8,
+            buf_len: usize,
+            required: *mut usize,
+        ) -> i32 {
+            if handle.is_null() || out_key.is_null() || required.is_null() {
+                return $crate::c_abi::error::NULL_ARG;
+            }
+            if buf.is_null() && buf_len != 0 {
+                return $crate::c_abi::error::NULL_ARG;
+            }
+            unsafe {
+                *out_key = 0;
+                *required = 0;
+            }
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let h = unsafe { &*handle };
+                let Some((key, name)) = h.entries.get(idx as usize) else {
+                    return $crate::c_abi::error::OUT_OF_RANGE;
+                };
+                unsafe { *out_key = *key };
+                $crate::c_abi::write_str_to_buf(name, buf, buf_len, required)
+            }))
+            .unwrap_or($crate::c_abi::error::PANIC)
+        }
+    };
 }
 
 /// Opaque handle handed out across the ABI boundary. C side only sees
