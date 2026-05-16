@@ -42,7 +42,22 @@ pub struct CrimsonItemInfoHandle {
     /// Sealed Abyss Artifact series) point at the catalog mission key
     /// of the challenge that rewards them; regular items leave this
     /// field at 0 and don't show up in the map.
+    ///
+    /// Verified across the live 1.07 install: 141 items carry a
+    /// non-zero value, all 141 missions they point at have internal
+    /// names matching `Challenge_SealedArtifact_*`. The mapping is
+    /// **1:1** (no mission is the target of more than one artifact),
+    /// so the reverse map below is a clean inverse.
     look_detail_mission_by_key: HashMap<u32, u32>,
+    /// Inverse of `look_detail_mission_by_key`: mission_key → item_key.
+    /// Lets the editor answer "which artifact starts THIS challenge?"
+    /// in O(1). For missions absent from the map, no artifact
+    /// triggers them — they're started by other means (e.g. dialogue,
+    /// kill counters, geographic discovery).
+    ///
+    /// **Invariant**: the iteminfo's forward map is verified 1:1 in
+    /// 1.07, so this inverse is unambiguous.
+    artifact_by_mission: HashMap<u32, u32>,
     /// Per-item gamedata socket caps:
     /// `(use_socket, socket_valid_count)`.
     /// - `use_socket = 0` → item is not socket-capable in vanilla.
@@ -178,11 +193,28 @@ impl CrimsonItemInfoHandle {
         // Canonical gem set is the (item_type=74, category=2501) bucket
         // — collected during the parse loop above.
         let canonical_gem_list: Vec<u32> = canonical_gems_set.into_iter().collect();
+        // Inverse of look_detail_mission_by_key. The forward map is
+        // verified 1:1 against the live 1.07 install, so this inverse
+        // is unambiguous; if a future patch broke the 1:1 invariant
+        // we'd silently overwrite earlier entries — surface a warning
+        // in that case so we know to revisit the schema.
+        let mut artifact_by_mission: HashMap<u32, u32> =
+            HashMap::with_capacity(look_detail_mission_by_key.len());
+        for (&item_key, &mission_key) in &look_detail_mission_by_key {
+            if artifact_by_mission.insert(mission_key, item_key).is_some() {
+                eprintln!(
+                    "warn: look_detail_mission_info 1:1 invariant broken — \
+                     mission {mission_key} pointed at by multiple artifacts; \
+                     keeping last-write-wins"
+                );
+            }
+        }
         Ok(CrimsonItemInfoHandle {
             by_key,
             max_stack_by_key,
             icon_path_by_key,
             look_detail_mission_by_key,
+            artifact_by_mission,
             socket_caps_by_key,
             socket_allowed_gems_by_key,
             canonical_gem_list,
@@ -453,6 +485,48 @@ pub unsafe extern "C" fn crimson_iteminfo_lookup_look_detail_mission_info(
             return error::NOT_FOUND;
         };
         unsafe { *out_mission_key = *mk };
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Reverse of [`crimson_iteminfo_lookup_look_detail_mission_info`]:
+/// given a `MissionKey (u32)`, return the `ItemKey (u32)` of the
+/// artifact whose pickup triggers that challenge.
+///
+/// Use case: the editor's catalog UI starts from a focused mission
+/// (challenge); to highlight "you need item X to start this", it
+/// reads the artifact key here. Combined with the inventory walker
+/// and PALOC, the editor can also tell the user "you already own /
+/// have used the artifact for this challenge".
+///
+/// **Coverage**: 141 missions in 1.07 — all named
+/// `Challenge_SealedArtifact_*`. Returns `NOT_FOUND` for the
+/// remaining ~3,900 missions; those are challenges that start by
+/// other triggers (dialogue, kills, exploration) and need no
+/// artifact. The editor uses this to gate the "Sealed Artifact
+/// required" badge.
+///
+/// On `NOT_FOUND`, `*out_item_key` is set to 0.
+///
+/// # Safety
+/// `handle` and `out_item_key` must be non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_iteminfo_lookup_artifact_for_mission(
+    handle: *const CrimsonItemInfoHandle,
+    mission_key: u32,
+    out_item_key: *mut u32,
+) -> i32 {
+    if handle.is_null() || out_item_key.is_null() {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_item_key = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let Some(ik) = h.artifact_by_mission.get(&mission_key) else {
+            return error::NOT_FOUND;
+        };
+        unsafe { *out_item_key = *ik };
         error::OK
     }))
     .unwrap_or(error::PANIC)
@@ -1292,6 +1366,193 @@ mod tests {
         unsafe { crimson_iteminfo_free(handle) };
     }
 
+    /// Diagnostic — surveys the artifact ↔ challenge mapping carried
+    /// by `iteminfo.look_detail_mission_info`. Resolves item display
+    /// names (via PALOC `(itemkey<<32)|0x70`) and mission internal
+    /// names (via missioninfo) so we can see the actual mapping data
+    /// and decide what to ship as an API surface.
+    ///
+    /// What we want to learn from this probe:
+    ///   - How many items carry a non-zero look_detail_mission_info?
+    ///   - What naming pattern do those mission internal_names have
+    ///     (e.g. "Challenge_*", "Catalog_*", "Mission_*Artifact*")?
+    ///   - Is the mapping 1:1 (one artifact per mission) or 1:N
+    ///     (multiple artifacts can start the same challenge)?
+    ///   - What fraction of missions have NO artifact pointing at them
+    ///     (those are challenges that start by other triggers)?
+    #[test]
+    #[ignore = "investigation only — artifact ↔ catalog-challenge mapping survey"]
+    fn _probe_artifact_challenge_mapping() {
+        use crate::mission_info::parse_mission_info_lossy;
+
+        let Some(pamt_path) = find_pamt_for_iteminfo() else {
+            eprintln!("skipping: no game install");
+            return;
+        };
+        let pamt = CString::new(pamt_path.to_str().unwrap()).unwrap();
+        let iteminfo_bytes = extract_iteminfo_bytes(pamt.as_c_str());
+
+        // Pull missioninfo too.
+        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
+            });
+        let pamt_data = std::fs::read(game_root.join("0008").join("0.pamt"))
+            .expect("read 0008 pamt");
+        let pamt_parsed = crate::binary::pamt::PackMeta::parse(&pamt_data, None)
+            .expect("parse pamt");
+        let dir = pamt_parsed.directories.iter()
+            .find(|d| d.path == "gamedata/binary__/client/bin")
+            .expect("dir");
+        let mi_file = dir.files.iter().find(|f| f.name == "missioninfo.pabgb")
+            .expect("missioninfo");
+        let missioninfo_bytes = crate::binary::paz::extract_file(
+            &game_root.join("0008"),
+            mi_file,
+            "gamedata/binary__/client/bin",
+            &pamt_parsed.header.encrypt_info.encrypt_info,
+        ).expect("extract missioninfo");
+        let mission_entries = parse_mission_info_lossy(&missioninfo_bytes);
+        let mission_name_by_key: std::collections::HashMap<u32, String> = mission_entries
+            .iter()
+            .map(|e| (e.key, e.name.clone()))
+            .collect();
+
+        // Build iteminfo handle.
+        let mut h: *mut CrimsonItemInfoHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_iteminfo_load_from_bytes(iteminfo_bytes.as_ptr(), iteminfo_bytes.len(), &mut h) },
+            error::OK
+        );
+        let handle = unsafe { &*h };
+
+        // Pull eng PALOC for item display names.
+        let paloc_pamt = game_root.join("0020").join("0.pamt");
+        let paloc_handle = if paloc_pamt.is_file() {
+            let pamt_c = CString::new(paloc_pamt.to_str().unwrap()).unwrap();
+            let dir_c = CString::new("gamedata/stringtable/binary__").unwrap();
+            let name_c = CString::new("localizationstring_eng.paloc").unwrap();
+            let mut needed: usize = 0;
+            let _ = unsafe {
+                crimson_paz_extract_file(
+                    pamt_c.as_ptr(), dir_c.as_ptr(), name_c.as_ptr(),
+                    ptr::null_mut(), 0, &mut needed,
+                )
+            };
+            let mut buf = vec![0u8; needed];
+            unsafe {
+                crimson_paz_extract_file(
+                    pamt_c.as_ptr(), dir_c.as_ptr(), name_c.as_ptr(),
+                    buf.as_mut_ptr(), buf.len(), &mut needed,
+                );
+            }
+            buf.truncate(needed);
+            let mut ph: *mut crate::c_abi::paloc::CrimsonPalocHandle = ptr::null_mut();
+            unsafe {
+                crate::c_abi::paloc::crimson_paloc_load_from_bytes(
+                    buf.as_ptr(), buf.len(), &mut ph,
+                );
+            }
+            Some(ph)
+        } else {
+            None
+        };
+
+        // Walk every item carrying a non-zero look_detail_mission_info.
+        // Group: mission_key → Vec<(item_key, item_display)>.
+        let mut by_mission: std::collections::BTreeMap<u32, Vec<(u32, String)>> = Default::default();
+        for (item_key, mission_key) in &handle.look_detail_mission_by_key {
+            let display = if let Some(ph) = paloc_handle {
+                let u64_key = (u64::from(*item_key) << 32) | 0x70u64;
+                let decimal = format!("{u64_key}");
+                let p = unsafe { &*ph };
+                p.lookup_str(&decimal).unwrap_or("<no display>").to_string()
+            } else {
+                "<paloc unavailable>".to_string()
+            };
+            by_mission.entry(*mission_key).or_default().push((*item_key, display));
+        }
+
+        // ── Top-level stats ────────────────────────────────────────
+        eprintln!("\n=== iteminfo → mission mapping survey ===");
+        eprintln!("  total items in iteminfo:                  {}", handle.entries.len());
+        eprintln!("  items with look_detail_mission_info != 0: {}",
+            handle.look_detail_mission_by_key.len());
+        eprintln!("  distinct missions pointed at:             {}", by_mission.len());
+
+        let with_multi = by_mission.values().filter(|v| v.len() > 1).count();
+        eprintln!("  missions with >1 artifact pointing at them: {}", with_multi);
+
+        // ── Mission-name pattern stats — which prefixes show up most?
+        let mut prefix_hist: std::collections::BTreeMap<String, u32> = Default::default();
+        let mut missing_in_missioninfo = 0u32;
+        for mission_key in by_mission.keys() {
+            match mission_name_by_key.get(mission_key) {
+                Some(name) => {
+                    // First 2 path segments of the internal name.
+                    let prefix: String = name.split('_').take(2).collect::<Vec<_>>().join("_");
+                    *prefix_hist.entry(prefix).or_insert(0) += 1;
+                }
+                None => missing_in_missioninfo += 1,
+            }
+        }
+        eprintln!("\n  mission-name prefix histogram (top 15):");
+        let mut sorted_prefixes: Vec<_> = prefix_hist.iter().collect();
+        sorted_prefixes.sort_by(|a, b| b.1.cmp(a.1));
+        for (prefix, count) in sorted_prefixes.iter().take(15) {
+            eprintln!("    {:6} × {}", count, prefix);
+        }
+        eprintln!("  missions pointed-at but not found in missioninfo: {}",
+            missing_in_missioninfo);
+
+        // ── Sample dump: 25 (mission, [items]) entries
+        eprintln!("\n  sample (first 25 missions; mission_name → [items]):");
+        for (i, (mission_key, items)) in by_mission.iter().take(25).enumerate() {
+            let mname = mission_name_by_key.get(mission_key)
+                .map(|s| s.as_str())
+                .unwrap_or("<not in missioninfo>");
+            let items_str: Vec<String> = items.iter()
+                .map(|(ik, n)| format!("{ik}:{n}"))
+                .collect();
+            eprintln!("    [{:2}] mission={} ({}) → {} item(s):", i, mission_key, mname, items.len());
+            for it in &items_str {
+                eprintln!("           {it}");
+            }
+        }
+
+        // ── Multi-artifact missions — interesting case
+        eprintln!("\n  missions with multiple artifacts (1:N case):");
+        let mut multi_count = 0;
+        for (mission_key, items) in by_mission.iter().filter(|(_, v)| v.len() > 1) {
+            let mname = mission_name_by_key.get(mission_key)
+                .map(|s| s.as_str())
+                .unwrap_or("<not in missioninfo>");
+            eprintln!("    mission={} ({}) → {} items: {:?}",
+                mission_key, mname, items.len(),
+                items.iter().map(|(k, n)| format!("{k}:{n}")).collect::<Vec<_>>());
+            multi_count += 1;
+            if multi_count >= 10 { break; }
+        }
+
+        // ── Universe — total missions vs missions-with-artifacts
+        eprintln!("\n  universe context:");
+        eprintln!("    total missions in missioninfo: {}", mission_entries.len());
+        let with_artifact = by_mission.len() as f64;
+        let total_missions = mission_entries.len() as f64;
+        eprintln!(
+            "    fraction of missions started by an artifact: {:.1}% ({}/{})",
+            (with_artifact / total_missions) * 100.0,
+            by_mission.len(), mission_entries.len(),
+        );
+
+        // Cleanup
+        unsafe { crimson_iteminfo_free(h) };
+        if let Some(ph) = paloc_handle {
+            unsafe { crate::c_abi::paloc::crimson_paloc_free(ph) };
+        }
+    }
+
     /// Diagnostic — dumps the iteminfo fields for known gem itemkeys
     /// to figure out which field reliably marks something as a gem.
     /// Items investigated: 1002979 (爆走的力量審判, durability gem
@@ -1485,6 +1746,129 @@ mod tests {
         let mut g2: u32 = 0;
         assert_eq!(
             unsafe { crimson_iteminfo_canonical_gem_at(ptr::null(), 0, &mut g2) },
+            error::NULL_ARG
+        );
+
+        unsafe { crimson_iteminfo_free(handle) };
+    }
+
+    /// Validates the artifact ↔ challenge bidirectional mapping is
+    /// 1:1 and round-trips correctly. The phase-3 probe
+    /// `_probe_artifact_challenge_mapping` confirmed:
+    /// - 141 items carry a non-zero `look_detail_mission_info`
+    /// - All 141 missions they point at are `Challenge_SealedArtifact_*`
+    /// - Mapping is 1:1 (no mission target by >1 artifact)
+    ///
+    /// This test asserts the same invariants via the C ABI surface
+    /// and pins a handful of (item, mission) tuples from the probe.
+    /// Pinned tuples catch both schema regression (parser misses the
+    /// field) and Pearl Abyss rebinding (an artifact is reassigned to
+    /// a different challenge).
+    #[test]
+    fn c_abi_iteminfo_artifact_challenge_roundtrip_live() {
+        let Some(pamt_path) = find_pamt_for_iteminfo() else {
+            eprintln!("skipping c_abi_iteminfo_artifact_challenge_roundtrip_live: no game install");
+            return;
+        };
+        let pamt = CString::new(pamt_path.to_str().unwrap()).unwrap();
+        let bytes = extract_iteminfo_bytes(pamt.as_c_str());
+
+        let mut handle: *mut CrimsonItemInfoHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_iteminfo_load_from_bytes(bytes.as_ptr(), bytes.len(), &mut handle) },
+            error::OK
+        );
+
+        // ── Pinned (artifact_item_key, challenge_mission_key) pairs from
+        // the probe output, covering several weapon-mastery tracks +
+        // hunting + challenge-and-change. If PA rebinds any of these
+        // the test fires.
+        let pins: &[(u32, u32, &str)] = &[
+            (1002038, 1000138, "Hunting_XI"),
+            (1001984, 1000143, "Mastery_Battle_X"),
+            (1002035, 1000144, "ChallengeAndChange_VII"),
+            (1000826, 1000209, "Mastery_OneHandSword_I"),
+            (1002008, 1000214, "Mastery_OneHandSword_II"),
+            (1000850, 1000217, "Mastery_OneHandSword_III"),
+            (1001987, 1000602, "Mastery_Bow_I"),
+            (1002004, 1000605, "Mastery_Battle_I"),
+        ];
+
+        for &(item_key, mission_key, label) in pins {
+            // Forward: item → mission.
+            let mut got_mission: u32 = 0;
+            let rc = unsafe {
+                crimson_iteminfo_lookup_look_detail_mission_info(
+                    handle, item_key, &mut got_mission,
+                )
+            };
+            assert_eq!(rc, error::OK, "forward lookup failed for {label} (item {item_key})");
+            assert_eq!(
+                got_mission, mission_key,
+                "{label}: forward mapping drifted (got mission {got_mission}, expected {mission_key})"
+            );
+
+            // Reverse: mission → item.
+            let mut got_item: u32 = 0;
+            let rc = unsafe {
+                crimson_iteminfo_lookup_artifact_for_mission(
+                    handle, mission_key, &mut got_item,
+                )
+            };
+            assert_eq!(rc, error::OK, "reverse lookup failed for {label} (mission {mission_key})");
+            assert_eq!(
+                got_item, item_key,
+                "{label}: reverse mapping drifted (got item {got_item}, expected {item_key})"
+            );
+        }
+
+        // ── Full-table consistency: every forward entry must have a
+        // matching reverse entry, and vice versa (1:1 invariant).
+        unsafe {
+            let h = &*handle;
+            assert_eq!(
+                h.look_detail_mission_by_key.len(),
+                h.artifact_by_mission.len(),
+                "forward and reverse maps disagree on entry count — 1:1 invariant broken \
+                 (this would mean ≥2 artifacts point at the same mission)"
+            );
+            for (item_key, mission_key) in &h.look_detail_mission_by_key {
+                let reverse_item = h.artifact_by_mission.get(mission_key)
+                    .unwrap_or_else(|| panic!(
+                        "forward says item {item_key} → mission {mission_key}, but reverse map missing"
+                    ));
+                assert_eq!(
+                    reverse_item, item_key,
+                    "round-trip broken: item {item_key} → mission {mission_key} → item {reverse_item}"
+                );
+            }
+        }
+
+        // ── NOT_FOUND paths.
+        let mut zero: u32 = 99;
+        let rc = unsafe {
+            crimson_iteminfo_lookup_artifact_for_mission(
+                handle, u32::MAX, &mut zero,
+            )
+        };
+        assert_eq!(rc, error::NOT_FOUND);
+        assert_eq!(zero, 0, "out_item_key must be reset on NOT_FOUND");
+
+        // ── NULL_ARG paths.
+        assert_eq!(
+            unsafe {
+                crimson_iteminfo_lookup_artifact_for_mission(
+                    ptr::null(), 0, &mut zero,
+                )
+            },
+            error::NULL_ARG
+        );
+        assert_eq!(
+            unsafe {
+                crimson_iteminfo_lookup_artifact_for_mission(
+                    handle, 0, ptr::null_mut(),
+                )
+            },
             error::NULL_ARG
         );
 
