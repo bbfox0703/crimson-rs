@@ -1,6 +1,10 @@
 mod binary;
 #[cfg(feature = "c_abi")]
 mod character_info;
+#[cfg(feature = "c_abi")]
+mod craft_tool_group_info;
+#[cfg(feature = "c_abi")]
+mod craft_tool_info;
 mod crypto;
 #[cfg(feature = "c_abi")]
 mod dye_color_group_info;
@@ -11,7 +15,21 @@ mod faction_relation_group_info;
 #[cfg(feature = "c_abi")]
 mod faction_spawn_data_info;
 #[cfg(feature = "c_abi")]
+mod game_advice_group_info;
+#[cfg(feature = "c_abi")]
+mod game_advice_info;
+#[cfg(feature = "c_abi")]
+mod gameplay_variable_info;
+#[cfg(feature = "c_abi")]
 mod gimmick_info;
+#[cfg(feature = "c_abi")]
+mod global_game_event_group_info;
+#[cfg(feature = "c_abi")]
+mod global_game_event_info;
+#[cfg(feature = "c_abi")]
+mod house_info;
+#[cfg(feature = "c_abi")]
+mod item_group_info;
 mod item_info;
 #[cfg(feature = "c_abi")]
 mod knowledge_info;
@@ -28,6 +46,12 @@ mod python;
 mod quest_gauge_info;
 #[cfg(feature = "c_abi")]
 mod quest_info;
+#[cfg(feature = "c_abi")]
+mod region_info;
+#[cfg(feature = "c_abi")]
+mod reserve_slot_info;
+#[cfg(feature = "c_abi")]
+mod royal_supply_info;
 mod save;
 mod skill_info;
 #[cfg(feature = "c_abi")]
@@ -37,6 +61,8 @@ mod store_info;
 mod string_info;
 #[cfg(feature = "c_abi")]
 mod sub_level_info;
+#[cfg(feature = "c_abi")]
+mod trigger_region_info;
 pub(crate) mod python_traits;
 
 #[cfg(feature = "c_abi")]
