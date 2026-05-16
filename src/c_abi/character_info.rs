@@ -5508,4 +5508,322 @@ mod tests {
             p.join(name)
         }
     }
+
+    /// Investigation probe — schema dump for the **niche bridge**
+    /// candidates from the next-session list. Twelve table candidates:
+    /// `characterappearanceindexinfo`, `gameadviceinfo`,
+    /// `gameplayvariableinfo`, `itemgroupinfo`, `crafttoolinfo`,
+    /// `royalsupply` / `royalsupplyinfo`, `globalgameevent` /
+    /// `globalgameeventinfo`, `regioninfo`, `houseinfo`,
+    /// `factionresearch*`, `equipslotinfo`, `reserveslot` /
+    /// `reserveslotinfo`.
+    ///
+    /// For each candidate:
+    /// 1. Locate the `.pabgb` + (optional) `.pabgh` in 0008's PAMT.
+    /// 2. Try the standard `(u32 key, u32 offset)` PABGH parse.
+    /// 3. Fall back to `(u16 key, u32 offset)` 6-byte or
+    ///    `(u8 key, u32 offset)` 5-byte entries.
+    /// 4. Dump first 2 rows' bytes + attempt to interpret as
+    ///    `[key prefix][u32 name_len][name][...]`.
+    ///
+    /// For the PALOC-resolvable candidate (GameAdvice), also probes
+    /// PALOC namespaces: for each row's (key, name) pair, scan
+    /// `localizationstring_eng.paloc` at every plausible lo32 to find
+    /// the chain — same pattern as the `_probe_faction_paloc_chains`
+    /// pass.
+    ///
+    /// All output written to `out/niche_bridges_probe/`. Skips cleanly
+    /// when the game install isn't present.
+    #[test]
+    #[ignore = "investigation only — niche-bridge candidate schema dump"]
+    fn _probe_niche_bridge_candidates() {
+        use crate::binary::pamt::PackMeta;
+        use crate::binary::paz;
+        use std::fmt::Write;
+
+        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
+            });
+        let pamt_path = game_root.join("0008").join("0.pamt");
+        let Ok(pamt_bytes) = std::fs::read(&pamt_path) else {
+            eprintln!("skipping: no {}", pamt_path.display());
+            return;
+        };
+        let pamt = PackMeta::parse(&pamt_bytes, None).expect("parse PAMT");
+        let dir = pamt
+            .directories
+            .iter()
+            .find(|d| d.path == "gamedata/binary__/client/bin")
+            .expect("0008 bin dir");
+        let enc = &pamt.header.encrypt_info.encrypt_info;
+        let group_dir = game_root.join("0008");
+
+        let out_dir = std::path::PathBuf::from("out/niche_bridges_probe");
+        std::fs::create_dir_all(&out_dir).ok();
+
+        // First pass — file discovery: dump every .pabgb name matching
+        // any of these patterns. Casts a wide net so we catch
+        // alternate spellings (e.g. `royalsupply` vs `royalsupplyinfo`).
+        let patterns: &[&str] = &[
+            "characterappearance",
+            "gameadvice",
+            "gameplayvariable",
+            "itemgroup",
+            "crafttool",
+            "royalsupply",
+            "globalgameevent",
+            "regioninfo",
+            "houseinfo",
+            "factionresearch",
+            "equipslot",
+            "reserveslot",
+        ];
+        let mut discovered: Vec<(String, u32, u32)> = Vec::new(); // (name, csz, usz)
+        let mut inventory = String::new();
+        let _ = writeln!(inventory, "# Niche-bridge candidate file discovery (0008)");
+        for f in &dir.files {
+            let lower = f.name.to_ascii_lowercase();
+            if patterns.iter().any(|p| lower.contains(p))
+                && (lower.ends_with(".pabgb") || lower.ends_with(".pabgh"))
+            {
+                let _ = writeln!(
+                    inventory,
+                    "  {} ({}c / {}u)",
+                    f.name, f.file.compressed_size, f.file.uncompressed_size
+                );
+                if lower.ends_with(".pabgb") {
+                    discovered.push((
+                        f.name.clone(),
+                        f.file.compressed_size,
+                        f.file.uncompressed_size,
+                    ));
+                }
+            }
+        }
+        std::fs::write(out_dir.join("file_inventory.txt"), &inventory).ok();
+        eprintln!("file inventory written ({} pabgb hits)", discovered.len());
+        eprint!("{inventory}");
+
+        // Schema dump per candidate.
+        let mut schemas = String::new();
+        for (fname, _csz, usz) in &discovered {
+            let stem = &fname[..fname.len() - ".pabgb".len()];
+            let pabgh_name = format!("{stem}.pabgh");
+            let pabgb_file = dir.files.iter().find(|f| &f.name == fname).unwrap();
+            let pabgh_file = dir.files.iter().find(|f| f.name == pabgh_name);
+
+            let pabgb = match paz::extract_file(
+                &group_dir,
+                pabgb_file,
+                "gamedata/binary__/client/bin",
+                enc,
+            ) {
+                Ok(b) => b,
+                Err(e) => {
+                    let _ = writeln!(schemas, "\n=== {stem} === pabgb extract FAILED: {e}");
+                    continue;
+                }
+            };
+            std::fs::write(out_dir.join(fname), &pabgb).ok();
+            let pabgh = pabgh_file.and_then(|f| {
+                paz::extract_file(
+                    &group_dir,
+                    f,
+                    "gamedata/binary__/client/bin",
+                    enc,
+                )
+                .ok()
+            });
+            if let Some(ref b) = pabgh {
+                std::fs::write(out_dir.join(&pabgh_name), b).ok();
+            }
+
+            let _ = writeln!(
+                schemas,
+                "\n=== {stem} ===  pabgb={} B (unc≈{}B)  pabgh={}",
+                pabgb.len(),
+                usz,
+                pabgh
+                    .as_ref()
+                    .map(|b| format!("{} B", b.len()))
+                    .unwrap_or_else(|| "MISSING".into())
+            );
+
+            let Some(pabgh) = pabgh.as_deref() else {
+                // No PABGH — flat-file scan. Dump first 128 bytes raw
+                // and try to interpret as leading key+name structure.
+                let n = pabgb.len().min(128);
+                let _ = writeln!(schemas, "  no .pabgh — flat file");
+                let _ = writeln!(schemas, "  first {n} bytes: {:02x?}", &pabgb[..n]);
+                continue;
+            };
+
+            // Try standard (u32 key, u32 offset).
+            let std_ok = crate::skill_info::parse_pabgh(pabgh);
+            match std_ok {
+                Ok(entries) => {
+                    let _ = writeln!(
+                        schemas,
+                        "  STANDARD (u32 key, u32 offset)  {} rows",
+                        entries.len()
+                    );
+                    dump_first_rows_u32_key(&mut schemas, &entries, &pabgb);
+                }
+                Err(_) => {
+                    // Try (u16, u32) 6-byte.
+                    if pabgh.len() >= 2 {
+                        let cnt =
+                            u16::from_le_bytes([pabgh[0], pabgh[1]]) as usize;
+                        if pabgh.len() == 2 + cnt * 6 {
+                            let _ = writeln!(
+                                schemas,
+                                "  CUSTOM (u16 key, u32 offset)  {cnt} rows"
+                            );
+                            dump_first_rows_u16_key(&mut schemas, pabgh, cnt, &pabgb);
+                        } else if pabgh.len() == 2 + cnt * 5 {
+                            let _ = writeln!(
+                                schemas,
+                                "  CUSTOM (u8 key, u32 offset)  {cnt} rows"
+                            );
+                            dump_first_rows_u8_key(&mut schemas, pabgh, cnt, &pabgb);
+                        } else {
+                            let _ = writeln!(
+                                schemas,
+                                "  UNKNOWN PABGH shape, count_u16={cnt}, pabgh.len={}; first 64: {:02x?}",
+                                pabgh.len(),
+                                &pabgh[..pabgh.len().min(64)]
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        std::fs::write(out_dir.join("schemas.txt"), &schemas).ok();
+        eprintln!("schemas.txt written ({} B)", schemas.len());
+
+        // Helpers — kept local to the probe to avoid polluting the
+        // bridge namespace.
+        fn dump_first_rows_u32_key(
+            out: &mut String,
+            entries: &[crate::skill_info::SkillIndexEntry],
+            pabgb: &[u8],
+        ) {
+            for (i, e) in entries.iter().take(3).enumerate() {
+                let start = e.offset as usize;
+                let end = (start + 96).min(pabgb.len());
+                let row = &pabgb[start..end];
+                let _ = writeln!(
+                    out,
+                    "  row[{i}] key=0x{:08x} ({}) @ offset={}..{}",
+                    e.key, e.key, start, end
+                );
+                let _ = writeln!(out, "    hex: {:02x?}", row);
+                if row.len() >= 8 {
+                    let body_key =
+                        u32::from_le_bytes([row[0], row[1], row[2], row[3]]);
+                    let name_len =
+                        u32::from_le_bytes([row[4], row[5], row[6], row[7]])
+                            as usize;
+                    let _ = writeln!(
+                        out,
+                        "    body_key=0x{body_key:08x} ({body_key}) matches PABGH? {}",
+                        body_key == e.key
+                    );
+                    let _ = writeln!(out, "    leading u32 name_len = {name_len}");
+                    if (1..=128).contains(&name_len)
+                        && 8 + name_len <= row.len()
+                        && let Ok(s) = std::str::from_utf8(&row[8..8 + name_len])
+                    {
+                        let _ = writeln!(out, "    name: {s:?}");
+                    }
+                }
+            }
+        }
+        fn dump_first_rows_u16_key(
+            out: &mut String,
+            pabgh: &[u8],
+            count: usize,
+            pabgb: &[u8],
+        ) {
+            for i in 0..count.min(3) {
+                let off = 2 + i * 6;
+                let key = u16::from_le_bytes([pabgh[off], pabgh[off + 1]]);
+                let row_off = u32::from_le_bytes([
+                    pabgh[off + 2],
+                    pabgh[off + 3],
+                    pabgh[off + 4],
+                    pabgh[off + 5],
+                ]) as usize;
+                let end = (row_off + 96).min(pabgb.len());
+                let row = &pabgb[row_off..end];
+                let _ = writeln!(
+                    out,
+                    "  row[{i}] key={key} (0x{key:04x}) @ offset={row_off}..{end}"
+                );
+                let _ = writeln!(out, "    hex: {:02x?}", row);
+                if row.len() >= 6 {
+                    let body_key = u16::from_le_bytes([row[0], row[1]]);
+                    let name_len =
+                        u32::from_le_bytes([row[2], row[3], row[4], row[5]])
+                            as usize;
+                    let _ = writeln!(
+                        out,
+                        "    body_key=0x{body_key:04x} ({body_key}) matches PABGH? {}",
+                        body_key == key
+                    );
+                    let _ = writeln!(out, "    leading u32 name_len = {name_len}");
+                    if (1..=128).contains(&name_len)
+                        && 6 + name_len <= row.len()
+                        && let Ok(s) = std::str::from_utf8(&row[6..6 + name_len])
+                    {
+                        let _ = writeln!(out, "    name: {s:?}");
+                    }
+                }
+            }
+        }
+        fn dump_first_rows_u8_key(
+            out: &mut String,
+            pabgh: &[u8],
+            count: usize,
+            pabgb: &[u8],
+        ) {
+            for i in 0..count.min(3) {
+                let off = 2 + i * 5;
+                let key = pabgh[off];
+                let row_off = u32::from_le_bytes([
+                    pabgh[off + 1],
+                    pabgh[off + 2],
+                    pabgh[off + 3],
+                    pabgh[off + 4],
+                ]) as usize;
+                let end = (row_off + 96).min(pabgb.len());
+                let row = &pabgb[row_off..end];
+                let _ = writeln!(
+                    out,
+                    "  row[{i}] key={key} (0x{key:02x}) @ offset={row_off}..{end}"
+                );
+                let _ = writeln!(out, "    hex: {:02x?}", row);
+                if row.len() >= 5 {
+                    let body_key = row[0];
+                    let name_len =
+                        u32::from_le_bytes([row[1], row[2], row[3], row[4]])
+                            as usize;
+                    let _ = writeln!(
+                        out,
+                        "    body_key={body_key} (0x{body_key:02x}) matches PABGH? {}",
+                        body_key == key
+                    );
+                    let _ = writeln!(out, "    leading u32 name_len = {name_len}");
+                    if (1..=128).contains(&name_len)
+                        && 5 + name_len <= row.len()
+                        && let Ok(s) = std::str::from_utf8(&row[5..5 + name_len])
+                    {
+                        let _ = writeln!(out, "    name: {s:?}");
+                    }
+                }
+            }
+        }
+    }
 }
