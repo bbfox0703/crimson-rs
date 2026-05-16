@@ -24,7 +24,12 @@
 > `gimmick_info`, `character_info` bridges + `checksum` extern "C"
 > wrapper + the legacy `skill_info` bridge + the
 > `crimson_paz_list_npc_portraits` PAZ-layer NPC-portrait enumerator.
-> 166 tests with `c_abi`, 69 without (+1 ignored cross-version probe).
+> **Three follow-on dye gamedata bridges shipped 2026-05-16**:
+> `dye_color_group_info`, `part_prefab_dye_texture_pallete_info`,
+> `part_prefab_dye_slot_info` — replace the PyQt5 reference editor's
+> hand-maintained `dye_slot_counts.json` with gamedata-driven data.
+> See [`dye-editor-scope.md`](./dye-editor-scope.md).
+> 188 tests with `c_abi`, 69 without (+16 ignored diagnostic probes).
 > Clippy clean both modes.
 >
 > **Remaining (optional follow-ons only)**:
@@ -931,8 +936,8 @@ to hook in without an ABI break.
 
 ### Tests
 
-5 tests added (4 c_abi plumbing/chain + 1 parser live). 134 total
-with `c_abi`, 67 without. Clippy clean both modes.
+5 tests added (4 c_abi plumbing/chain + 1 parser live).
+Clippy clean both modes.
 
 ---
 
@@ -993,8 +998,8 @@ for this bridge.
 
 ### Tests
 
-5 tests added (4 c_abi plumbing + 1 parser live-integration). 129
-total with `c_abi`, 67 without. Clippy clean both modes.
+5 tests added (4 c_abi plumbing + 1 parser live-integration).
+Clippy clean both modes.
 
 ---
 

@@ -2,28 +2,27 @@
 
 What `D:\Github\crimsonforge` (Python toolkit) can decode/extract that `crimson-rs` cannot yet — focused on **game data the user can read out**, not Blender/mesh/audio/UI/installer plumbing.
 
-Captured 2026-05-13 from a cross-repo survey. The intent is to record the gap so it can be triaged, not to plan a port.
+Captured 2026-05-13 from a cross-repo survey, **revised 2026-05-16** to mark the gaps closed by the Save Editor key-resolver workstream. The intent is to record the gap so it can be triaged, not to plan a port.
 
 ---
 
 ## Status snapshot
 
-crimson-rs covers the **archive layer** byte-for-byte:
+crimson-rs covers the **archive layer** byte-for-byte, **and the semantic key→PALOC layer for nine gamedata tables**:
 
-- `binary/{pamt,papgt,paz,trie}` — container read/write/roundtrip
+- `binary/{pamt,papgt,paz,trie,paloc}` — container read/write/roundtrip + PALOC parser (`src/binary/paloc.rs`)
 - `crypto/{checksum,chacha20}` — Jenkins hashlittle2 + ChaCha20
 - `item_info/` — full schema parser for `iteminfo.pabgb` (105 fields)
 - `skill_info/` — `skill.pabgb` + `skill.pabgh` with brute-forced tail sizes
 - `string_info/` — `u32 hash → string` bridge
 - `save/` — game save read/write
+- `character_info/`, `mission_info/`, `quest_info/`, `stage_info/`, `knowledge_info/`, `quest_gauge_info/`, `sub_level_info/`, `gimmick_info/`, `dye_color_group_info/`, `part_prefab_dye_texture_pallete_info/`, `part_prefab_dye_slot_info/` — anchor-scan parsers behind C ABI bridges that chain through PALOC for display names (where the gamedata row resolves there)
 
-What it does **not** cover is the **semantic / cross-reference layer**: linking the keys that live inside `.pabgb` rows to the human-facing strings inside `.paloc`, or to the prefab/PAC/`.pab` files referenced by hash.
-
-CrimsonForge has spent considerable RE effort on that layer. The biggest concrete gaps the user asked about — **NPC/character key ↔ display name** and **quest key ↔ quest name** — are both in that bucket.
+The remaining gap is mostly the **mesh / prefab / animation / dialogue** surface CrimsonForge built for the Blender pipeline, which is intentionally out of scope here.
 
 ---
 
-## 1. Character key ↔ display name (NPC names)
+## 1. Character key ↔ display name (NPC names) — CLOSED (partial)
 
 **The chain in the game files**
 
@@ -44,20 +43,22 @@ characterinfo.pabgb       (gamedata, group 0008)
 - [`core/character_asset_resolver.py`](D:/Github/crimsonforge/core/character_asset_resolver.py) — given a character key (`CD_M0001_00_Ogre`) or a fuzzy string (`ogre`, `hexe`), walks every PAMT for filename matches, then **content-scans the ~20 most-relevant `.pabgb` system tables** for the character key as a literal byte string. Returns a `CharacterAssetBundle` grouped into 14 presentation categories (Mesh / Skeleton / Morph / Appearance / Animation / Physics / Effects / Cutscene / Texture / UI / Database / Localization / Audio / Other).
 - [`core/character_unlock_service.py`](D:/Github/crimsonforge/core/character_unlock_service.py), [`core/condition_patcher.py`](D:/Github/crimsonforge/core/condition_patcher.py) — workflow layers on top.
 
-**What crimson-rs has**
+**What crimson-rs has (2026-05-16)**
 
 | Piece | crimson-rs status |
 | --- | --- |
-| Read `characterinfo.pabgb` rows with a typed schema | ✗ — only `iteminfo.pabgb` / `skill.pabgb` have schema parsers |
-| Resolve PALOC `loc_key` → display string | ✗ — PALOC is not parsed at all in `src/binary` (no `paloc.rs`) |
-| Resolve prefab/PAC hashes via PAMT 0009 | partial — PAMT is parsed but no "hash → stem" helper |
-| Content-scan PABGB tables for a literal key | ✗ — generic search not exposed |
+| Read `characterinfo.pabgb` rows | ✓ anchor-scan parser at `src/character_info/` |
+| Resolve PALOC `loc_key` → display string | ✓ `src/binary/paloc.rs` + `crimson_paloc_*` C ABI |
+| CharacterKey → display name (via PALOC `lo32=0x30`) | ✓ `crimson_characterinfo_lookup_display_name` (22% sample coverage; the other 78% resolve via `lookup_string_key` internal-name fallback) |
+| CharacterKey → NPC portrait DDS | ✓ `crimson_characterinfo_resolve_portrait` (chains the display-name lookup with a fuzzy filename match against `crimson_paz_list_npc_portraits`) |
+| Resolve prefab/PAC hashes via PAMT 0009 | partial — PAMT is parsed; the portrait matcher does fuzzy filename routing, but no exhaustive "hash → stem" helper |
+| Content-scan PABGB tables for a literal key | ✗ — generic search not exposed; CrimsonForge's body-byte scan is still its own |
 
-**Gap size**: this is the single biggest user-visible omission. The full chain takes three parsers we don't have: `characterinfo.pabgb` schema, generic PALOC key-value reader, and the prefab-hash resolver.
+**Remaining gap**: broader CharacterKey display-name coverage (the 78% sample-bias miss path needs PALOC namespaces beyond `0x30`), plus the prefab-hash resolver if mesh/animation linkage is ever wanted.
 
 ---
 
-## 2. Quest key ↔ quest name
+## 2. Quest key ↔ quest name — CLOSED (titles)
 
 **The chain in the game files**
 
@@ -96,18 +97,20 @@ Also relevant:
 - [`core/dialogue_catalog.py`](D:/Github/crimsonforge/core/dialogue_catalog.py) — parses every symbolic PALOC key (`questdialog_hello_00496`, `aidialogstringinfo_*`, `intro_*`, `epilogue_*`) into a conversation/scene/speaker structure. Exports 30k+ dialogue lines with speaker role, chapter, mentions of other characters via `StaticInfo:Character:…` tokens.
 - [`tools/patch_quest_hp.py`](D:/Github/crimsonforge/tools/patch_quest_hp.py) — already locates and writes back into a `questinfo.pabgb` row via the same PAZ pipeline.
 
-**What crimson-rs has**
+**What crimson-rs has (2026-05-16)**
 
 | Piece | crimson-rs status |
 | --- | --- |
-| Schema parser for `questinfo.pabgb` (and the four other quest tables) | ✗ |
-| PALOC key-value reader | ✗ |
-| Quest-key → name resolver | ✗ |
-| Generic gamedata table search-by-key | ✗ |
+| Anchor-scan parsers for `questinfo.pabgb`, `missioninfo.pabgb`, `stageinfo.pabgb`, `knowledgeinfo.pabgb`, `questgaugeinfo.pabgb`, `gimmickinfo.pabgb`, `sublevelinfo.pabgb` | ✓ — under `src/<table>_info/` |
+| PALOC key-value reader | ✓ `src/binary/paloc.rs` |
+| Quest-key → display title (via Jenkins hash hop into PALOC `lo32=0x100/0x101`) | ✓ `crimson_missioninfo_*` / `crimson_questinfo_*` / `crimson_stageinfo_*` / `crimson_knowledgeinfo_*` |
+| Quest-key → internal name fallback | ✓ `lookup_string_key` on every bridge |
+| Generic gamedata table search-by-key | ✗ — only the schema-aware bridges above; no body-byte scan |
+| `StaticInfo:Quest:…` / `StaticInfo:Character:…` token resolution in dialogue | ✗ — see [`paloc-template-survey.md`](paloc-template-survey.md) for the decision to defer until descriptions / dialogue land |
 
 ---
 
-## 3. PALOC semantic extraction
+## 3. PALOC semantic extraction — CLOSED
 
 **File**: [`core/paloc_parser.py`](D:/Github/crimsonforge/core/paloc_parser.py) (lines 121–187). Reads `.paloc` files into:
 
@@ -115,9 +118,7 @@ Also relevant:
 - Numeric key ↔ text pairs (legacy IDs, 6+ digits)
 - Filters header sentinels (`@`, `#`)
 
-**crimson-rs**: there is no `paloc` module in `src/binary/`. The existing `docs/paloc-71-dev-items.md` discusses paloc translation gaps but the project never built its own parser. Roundtrip is achieved indirectly because everything goes through PAZ — but the **content** of paloc is opaque to us.
-
-This is the foundational missing piece. Almost every other gap below requires it.
+**crimson-rs (2026-05-16)**: shipped as [`src/binary/paloc.rs`](../src/binary/paloc.rs) (Python: `parse_paloc_bytes` / `serialize_paloc`; C ABI: `crimson_paloc_*` with length-prefixed numeric + symbolic key lookups). Both numeric and symbolic keys round-trip; the 1.07 English file is 179,571 entries (124,800 numeric + 54,713 symbolic).
 
 ---
 
@@ -206,18 +207,16 @@ These are all Blender / asset-export oriented and not on the critical path for "
 
 ---
 
-## Triage / what an MVP "close the question" port would need
+## Triage / what an MVP "close the question" port would need — DONE
 
-If the goal is just to answer **"give me NPC names and quest names from the archive"** in crimson-rs, the minimum viable set is:
+Status (2026-05-16): the MVP set originally scoped here is shipped. The full chain for NPC + quest names is in place via the C ABI:
 
-1. `binary/paloc.rs` — parse `.paloc` into `{key → string}` maps (symbolic + numeric). Exposed to Python as `read_paloc(bytes) -> dict[str, str]`.
-2. `character_info/` — schema parser for `characterinfo.pabgb` modeled on the existing `item_info/` layout. Extract at minimum `character_key`, `loc_key`, `family_code`, prefab hash refs.
-3. `quest_info/` — schema parser for `questinfo.pabgb` (and ideally `questgroupinfo`, `missioninfo`). At minimum `quest_id`, `loc_key`.
-4. A high-level Python helper that walks PAMT, decrypts the relevant entries, joins `*.loc_key` against the PALOC map, and returns enriched records.
+1. `binary/paloc.rs` — ✓ shipped (Python: `parse_paloc_bytes`; C ABI: `crimson_paloc_*`).
+2. `character_info/` + `crimson_characterinfo_*` — ✓ shipped (cat-byte strip → PALOC `lo32=0x30`, with internal-name fallback for the 78% sample-bias miss path).
+3. `mission_info/` / `quest_info/` / `stage_info/` / `knowledge_info/` etc. — ✓ shipped (Jenkins hash hop into PALOC `lo32=0x100/0x101/0x102/0x490/0x491`).
+4. The "high-level Python helper" surface is the C ABI rather than Python; downstream tooling (`CrimsonAtomtic`) consumes it through `crimson_*_lookup_display_name`.
 
-The character/quest schemas are unknown to us today — the same RE workflow that produced `item_info/` and `skill_info/` (hexpat patterns in `references/`, `plcli`, cross-version diffs against the 1.04/1.05/1.06 reference dumps) would apply.
-
-`pabgb_parser.py`'s heuristic field-typing approach (section 4) is an attractive **fallback** for the long tail of tables we won't write full schemas for. Worth considering whether to mirror it.
+`pabgb_parser.py`'s heuristic field-typing approach (section 4) is still **not** mirrored. Each bridge ships a hand-rolled anchor scanner (or schema parser, for `iteminfo` / `skill`) sized to that table's filtering rules. A generic heuristic parser would be valuable if the long-tail tables (`buffinfo`, `factioninfo`, `regioninfo`, …) ever need surfacing, but no consumer has asked for them yet.
 
 ---
 
