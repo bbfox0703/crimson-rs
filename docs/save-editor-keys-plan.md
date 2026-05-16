@@ -4,11 +4,33 @@
 >
 > **Where we are (updated 2026-05-16)**: every save-side key the C# Save
 > Editor currently surfaces resolves through a shipped C ABI bridge.
-> **19 bridges shipped + the deferred-redecode batch ABI.** Test suite:
-> **211** with `c_abi`, **69** without, **24** `#[ignore]`'d diagnostic
+> **32 bridges shipped + the deferred-redecode batch ABI.** Test suite:
+> **237** with `c_abi`, **69** without, **25** `#[ignore]`'d diagnostic
 > probes. Clippy clean both modes.
 >
 > ### What landed in the last sessions (2026-05-16)
+>
+> -1. **Niche-bridge batch (13 templates)** — `store_info` and
+>    `mercenary_info` were already shipped earlier in the day; the
+>    latest pass added eleven more sibling tables that the C# editor
+>    references for various UX surfaces. All ship name-only (PALOC
+>    chain probes deferred); the new `impl_name_only_bridge!` macro
+>    in `c_abi/mod.rs` keeps each new bridge a ~15-line declaration.
+>    | Bridge | Rows | Sample row |
+>    |---|---:|---|
+>    | `house_info` (HouseKey, u16) | 4 | `0x4247 → "DefaultHouse_Lv1"` |
+>    | `royal_supply_info` (RoyalSupplyKey, u16) | 4 | `0x4242 → "RoyalSupply_Hernand"` |
+>    | `craft_tool_info` (CraftToolKey, u16) | 17 | `28001 → "CraftTool_Enchant"` |
+>    | `craft_tool_group_info` (CraftToolGroupKey, u16) | 10 | `16960 → "CraftTool_Equip_Enchant"` |
+>    | `trigger_region_info` (TriggerRegionKey, u32) | 12 | `1000000 → "Swamp"` |
+>    | `gameplay_variable_info` (GamePlayVariableKey, u32) | 47 | `1000041 → "CD_Live"` |
+>    | `global_game_event_info` (GlobalGameEventInfoKey, u16) | 103 | `0x4258 → "Drought_Varnian"` |
+>    | `global_game_event_group_info` (GlobalGameEventGroupKey, u16) | 7 | `0x4240 → "WeatherEventGroup"` |
+>    | `game_advice_info` (GameAdviceInfoKey, u32) | 461 | `0x9cfd99b0 → "Advice_Control_Move"` |
+>    | `game_advice_group_info` (GameAdviceGroupKey, u32) | 8 | `1000008 → "GameAdviceGroup_ControlBasics"` |
+>    | `reserve_slot_info` (ReserveSlotKey, u32) | 27 | `1000000 → "ArrowItem"` |
+>    | `region_info` (RegionKey, u16) | 1,004 | `1 → "Region_Pywel"` |
+>    | `item_group_info` (ItemGroupKey, u16) | 1,500 | `18167 → "ItemGroup_Category_Equipment"` |
 >
 > 0. **StoreKey + MercenaryKey + `_itemKey → _partPrefabKey`** — three
 >    new bridges from the latest pass.
@@ -61,17 +83,32 @@
 >    one (~0.1s). Full design + C# usage pattern in
 >    [`save-deferred-redecode.md`](./save-deferred-redecode.md).
 >
-> ### Full bridge inventory (19)
+> ### Full bridge inventory (32)
 >
+> Title-resolver bridges:
 > `mission_info`, `quest_info`, `stage_info`, `quest_gauge_info`,
 > `knowledge_info`, `sub_level_info`, `gimmick_info`,
-> `character_info` (+ `resolve_portrait` matcher), `skill_info`,
+> `character_info` (+ `resolve_portrait` matcher), `skill_info`.
+>
+> Dye / appearance gamedata bridges:
 > `dye_color_group_info`, `part_prefab_dye_texture_pallete_info`,
-> `part_prefab_dye_slot_info`, `faction_node_info`,
-> `faction_spawn_data_info`, `faction_relation_group_info`,
-> **`store_info`**, **`mercenary_info`**, **`item_part_prefab`** (the
-> combined iteminfo+stringinfo+partprefab join) + `checksum`
-> extern "C" wrapper. Plus the PAZ-layer
+> `part_prefab_dye_slot_info`, **`item_part_prefab`** (the combined
+> iteminfo+stringinfo+partprefab join).
+>
+> Faction bridges:
+> `faction_node_info`, `faction_spawn_data_info`, `faction_relation_group_info`.
+>
+> Catalog / template-name bridges (Save Editor browser surfaces):
+> **`store_info`** (292), **`mercenary_info`** (18),
+> **`house_info`** (4), **`royal_supply_info`** (4),
+> **`craft_tool_info`** (17), **`craft_tool_group_info`** (10),
+> **`trigger_region_info`** (12), **`gameplay_variable_info`** (47),
+> **`global_game_event_info`** (103), **`global_game_event_group_info`** (7),
+> **`game_advice_info`** (461), **`game_advice_group_info`** (8),
+> **`reserve_slot_info`** (27), **`region_info`** (1,004),
+> **`item_group_info`** (1,500).
+>
+> Plus the `checksum` extern "C" wrapper. Plus the PAZ-layer
 > `crimson_paz_list_npc_portraits` enumerator. Save-handle
 > utilities: `list_inventory_items`, `get_mutation_version`,
 > `begin_deferred_redecode` / `end_*` / `abort_*` / `is_*_open`.
@@ -110,6 +147,21 @@
 >   editor. Phase 1 (per-gate mapping) is complete; Phase 2 (hash →
 >   name) needs an IDA pass. See
 >   [`abyss-gate-map.md`](./abyss-gate-map.md).
+> - **PALOC chains for `game_advice_info` and `reserve_slot_info`** —
+>   both bridge bodies contain hash-hop pointers / Hangul strings that
+>   resolve to localized tip / slot-label text. Probe is straightforward
+>   (model after `_probe_faction_paloc_chains`). Defer unless a
+>   downstream editor surfaces these labels directly.
+> - **`equip_slot_info`** — 14 rows in 1.07, standard `(u32, u32)`
+>   PABGH but **row body has no name field** (`name_len = 0`); the 14
+>   slots are a fixed enum (head / chest / hands / …). Bridge surface
+>   needs a different shape — possibly icon-path-hash + slot-type byte
+>   — and is deferred until an editor surface actually consumes it.
+> - **`storeinfo` / `mercenaryinfo` / `globalgameevent` / `royalsupply`
+>   per-row body content** — beyond the template name, each row's body
+>   carries price / item / timing / supply-item lists this bridge
+>   doesn't surface. Pull the inline data only when an editor feature
+>   needs it.
 >
 > ### Where to start a new session
 >
