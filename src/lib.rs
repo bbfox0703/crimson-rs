@@ -30,6 +30,8 @@ mod python;
 mod quest_gauge_info;
 #[cfg(feature = "c_abi")]
 mod quest_info;
+#[cfg(feature = "c_abi")]
+mod royal_supply_info;
 mod save;
 mod skill_info;
 #[cfg(feature = "c_abi")]
