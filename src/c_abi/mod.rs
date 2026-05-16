@@ -37,6 +37,7 @@ pub mod faction_spawn_data_info;
 pub mod gimmick_info;
 pub mod iteminfo;
 pub mod knowledge_info;
+pub mod mercenary_info;
 pub mod mission_info;
 pub mod paloc;
 pub mod part_prefab_dye_slot_info;
