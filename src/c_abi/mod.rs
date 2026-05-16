@@ -36,6 +36,8 @@ pub mod dye_color_group_info;
 pub mod faction_node_info;
 pub mod faction_relation_group_info;
 pub mod faction_spawn_data_info;
+pub mod game_advice_group_info;
+pub mod game_advice_info;
 pub mod gameplay_variable_info;
 pub mod gimmick_info;
 pub mod global_game_event_group_info;
