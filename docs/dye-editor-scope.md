@@ -7,17 +7,19 @@ already implements this; this doc records what the in-house C# editor
 needs and what crimson-rs needs to ship (or not ship).
 
 > Status (2026-05-16): Save schema verified **and** all three
-> gamedata-side `dye*.pabgb` tables RE'd + bridged behind C ABI.
+> gamedata-side `dye*.pabgb` tables RE'd + bridged behind C ABI **and**
+> the `_itemKey → _partPrefabKey` cross-reference is now bridged.
 > Parsers + bridges shipped in
 > [`src/dye_color_group_info/`](../src/dye_color_group_info/),
 > [`src/part_prefab_dye_texture_pallete_info/`](../src/part_prefab_dye_texture_pallete_info/),
 > [`src/part_prefab_dye_slot_info/`](../src/part_prefab_dye_slot_info/)
-> with matching `c_abi/*.rs` bridges. **Replaces the PyQt5 reference
-> editor's hand-maintained `dye_slot_counts.json`** with gamedata-driven
-> data, plus per-slot default materials the JSON never carried.
-> Remaining work: `_itemKey → _partPrefabKey` cross-reference (lives
-> in `iteminfo.pabgb` or a sibling `partprefab*` table) — the C# editor
-> needs this linkage to actually look up slot counts by item.
+> with matching `c_abi/*.rs` bridges, plus the combined
+> [`src/c_abi/item_part_prefab.rs`](../src/c_abi/item_part_prefab.rs)
+> bridge that resolves `ItemKey → Vec<PartPrefabKey>` via the
+> 3-table join (iteminfo → stringinfo → partprefabdyeslotinfo).
+> **Replaces the PyQt5 reference editor's hand-maintained
+> `dye_slot_counts.json`** end-to-end — the C# editor can now look up
+> slot counts by item key directly.
 
 ---
 
@@ -267,11 +269,34 @@ other ObjectLists use). Defer until there's a concrete user demand.
 
 ## Open RE — next session
 
-**All three gamedata tables RE'd 2026-05-16 (this iteration).** The
-remaining blocker for the C# editor to consume slot counts is the
-**`_itemKey → _partPrefabKey` cross-reference** — needs to live in
-`iteminfo.pabgb` (or a sibling `partprefab*` table). Once that's
-bridged, the C# editor can drop `dye_slot_counts.json` entirely.
+**All three gamedata tables RE'd 2026-05-16 (earlier this iteration)
+and the `_itemKey → _partPrefabKey` linkage bridged later the same day.**
+
+Linkage details (from `_probe_partprefab_string_linkage`): the cross-
+reference is a 3-table join, not a direct field. ItemInfo carries
+`prefab_data_list[].prefab_names[]` as `StringInfoKey` u32 hashes;
+each hash resolves through `stringinfo.pabgb` to a prefab name like
+`"cd_phm_00_hel_00_0354_c"`; that name matches one of the 1,105
+`prefab_name` strings in `partprefabdyeslotinfo`, whose row key is
+the `PartPrefabKey` the dye editor needs. The bridge precomputes the
+join at load time —
+[`src/c_abi/item_part_prefab.rs`](../src/c_abi/item_part_prefab.rs)
+exposes `lookup_count` / `lookup_key_at` / `lookup_prefab_name_at` so
+the C# editor can drop `dye_slot_counts.json` entirely.
+
+Coverage in 1.07: ~120 items resolve to at least one partprefab key
+(out of 507 `is_dyeable=1` items). The remaining dyeable items carry
+prefab variants for body types (goblin/dwarf/tribe meshes) that share
+the human male's dye-slot layout but aren't themselves listed in
+`partprefabdyeslotinfo`; the editor can fall back on the human male
+prefab's slot count for those cases.
+
+Probes for cross-version regression:
+
+```powershell
+cargo test --lib --features c_abi _probe_partprefab_string_linkage -- --ignored --nocapture
+cargo test --lib --features c_abi _probe_itemkey_partprefab_linkage -- --ignored --nocapture
+```
 
 Diagnostic re-run (when a future patch may have changed the dye
 schemas):

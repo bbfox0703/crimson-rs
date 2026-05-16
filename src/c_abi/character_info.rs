@@ -4374,4 +4374,1138 @@ mod tests {
         std::fs::write(&out_path, &out).expect("write file_list");
         eprintln!("wrote {} hits to {}", hits, out_path.display());
     }
+
+    /// Investigation probe — file discovery + schema sampling for the
+    /// **StoreKey** / **MercenaryKey** / **`_itemKey → _partPrefabKey`**
+    /// bridges (next-session workstream).
+    ///
+    /// What it does:
+    /// 1. Lists every `store*` / `mercenary*` / `partprefab*` file in
+    ///    0008's PAMT manifest (with compressed / uncompressed sizes).
+    /// 2. For each known target stem (`storeinfo`, `mercenaryinfo`, and
+    ///    every `partprefab*` table) extracts the `.pabgb` + `.pabgh`
+    ///    pair (if present), tries the standard PABGH shape
+    ///    (`u16 count + (u32 key, u32 offset)*`) and the small-key
+    ///    variant (`u16 count + (u16 key, u32 offset)*`), and dumps the
+    ///    first 96 bytes of the first row with a key + name_len + name
+    ///    interpretation attempt.
+    /// 3. Linkage probe for `_itemKey → _partPrefabKey`: parses iteminfo
+    ///    once, collects every distinct `StringInfoKey` referenced by
+    ///    `PrefabData.prefab_names[]`, then checks how many overlap with
+    ///    the row keys in `partprefabdyeslotinfo.pabgh`. If the overlap
+    ///    is high, the linkage is `iteminfo.prefab_data_list[N].prefab_names[0].0`
+    ///    used directly as `PartPrefabKey`. If low, the bridge needs a
+    ///    sibling table or the `partprefab*` row keys are hashes of the
+    ///    prefab name string.
+    ///
+    /// All output goes to `out/store_mercenary_partprefab_probe/`.
+    /// Skips cleanly when the game install isn't present.
+    #[test]
+    #[ignore = "investigation only — store/mercenary/partprefab schema + linkage probe"]
+    fn _probe_store_mercenary_partprefab() {
+        use crate::binary::pamt::PackMeta;
+        use crate::binary::paz;
+        use std::collections::{HashMap, HashSet};
+        use std::fmt::Write;
+
+        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
+            });
+        let pamt_path = game_root.join("0008").join("0.pamt");
+        let Ok(pamt_bytes) = std::fs::read(&pamt_path) else {
+            eprintln!("skipping: no {}", pamt_path.display());
+            return;
+        };
+        let pamt = PackMeta::parse(&pamt_bytes, None).expect("parse PAMT");
+        let dir = pamt
+            .directories
+            .iter()
+            .find(|d| d.path == "gamedata/binary__/client/bin")
+            .expect("missing gamedata/binary__/client/bin dir in 0008 PAMT");
+
+        let out_dir = std::path::PathBuf::from("out/store_mercenary_partprefab_probe");
+        std::fs::create_dir_all(&out_dir).ok();
+
+        // ── 1. File discovery ──────────────────────────────────────
+        let mut file_list = String::new();
+        let _ = writeln!(file_list, "# 0008 gamedata files matching store* / mercenary* / partprefab*");
+        let mut partprefab_stems: Vec<String> = Vec::new();
+        for d in &pamt.directories {
+            for f in &d.files {
+                let lower = f.name.to_ascii_lowercase();
+                if lower.starts_with("store")
+                    || lower.starts_with("mercenary")
+                    || lower.starts_with("partprefab")
+                {
+                    let _ = writeln!(
+                        file_list,
+                        "  {}/{}  ({}c / {}u)",
+                        d.path, f.name, f.file.compressed_size, f.file.uncompressed_size
+                    );
+                    if lower.starts_with("partprefab") && lower.ends_with(".pabgb") {
+                        let stem = f.name[..f.name.len() - ".pabgb".len()].to_owned();
+                        if !partprefab_stems.contains(&stem) {
+                            partprefab_stems.push(stem);
+                        }
+                    }
+                }
+            }
+        }
+        std::fs::write(out_dir.join("file_list.txt"), &file_list).ok();
+        eprintln!("{file_list}");
+
+        // ── 2. Per-target schema probe ─────────────────────────────
+        let mut named_targets = vec![
+            "storeinfo".to_owned(),
+            "mercenaryinfo".to_owned(),
+        ];
+        for stem in &partprefab_stems {
+            if !named_targets.contains(stem) {
+                named_targets.push(stem.clone());
+            }
+        }
+
+        // We need keys later from partprefabdyeslotinfo for the linkage probe.
+        let mut partprefab_dye_slot_keys: HashSet<u32> = HashSet::new();
+
+        let mut schemas = String::new();
+        for stem in &named_targets {
+            let pabgb_name = format!("{stem}.pabgb");
+            let pabgh_name = format!("{stem}.pabgh");
+            let Some(pabgb_file) = dir.files.iter().find(|f| f.name == pabgb_name) else {
+                let _ = writeln!(schemas, "\n=== {stem} ===  MISSING .pabgb");
+                continue;
+            };
+            let pabgh_file = dir.files.iter().find(|f| f.name == pabgh_name);
+            let pabgb_bytes = match paz::extract_file(
+                &game_root.join("0008"),
+                pabgb_file,
+                "gamedata/binary__/client/bin",
+                &pamt.header.encrypt_info.encrypt_info,
+            ) {
+                Ok(b) => b,
+                Err(e) => {
+                    let _ = writeln!(schemas, "\n=== {stem} ===  pabgb extract failed: {e}");
+                    continue;
+                }
+            };
+            std::fs::write(out_dir.join(&pabgb_name), &pabgb_bytes).ok();
+            let pabgh_bytes = pabgh_file.and_then(|f| {
+                paz::extract_file(
+                    &game_root.join("0008"),
+                    f,
+                    "gamedata/binary__/client/bin",
+                    &pamt.header.encrypt_info.encrypt_info,
+                )
+                .ok()
+            });
+            if let Some(b) = &pabgh_bytes {
+                std::fs::write(out_dir.join(&pabgh_name), b).ok();
+            }
+            let _ = writeln!(
+                schemas,
+                "\n=== {stem} ===  pabgb={} B  pabgh={}",
+                pabgb_bytes.len(),
+                pabgh_bytes
+                    .as_ref()
+                    .map(|b| format!("{} B", b.len()))
+                    .unwrap_or_else(|| "MISSING".into()),
+            );
+
+            // Try standard PABGH (u16 count + (u32 key, u32 offset)*).
+            if let Some(pabgh) = pabgh_bytes.as_deref() {
+                match crate::skill_info::parse_pabgh(pabgh) {
+                    Ok(entries) => {
+                        let _ = writeln!(
+                            schemas,
+                            "  standard (u32 key, u32 offset) PABGH OK — {} rows",
+                            entries.len()
+                        );
+                        if stem == "partprefabdyeslotinfo" {
+                            partprefab_dye_slot_keys.extend(entries.iter().map(|e| e.key));
+                        }
+                        for (i, e) in entries.iter().take(2).enumerate() {
+                            let start = e.offset as usize;
+                            let end = (start + 96).min(pabgb_bytes.len());
+                            let row = &pabgb_bytes[start..end];
+                            let _ = writeln!(
+                                schemas,
+                                "  row[{i}] key={} (0x{:08x}) @ offset={}..{} ({} B)",
+                                e.key, e.key, start, end, row.len()
+                            );
+                            let _ = writeln!(schemas, "    hex: {:02x?}", row);
+                            if row.len() >= 8 {
+                                let body_key =
+                                    u32::from_le_bytes([row[0], row[1], row[2], row[3]]);
+                                let name_len =
+                                    u32::from_le_bytes([row[4], row[5], row[6], row[7]])
+                                        as usize;
+                                let _ = writeln!(
+                                    schemas,
+                                    "    body_key={body_key} (matches PABGH? {}) name_len={name_len}",
+                                    body_key == e.key
+                                );
+                                if (1..=128).contains(&name_len)
+                                    && 8 + name_len <= row.len()
+                                    && let Ok(s) =
+                                        std::str::from_utf8(&row[8..8 + name_len])
+                                {
+                                    let _ = writeln!(schemas, "    name: {s:?}");
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let _ = writeln!(
+                            schemas,
+                            "  standard PABGH parse FAILED ({e}); trying u16-key variant",
+                        );
+                        if pabgh.len() >= 2 {
+                            let cnt = u16::from_le_bytes([pabgh[0], pabgh[1]]) as usize;
+                            if pabgh.len() == 2 + cnt * 6 {
+                                let _ = writeln!(
+                                    schemas,
+                                    "  custom (u16 key, u32 offset) PABGH OK — {cnt} rows"
+                                );
+                                for i in 0..cnt.min(2) {
+                                    let off = 2 + i * 6;
+                                    let key = u16::from_le_bytes([pabgh[off], pabgh[off + 1]]);
+                                    let row_off = u32::from_le_bytes([
+                                        pabgh[off + 2],
+                                        pabgh[off + 3],
+                                        pabgh[off + 4],
+                                        pabgh[off + 5],
+                                    ]) as usize;
+                                    let end = (row_off + 96).min(pabgb_bytes.len());
+                                    let row = &pabgb_bytes[row_off..end];
+                                    let _ = writeln!(
+                                        schemas,
+                                        "  row[{i}] key={key} (0x{:04x}) @ offset={row_off}..{end}",
+                                        key
+                                    );
+                                    let _ = writeln!(schemas, "    hex: {:02x?}", row);
+                                }
+                            } else {
+                                let _ = writeln!(
+                                    schemas,
+                                    "  unrecognised PABGH shape; first 64 bytes: {:02x?}",
+                                    &pabgh[..pabgh.len().min(64)]
+                                );
+                            }
+                        }
+                    }
+                }
+            } else {
+                // No PABGH → maybe storeinfo is a self-describing flat
+                // file (per references/store_info.hexpat). Dump the first
+                // 256 bytes raw so we can see whether the leading shape
+                // matches the hexpat: u16 store_key + u32 name_len + name.
+                let n = pabgb_bytes.len().min(256);
+                let _ = writeln!(
+                    schemas,
+                    "  no .pabgh — flat-file? first {n} bytes:",
+                );
+                let _ = writeln!(schemas, "    hex: {:02x?}", &pabgb_bytes[..n]);
+                if pabgb_bytes.len() >= 6 {
+                    let store_key = u16::from_le_bytes([pabgb_bytes[0], pabgb_bytes[1]]);
+                    let name_len = u32::from_le_bytes([
+                        pabgb_bytes[2],
+                        pabgb_bytes[3],
+                        pabgb_bytes[4],
+                        pabgb_bytes[5],
+                    ]) as usize;
+                    let _ = writeln!(
+                        schemas,
+                        "    leading u16 key + u32 name_len => key=0x{store_key:04x} name_len={name_len}"
+                    );
+                    if (1..=64).contains(&name_len)
+                        && 6 + name_len <= pabgb_bytes.len()
+                        && let Ok(s) = std::str::from_utf8(&pabgb_bytes[6..6 + name_len])
+                    {
+                        let _ = writeln!(schemas, "    name: {s:?}");
+                    }
+                }
+            }
+        }
+        std::fs::write(out_dir.join("schemas.txt"), &schemas).ok();
+        eprintln!("wrote schemas.txt ({} B)", schemas.len());
+
+        // ── 3. `_itemKey → _partPrefabKey` linkage probe ─────────────
+        // Parse iteminfo, collect every distinct StringInfoKey referenced
+        // by `prefab_data_list[].prefab_names[]`, and check what fraction
+        // overlap with the partprefabdyeslotinfo.pabgh row keys.
+        let mut linkage = String::new();
+        let _ = writeln!(linkage, "# _itemKey → _partPrefabKey linkage probe");
+        let _ = writeln!(
+            linkage,
+            "\npartprefabdyeslotinfo row keys collected: {}",
+            partprefab_dye_slot_keys.len()
+        );
+        if let Some(iteminfo_file) = dir.files.iter().find(|f| f.name == "iteminfo.pabgb") {
+            let iteminfo_bytes = paz::extract_file(
+                &game_root.join("0008"),
+                iteminfo_file,
+                "gamedata/binary__/client/bin",
+                &pamt.header.encrypt_info.encrypt_info,
+            )
+            .expect("extract iteminfo.pabgb");
+            let mut offset = 0usize;
+            let mut total_items = 0usize;
+            let mut items_with_prefab = 0usize;
+            let mut prefab_name_hashes: HashSet<u32> = HashSet::new();
+            // (item_key, item_string_key) → list of (prefab_data_idx, prefab_name_hashes[])
+            type SampleRow = (u32, String, Vec<(usize, Vec<u32>)>);
+            let mut sample_rows: Vec<SampleRow> = Vec::new();
+            let mut item_hashes_by_key: HashMap<u32, Vec<u32>> = HashMap::new();
+            use crate::binary::BinaryRead;
+            while offset < iteminfo_bytes.len() {
+                let item =
+                    crate::item_info::ItemInfo::read_from(&iteminfo_bytes, &mut offset)
+                        .expect("parse iteminfo row");
+                total_items += 1;
+                let prefab_list = &item.prefab_data_list.items;
+                if prefab_list.is_empty() {
+                    continue;
+                }
+                let mut any_prefab = false;
+                let mut per_pd: Vec<(usize, Vec<u32>)> = Vec::new();
+                let mut flat_for_item: Vec<u32> = Vec::new();
+                for (pd_idx, pd) in prefab_list.iter().enumerate() {
+                    let hashes: Vec<u32> =
+                        pd.prefab_names.items.iter().map(|k| k.0).collect();
+                    if !hashes.is_empty() {
+                        any_prefab = true;
+                        for &h in &hashes {
+                            prefab_name_hashes.insert(h);
+                            flat_for_item.push(h);
+                        }
+                    }
+                    per_pd.push((pd_idx, hashes));
+                }
+                if any_prefab {
+                    items_with_prefab += 1;
+                    item_hashes_by_key.insert(item.key.0, flat_for_item);
+                    if sample_rows.len() < 8 {
+                        sample_rows.push((
+                            item.key.0,
+                            item.string_key.data.to_owned(),
+                            per_pd,
+                        ));
+                    }
+                }
+            }
+            let intersect = prefab_name_hashes
+                .iter()
+                .filter(|h| partprefab_dye_slot_keys.contains(*h))
+                .count();
+            let _ = writeln!(
+                linkage,
+                "\niteminfo: parsed {total_items} items, {items_with_prefab} have non-empty prefab_data_list"
+            );
+            let _ = writeln!(
+                linkage,
+                "distinct prefab_name StringInfoKeys across iteminfo: {}",
+                prefab_name_hashes.len()
+            );
+            let _ = writeln!(
+                linkage,
+                "intersection w/ partprefabdyeslotinfo row keys: {intersect}"
+            );
+            let coverage_pct = if !prefab_name_hashes.is_empty() {
+                100.0 * intersect as f64 / prefab_name_hashes.len() as f64
+            } else {
+                0.0
+            };
+            let _ = writeln!(
+                linkage,
+                "  coverage: {coverage_pct:.1}% of iteminfo prefab hashes hit the dye-slot table"
+            );
+            let _ = writeln!(
+                linkage,
+                "\nFirst 8 items with prefab_data_list (key, string_key, per-PrefabData hashes):"
+            );
+            for (k, sk, per_pd) in sample_rows.iter() {
+                let _ = writeln!(linkage, "\n  item_key={k} ({sk:?})");
+                for (pd_idx, hashes) in per_pd {
+                    let hits: Vec<bool> = hashes
+                        .iter()
+                        .map(|h| partprefab_dye_slot_keys.contains(h))
+                        .collect();
+                    let _ = writeln!(
+                        linkage,
+                        "    PrefabData[{pd_idx}]  prefab_names={:08x?}  dye_slot_hits={:?}",
+                        hashes, hits
+                    );
+                }
+            }
+
+            // Also probe: how many distinct items map to AT LEAST ONE
+            // hash that's a dye-slot key? That's the upper bound on how
+            // many items the linkage can cover.
+            let items_hitting_dye_slot = item_hashes_by_key
+                .iter()
+                .filter(|(_, hs)| hs.iter().any(|h| partprefab_dye_slot_keys.contains(h)))
+                .count();
+            let _ = writeln!(
+                linkage,
+                "\nitems with at least one prefab_name in partprefabdyeslotinfo: {items_hitting_dye_slot} / {items_with_prefab}"
+            );
+        } else {
+            let _ = writeln!(linkage, "iteminfo.pabgb not in 0008 PAMT — skipping");
+        }
+        std::fs::write(out_dir.join("linkage.txt"), &linkage).ok();
+        eprintln!("wrote linkage.txt ({} B)", linkage.len());
+    }
+
+    /// Investigation probe — deepen the `_itemKey → _partPrefabKey`
+    /// linkage hunt now that the first probe ruled out the obvious
+    /// `iteminfo.prefab_data_list[].prefab_names[].0` candidate (0%
+    /// intersection across 5,377 items × 4,261 distinct hashes).
+    ///
+    /// Strategies tried here:
+    /// 1. Cross-check partprefabdyeslotinfo row keys against
+    ///    `stringinfo.pabgb` — are the row keys themselves StringInfoKey
+    ///    hashes? If yes, resolving the key gives the prefab name, and
+    ///    the linkage is "some itemkey-owned u32 == this hash".
+    /// 2. Brute-force u32 scan of iteminfo's raw byte stream: for each
+    ///    item's parsed byte span, count how many u32 windows hit a
+    ///    partprefab row key. Reports counts both for dyeable items
+    ///    (`is_dyeable=1`) and the whole population.
+    /// 3. For the top dyeable-item hits, dump the local byte context so
+    ///    we can spot which iteminfo field the u32 lives in.
+    ///
+    /// All output in `out/store_mercenary_partprefab_probe/linkage_v2.txt`.
+    #[test]
+    #[ignore = "investigation only — _itemKey → _partPrefabKey deeper linkage probe"]
+    fn _probe_itemkey_partprefab_linkage() {
+        use crate::binary::BinaryRead;
+        use crate::binary::pamt::PackMeta;
+        use crate::binary::paz;
+        use std::collections::{HashMap, HashSet};
+        use std::fmt::Write;
+
+        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
+            });
+        let pamt_path = game_root.join("0008").join("0.pamt");
+        let Ok(pamt_bytes) = std::fs::read(&pamt_path) else {
+            eprintln!("skipping: no {}", pamt_path.display());
+            return;
+        };
+        let pamt = PackMeta::parse(&pamt_bytes, None).expect("parse PAMT");
+        let dir = pamt
+            .directories
+            .iter()
+            .find(|d| d.path == "gamedata/binary__/client/bin")
+            .expect("missing gamedata/binary__/client/bin dir in 0008 PAMT");
+        let group_dir = game_root.join("0008");
+        let enc = &pamt.header.encrypt_info.encrypt_info;
+
+        let out_dir = std::path::PathBuf::from("out/store_mercenary_partprefab_probe");
+        std::fs::create_dir_all(&out_dir).ok();
+        let mut out = String::new();
+
+        // ── Load partprefabdyeslotinfo (key → prefab_name) ───────────
+        let pp_pabgb = paz::extract_file(
+            &group_dir,
+            dir.files
+                .iter()
+                .find(|f| f.name == "partprefabdyeslotinfo.pabgb")
+                .expect("partprefabdyeslotinfo.pabgb"),
+            "gamedata/binary__/client/bin",
+            enc,
+        )
+        .expect("extract partprefabdyeslotinfo.pabgb");
+        let pp_pabgh = paz::extract_file(
+            &group_dir,
+            dir.files
+                .iter()
+                .find(|f| f.name == "partprefabdyeslotinfo.pabgh")
+                .expect("partprefabdyeslotinfo.pabgh"),
+            "gamedata/binary__/client/bin",
+            enc,
+        )
+        .expect("extract partprefabdyeslotinfo.pabgh");
+        let pp_entries =
+            crate::part_prefab_dye_slot_info::parse_part_prefab_dye_slot_info_lossy(
+                &pp_pabgb, &pp_pabgh,
+            );
+        let mut pp_name_by_key: HashMap<u32, String> = HashMap::with_capacity(pp_entries.len());
+        for e in &pp_entries {
+            pp_name_by_key.insert(e.key, e.prefab_name.clone());
+        }
+        let pp_keys: HashSet<u32> = pp_name_by_key.keys().copied().collect();
+        let _ = writeln!(
+            out,
+            "partprefabdyeslotinfo: {} rows, sample (key → prefab_name):",
+            pp_entries.len(),
+        );
+        for e in pp_entries.iter().take(5) {
+            let _ = writeln!(out, "  0x{:08x} → {}", e.key, e.prefab_name);
+        }
+
+        // ── Strategy 1: are partprefab row keys also in stringinfo? ──
+        let si_bytes = paz::extract_file(
+            &group_dir,
+            dir.files
+                .iter()
+                .find(|f| f.name == "stringinfo.pabgb")
+                .expect("stringinfo.pabgb"),
+            "gamedata/binary__/client/bin",
+            enc,
+        )
+        .expect("extract stringinfo.pabgb");
+        let si_entries = crate::string_info::StringInfoData::parse_pabgb(&si_bytes)
+            .expect("parse stringinfo.pabgb");
+        let mut si_by_hash: HashMap<u32, String> = HashMap::with_capacity(si_entries.len());
+        for e in &si_entries {
+            si_by_hash.entry(e.hash).or_insert_with(|| e.value.clone());
+        }
+        let _ = writeln!(out, "\nstringinfo.pabgb: {} entries", si_entries.len());
+        let mut pp_in_si = 0usize;
+        let mut pp_si_mismatch_name = 0usize;
+        let mut sample_resolved: Vec<(u32, String, String)> = Vec::new();
+        for e in &pp_entries {
+            if let Some(si_val) = si_by_hash.get(&e.key) {
+                pp_in_si += 1;
+                if si_val != &e.prefab_name && sample_resolved.len() < 5 {
+                    sample_resolved.push((e.key, e.prefab_name.clone(), si_val.clone()));
+                    pp_si_mismatch_name += 1;
+                }
+            }
+        }
+        let _ = writeln!(
+            out,
+            "  partprefab keys present in stringinfo: {} / {} ({:.1}%)",
+            pp_in_si,
+            pp_entries.len(),
+            100.0 * pp_in_si as f64 / pp_entries.len() as f64,
+        );
+        if pp_si_mismatch_name > 0 {
+            let _ = writeln!(
+                out,
+                "  WARN: {pp_si_mismatch_name} partprefab rows have a stringinfo entry whose value disagrees with prefab_name"
+            );
+            for (k, pn, sv) in &sample_resolved {
+                let _ = writeln!(
+                    out,
+                    "    0x{k:08x}: prefab_name={pn:?}  stringinfo_value={sv:?}"
+                );
+            }
+        }
+
+        // ── Strategy 2: brute-force u32 scan over iteminfo bytes ────
+        let item_pabgb = paz::extract_file(
+            &group_dir,
+            dir.files
+                .iter()
+                .find(|f| f.name == "iteminfo.pabgb")
+                .expect("iteminfo.pabgb"),
+            "gamedata/binary__/client/bin",
+            enc,
+        )
+        .expect("extract iteminfo.pabgb");
+        let mut offset = 0usize;
+        // (item_key, string_key, is_dyeable, row_start, row_end)
+        let mut item_spans: Vec<(u32, String, bool, usize, usize)> = Vec::new();
+        while offset < item_pabgb.len() {
+            let start = offset;
+            let item = crate::item_info::ItemInfo::read_from(&item_pabgb, &mut offset)
+                .expect("parse iteminfo row");
+            item_spans.push((
+                item.key.0,
+                item.string_key.data.to_owned(),
+                item.is_dyeable != 0,
+                start,
+                offset,
+            ));
+        }
+        let _ = writeln!(
+            out,
+            "\niteminfo: {} items parsed; {} marked is_dyeable=1",
+            item_spans.len(),
+            item_spans.iter().filter(|i| i.2).count(),
+        );
+
+        // For each item span, count u32 windows whose value is in
+        // pp_keys. Also record offset-within-row to find the field.
+        let mut per_item_hits: HashMap<u32, Vec<(usize, u32)>> = HashMap::new();
+        for &(item_key, _, _, s, e) in &item_spans {
+            let body = &item_pabgb[s..e];
+            let mut hits = Vec::new();
+            // Stride-1 scan (catches unaligned hits too).
+            let mut i = 0;
+            while i + 4 <= body.len() {
+                let v = u32::from_le_bytes([body[i], body[i + 1], body[i + 2], body[i + 3]]);
+                if pp_keys.contains(&v) {
+                    hits.push((i, v));
+                }
+                i += 1;
+            }
+            if !hits.is_empty() {
+                per_item_hits.insert(item_key, hits);
+            }
+        }
+        let dyeable_with_hit = item_spans
+            .iter()
+            .filter(|i| i.2 && per_item_hits.contains_key(&i.0))
+            .count();
+        let all_with_hit = per_item_hits.len();
+        let dyeable_total = item_spans.iter().filter(|i| i.2).count();
+        let _ = writeln!(
+            out,
+            "\nbrute-force u32 scan (stride 1):"
+        );
+        let _ = writeln!(
+            out,
+            "  items with at least one partprefab-key hit:           {all_with_hit} / {} ({:.1}%)",
+            item_spans.len(),
+            100.0 * all_with_hit as f64 / item_spans.len() as f64,
+        );
+        let _ = writeln!(
+            out,
+            "  dyeable items with at least one partprefab-key hit:   {dyeable_with_hit} / {dyeable_total} ({:.1}%)",
+            if dyeable_total > 0 {
+                100.0 * dyeable_with_hit as f64 / dyeable_total as f64
+            } else { 0.0 },
+        );
+
+        // Per-offset histogram (which offsets-within-row contain hits)
+        let mut offset_hist: HashMap<usize, usize> = HashMap::new();
+        let mut dyeable_offset_hist: HashMap<usize, usize> = HashMap::new();
+        for &(item_key, _, dyeable, _, _) in &item_spans {
+            if let Some(hits) = per_item_hits.get(&item_key) {
+                for &(off, _v) in hits {
+                    *offset_hist.entry(off).or_insert(0) += 1;
+                    if dyeable {
+                        *dyeable_offset_hist.entry(off).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+        let mut hist_sorted: Vec<_> = dyeable_offset_hist.iter().collect();
+        hist_sorted.sort_by(|a, b| b.1.cmp(a.1));
+        let _ = writeln!(out, "\nTop 20 within-row offsets w/ partprefab-key hits across DYEABLE items:");
+        for (off, cnt) in hist_sorted.iter().take(20) {
+            let global = offset_hist.get(*off).copied().unwrap_or(0);
+            let _ = writeln!(
+                out,
+                "  offset {off:>5} : {cnt} dyeable hits  ({global} total across all items)"
+            );
+        }
+
+        // Dump 4-5 sample dyeable items with hits — print local
+        // byte context around each hit, plus the resolved prefab_name.
+        let _ = writeln!(out, "\nSample hits — 5 dyeable items:");
+        let mut shown = 0usize;
+        for (item_key, string_key, dyeable, s, _e) in &item_spans {
+            if shown >= 5 {
+                break;
+            }
+            if !*dyeable {
+                continue;
+            }
+            let Some(hits) = per_item_hits.get(item_key) else {
+                continue;
+            };
+            shown += 1;
+            let _ = writeln!(out, "\n  item_key={item_key} ({string_key:?}, is_dyeable=1) hits={}", hits.len());
+            for (off, v) in hits.iter().take(4) {
+                let abs_lo = *s + off;
+                let abs_hi = (abs_lo + 24).min(item_pabgb.len());
+                let ctx_lo = abs_lo.saturating_sub(8);
+                let ctx = &item_pabgb[ctx_lo..abs_hi];
+                let pname = pp_name_by_key.get(v).map(|s| s.as_str()).unwrap_or("?");
+                let _ = writeln!(
+                    out,
+                    "    +{off:5} = 0x{v:08x} ({pname})   ctx[-8..+24]: {:02x?}",
+                    ctx
+                );
+            }
+        }
+
+        std::fs::write(out_dir.join("linkage_v2.txt"), &out).ok();
+        eprintln!("wrote linkage_v2.txt ({} B)", out.len());
+    }
+
+    /// Investigation probe — broad scan across every PAMT group (0001..)
+    /// looking for a sibling table that might house the
+    /// `_itemKey → _partPrefabKey` linkage. Strategy v2 ruled out
+    /// iteminfo (0% direct u32 overlap) and stringinfo (0% partprefab-key
+    /// presence), so the linkage table likely lives elsewhere.
+    ///
+    /// Heuristics:
+    /// 1. List every `.pabgb` filename across every 000N/PAMT, group by
+    ///    name pattern, sort by size.
+    /// 2. Highlight files matching any of: `dye`, `prefab`, `item`,
+    ///    `appearance`, `equipment`, `equip`, `wear` — these are the
+    ///    plausible homes for an `(item_key, part_prefab_key)` map.
+    /// 3. For the top candidates (<200 KB), extract the file and check
+    ///    whether ANY u32 window in the body matches a known
+    ///    partprefabdyeslotinfo row key. If yes, that's our linkage
+    ///    table — record the file + the hit count.
+    #[test]
+    #[ignore = "investigation only — partprefab linkage table file search across all PAMT groups"]
+    fn _probe_partprefab_linkage_table_scan() {
+        use crate::binary::pamt::PackMeta;
+        use crate::binary::paz;
+        use std::collections::HashSet;
+        use std::fmt::Write;
+
+        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
+            });
+
+        // First, gather the 1,105 partprefabdyeslotinfo keys from 0008.
+        let pamt_0008 = match std::fs::read(game_root.join("0008").join("0.pamt")) {
+            Ok(b) => b,
+            Err(_) => {
+                eprintln!("skipping: no 0008/0.pamt");
+                return;
+            }
+        };
+        let p8 = PackMeta::parse(&pamt_0008, None).expect("parse 0008 PAMT");
+        let p8_bin = p8
+            .directories
+            .iter()
+            .find(|d| d.path == "gamedata/binary__/client/bin")
+            .expect("0008 bin dir");
+        let pp_pabgb = paz::extract_file(
+            &game_root.join("0008"),
+            p8_bin
+                .files
+                .iter()
+                .find(|f| f.name == "partprefabdyeslotinfo.pabgb")
+                .expect("partprefabdyeslotinfo.pabgb"),
+            "gamedata/binary__/client/bin",
+            &p8.header.encrypt_info.encrypt_info,
+        )
+        .expect("extract partprefabdyeslotinfo.pabgb");
+        let pp_pabgh = paz::extract_file(
+            &game_root.join("0008"),
+            p8_bin
+                .files
+                .iter()
+                .find(|f| f.name == "partprefabdyeslotinfo.pabgh")
+                .expect("partprefabdyeslotinfo.pabgh"),
+            "gamedata/binary__/client/bin",
+            &p8.header.encrypt_info.encrypt_info,
+        )
+        .expect("extract partprefabdyeslotinfo.pabgh");
+        let pp_entries =
+            crate::part_prefab_dye_slot_info::parse_part_prefab_dye_slot_info_lossy(
+                &pp_pabgb, &pp_pabgh,
+            );
+        let pp_keys: HashSet<u32> = pp_entries.iter().map(|e| e.key).collect();
+        eprintln!("collected {} partprefab keys to probe against", pp_keys.len());
+
+        let out_dir = std::path::PathBuf::from("out/store_mercenary_partprefab_probe");
+        std::fs::create_dir_all(&out_dir).ok();
+        let mut out = String::new();
+        let _ = writeln!(out, "# partprefab linkage-table search (across all PAMT groups)");
+        let _ = writeln!(out, "partprefab keys to find: {}\n", pp_keys.len());
+
+        // Walk every 000N folder under game_root.
+        let mut groups: Vec<String> = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(&game_root) {
+            for ent in rd.flatten() {
+                if let Some(name) = ent.file_name().to_str()
+                    && name.len() == 4
+                    && name.chars().all(|c| c.is_ascii_digit())
+                    && ent.path().join("0.pamt").is_file()
+                {
+                    groups.push(name.to_owned());
+                }
+            }
+        }
+        groups.sort();
+        let _ = writeln!(out, "discovered PAMT groups: {:?}\n", groups);
+
+        let pattern_keys = ["dye", "prefab", "item", "appear", "equip", "wear", "part"];
+
+        // First pass: filename inventory, grouped by group.
+        let _ = writeln!(out, "## Filename inventory across all groups (matches: {pattern_keys:?})");
+        let mut candidates: Vec<(String, String, String, u32, u32)> = Vec::new(); // (group, dir, name, comp, uncomp)
+        for g in &groups {
+            let pamt_path = game_root.join(g).join("0.pamt");
+            let Ok(bytes) = std::fs::read(&pamt_path) else { continue; };
+            let Ok(pamt) = PackMeta::parse(&bytes, None) else {
+                let _ = writeln!(out, "  {g}: PAMT parse failed");
+                continue;
+            };
+            let _ = writeln!(out, "\n### {g} ({} dirs)", pamt.directories.len());
+            for d in &pamt.directories {
+                for f in &d.files {
+                    let lower = f.name.to_ascii_lowercase();
+                    if pattern_keys.iter().any(|p| lower.contains(p))
+                        && (lower.ends_with(".pabgb") || lower.ends_with(".pabgh"))
+                    {
+                        let _ = writeln!(
+                            out,
+                            "  {}/{} ({}c / {}u)",
+                            d.path, f.name, f.file.compressed_size, f.file.uncompressed_size
+                        );
+                        if lower.ends_with(".pabgb") {
+                            candidates.push((
+                                g.clone(),
+                                d.path.clone(),
+                                f.name.clone(),
+                                f.file.compressed_size,
+                                f.file.uncompressed_size,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sort candidates by ascending uncompressed size — small files first,
+        // they're cheap to probe and the linkage table is likely <500 KB
+        // (1,105 rows × maybe 16 bytes/row ≈ 18 KB minimum).
+        candidates.sort_by_key(|c| c.4);
+
+        let _ = writeln!(
+            out,
+            "\n## Candidate scan ({} .pabgb candidates, smallest first)",
+            candidates.len()
+        );
+        // Cap to candidates <= 5 MB to keep test time bounded.
+        let cap = 5 * 1024 * 1024;
+        for (g, dpath, fname, _csz, usz) in &candidates {
+            if *usz as usize > cap {
+                continue;
+            }
+            // Extract.
+            let pamt_path = game_root.join(g).join("0.pamt");
+            let Ok(bytes) = std::fs::read(&pamt_path) else { continue; };
+            let Ok(pamt) = PackMeta::parse(&bytes, None) else { continue; };
+            let Some(d) = pamt.directories.iter().find(|d| &d.path == dpath) else {
+                continue;
+            };
+            let Some(f) = d.files.iter().find(|f| f.name == *fname) else {
+                continue;
+            };
+            let Ok(blob) = paz::extract_file(
+                &game_root.join(g),
+                f,
+                &d.path,
+                &pamt.header.encrypt_info.encrypt_info,
+            ) else {
+                let _ = writeln!(out, "  {g}/{fname}: extract FAILED");
+                continue;
+            };
+            // Stride-1 u32 scan.
+            let mut hits = 0usize;
+            let mut distinct: HashSet<u32> = HashSet::new();
+            let mut i = 0;
+            while i + 4 <= blob.len() {
+                let v = u32::from_le_bytes([blob[i], blob[i + 1], blob[i + 2], blob[i + 3]]);
+                if pp_keys.contains(&v) {
+                    hits += 1;
+                    distinct.insert(v);
+                }
+                i += 1;
+            }
+            if hits > 0 {
+                let _ = writeln!(
+                    out,
+                    "  HIT  {g}/{fname} ({usz}B unc): {hits} u32 hits ({} distinct partprefab keys)",
+                    distinct.len()
+                );
+            }
+        }
+
+        std::fs::write(out_dir.join("linkage_table_scan.txt"), &out).ok();
+        eprintln!("wrote linkage_table_scan.txt ({} B)", out.len());
+    }
+
+    /// Investigation probe — last linkage hypothesis: iteminfo's
+    /// `prefab_data_list[].prefab_names[]` StringInfoKeys resolve (via
+    /// `stringinfo.pabgb`) to symbolic names, and partprefabdyeslotinfo's
+    /// row's `prefab_name` field carries the SAME (or a derived) string.
+    /// If the strings match directly, the linkage is:
+    /// `iteminfo → prefab_names[] → stringinfo → string → match against
+    ///  partprefab.prefab_name → row key`.
+    ///
+    /// If they DON'T match directly, dumps the symbolic names so we can
+    /// see what the naming convention looks like (and whether a
+    /// derivation rule like "prepend cd_ + lowercase" is in play).
+    ///
+    /// Also tests the Jenkins-hash hypothesis: for the first few
+    /// partprefab row keys, brute-force Jenkins hashlittle2 of the
+    /// row's `prefab_name` field with seed 0 / 0xDEBA1DCD / 1, see if
+    /// any match the row key.
+    #[test]
+    #[ignore = "investigation only — string-resolution + Jenkins hash linkage check"]
+    fn _probe_partprefab_string_linkage() {
+        use crate::binary::pamt::PackMeta;
+        use crate::binary::paz;
+        use std::collections::{HashMap, HashSet};
+        use std::fmt::Write;
+
+        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
+            });
+        let pamt_path = game_root.join("0008").join("0.pamt");
+        let Ok(pamt_bytes) = std::fs::read(&pamt_path) else {
+            eprintln!("skipping: no {}", pamt_path.display());
+            return;
+        };
+        let pamt = PackMeta::parse(&pamt_bytes, None).expect("parse PAMT");
+        let dir = pamt
+            .directories
+            .iter()
+            .find(|d| d.path == "gamedata/binary__/client/bin")
+            .expect("0008 bin dir");
+        let enc = &pamt.header.encrypt_info.encrypt_info;
+        let group_dir = game_root.join("0008");
+
+        // ── Load tables ──
+        let pp_pabgb = paz::extract_file(
+            &group_dir,
+            dir.files
+                .iter()
+                .find(|f| f.name == "partprefabdyeslotinfo.pabgb")
+                .unwrap(),
+            "gamedata/binary__/client/bin",
+            enc,
+        )
+        .unwrap();
+        let pp_pabgh = paz::extract_file(
+            &group_dir,
+            dir.files
+                .iter()
+                .find(|f| f.name == "partprefabdyeslotinfo.pabgh")
+                .unwrap(),
+            "gamedata/binary__/client/bin",
+            enc,
+        )
+        .unwrap();
+        let pp_entries =
+            crate::part_prefab_dye_slot_info::parse_part_prefab_dye_slot_info_lossy(
+                &pp_pabgb, &pp_pabgh,
+            );
+        let pp_name_set: HashSet<String> =
+            pp_entries.iter().map(|e| e.prefab_name.clone()).collect();
+        let pp_key_by_name: HashMap<String, u32> = pp_entries
+            .iter()
+            .map(|e| (e.prefab_name.clone(), e.key))
+            .collect();
+        let pp_keys: HashSet<u32> = pp_entries.iter().map(|e| e.key).collect();
+        let si_bytes = paz::extract_file(
+            &group_dir,
+            dir.files
+                .iter()
+                .find(|f| f.name == "stringinfo.pabgb")
+                .unwrap(),
+            "gamedata/binary__/client/bin",
+            enc,
+        )
+        .unwrap();
+        let si_entries =
+            crate::string_info::StringInfoData::parse_pabgb(&si_bytes).unwrap();
+        let mut si: HashMap<u32, String> = HashMap::with_capacity(si_entries.len());
+        for e in &si_entries {
+            si.entry(e.hash).or_insert_with(|| e.value.clone());
+        }
+
+        let item_pabgb = paz::extract_file(
+            &group_dir,
+            dir.files
+                .iter()
+                .find(|f| f.name == "iteminfo.pabgb")
+                .unwrap(),
+            "gamedata/binary__/client/bin",
+            enc,
+        )
+        .unwrap();
+
+        let mut out = String::new();
+        let _ = writeln!(out, "# partprefab string-linkage probe\n");
+        let _ = writeln!(out, "partprefab rows: {}", pp_entries.len());
+        let _ = writeln!(out, "stringinfo entries: {}", si.len());
+        let _ = writeln!(
+            out,
+            "\nSample partprefab prefab_name strings:"
+        );
+        for e in pp_entries.iter().take(8) {
+            let _ = writeln!(out, "  0x{:08x} → {}", e.key, e.prefab_name);
+        }
+
+        // ── Walk items, resolve prefab_names + log everything ──
+        use crate::binary::BinaryRead;
+        let mut offset = 0usize;
+        let mut dyeable_items_processed = 0usize;
+        let mut prefab_name_resolved_direct_hit = 0usize;
+        let mut prefab_name_resolved_total = 0usize;
+        let mut unresolved_hashes = 0usize;
+        type DyeableResolution = (u32, String, Vec<(u32, Option<String>, bool)>);
+        let mut sample_dyeable_resolutions: Vec<DyeableResolution> = Vec::new();
+        // Also collect: does any resolved string appear as a SUBSTRING of
+        // any partprefab prefab_name? (in case iteminfo stores a shorter
+        // canonical name like "Phm_Lb_0054" and partprefab adds prefixes)
+        let mut substring_hits = 0usize;
+        // Also walk *every* stringinfo entry and check if its value
+        // matches any partprefab prefab_name exactly. That tells us
+        // whether the prefab_name strings even live in stringinfo.
+        let mut si_full_string_matches: Vec<(u32, &String)> = si_entries
+            .iter()
+            .filter(|s| pp_name_set.contains(&s.value))
+            .map(|s| (s.hash, &s.value))
+            .collect();
+        si_full_string_matches.sort_by_key(|(h, _)| *h);
+        let _ = writeln!(
+            out,
+            "\nstringinfo entries whose value matches a partprefab prefab_name: {}",
+            si_full_string_matches.len()
+        );
+        for (h, v) in si_full_string_matches.iter().take(10) {
+            let pp_key = pp_key_by_name.get(*v).copied().unwrap_or(0);
+            let _ = writeln!(
+                out,
+                "  stringinfo hash 0x{h:08x} → {v:?}  (partprefab key: 0x{pp_key:08x})"
+            );
+        }
+
+        while offset < item_pabgb.len() {
+            let item = crate::item_info::ItemInfo::read_from(&item_pabgb, &mut offset)
+                .expect("parse iteminfo row");
+            if item.is_dyeable == 0 {
+                continue;
+            }
+            dyeable_items_processed += 1;
+            let mut per_hash: Vec<(u32, Option<String>, bool)> = Vec::new();
+            for pd in &item.prefab_data_list.items {
+                for k in &pd.prefab_names.items {
+                    prefab_name_resolved_total += 1;
+                    let resolved = si.get(&k.0).cloned();
+                    if resolved.is_none() {
+                        unresolved_hashes += 1;
+                    }
+                    let direct = resolved
+                        .as_ref()
+                        .is_some_and(|s| pp_name_set.contains(s));
+                    if direct {
+                        prefab_name_resolved_direct_hit += 1;
+                    }
+                    if let Some(r) = &resolved {
+                        let substr = pp_name_set.iter().any(|pn| pn.contains(r) || r.contains(pn));
+                        if substr && !direct {
+                            substring_hits += 1;
+                        }
+                    }
+                    per_hash.push((k.0, resolved, direct));
+                }
+            }
+            if sample_dyeable_resolutions.len() < 8 {
+                sample_dyeable_resolutions.push((
+                    item.key.0,
+                    item.string_key.data.to_owned(),
+                    per_hash,
+                ));
+            }
+        }
+        let _ = writeln!(
+            out,
+            "\ndyeable items: {dyeable_items_processed}"
+        );
+        let _ = writeln!(
+            out,
+            "prefab_names hashes (total across all dyeable items): {prefab_name_resolved_total}"
+        );
+        let _ = writeln!(
+            out,
+            "  resolved via stringinfo: {} ({:.1}%)",
+            prefab_name_resolved_total - unresolved_hashes,
+            100.0
+                * (prefab_name_resolved_total - unresolved_hashes) as f64
+                / prefab_name_resolved_total.max(1) as f64,
+        );
+        let _ = writeln!(
+            out,
+            "  direct match against partprefab prefab_name set: {prefab_name_resolved_direct_hit}"
+        );
+        let _ = writeln!(out, "  substring match (either direction): {substring_hits}");
+
+        let _ = writeln!(out, "\nSample resolutions (first 8 dyeable items):");
+        for (k, sk, hashes) in &sample_dyeable_resolutions {
+            let _ = writeln!(out, "\n  item_key={k} ({sk:?})");
+            for (h, r, direct) in hashes {
+                let marker = if *direct { "✓" } else { " " };
+                let resolved_dbg = r.as_deref().unwrap_or("<no stringinfo entry>");
+                let _ = writeln!(
+                    out,
+                    "    {marker} hash 0x{h:08x} → {resolved_dbg:?}"
+                );
+            }
+        }
+
+        // ── calculate_checksum hypothesis test ──
+        // Use the existing Jenkins checksum (seed = length + 0xDEBA1DCD)
+        // to hash each partprefab prefab_name string and see if the
+        // result matches the row key. Also try a few derived strings
+        // (suffixes / .pac extension).
+        use crate::crypto::checksum::calculate_checksum;
+        let _ = writeln!(
+            out,
+            "\n## calculate_checksum hypothesis test (10 partprefab rows)"
+        );
+        let mut cs_hits = 0usize;
+        for e in pp_entries.iter().take(10) {
+            let hit = calculate_checksum(e.prefab_name.as_bytes());
+            let match_flag = hit == e.key;
+            if match_flag {
+                cs_hits += 1;
+            }
+            let _ = writeln!(
+                out,
+                "  {:?}  cs=0x{:08x}  target=0x{:08x}  match={}",
+                e.prefab_name, hit, e.key, match_flag
+            );
+        }
+        let _ = writeln!(out, "  direct cs(prefab_name) hits: {cs_hits}/10");
+
+        let _ = writeln!(
+            out,
+            "\n  Variant transformations for row[0] ({:?}, target 0x{:08x}):",
+            pp_entries[0].prefab_name, pp_entries[0].key
+        );
+        let pn = &pp_entries[0].prefab_name;
+        for variant in [
+            pn.clone(),
+            format!("{pn}.pac"),
+            format!("{pn}.prefab"),
+            format!("{pn}_00"),
+            pn.to_uppercase(),
+            pn.to_lowercase(),
+            format!("character/model/{pn}.pac"),
+        ] {
+            let cs = calculate_checksum(variant.as_bytes());
+            let _ = writeln!(
+                out,
+                "    {variant:?}  cs=0x{cs:08x}  match={}",
+                cs == pp_entries[0].key
+            );
+        }
+
+        // suppress unused warnings if all empty
+        let _ = pp_keys;
+
+        std::fs::write(out_dir_for("linkage_string_v3.txt"), &out).ok();
+        eprintln!("wrote linkage_string_v3.txt ({} B)", out.len());
+
+        fn out_dir_for(name: &str) -> std::path::PathBuf {
+            let p = std::path::PathBuf::from("out/store_mercenary_partprefab_probe");
+            std::fs::create_dir_all(&p).ok();
+            p.join(name)
+        }
+    }
 }

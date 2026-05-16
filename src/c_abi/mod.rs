@@ -35,8 +35,10 @@ pub mod faction_node_info;
 pub mod faction_relation_group_info;
 pub mod faction_spawn_data_info;
 pub mod gimmick_info;
+pub mod item_part_prefab;
 pub mod iteminfo;
 pub mod knowledge_info;
+pub mod mercenary_info;
 pub mod mission_info;
 pub mod paloc;
 pub mod part_prefab_dye_slot_info;
@@ -46,6 +48,7 @@ pub mod quest_gauge_info;
 pub mod quest_info;
 pub mod skill_info;
 pub mod stage_info;
+pub mod store_info;
 pub mod string_info;
 pub mod sub_level_info;
 

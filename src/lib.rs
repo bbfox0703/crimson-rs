@@ -16,6 +16,8 @@ mod item_info;
 #[cfg(feature = "c_abi")]
 mod knowledge_info;
 #[cfg(feature = "c_abi")]
+mod mercenary_info;
+#[cfg(feature = "c_abi")]
 mod mission_info;
 #[cfg(feature = "c_abi")]
 mod part_prefab_dye_slot_info;
@@ -30,6 +32,8 @@ mod save;
 mod skill_info;
 #[cfg(feature = "c_abi")]
 mod stage_info;
+#[cfg(feature = "c_abi")]
+mod store_info;
 mod string_info;
 #[cfg(feature = "c_abi")]
 mod sub_level_info;
