@@ -35,6 +35,7 @@ pub mod faction_node_info;
 pub mod faction_relation_group_info;
 pub mod faction_spawn_data_info;
 pub mod gimmick_info;
+pub mod item_part_prefab;
 pub mod iteminfo;
 pub mod knowledge_info;
 pub mod mercenary_info;
