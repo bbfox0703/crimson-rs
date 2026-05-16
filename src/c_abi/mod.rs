@@ -38,6 +38,8 @@ pub mod faction_relation_group_info;
 pub mod faction_spawn_data_info;
 pub mod gameplay_variable_info;
 pub mod gimmick_info;
+pub mod global_game_event_group_info;
+pub mod global_game_event_info;
 pub mod house_info;
 pub mod item_part_prefab;
 pub mod iteminfo;

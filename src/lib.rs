@@ -19,6 +19,10 @@ mod gameplay_variable_info;
 #[cfg(feature = "c_abi")]
 mod gimmick_info;
 #[cfg(feature = "c_abi")]
+mod global_game_event_group_info;
+#[cfg(feature = "c_abi")]
+mod global_game_event_info;
+#[cfg(feature = "c_abi")]
 mod house_info;
 mod item_info;
 #[cfg(feature = "c_abi")]
