@@ -47,6 +47,7 @@ pub mod item_group_info;
 pub mod item_part_prefab;
 pub mod iteminfo;
 pub mod knowledge_info;
+pub mod main_quest_chapter;
 pub mod mercenary_info;
 pub mod mission_info;
 pub mod paloc;
@@ -58,6 +59,7 @@ pub mod quest_info;
 pub mod region_info;
 pub mod reserve_slot_info;
 pub mod royal_supply_info;
+pub mod side_quest_faction;
 pub mod skill_info;
 pub mod stage_info;
 pub mod store_info;
@@ -132,6 +134,11 @@ pub mod error {
     /// `crimson_save_abort_deferred_redecode` was called but no batch
     /// is currently open. Pairing is begin → (end | abort).
     pub const BATCH_NOT_OPEN: i32 = -22;
+    /// `crimson_save_set_object_list_present` targeted a field whose
+    /// schema `meta_kind` isn't `6` or `7` (ObjectList). Used to surface
+    /// the type mismatch separately from `NOT_SCALAR_FIELD_KIND` so the
+    /// caller can route to the right toggle entry point.
+    pub const NOT_OBJECT_LIST: i32 = -23;
     pub const PANIC: i32 = -99;
 }
 
@@ -2636,6 +2643,280 @@ fn toggle_one_scalar_presence_in_place(
         // start/end are stale but the encoder ignores them for
         // scalar emission; they'll be refreshed by the re-decode.
     } else {
+        field_mut.value = FieldValue::None;
+        field_mut.start = 0;
+        field_mut.end = 0;
+    }
+    Ok(())
+}
+
+/// Build the 18-byte `zero1_count_u24` header for an `object_list`
+/// field with the given non-zero count. We pin this variant because
+/// the decoder's body_offset-probing loop (see
+/// [`decode_object_list`](crate::save::body::decoder)) accepts any of
+/// {0,1,2,3} byte leading skip and picks the "furthest reaching"
+/// success — so an all-zero header (count=0) is genuinely ambiguous
+/// and round-trips as `marker_run_plus_zeros`, which the encoder
+/// can't re-emit with a different count. Lists with count >= 1 in
+/// `zero1_count_u24` disambiguate via the count u24 bytes themselves,
+/// so the round-trip is well-defined; this is why
+/// `set_object_list_present(make_present=1)` always materializes the
+/// list with `count=1` + a default empty element rather than `count=0`.
+fn build_zero1_count_u24_header(count: u32) -> Result<Vec<u8>, i32> {
+    if count == 0 {
+        // Defensive: callers must seed count >= 1 to keep the round-trip
+        // unambiguous. The decoder's body_offset probing eats 1-3 bytes
+        // past the header when count=0, contaminating the next field.
+        return Err(error::LIST_VARIANT_UNSUPPORTED);
+    }
+    if count > 0xFF_FFFF {
+        return Err(error::OUT_OF_RANGE);
+    }
+    let mut bytes = vec![0u8; 18];
+    bytes[1] = (count & 0xFF) as u8;
+    bytes[2] = ((count >> 8) & 0xFF) as u8;
+    bytes[3] = ((count >> 16) & 0xFF) as u8;
+    Ok(bytes)
+}
+
+/// Flip the mask bit of an `object_list` field, creating (or removing)
+/// the corresponding list payload in the enclosing block.
+///
+/// `present_flag == 1` makes the field present:
+/// - The mask bit at `field_idx` in the enclosing block is set.
+/// - The field is initialised as a `count = 1` [`FieldValue::ObjectList`]
+///   containing one default-empty element of the field's element class
+///   (per the schema's `meta_aux`). This is the natural flow for the
+///   dye-editor use case ("add the first dye element") and keeps the
+///   byte layout unambiguous for the decoder's body-offset probing — a
+///   `count = 0` header would be greedily reclassified as
+///   `marker_run_plus_zeros` and steal bytes from subsequent fields.
+/// - Caller follows up with
+///   [`crimson_save_set_scalar_field_present`] /
+///   [`crimson_save_set_scalar_field_path`] to populate the element's
+///   scalar fields (RGBA, material, color group, …).
+///
+/// `present_flag == 0` makes the field absent:
+/// - The mask bit is cleared.
+/// - The field's `kind` becomes `Absent`, its `value` becomes `None`.
+/// - Any existing elements are discarded. The encoder emits nothing
+///   for an absent field, so the body shrinks back exactly the way it
+///   was before the matching `make_present == 1` call — `present(1)
+///   → present(0)` is byte-identical to the original.
+///
+/// Validation:
+/// - The field's schema `meta_kind` must be `6` or `7` (ObjectList);
+///   else `NOT_OBJECT_LIST`. Scalar / inline-bytes / dynamic-array
+///   presence toggles route through
+///   [`crimson_save_set_scalar_field_present`] /
+///   [`crimson_save_set_inline_bytes_field`] /
+///   [`crimson_save_dynamic_array_set_u32_elements`] respectively.
+/// - When `present_flag == 1` and the schema can't build the default
+///   element bytes (e.g. an unknown element class index), the call is
+///   rolled back and returns `BODY_PARSE`.
+///
+/// # Safety
+/// `handle` must be a live, exclusive handle. `path` must point to
+/// `path_len` readable [`CrimsonPathStep`] values (or NULL with
+/// `path_len == 0`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_set_object_list_present(
+    handle: *mut CrimsonSaveHandle,
+    block_idx: u32,
+    path: *const CrimsonPathStep,
+    path_len: usize,
+    field_idx: u32,
+    present_flag: i32,
+) -> i32 {
+    if handle.is_null() {
+        return error::NULL_ARG;
+    }
+    if path.is_null() && path_len != 0 {
+        return error::NULL_ARG;
+    }
+    let make_present = present_flag != 0;
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &mut *handle };
+        let steps: &[CrimsonPathStep] = if path_len == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(path, path_len) }
+        };
+        // Pre-build the default element bytes (and decode them with the
+        // schema) outside the length-changing closure. The closure only
+        // has access to `blocks`, so we hand it a ready-to-insert
+        // `ObjectBlock`. For the absent-toggle path this is unused.
+        let default_element: Option<ObjectBlock> = if make_present {
+            let element_class = match resolve_object_list_element_class(
+                &h.blocks,
+                block_idx,
+                steps,
+                field_idx,
+            ) {
+                Ok(c) => c,
+                Err(code) => return code,
+            };
+            let bytes = match build_empty_element_bytes(element_class, &h.body) {
+                Ok(b) => b,
+                Err(code) => return code,
+            };
+            let schema_clone = h.body.schema.clone();
+            match crate::save::decode_one_list_element_bytes(&bytes, &schema_clone) {
+                Ok(el) => Some(el),
+                Err(_) => return error::BODY_PARSE,
+            }
+        } else {
+            None
+        };
+        apply_length_changing_mutation(h, move |blocks| {
+            toggle_one_object_list_presence_in_place(
+                blocks,
+                block_idx,
+                steps,
+                field_idx,
+                make_present,
+                default_element,
+            )
+        })
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Resolve the element `class_index` for an ObjectList field whose
+/// current instance is **absent**.
+///
+/// The schema's `meta_aux` is opaque for `meta_kind ∈ {6, 7}` (the
+/// element class is encoded per-element on the wrapper, not on the
+/// field). So we discover it by scanning the whole save tree for any
+/// block of the same parent class with the field present-and-non-empty,
+/// then copying that element's `class_index`. Returns `NOT_FOUND` when
+/// no template exists.
+fn resolve_object_list_element_class(
+    blocks: &[ObjectBlock],
+    block_idx: u32,
+    path: &[CrimsonPathStep],
+    field_idx: u32,
+) -> Result<u32, i32> {
+    // Step 1: walk to the target parent block so we know its class_name
+    // + verify the field is meta_kind 6/7.
+    let mut current = blocks
+        .get(block_idx as usize)
+        .ok_or(error::OUT_OF_RANGE)?;
+    for step in path {
+        let field = current
+            .fields
+            .get(step.field_idx as usize)
+            .ok_or(error::OUT_OF_RANGE)?;
+        current = match &field.value {
+            FieldValue::Locator { child: Some(child), .. } => child.as_ref(),
+            FieldValue::ObjectList { elements, .. } => elements
+                .get(step.element_idx as usize)
+                .ok_or(error::OUT_OF_RANGE)?,
+            _ => return Err(error::NOT_NAVIGABLE),
+        };
+    }
+    let field = current
+        .fields
+        .get(field_idx as usize)
+        .ok_or(error::OUT_OF_RANGE)?;
+    if !matches!(field.meta_kind, 6 | 7) {
+        return Err(error::NOT_OBJECT_LIST);
+    }
+    let parent_class = current.class_name.clone();
+    let target_idx = field_idx as usize;
+
+    // Step 2: scan the tree for any block of the same parent class with
+    // the same field present-and-non-empty. Copy the first element's
+    // class_index.
+    fn scan(
+        block: &ObjectBlock,
+        target_class: &str,
+        target_idx: usize,
+    ) -> Option<u32> {
+        if block.class_name == target_class
+            && let Some(field) = block.fields.get(target_idx)
+            && let FieldValue::ObjectList { elements, .. } = &field.value
+            && let Some(first) = elements.first()
+        {
+            return Some(first.class_index);
+        }
+        for f in &block.fields {
+            match &f.value {
+                FieldValue::Locator { child: Some(child), .. } => {
+                    if let Some(v) = scan(child, target_class, target_idx) {
+                        return Some(v);
+                    }
+                }
+                FieldValue::ObjectList { elements, .. } => {
+                    for el in elements {
+                        if let Some(v) = scan(el, target_class, target_idx) {
+                            return Some(v);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+    for top in blocks {
+        if let Some(c) = scan(top, &parent_class, target_idx) {
+            return Ok(c);
+        }
+    }
+    Err(error::NOT_FOUND)
+}
+
+/// Shared mutator behind [`crimson_save_set_object_list_present`].
+/// `default_element` is required for the make-present path and ignored
+/// on make-absent.
+fn toggle_one_object_list_presence_in_place(
+    blocks: &mut [ObjectBlock],
+    block_idx: u32,
+    path: &[CrimsonPathStep],
+    field_idx: u32,
+    make_present: bool,
+    default_element: Option<ObjectBlock>,
+) -> Result<(), i32> {
+    let parent = navigate_mut_to_parent(blocks, block_idx, path)?;
+    let target_idx = field_idx as usize;
+    let Some(field) = parent.fields.get(target_idx) else {
+        return Err(error::OUT_OF_RANGE);
+    };
+    if !matches!(field.meta_kind, 6 | 7) {
+        return Err(error::NOT_OBJECT_LIST);
+    }
+    if target_idx / 8 >= parent.mask_bytes.len() {
+        return Err(error::OUT_OF_RANGE);
+    }
+
+    let byte_idx = target_idx / 8;
+    let bit_idx = target_idx % 8;
+    if make_present {
+        parent.mask_bytes[byte_idx] |= 1 << bit_idx;
+    } else {
+        parent.mask_bytes[byte_idx] &= !(1 << bit_idx);
+    }
+
+    let field_mut = parent
+        .fields
+        .get_mut(target_idx)
+        .expect("field bounds checked above");
+    field_mut.present = make_present;
+    if make_present {
+        let element = default_element.ok_or(error::NULL_ARG)?;
+        let header_bytes = build_zero1_count_u24_header(1)?;
+        field_mut.kind = FieldKind::ObjectList;
+        field_mut.value = FieldValue::ObjectList {
+            count: 1,
+            header_variant: "zero1_count_u24",
+            header_bytes,
+            elements: vec![element],
+        };
+        // start/end are stale but the encoder uses header_bytes +
+        // elements directly; the re-decode pass refreshes the range.
+    } else {
+        field_mut.kind = FieldKind::Absent;
         field_mut.value = FieldValue::None;
         field_mut.start = 0;
         field_mut.end = 0;
@@ -6393,6 +6674,257 @@ mod tests {
             "EquipmentSaveData remove+reinsert-with-original-values must be byte-identical \
              — proves the Locator-then-ObjectList descent + scalar present-toggle cycle \
              is fully reversible"
+        );
+
+        unsafe { crimson_save_free(handle) };
+    }
+
+    /// Round-trip test for [`crimson_save_set_object_list_present`]:
+    /// pick an `ItemSaveData` whose `_itemDyeDataList` field is absent,
+    /// toggle it present (auto-materializes count=1 + one empty
+    /// `ItemDyeSaveData`) → toggle it back to absent → assert body
+    /// bytes are byte-identical to the original.
+    ///
+    /// Closes the v2 "add dye to undyed item" path for `CrimsonAtomtic`'s
+    /// dye editor (see [`docs/dye-editor-scope.md`](../../../docs/dye-editor-scope.md)).
+    /// Skips cleanly when slot104 isn't present.
+    #[test]
+    fn c_abi_object_list_present_roundtrip_dye_data_list_slot104() {
+        let Some(path) = find_slot104_save() else {
+            eprintln!(
+                "skipping c_abi_object_list_present_roundtrip_dye_data_list_slot104: \
+                 no slot104/save.save"
+            );
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let mut handle: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle) },
+            error::OK
+        );
+        let original_body = unsafe { (*handle).save.body.clone() };
+
+        // Find the first ItemSaveData under InventorySaveData →
+        // _inventorylist[N] → _itemList[M] whose `_itemDyeDataList` is
+        // ABSENT. Most non-dyed items match — the slot104 baseline has
+        // hundreds of candidates.
+        type Target = (u32, u32, u32, u32, u32, u32);
+        let found: Option<Target> = unsafe {
+            let h = &*handle;
+            let mut hit: Option<Target> = None;
+            'outer: for (block_idx, block) in h.blocks.iter().enumerate() {
+                if block.class_name != "InventorySaveData" {
+                    continue;
+                }
+                let Some(inv_list) = block
+                    .fields
+                    .iter()
+                    .find(|f| f.name.eq_ignore_ascii_case("_inventorylist"))
+                else { continue };
+                let inv_list_field_idx = inv_list.field_index;
+                let FieldValue::ObjectList { elements: containers, .. } = &inv_list.value
+                else { continue };
+                for (inv_idx, container) in containers.iter().enumerate() {
+                    let Some(item_list_field) = container
+                        .fields
+                        .iter()
+                        .find(|f| f.name.eq_ignore_ascii_case("_itemList"))
+                    else { continue };
+                    let item_list_field_idx = item_list_field.field_index;
+                    let FieldValue::ObjectList { elements: items, .. } = &item_list_field.value
+                    else { continue };
+                    for (item_idx, item) in items.iter().enumerate() {
+                        let Some(dye_field) = item.fields.iter().find(|f| f.name == "_itemDyeDataList")
+                        else { continue };
+                        if dye_field.present {
+                            continue; // we want an absent dye list
+                        }
+                        if !matches!(dye_field.meta_kind, 6 | 7) {
+                            continue; // schema sanity
+                        }
+                        hit = Some((
+                            block_idx as u32,
+                            inv_list_field_idx,
+                            inv_idx as u32,
+                            item_list_field_idx,
+                            item_idx as u32,
+                            dye_field.field_index,
+                        ));
+                        break 'outer;
+                    }
+                }
+            }
+            hit
+        };
+        let Some((block_idx, inv_field_idx, inv_elem_idx, item_field_idx, item_elem_idx, dye_field_idx)) = found
+        else {
+            eprintln!(
+                "skipping: no ItemSaveData with absent _itemDyeDataList found in slot104"
+            );
+            unsafe { crimson_save_free(handle) };
+            return;
+        };
+        eprintln!(
+            "round-trip target: block={block_idx} inv_field={inv_field_idx} \
+             inv_elem={inv_elem_idx} item_field={item_field_idx} \
+             item_elem={item_elem_idx} dye_field={dye_field_idx}"
+        );
+
+        let path = [
+            CrimsonPathStep { field_idx: inv_field_idx, element_idx: inv_elem_idx },
+            CrimsonPathStep { field_idx: item_field_idx, element_idx: item_elem_idx },
+        ];
+
+        // ── Step 1: toggle the dye list from absent to present. The
+        //    ABI auto-materializes count=1 with one default empty
+        //    ItemDyeSaveData element (the byte-unambiguous shape that
+        //    survives a re-decode).
+        let rc = unsafe {
+            crimson_save_set_object_list_present(
+                handle,
+                block_idx,
+                path.as_ptr(),
+                path.len(),
+                dye_field_idx,
+                1,
+            )
+        };
+        assert_eq!(rc, error::OK, "set_object_list_present(true) failed rc={rc}");
+
+        // ── Verify: dye field is now present with count=1 and one
+        //    decoded element with every dye scalar absent.
+        let after_present_len = unsafe {
+            let h = &*handle;
+            let inv_field = &h.blocks[block_idx as usize].fields[inv_field_idx as usize];
+            let FieldValue::ObjectList { elements: containers, .. } = &inv_field.value
+            else { panic!("inv field shape changed") };
+            let item_field = &containers[inv_elem_idx as usize].fields[item_field_idx as usize];
+            let FieldValue::ObjectList { elements: items, .. } = &item_field.value
+            else { panic!("item field shape changed") };
+            let item = &items[item_elem_idx as usize];
+            let dye_field = &item.fields[dye_field_idx as usize];
+            assert!(dye_field.present, "dye field must be present after toggle");
+            assert_eq!(dye_field.kind, FieldKind::ObjectList, "kind must be ObjectList");
+            let FieldValue::ObjectList { count, elements, .. } = &dye_field.value
+            else { panic!("dye field value must be ObjectList") };
+            assert_eq!(*count, 1, "make-present must materialize count=1");
+            assert_eq!(elements.len(), 1, "must have exactly one default element");
+            assert_eq!(
+                elements[0].class_name, "ItemDyeSaveData",
+                "default element class must be ItemDyeSaveData"
+            );
+            // Every field on the default element should be absent — the
+            // caller follows up with set_scalar_field_present to add the
+            // RGBA / material / color group values.
+            assert!(
+                elements[0].fields.iter().all(|f| !f.present),
+                "default element fields must all be absent"
+            );
+            h.save.body.len()
+        };
+        assert!(
+            after_present_len > original_body.len(),
+            "body must grow when an absent ObjectList field becomes present \
+             (was {} bytes, now {})",
+            original_body.len(),
+            after_present_len,
+        );
+
+        // ── Step 2: toggle the field back to absent. The encoder
+        //    skips emission for absent fields, so the body shrinks back
+        //    exactly the way it was before the make-present call.
+        let rc = unsafe {
+            crimson_save_set_object_list_present(
+                handle,
+                block_idx,
+                path.as_ptr(),
+                path.len(),
+                dye_field_idx,
+                0,
+            )
+        };
+        assert_eq!(rc, error::OK, "set_object_list_present(false) failed rc={rc}");
+
+        unsafe {
+            let h = &*handle;
+            let inv_field = &h.blocks[block_idx as usize].fields[inv_field_idx as usize];
+            let FieldValue::ObjectList { elements: containers, .. } = &inv_field.value
+            else { panic!("inv field shape changed") };
+            let item_field = &containers[inv_elem_idx as usize].fields[item_field_idx as usize];
+            let FieldValue::ObjectList { elements: items, .. } = &item_field.value
+            else { panic!("item field shape changed") };
+            let item = &items[item_elem_idx as usize];
+            let dye_field = &item.fields[dye_field_idx as usize];
+            assert!(!dye_field.present, "dye field must be absent after final toggle");
+            assert_eq!(dye_field.kind, FieldKind::Absent);
+        }
+        let after_remove = unsafe { (*handle).save.body.clone() };
+        assert_eq!(
+            after_remove.len(),
+            original_body.len(),
+            "body length must match original after present→absent cycle"
+        );
+        assert_eq!(
+            after_remove, original_body,
+            "body bytes must be byte-identical to original after the full round-trip"
+        );
+
+        unsafe { crimson_save_free(handle) };
+    }
+
+    /// Schema-only validation: `set_object_list_present` must reject
+    /// scalar fields (meta_kind 0/2) with `NOT_OBJECT_LIST`, mirroring
+    /// the symmetric rejection `set_scalar_field_present` does for
+    /// ObjectList fields.
+    #[test]
+    fn c_abi_object_list_present_rejects_scalar_field_slot104() {
+        let Some(path) = find_slot104_save() else {
+            eprintln!(
+                "skipping c_abi_object_list_present_rejects_scalar_field_slot104: \
+                 no slot104/save.save"
+            );
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let mut handle: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle) },
+            error::OK
+        );
+
+        // Find any block with a scalar field (meta_kind 0 or 2).
+        let target = unsafe {
+            let h = &*handle;
+            h.blocks.iter().enumerate().find_map(|(b_idx, block)| {
+                block.fields.iter().find_map(|f| {
+                    if matches!(f.meta_kind, 0 | 2) {
+                        Some((b_idx as u32, f.field_index))
+                    } else {
+                        None
+                    }
+                })
+            })
+        };
+        let Some((block_idx, scalar_field_idx)) = target else {
+            unsafe { crimson_save_free(handle) };
+            panic!("no scalar field found in slot104 — unexpected save shape");
+        };
+
+        let rc = unsafe {
+            crimson_save_set_object_list_present(
+                handle,
+                block_idx,
+                ptr::null(),
+                0,
+                scalar_field_idx,
+                1,
+            )
+        };
+        assert_eq!(
+            rc,
+            error::NOT_OBJECT_LIST,
+            "must reject scalar field with NOT_OBJECT_LIST"
         );
 
         unsafe { crimson_save_free(handle) };

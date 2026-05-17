@@ -2,11 +2,84 @@
 
 > **🎯 New session pickup — start here.**
 >
-> **Where we are (updated 2026-05-16)**: every save-side key the C# Save
+> **Where we are (updated 2026-05-17)**: every save-side key the C# Save
 > Editor currently surfaces resolves through a shipped C ABI bridge.
-> **32 bridges shipped + the deferred-redecode batch ABI.** Test suite:
-> **237** with `c_abi`, **69** without, **25** `#[ignore]`'d diagnostic
-> probes. Clippy clean both modes.
+> **34 bridges shipped + the deferred-redecode batch ABI + the
+> object-list presence-toggle ABI.** Test suite: **268** with `c_abi`,
+> **76** without, **30** `#[ignore]`'d diagnostic probes. Clippy clean
+> both modes.
+>
+> ### What landed this session (2026-05-17, third pass)
+>
+> - **`side_quest_faction`** — sibling of `main_quest_chapter`. Curated
+>   flat `(quest_title, faction_name)` rollup sourced from
+>   [`side-quest-list.md`](./ref-gamedata/side-quest-list.md). Side quests are
+>   organized by faction rather than the Chapter/Arc structure used for
+>   main quests, so the bridge ships a two-direction lookup: quest→
+>   faction (1:1, every curated quest has exactly one faction) and
+>   faction→ordered list of quests (mirrors the
+>   `lookup_related_count` / `_at` pattern from
+>   `faction_relation_group_info`). 84 quest titles across 22 factions
+>   (8 named factions with multiple quests + 14 singletons). Each quest
+>   title is a `QuestKey` display title at `lo32=0x100` (cross-checked
+>   against `Record of the Greymanes` and other rows already pinned in
+>   the verified-mapping list). Surface:
+>   `crimson_side_quest_table_entry_count` / `_get_entry`,
+>   `_faction_for_quest`, `_quest_count_for_faction`,
+>   `_quest_at_for_faction`. No handle, no file load. 7 pure-Rust
+>   tests; no live-install dependency.
+>   - **Caveat**: source MD contains one typo preserved as-is —
+>     "Encirlement on the Cliff" (canonical English spelling
+>     "Encirclement"). If a live PALOC cross-check returns the correct
+>     spelling, the row needs a one-character fix. Flagged at the row
+>     definition site.
+>   - **Coverage caveat**: the list is user-curated, completeness vs.
+>     shipped game content not guaranteed. The bridge enumerates only
+>     what's in the MD; quests outside it will return `NOT_FOUND`.
+>
+> ### What landed this session (2026-05-17, second pass)
+>
+> - **`main_quest_chapter`** — curated `(chapter, arc, mission)` rollup
+>   bridge sourced from [`main-quest-list.md`](./ref-gamedata/main-quest-list.md).
+>   Closes the long-deferred **"Quest chapter rollup"** follow-on —
+>   the chapter layer ("Prologue: Dead of Night", "Chapter 1: The First
+>   Encounter", …) is not present in any RE'd gamedata table, so the
+>   bridge ships the wiki-style breakdown as a static lookup. ~170 rows
+>   across Prologue + 12 chapters + Epilogue. The arc layer matches the
+>   `questinfo.pabgb` display titles at `lo32=0x100` (so callers can
+>   chain `QuestKey → arc title → chapter` directly via the existing
+>   `crimson_questinfo_lookup_display_name`); the mission layer matches
+>   `missioninfo.pabgb` display titles at `lo32=0x101`. Surface:
+>   `crimson_main_quest_table_entry_count` / `_get_entry` for
+>   enumeration, plus `_chapter_for_arc` / `_chapter_for_mission` /
+>   `_arc_for_mission` for direct lookups. No handle, no file load —
+>   pure static data with lazy `OnceLock` indices. Three mission titles
+>   repeat across chapters ("In Ashes", "Reclamation", "The Counterattack")
+>   and "Traitor" exists as both a Ch6 mission and a Ch8 arc; the
+>   bridge documents first-match-by-table-order behaviour and tests
+>   pin those edges. 8 pure-Rust tests (no live install dependency).
+>
+> ### What landed this session (2026-05-17, first pass)
+>
+> - **`crimson_save_set_object_list_present`** — toggles an absent
+>   `ObjectList` field on / off; the make-present path auto-materializes
+>   `count=1` with one default-empty element of the field's element
+>   class (discovered by scanning the save for any sibling block of the
+>   same parent class with the field present-and-non-empty, then copying
+>   its first element's `class_index`). Closes the "add dye to undyed
+>   item" v2 path for `CrimsonAtomtic`'s dye editor — the C# side can
+>   now seed an empty `_itemDyeDataList` on items that have never been
+>   dyed, then drive RGBA / material / color-group via
+>   `set_scalar_field_present` against element 0. See
+>   [`dye-editor-scope.md`](./dye-editor-scope.md) §v2. The count=1
+>   shape is mandatory — a count=0 header is genuinely ambiguous to the
+>   decoder's `body_offset` probing (greedy-matches
+>   `marker_run_plus_zeros`, which the encoder can't re-emit with a
+>   different count); materializing one default element + the
+>   `zero1_count_u24` variant disambiguates the round-trip. Pinned by
+>   `c_abi_object_list_present_roundtrip_dye_data_list_slot104` (full
+>   absent → present → absent cycle on a live slot104 ItemSaveData,
+>   asserting byte-identity to the original body).
 >
 > ### What landed in the last sessions (2026-05-16)
 >
@@ -83,12 +156,17 @@
 >    one (~0.1s). Full design + C# usage pattern in
 >    [`save-deferred-redecode.md`](./save-deferred-redecode.md).
 >
-> ### Full bridge inventory (32)
+> ### Full bridge inventory (34)
 >
 > Title-resolver bridges:
 > `mission_info`, `quest_info`, `stage_info`, `quest_gauge_info`,
 > `knowledge_info`, `sub_level_info`, `gimmick_info`,
-> `character_info` (+ `resolve_portrait` matcher), `skill_info`.
+> `character_info` (+ `resolve_portrait` matcher), `skill_info`,
+> **`main_quest_chapter`** (curated rollup — chapter → arc → mission
+> tree from [`main-quest-list.md`](./ref-gamedata/main-quest-list.md)),
+> **`side_quest_faction`** (curated flat rollup — quest → faction
+> from [`side-quest-list.md`](./ref-gamedata/side-quest-list.md), with reverse
+> enumeration).
 >
 > Dye / appearance gamedata bridges:
 > `dye_color_group_info`, `part_prefab_dye_texture_pallete_info`,
@@ -140,8 +218,12 @@
 >   `dye_slot_counts.json` entirely.
 > - Knowledge group breadcrumb (would need `knowledge_group_info`
 >   sibling bridge + row-body parse).
-> - Quest chapter rollup ("Prologue: Dead of Night" et al. — never
->   located).
+> - ~~Quest chapter rollup ("Prologue: Dead of Night" et al. — never
+>   located)~~ — **shipped 2026-05-17** via the `main_quest_chapter`
+>   bridge backed by the curated
+>   [`main-quest-list.md`](./ref-gamedata/main-quest-list.md). The chapter layer is
+>   genuinely not in any gamedata file; the bridge embeds the wiki-style
+>   breakdown as a static table.
 > - lo32=0x490 mission-variant meaning (Q4, partially overshadowed
 >   by the knowledge work).
 > - Broader PALOC namespace coverage for CharacterKey (the 78%
@@ -169,8 +251,21 @@
 > - **`storeinfo` / `mercenaryinfo` / `globalgameevent` / `royalsupply`
 >   per-row body content** — beyond the template name, each row's body
 >   carries price / item / timing / supply-item lists this bridge
->   doesn't surface. Pull the inline data only when an editor feature
->   needs it.
+>   doesn't surface. **Investigation note (2026-05-17)**: the hexpat
+>   pattern at `references/store_info.hexpat` claims uniform 105-byte
+>   `StoreItemEntry`, but the live 1.07 storeinfo file disproves it —
+>   `Store_Her_General`'s first item is 123 bytes and subsequent items
+>   have different sizes (variable-length `item_data` section).
+>   Variant landscape is now classified into 16 groups by
+>   `(field_e, format_tag)`; see the `#[ignore]`'d
+>   `_probe_store_variant_distribution` in
+>   [`src/store_info/mod.rs`](../src/store_info/mod.rs). The probe also
+>   shows 86 rows (field_e ∈ {14, 1536, 1537, 1538}) use a completely
+>   different body shape (prefix-list-then-std-family) that needs its
+>   own RE pass. **Resume next session** with a variable-length item
+>   walker (scan for `0xFFFF` separator + `item_key_dup` match) +
+>   field_e=1536 family layout RE. Pull the inline data only when an
+>   editor feature actually needs it.
 > - **`crimson_save_set_dynamic_array_present`** — toggle a
 >   `dynamic_array` field between absent and present (mirroring
 >   `set_scalar_field_present` for `meta_kind == 3`). Read / wholesale-
@@ -185,6 +280,9 @@
 >   absent → present transition; for now `set_inline_bytes_field` (for
 >   `meta_kind == 1`) and `dynamic_array_set_u32_elements` (for
 >   already-present `meta_kind == 3`) cover the common cases.
+>   (The sibling `crimson_save_set_object_list_present` for `meta_kind
+>   ∈ {6, 7}` ships 2026-05-17 — see "What landed this session" at the
+>   top of the doc.)
 > - **`crimson_save_get_inline_bytes_field`** — typed read accessor
 >   for `inline_bytes` content (e.g.
 >   `GameData_GimmickPointData.staticstringA`). Today the JSON's

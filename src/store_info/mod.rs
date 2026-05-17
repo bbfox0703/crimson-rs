@@ -22,7 +22,16 @@
 //! `(u16 key, u32 name_len, name)` triple. The rest of each row (~4 KB
 //! of price / item / format-tag body) is left untouched; the hexpat
 //! pattern at `references/store_info.hexpat` documents the per-format
-//! layouts for callers that want to RE the embedded item list.
+//! layouts for callers that want to RE the embedded item list. Per-row
+//! body decode (with per-item `(item_key, buy_price, sell_price,
+//! purchase_limit)` extraction) is **deferred** — the hexpat-claimed
+//! "105-byte uniform items" turns out to be wrong: items are
+//! variable-length in 1.07 saves (the first item of Store_Her_General
+//! is 123 bytes, item 1 has a different size, stride is not constant).
+//! See [`docs/save-editor-keys-plan.md`](../../docs/save-editor-keys-plan.md)
+//! "What's deferred" for the RE roadmap and the
+//! `_probe_store_variant_distribution` test below for the classified-
+//! by-`(field_e, format_tag)` row landscape.
 //!
 //! ```text
 //! Row {
@@ -197,6 +206,136 @@ mod tests {
                 e.key,
                 e.name,
             );
+        }
+    }
+
+    /// Forensic probe for the next-session per-row body RE pass.
+    /// Classifies every row by `(field_e, format_tag)` (the
+    /// common-header discriminators at offsets +21 and +26..+27) and
+    /// dumps the first 96 bytes of body for each variant group.
+    ///
+    /// 1.07 distribution (2026-05-17 baseline):
+    /// - `field_e=0, format_tag=0x01FD/0x03FC/0x83FC`: 181 rows (standard family;
+    ///   items table follows the 23-byte std-family continuation)
+    /// - `field_e=1, format_tag=0x01FD`: 10 rows (Trade — variable-length items)
+    /// - `field_e=2, format_tag=0x01FD`: 9 rows (Short-tail — 15-byte tail variant)
+    /// - `field_e=0, format_tag=0x0600/0x83FC`: 6 rows (Camp anomaly + leather variants)
+    /// - `field_e ∈ {14, 1536, 1537, 1538}`: 86 rows (Camp / BlackMarket /
+    ///   Furniture / TradeManager etc. — completely different body layout,
+    ///   prefix-list-then-std-family structure; layout pending full RE)
+    ///
+    /// The hexpat `references/store_info.hexpat` claims a uniform 105-byte
+    /// `StoreItemEntry`, but the probe revealed that item bytes are
+    /// actually **variable-length** even within the standard family
+    /// (Store_Her_General's first item is 123 bytes; subsequent items
+    /// have different sizes). A full per-item parser needs either:
+    /// - a variable-length walker that scans for the `0xFFFF` separator
+    ///   + `item_key_dup` match to find item boundaries, or
+    /// - deeper RE of the `item_data` sub-fields to compute per-item
+    ///   length from the leading `sentinel_2` bitmask.
+    ///
+    /// Re-run with:
+    /// ```text
+    /// cargo test --lib --features c_abi _probe_store_variant_distribution -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn _probe_store_variant_distribution() {
+        let Some((pabgb, pabgh)) = find_table_bytes() else {
+            eprintln!("skipping: no game install");
+            return;
+        };
+        let count = u16::from_le_bytes([pabgh[0], pabgh[1]]) as usize;
+        assert_eq!(pabgh.len(), 2 + count * 6, "PABGH shape mismatch");
+        let mut entries: Vec<(u16, u32)> = Vec::with_capacity(count);
+        for i in 0..count {
+            let off = 2 + i * 6;
+            let k = u16::from_le_bytes([pabgh[off], pabgh[off + 1]]);
+            let o = u32::from_le_bytes([
+                pabgh[off + 2],
+                pabgh[off + 3],
+                pabgh[off + 4],
+                pabgh[off + 5],
+            ]);
+            entries.push((k, o));
+        }
+        let mut offsets: Vec<u32> = entries.iter().map(|&(_, o)| o).collect();
+        offsets.sort();
+        offsets.push(pabgb.len() as u32);
+
+        use std::collections::BTreeMap;
+        type VariantSample = (u16, u32, u32, String);
+        let mut by_variant: BTreeMap<(u32, u8, u8), Vec<VariantSample>> = BTreeMap::new();
+        for &(key, start) in &entries {
+            let row_end = offsets
+                .iter()
+                .find(|&&o| o > start)
+                .copied()
+                .unwrap_or(pabgb.len() as u32);
+            let len = row_end - start;
+            let body = &pabgb[start as usize..row_end as usize];
+            if body.len() < 6 {
+                continue;
+            }
+            let name_len = u32::from_le_bytes([body[2], body[3], body[4], body[5]]) as usize;
+            if 6 + name_len > body.len() {
+                continue;
+            }
+            let name = std::str::from_utf8(&body[6..6 + name_len])
+                .unwrap_or("<bad utf8>")
+                .to_owned();
+            let common_start = 6 + name_len;
+            if common_start + 28 > body.len() {
+                continue;
+            }
+            let field_e = u32::from_le_bytes([
+                body[common_start + 21],
+                body[common_start + 22],
+                body[common_start + 23],
+                body[common_start + 24],
+            ]);
+            let fta = body[common_start + 26];
+            let ftb = body[common_start + 27];
+            by_variant
+                .entry((field_e, fta, ftb))
+                .or_default()
+                .push((key, start, len, name));
+        }
+
+        println!("\n=== Store variant distribution ({count} total rows) ===");
+        for ((field_e, fta, ftb), rows) in &by_variant {
+            println!(
+                "  field_e={} format_tag=0x{:02X}{:02X}: {} rows  (sample: key={} name={:?} len={})",
+                field_e,
+                fta,
+                ftb,
+                rows.len(),
+                rows[0].0,
+                rows[0].3,
+                rows[0].2,
+            );
+        }
+
+        println!("\n=== First-sample body dumps (96 bytes after name) ===");
+        for ((field_e, fta, ftb), rows) in &by_variant {
+            let (key, start, len, name) = &rows[0];
+            let body = &pabgb[*start as usize..(*start as usize + *len as usize)];
+            let name_len =
+                u32::from_le_bytes([body[2], body[3], body[4], body[5]]) as usize;
+            let after_name = 6 + name_len;
+            let head = &body[after_name..(after_name + 96).min(body.len())];
+            print!(
+                "  variant=(field_e={}, 0x{:02X}{:02X}) key={} name={:?} body_len={} :",
+                field_e, fta, ftb, key, name, len
+            );
+            for (i, b) in head.iter().enumerate() {
+                if i % 16 == 0 {
+                    println!();
+                    print!("    {:04X}:", after_name + i);
+                }
+                print!(" {:02X}", b);
+            }
+            println!();
         }
     }
 }

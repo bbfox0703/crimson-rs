@@ -1933,6 +1933,720 @@ mod tests {
         }
     }
 
+    /// Save-tree skeleton probe — dumps the top-level TOC class
+    /// histogram plus, for every block, the names of `ObjectList` /
+    /// `Locator` fields it carries (i.e. the recursive entry points).
+    /// Used to spot containers the dye probe might miss — e.g. mount
+    /// equipment, inactive-character equipment, etc.
+    #[test]
+    #[ignore = "investigation only — TOC skeleton + container fields dump"]
+    fn _probe_save_skeleton_slot103() {
+        use crate::save::{Body, FieldValue, Save};
+
+        let save_path = std::env::var_os("CRIMSON_DYE_PROBE_SAVE")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("CRIMSON_LIVE_SAVE").map(PathBuf::from))
+            .or_else(|| {
+                let appdata = std::env::var_os("LOCALAPPDATA")?;
+                let root = PathBuf::from(appdata)
+                    .join("Pearl Abyss")
+                    .join("CD")
+                    .join("save");
+                std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
+                    let p = entry.path().join("slot103").join("save.save");
+                    p.is_file().then_some(p)
+                })
+            });
+        let Some(save_path) = save_path else {
+            eprintln!("skipping: no slot103/save.save");
+            return;
+        };
+        eprintln!("probing {}", save_path.display());
+
+        let raw = std::fs::read(&save_path).expect("read save");
+        let save = Save::parse(&raw).expect("parse save");
+        let body = Body::parse(&save.body).expect("parse body");
+        let blocks = body.decode_blocks(&save.body);
+
+        eprintln!("\n=== TOC block class histogram ===");
+        let mut hist: std::collections::BTreeMap<String, u32> = Default::default();
+        for b in &blocks {
+            *hist.entry(b.class_name.clone()).or_insert(0) += 1;
+        }
+        for (cls, c) in &hist {
+            eprintln!("  {cls}: {c}");
+        }
+
+        eprintln!("\n=== blocks with names matching mount/horse/pet/vehicle/character/owner ===");
+        let needles = ["mount", "horse", "pet", "vehicle", "companion", "stable",
+                       "character", "owner", "kliff", "damine", "oongka", "playable"];
+        for (i, b) in blocks.iter().enumerate() {
+            let low = b.class_name.to_ascii_lowercase();
+            if needles.iter().any(|n| low.contains(n)) {
+                eprintln!("  toc[{i}] {} ({} fields)", b.class_name, b.fields.len());
+                for f in &b.fields {
+                    let kind = match &f.value {
+                        FieldValue::ObjectList { count, .. } => format!("ObjectList<count={count}>"),
+                        FieldValue::Locator { .. } => "Locator".into(),
+                        _ => continue,
+                    };
+                    eprintln!("    .{} : {} (present={})", f.name, kind, f.present);
+                }
+            }
+        }
+
+        eprintln!("\n=== every block class that hosts ItemSaveData (recursively) ===");
+        let mut hosts: std::collections::BTreeMap<String, u32> = Default::default();
+
+        fn walk(
+            b: &crate::save::ObjectBlock,
+            parent: &str,
+            hosts: &mut std::collections::BTreeMap<String, u32>,
+        ) {
+            if b.class_name == "ItemSaveData" {
+                *hosts.entry(parent.to_string()).or_insert(0) += 1;
+            }
+            for f in &b.fields {
+                match &f.value {
+                    FieldValue::ObjectList { elements, .. } => {
+                        let next_parent = format!("{}.{}", b.class_name, f.name);
+                        for e in elements {
+                            walk(e, &next_parent, hosts);
+                        }
+                    }
+                    FieldValue::Locator { child: Some(c), .. } => {
+                        let next_parent = format!("{}.{}<locator>", b.class_name, f.name);
+                        walk(c, &next_parent, hosts);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for b in &blocks {
+            walk(b, "<root>", &mut hosts);
+        }
+        for (path, c) in &hosts {
+            eprintln!("  {path} → {c} ItemSaveData instances");
+        }
+    }
+
+    /// Dye data probe — walks **both** `InventorySaveData` AND
+    /// `EquipmentSaveData` (and any other container that recurses into
+    /// `ItemSaveData`) for every present `_itemDyeDataList`. Dumps the
+    /// full per-element scalar set (RGBA / slotNo / grime / colorGroup
+    /// / texturePallete / disableSymbol) for each hit — i.e. every dye
+    /// the player has applied across the whole save.
+    ///
+    /// Defaults to `slot103/save.save` because that's where the
+    /// 2026-05-17 in-game dye-application session lives (user dyed
+    /// multiple items via the NPC dye UI — Hernand / Pailune themes,
+    /// the bright / dark / normal tiers across the red / yellow color
+    /// families). Override with `CRIMSON_DYE_PROBE_SAVE` for other
+    /// slots.
+    ///
+    /// Output table per hit:
+    ///   `(parent_class, item_key, dye_idx, R, G, B, A, slotNo,
+    ///    grime, colorGroup, texturePallete, disableSymbol, path)`
+    ///
+    /// Counterpart to [`_probe_item_dye_data`] (slot0, single sample,
+    /// schema-validation only). This one is the **data-collection**
+    /// probe: it doesn't enforce a schema, it just enumerates.
+    #[test]
+    #[ignore = "investigation only — full dye enumeration anywhere in tree (default slot103)"]
+    fn _probe_item_dye_data_anywhere_slot103() {
+        use crate::save::{Body, FieldValue, ScalarValue, Save};
+
+        let save_path = std::env::var_os("CRIMSON_DYE_PROBE_SAVE")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("CRIMSON_LIVE_SAVE").map(PathBuf::from))
+            .or_else(|| {
+                let appdata = std::env::var_os("LOCALAPPDATA")?;
+                let root = PathBuf::from(appdata)
+                    .join("Pearl Abyss")
+                    .join("CD")
+                    .join("save");
+                std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
+                    let p = entry.path().join("slot103").join("save.save");
+                    p.is_file().then_some(p)
+                })
+            });
+        let Some(save_path) = save_path else {
+            eprintln!("skipping: no slot103/save.save");
+            return;
+        };
+        eprintln!("probing {}", save_path.display());
+
+        let raw = std::fs::read(&save_path).expect("read save");
+        let save = Save::parse(&raw).expect("parse save");
+        let body = Body::parse(&save.body).expect("parse body");
+        let blocks = body.decode_blocks(&save.body);
+
+        struct Hit<'a> {
+            path_label: String,
+            parent_class: String,
+            parent_item_key: Option<u32>,
+            parent_item_no: Option<u64>,
+            dye_field: &'a crate::save::DecodedField,
+        }
+        let mut hits: Vec<Hit> = Vec::new();
+        let mut class_hist: std::collections::BTreeMap<String, u32> = Default::default();
+
+        fn walk<'a>(
+            block: &'a crate::save::ObjectBlock,
+            path: &str,
+            out: &mut Vec<Hit<'a>>,
+            class_hist: &mut std::collections::BTreeMap<String, u32>,
+        ) {
+            let pull_u32 = |name: &str| {
+                block.fields.iter()
+                    .find(|f| f.name == name)
+                    .and_then(|f| match &f.value {
+                        FieldValue::Scalar(ScalarValue::U32(v)) => Some(*v),
+                        _ => None,
+                    })
+            };
+            let pull_u64 = |name: &str| {
+                block.fields.iter()
+                    .find(|f| f.name == name)
+                    .and_then(|f| match &f.value {
+                        FieldValue::Scalar(ScalarValue::U64(v)) => Some(*v),
+                        _ => None,
+                    })
+            };
+            for f in &block.fields {
+                if f.name == "_itemDyeDataList" && f.present {
+                    *class_hist.entry(block.class_name.clone()).or_insert(0) += 1;
+                    out.push(Hit {
+                        path_label: path.to_string(),
+                        parent_class: block.class_name.clone(),
+                        parent_item_key: pull_u32("_itemKey"),
+                        parent_item_no: pull_u64("_itemNo"),
+                        dye_field: f,
+                    });
+                }
+            }
+            for f in &block.fields {
+                match &f.value {
+                    FieldValue::ObjectList { elements, .. } => {
+                        for (i, e) in elements.iter().enumerate() {
+                            let sub = format!("{path}.{}[{i}]", f.name);
+                            walk(e, &sub, out, class_hist);
+                        }
+                    }
+                    FieldValue::Locator { child: Some(c), .. } => {
+                        let sub = format!("{path}.{}<child>", f.name);
+                        walk(c, &sub, out, class_hist);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        for (i, block) in blocks.iter().enumerate() {
+            let root_label = format!("toc[{i}]:{}", block.class_name);
+            walk(block, &root_label, &mut hits, &mut class_hist);
+        }
+
+        eprintln!("\n=== _itemDyeDataList host classes ===");
+        for (cls, c) in &class_hist {
+            eprintln!("  {cls}: {} occurrences", c);
+        }
+        eprintln!("\ntotal _itemDyeDataList hits: {}", hits.len());
+
+        // ── Per-hit dump ───────────────────────────────────────────
+        eprintln!("\n=== dye enumeration ===");
+        let mut total_dye_entries = 0usize;
+        // Histogram a few interesting axes.
+        let mut color_group_hist: std::collections::BTreeMap<u32, u32> = Default::default();
+        let mut texture_palette_hist: std::collections::BTreeMap<u16, u32> = Default::default();
+        let mut rgb_set: std::collections::BTreeSet<(u8, u8, u8)> = Default::default();
+
+        for hit in &hits {
+            let FieldValue::ObjectList { count, elements: dyes, .. } = &hit.dye_field.value
+            else { continue };
+            total_dye_entries += *count as usize;
+
+            // Item-level header
+            eprintln!(
+                "\n  itemKey={:?} itemNo={:?} class={} dye_count={}",
+                hit.parent_item_key, hit.parent_item_no, hit.parent_class, count,
+            );
+            eprintln!("    path={}", hit.path_label);
+
+            for (didx, dye) in dyes.iter().enumerate() {
+                let pull_u8 = |name: &str| {
+                    dye.fields.iter()
+                        .find(|f| f.name == name && f.present)
+                        .and_then(|f| match &f.value {
+                            FieldValue::Scalar(ScalarValue::U8(v)) => Some(*v),
+                            _ => None,
+                        })
+                };
+                let pull_i8 = |name: &str| {
+                    dye.fields.iter()
+                        .find(|f| f.name == name && f.present)
+                        .and_then(|f| match &f.value {
+                            FieldValue::Scalar(ScalarValue::I8(v)) => Some(*v),
+                            _ => None,
+                        })
+                };
+                let pull_u16 = |name: &str| {
+                    dye.fields.iter()
+                        .find(|f| f.name == name && f.present)
+                        .and_then(|f| match &f.value {
+                            FieldValue::Scalar(ScalarValue::U16(v)) => Some(*v),
+                            _ => None,
+                        })
+                };
+                let pull_u32 = |name: &str| {
+                    dye.fields.iter()
+                        .find(|f| f.name == name && f.present)
+                        .and_then(|f| match &f.value {
+                            FieldValue::Scalar(ScalarValue::U32(v)) => Some(*v),
+                            _ => None,
+                        })
+                };
+                let r = pull_u8("_dyeColorR");
+                let g = pull_u8("_dyeColorG");
+                let b = pull_u8("_dyeColorB");
+                let a = pull_u8("_dyeColorA");
+                let slot_no = pull_i8("_dyeSlotNo");
+                let grime = pull_i8("_grimeOpacity");
+                let cgk = pull_u32("_dyeColorGroupInfoKey");
+                let palette = pull_u16("_texturePalleteKey");
+                let disable_sym = pull_i8("_disableSymbol");
+
+                if let (Some(r), Some(g), Some(b)) = (r, g, b) {
+                    rgb_set.insert((r, g, b));
+                }
+                if let Some(k) = cgk { *color_group_hist.entry(k).or_insert(0) += 1; }
+                if let Some(p) = palette { *texture_palette_hist.entry(p).or_insert(0) += 1; }
+
+                let fmt_u8 = |v: Option<u8>| v.map(|x| format!("{x}")).unwrap_or_else(|| "—".into());
+                let fmt_i8 = |v: Option<i8>| v.map(|x| format!("{x}")).unwrap_or_else(|| "—".into());
+                let fmt_u16 = |v: Option<u16>| v.map(|x| format!("{x}")).unwrap_or_else(|| "—".into());
+                let fmt_u32 = |v: Option<u32>| v.map(|x| format!("0x{x:08x}")).unwrap_or_else(|| "—".into());
+
+                eprintln!(
+                    "    dye[{didx}] mask={:02x?} slotNo={} R={} G={} B={} A={} \
+                     grime={} colorGroup={} texturePallete={} disableSym={}",
+                    dye.mask_bytes,
+                    fmt_i8(slot_no),
+                    fmt_u8(r), fmt_u8(g), fmt_u8(b), fmt_u8(a),
+                    fmt_i8(grime),
+                    fmt_u32(cgk),
+                    fmt_u16(palette),
+                    fmt_i8(disable_sym),
+                );
+            }
+        }
+
+        eprintln!("\n=== summary ===");
+        eprintln!("  hits (items with present _itemDyeDataList): {}", hits.len());
+        eprintln!("  total dye entries:                          {}", total_dye_entries);
+        eprintln!("  unique (R,G,B) values:                      {}", rgb_set.len());
+
+        eprintln!("\n=== _dyeColorGroupInfoKey histogram ===");
+        if color_group_hist.is_empty() {
+            eprintln!("  (none present)");
+        } else {
+            for (k, c) in &color_group_hist {
+                eprintln!("  0x{:08x}: {} entries", k, c);
+            }
+        }
+
+        eprintln!("\n=== _texturePalleteKey histogram ===");
+        if texture_palette_hist.is_empty() {
+            eprintln!("  (none present)");
+        } else {
+            for (k, c) in &texture_palette_hist {
+                eprintln!("  {}: {} entries", k, c);
+            }
+        }
+
+        eprintln!("\n=== unique (R,G,B) values seen ===");
+        for (r, g, b) in &rgb_set {
+            eprintln!("  ({:3}, {:3}, {:3})  #{:02x}{:02x}{:02x}", r, g, b, r, g, b);
+        }
+    }
+
+    /// Full dye enumeration with mercenary-template resolution.
+    ///
+    /// Sibling of [`_probe_item_dye_data_anywhere_slot103`]. The
+    /// earlier probe walks the same tree but doesn't distinguish
+    /// mercenary classes (mounts vs human mercenaries) — both share
+    /// `MercenarySaveData` and only the `_mercenaryKey` template ID
+    /// tells them apart (e.g. `0 → "Mercenary_Main"`, `7 →
+    /// "Vehicle_Horse"`). This probe resolves that key for every
+    /// mercenary container in the save and tags its equipment list /
+    /// inventory list / dye hits accordingly.
+    ///
+    /// Catches:
+    /// - All `_itemDyeDataList` hits across **every** ItemSaveData host
+    ///   the skeleton probe surfaced (EquipSlotElement, MercenarySaveData
+    ///   equip+inventory, InventoryElement, UseItemReserveSlot, faction,
+    ///   stores — though the latter two rarely carry user dyes).
+    /// - Per-mercenary roll-up: items held, dyed items, mount-vs-human
+    ///   classification.
+    ///
+    /// Defaults to `slot103/save.save`; override with
+    /// `CRIMSON_DYE_PROBE_SAVE`. Requires the live game install for
+    /// MercenaryKey name resolution; falls back to raw u32 keys if the
+    /// gamedata pamt isn't available.
+    #[test]
+    #[ignore = "investigation only — dye enumeration with mount / mercenary template resolution"]
+    fn _probe_item_dye_data_with_mercenary_resolution() {
+        use crate::binary::pamt::PackMeta;
+        use crate::binary::paz;
+        use crate::character_info::parse_character_info_lossy;
+        use crate::save::{Body, FieldValue, ScalarValue, Save};
+
+        let save_path = std::env::var_os("CRIMSON_DYE_PROBE_SAVE")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("CRIMSON_LIVE_SAVE").map(PathBuf::from))
+            .or_else(|| {
+                let appdata = std::env::var_os("LOCALAPPDATA")?;
+                let root = PathBuf::from(appdata)
+                    .join("Pearl Abyss")
+                    .join("CD")
+                    .join("save");
+                std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
+                    let p = entry.path().join("slot103").join("save.save");
+                    p.is_file().then_some(p)
+                })
+            });
+        let Some(save_path) = save_path else {
+            eprintln!("skipping: no slot103/save.save");
+            return;
+        };
+        eprintln!("probing {}", save_path.display());
+
+        // ── Load CharacterKey → name resolver (optional) ───────────
+        //
+        // MercenarySaveData uses `_characterKey` (NOT `_mercenaryKey`)
+        // as the template ID. The save value carries a cat-byte in its
+        // hi-byte that must be stripped (& 0xFFFFFF) before the lookup
+        // — see `character_info::CharacterInfoEntry::key` for the
+        // rationale.
+        let merc_name: std::collections::HashMap<u32, String> = {
+            let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
+                });
+            let mut out = std::collections::HashMap::new();
+            let pamt_path = game_root.join("0008").join("0.pamt");
+            if let Ok(pamt_bytes) = std::fs::read(&pamt_path)
+                && let Ok(pamt) = PackMeta::parse(&pamt_bytes, None)
+            {
+                let dir_path = "gamedata/binary__/client/bin";
+                if let Some(dir) = pamt.directories.iter().find(|d| d.path == dir_path)
+                    && let Some(pabgb) = dir.files.iter().find(|f| f.name == "characterinfo.pabgb")
+                {
+                    let group_dir = game_root.join("0008");
+                    let enc = &pamt.header.encrypt_info.encrypt_info;
+                    if let Ok(pabgb_bytes) = paz::extract_file(&group_dir, pabgb, dir_path, enc) {
+                        for e in parse_character_info_lossy(&pabgb_bytes) {
+                            out.entry(e.key).or_insert(e.name);
+                        }
+                        eprintln!("loaded {} CharacterKey → name rows", out.len());
+                    }
+                }
+            }
+            if out.is_empty() {
+                eprintln!("(no character template resolver — raw u32 keys will be shown)");
+            }
+            out
+        };
+
+        let raw = std::fs::read(&save_path).expect("read save");
+        let save = Save::parse(&raw).expect("parse save");
+        let body = Body::parse(&save.body).expect("parse body");
+        let blocks = body.decode_blocks(&save.body);
+
+        // Helper: pull a scalar by name.
+        fn pull_u32(b: &crate::save::ObjectBlock, n: &str) -> Option<u32> {
+            b.fields.iter().find(|f| f.name == n && f.present).and_then(|f| match &f.value {
+                FieldValue::Scalar(ScalarValue::U32(v)) => Some(*v),
+                FieldValue::Scalar(ScalarValue::U16(v)) => Some(u32::from(*v)),
+                FieldValue::Scalar(ScalarValue::U8(v))  => Some(u32::from(*v)),
+                _ => None,
+            })
+        }
+        fn pull_u64(b: &crate::save::ObjectBlock, n: &str) -> Option<u64> {
+            b.fields.iter().find(|f| f.name == n).and_then(|f| match &f.value {
+                FieldValue::Scalar(ScalarValue::U64(v)) => Some(*v),
+                _ => None,
+            })
+        }
+
+        // ── Pass 1: enumerate every MercenarySaveData (= mounts + humans) ──
+        // and dump its field schema, equip count, inventory count, dye count.
+        eprintln!("\n=== MercenarySaveData inventory ===");
+        let mut merc_total = 0usize;
+        let mut mount_total = 0usize;
+        // (path, idx, charKey, resolved_name, merc_no, is_main, equip_count, inv_count, dyes)
+        type MercRow = (String, usize, Option<u32>, String, Option<u64>, bool, usize, usize, usize);
+        let mut merc_rows: Vec<MercRow> = Vec::new();
+
+        fn walk_mercenaries(
+            b: &crate::save::ObjectBlock,
+            path: &str,
+            merc_name: &std::collections::HashMap<u32, String>,
+            merc_total: &mut usize,
+            mount_total: &mut usize,
+            merc_rows: &mut Vec<MercRow>,
+        ) {
+            // Is this a MercenarySaveData? If so, log it.
+            if b.class_name == "MercenarySaveData" {
+                *merc_total += 1;
+                let mkey = pull_u32(b, "_characterKey");
+                let stripped = mkey.map(|k| k & 0xFFFFFF);
+                let name = stripped.and_then(|k| merc_name.get(&k).cloned())
+                    .unwrap_or_else(|| "<unknown>".into());
+                if name.starts_with("Vehicle_") || name.contains("Horse")
+                    || name.contains("Mount") {
+                    *mount_total += 1;
+                }
+
+                // Count equipment + inventory items
+                let mut equip_count = 0usize;
+                let mut inv_count = 0usize;
+                let mut dye_in_lists = 0usize;
+                let mut count_dyes_in_list = |list: &crate::save::FieldValue| {
+                    if let FieldValue::ObjectList { elements, .. } = list {
+                        for item in elements {
+                            for f in &item.fields {
+                                if f.name == "_itemDyeDataList"
+                                    && f.present
+                                    && let FieldValue::ObjectList { count, .. } = &f.value
+                                {
+                                    dye_in_lists += *count as usize;
+                                }
+                            }
+                        }
+                    }
+                };
+                for f in &b.fields {
+                    match f.name.as_str() {
+                        "_equipItemList" => {
+                            if let FieldValue::ObjectList { count, .. } = &f.value {
+                                equip_count = *count as usize;
+                            }
+                            count_dyes_in_list(&f.value);
+                        }
+                        "_inventoryItemList" => {
+                            if let FieldValue::ObjectList { count, .. } = &f.value {
+                                inv_count = *count as usize;
+                            }
+                            count_dyes_in_list(&f.value);
+                        }
+                        _ => {}
+                    }
+                }
+                let merc_no = pull_u64(b, "_mercenaryNo");
+                let is_main = b.fields.iter()
+                    .any(|f| f.name == "_isMainMercenary" && f.present);
+                merc_rows.push((path.to_string(), merc_rows.len(), stripped, name, merc_no, is_main, equip_count, inv_count, dye_in_lists));
+            }
+            // Recurse
+            for f in &b.fields {
+                match &f.value {
+                    FieldValue::ObjectList { elements, .. } => {
+                        for (i, e) in elements.iter().enumerate() {
+                            let sub = format!("{path}.{}[{i}]", f.name);
+                            walk_mercenaries(e, &sub, merc_name, merc_total, mount_total, merc_rows);
+                        }
+                    }
+                    FieldValue::Locator { child: Some(c), .. } => {
+                        let sub = format!("{path}.{}<child>", f.name);
+                        walk_mercenaries(c, &sub, merc_name, merc_total, mount_total, merc_rows);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for (i, b) in blocks.iter().enumerate() {
+            let root = format!("toc[{i}]:{}", b.class_name);
+            walk_mercenaries(b, &root, &merc_name, &mut merc_total, &mut mount_total, &mut merc_rows);
+        }
+
+        eprintln!("\n  total MercenarySaveData blocks: {merc_total}");
+        eprintln!("  of which mounts (Vehicle/Horse/Mount): {mount_total}");
+        // Filter: only show non-empty / main entries (the 96-row dump
+        // is too noisy otherwise).
+        let mut shown = 0usize;
+        for (path, _i, key, name, merc_no, is_main, equip, inv, dyes) in &merc_rows {
+            if *equip == 0 && *inv == 0 && *dyes == 0 && !*is_main { continue; }
+            let tag = if name.starts_with("Vehicle_") || name.contains("Horse")
+                || name.contains("Mount") { "[MOUNT]" }
+                else if *is_main { "[MAIN] " }
+                else { "[OTHER]" };
+            eprintln!(
+                "  {tag} charKey={:?} mercNo={:?} name={:<36} equip={:>3} inv={:>3} dyes={:>2}  path={}",
+                key, merc_no, name, equip, inv, dyes, path,
+            );
+            shown += 1;
+        }
+        let hidden = merc_rows.len() - shown;
+        if hidden > 0 {
+            eprintln!("  (+{hidden} empty mercenary slots hidden)");
+        }
+
+        // ── Pass 2: full dye enumeration (any ItemSaveData host) ──
+        struct Hit<'a> {
+            path_label: String,
+            parent_class: String,
+            // Closest enclosing mercenary key + name (if any)
+            mercenary_label: Option<String>,
+            parent_item_key: Option<u32>,
+            parent_item_no: Option<u64>,
+            dye_field: &'a crate::save::DecodedField,
+        }
+        let mut hits: Vec<Hit> = Vec::new();
+        let mut class_hist: std::collections::BTreeMap<String, u32> = Default::default();
+
+        fn walk_dyes<'a>(
+            b: &'a crate::save::ObjectBlock,
+            path: &str,
+            current_merc: Option<&str>,
+            merc_name: &std::collections::HashMap<u32, String>,
+            out: &mut Vec<Hit<'a>>,
+            class_hist: &mut std::collections::BTreeMap<String, u32>,
+        ) {
+            // Detect MercenarySaveData context so we can label child items.
+            let next_merc_label: Option<String> = if b.class_name == "MercenarySaveData" {
+                let k = pull_u32(b, "_characterKey");
+                let stripped = k.map(|kk| kk & 0xFFFFFF);
+                let n = stripped.and_then(|kk| merc_name.get(&kk).cloned())
+                    .unwrap_or_else(|| "<unknown>".into());
+                let merc_no = pull_u64(b, "_mercenaryNo");
+                let is_main = b.fields.iter()
+                    .find(|f| f.name == "_isMainMercenary" && f.present)
+                    .map(|_| " MAIN").unwrap_or("");
+                Some(format!("charKey={k:?} name={n} mercNo={merc_no:?}{is_main}"))
+            } else {
+                current_merc.map(|s| s.to_string())
+            };
+            for f in &b.fields {
+                if f.name == "_itemDyeDataList" && f.present {
+                    *class_hist.entry(b.class_name.clone()).or_insert(0) += 1;
+                    out.push(Hit {
+                        path_label: path.to_string(),
+                        parent_class: b.class_name.clone(),
+                        mercenary_label: next_merc_label.clone(),
+                        parent_item_key: pull_u32(b, "_itemKey"),
+                        parent_item_no: pull_u64(b, "_itemNo"),
+                        dye_field: f,
+                    });
+                }
+            }
+            let merc_for_children = next_merc_label.as_deref();
+            for f in &b.fields {
+                match &f.value {
+                    FieldValue::ObjectList { elements, .. } => {
+                        for (i, e) in elements.iter().enumerate() {
+                            let sub = format!("{path}.{}[{i}]", f.name);
+                            walk_dyes(e, &sub, merc_for_children, merc_name, out, class_hist);
+                        }
+                    }
+                    FieldValue::Locator { child: Some(c), .. } => {
+                        let sub = format!("{path}.{}<child>", f.name);
+                        walk_dyes(c, &sub, merc_for_children, merc_name, out, class_hist);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for (i, b) in blocks.iter().enumerate() {
+            let root = format!("toc[{i}]:{}", b.class_name);
+            walk_dyes(b, &root, None, &merc_name, &mut hits, &mut class_hist);
+        }
+
+        eprintln!("\n=== _itemDyeDataList host classes ===");
+        for (cls, c) in &class_hist {
+            eprintln!("  {cls}: {} occurrences", c);
+        }
+        eprintln!("\ntotal dye hits: {}", hits.len());
+
+        // ── Per-hit dump ───────────────────────────────────────────
+        eprintln!("\n=== dye enumeration ===");
+        let mut total_entries = 0usize;
+        for hit in &hits {
+            let FieldValue::ObjectList { count, elements: dyes, .. } = &hit.dye_field.value
+            else { continue };
+            total_entries += *count as usize;
+            eprintln!(
+                "\n  [{}] itemKey={:?} itemNo={:?} class={} dyes={}",
+                hit.mercenary_label.as_deref().unwrap_or("<none>"),
+                hit.parent_item_key, hit.parent_item_no, hit.parent_class, count,
+            );
+            eprintln!("    path={}", hit.path_label);
+            for (didx, dye) in dyes.iter().enumerate() {
+                let pull_u8 = |name: &str| {
+                    dye.fields.iter()
+                        .find(|f| f.name == name && f.present)
+                        .and_then(|f| match &f.value {
+                            FieldValue::Scalar(ScalarValue::U8(v)) => Some(*v),
+                            _ => None,
+                        })
+                };
+                let pull_i8 = |name: &str| {
+                    dye.fields.iter()
+                        .find(|f| f.name == name && f.present)
+                        .and_then(|f| match &f.value {
+                            FieldValue::Scalar(ScalarValue::I8(v)) => Some(*v),
+                            _ => None,
+                        })
+                };
+                let pull_u16 = |name: &str| {
+                    dye.fields.iter()
+                        .find(|f| f.name == name && f.present)
+                        .and_then(|f| match &f.value {
+                            FieldValue::Scalar(ScalarValue::U16(v)) => Some(*v),
+                            _ => None,
+                        })
+                };
+                let pull_u32 = |name: &str| {
+                    dye.fields.iter()
+                        .find(|f| f.name == name && f.present)
+                        .and_then(|f| match &f.value {
+                            FieldValue::Scalar(ScalarValue::U32(v)) => Some(*v),
+                            _ => None,
+                        })
+                };
+                let r = pull_u8("_dyeColorR");
+                let g = pull_u8("_dyeColorG");
+                let b = pull_u8("_dyeColorB");
+                let a = pull_u8("_dyeColorA");
+                let slot_no = pull_i8("_dyeSlotNo");
+                let grime = pull_i8("_grimeOpacity");
+                let cgk = pull_u32("_dyeColorGroupInfoKey");
+                let palette = pull_u16("_texturePalleteKey");
+                let disable_sym = pull_i8("_disableSymbol");
+                let fmt_u8 = |v: Option<u8>| v.map(|x| format!("{x}")).unwrap_or_else(|| "—".into());
+                let fmt_i8 = |v: Option<i8>| v.map(|x| format!("{x}")).unwrap_or_else(|| "—".into());
+                let fmt_u16 = |v: Option<u16>| v.map(|x| format!("{x}")).unwrap_or_else(|| "—".into());
+                let fmt_u32 = |v: Option<u32>| v.map(|x| format!("0x{x:08x}")).unwrap_or_else(|| "—".into());
+                eprintln!(
+                    "    dye[{didx}] mask={:02x?} slotNo={} R={} G={} B={} A={} \
+                     grime={} colorGroup={} palette={} disableSym={}",
+                    dye.mask_bytes,
+                    fmt_i8(slot_no),
+                    fmt_u8(r), fmt_u8(g), fmt_u8(b), fmt_u8(a),
+                    fmt_i8(grime),
+                    fmt_u32(cgk),
+                    fmt_u16(palette),
+                    fmt_i8(disable_sym),
+                );
+            }
+        }
+        eprintln!("\n=== summary ===");
+        eprintln!("  hits:          {}", hits.len());
+        eprintln!("  total dyes:    {}", total_entries);
+        eprintln!("  mercenaries:   {} (mounts: {})", merc_total, mount_total);
+    }
+
     /// Abyss-gate per-gate mapping probe — Path B (`CrimsonAtomtic`) input.
     ///
     /// CrimsonAtomtic wants to replace the bulk "unlock all abyss gates"

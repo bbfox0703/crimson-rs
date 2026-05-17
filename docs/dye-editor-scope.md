@@ -6,9 +6,11 @@ reference editor at
 already implements this; this doc records what the in-house C# editor
 needs and what crimson-rs needs to ship (or not ship).
 
-> Status (2026-05-16): Save schema verified **and** all three
+> Status (2026-05-17): Save schema verified **and** all three
 > gamedata-side `dye*.pabgb` tables RE'd + bridged behind C ABI **and**
-> the `_itemKey → _partPrefabKey` cross-reference is now bridged.
+> the `_itemKey → _partPrefabKey` cross-reference is bridged **and**
+> the "add dye to undyed item" path lands via
+> `crimson_save_set_object_list_present` (see §v2 below).
 > Parsers + bridges shipped in
 > [`src/dye_color_group_info/`](../src/dye_color_group_info/),
 > [`src/part_prefab_dye_texture_pallete_info/`](../src/part_prefab_dye_texture_pallete_info/),
@@ -238,32 +240,60 @@ Workflow:
    the path `(block_idx, [(field=14 _itemDyeDataList, element=N)],
    field=<RGBA/grime/etc index>)`.
 
-### v2 — "add dye to previously-undyed item"
-
-Blocker: `set_scalar_field_present` rejects `ObjectList` fields
-(meta_kind 6/7). The reference editor uses a `dye_cli.exe` subprocess
-to handle PARC insertion + offset fix-up.
-
-To support this in C#, crimson-rs would need a new ABI:
+### v2 — "add dye to previously-undyed item" (shipped 2026-05-17)
 
 ```c
-// Toggle an absent ObjectList field's present-bit AND emit an empty
-// ObjectList header at the right offset, so the field becomes a
-// valid zero-element list.
 int32_t crimson_save_set_object_list_present(
     CrimsonSaveHandle* handle,
     uint32_t block_idx,
     const CrimsonPathStep* path,
     size_t path_len,
     uint32_t field_idx,
-    int32_t make_present
+    int32_t present_flag    // 1 = make present, 0 = make absent
 );
 ```
 
-Implementation outline: choose the `header_variant` based on the
-field's `meta_kind` + neighbouring lists in the same block (in
-practice probably `zero1_count_u24` — the variant `ItemSaveData`'s
-other ObjectLists use). Defer until there's a concrete user demand.
+`present_flag == 1` flips the field's mask bit and materializes the
+list as **count = 1** with a single default-empty `ItemDyeSaveData`
+element (every dye scalar absent). The caller then mutates the
+element's RGBA / material / color-group fields via
+`crimson_save_set_scalar_field_present` to fill it in.
+
+The count=1 shape is mandatory — a count=0 header is genuinely
+ambiguous to the decoder's `body_offset` probing (it greedy-matches
+`marker_run_plus_zeros`, which the encoder can't re-emit with a
+different count). Materializing one default element + the
+`zero1_count_u24` variant disambiguates the round-trip; the
+[`c_abi_object_list_present_roundtrip_dye_data_list_slot104`](../src/c_abi/mod.rs)
+integration test pins the contract.
+
+`present_flag == 0` clears the mask bit and any elements; the encoder
+emits nothing for an absent field, so `present(1) → present(0)` is
+byte-identical to the original.
+
+The element class for the default empty element is discovered by
+scanning the save tree for any sibling block of the same parent class
+where the field is present-and-non-empty, then copying its first
+element's `class_index`. If no template exists in the save (e.g. the
+user never dyed anything), the call returns `NOT_FOUND`; the C# editor
+can either prompt the user to dye one item via the in-game UI first
+or surface this as a "save state too clean to seed default class"
+edge case.
+
+C# call shape:
+```csharp
+// item dye list at ItemSaveData._itemDyeDataList (field index 14)
+var path = new[] {
+    new CrimsonPathStep { field_idx = _inventorylistIdx, element_idx = invIdx },
+    new CrimsonPathStep { field_idx = _itemListIdx, element_idx = itemIdx },
+};
+var rc = crimson_save_set_object_list_present(
+    handle, blockIdx, path, path.Length, 14, present_flag: 1
+);
+// rc == 0 (OK): the item now has one empty dye slot. Drive the RGBA
+// scalars onto element 0 via set_scalar_field_present (path extended
+// by one more step with field_idx = 14, element_idx = 0).
+```
 
 ---
 
@@ -311,10 +341,126 @@ and write raw extracted bytes to `out/dye_probe/` for plcli inspection.
 
 ---
 
+## Addendum (2026-05-17): slot103 multi-dye probe — model corrections
+
+`slot103/save.save` has dye applications across the active character,
+one mount, and (the previously-known) inventory test sample.
+`_probe_item_dye_data_with_mercenary_resolution` enumerates the lot.
+Three corrections to the model previously assumed in this doc:
+
+### 1. `_dyeColorGroupInfoKey` is the **theme**, not freeform colour
+
+The save's `_dyeColorR/G/B/A` are not freeform — they index into a
+**109-RGBA gradient** owned by `_dyeColorGroupInfoKey` (the bridge
+already records this layout per row). The 10 colorGroup rows
+correspond to the in-game NPC dye-menu themes
+(`Her_Color_Group_I` = 埃爾南德 / Hernand, `Por_Color_Group_I` = 波羅琳 /
+Pororin, plus Dem×3 tiers, Kwe, Del, Cal, Tom, Bar — 10 rows total).
+
+Empirical pattern from slot103: RGBA strictly clusters by theme:
+
+| Theme | colorGroup u32 | Observed RGBs |
+|---|---|---|
+| Her_Color_Group_I | `0xc88211f5` | `#a65757 #f22121 #d98585 #d99999 #594444 #a64848` (red family) |
+| Por_Color_Group_I | `0x2a85f874` | `#736e3f #403913 #59542a #736a15 #8c8530` (olive family) |
+
+**UX implication for the C# editor**: replace the freeform R/G/B
+sliders (the PyQt5 reference exposes) with **two dropdowns** — theme
+(10 options) + position-within-gradient. Off-gradient RGB values aren't
+reachable from the in-game UI.
+
+### 2. Three playable characters, one container per "active"
+
+The game has 3 playable characters (Kliff / Damine / Oongka). The
+**currently-active** character's equipment lives in `EquipmentSaveData`;
+the **other two playables** are stored under `MercenaryClanSaveData._mercenaryDataList[]`
+as if they were mercenaries, distinguished by their `_characterKey`:
+
+| Slot | `_characterKey` | Resolved name | Container |
+|---|---:|---|---|
+| Active | — | Kliff | `EquipmentSaveData._list[N]._item<child>` (18 equip slots) |
+| Mercenary[0] | 4 | Damian (= Damine) | `MercenaryClanSaveData._mercenaryDataList[0]._equipItemList[]` |
+| Mercenary[1] | 6 | Oongka | `MercenaryClanSaveData._mercenaryDataList[1]._equipItemList[]` |
+
+Switching active character in-game presumably moves the equipment
+between these two locations. **Any equipment-related editor feature
+(dye, gem socket, item swap, …) must walk both locations** or it will
+silently miss two-thirds of the player's gear.
+
+### 3. Mounts use `MercenarySaveData` too — keyed by `_characterKey`
+
+Mounts are stored in `MercenaryClanSaveData._mercenaryDataList[]` just
+like human mercenaries, distinguished by `_characterKey` internal-name
+prefix (`Riding_*` / `Animal_*` / `Vehicle_*`). The save uses
+`_characterKey` (CharacterKey u32) — NOT the 18-row MercenaryKey from
+[`mercenaryinfo.pabgb`](../src/c_abi/mercenary_info.rs) — to identify
+each mount template, with a cat-byte in the hi-byte that must be
+stripped (`& 0xFFFFFF`) before lookup against
+[`characterinfo.pabgb`](../src/character_info/mod.rs).
+
+slot103 example (the user's only dyed mount):
+
+```
+charKey=31378 mercNo=3135 name=Animal_Black_Horse_Wild_31378
+  _equipItemList[1]: itemKey=1511010
+    dye[0] mask=[de,00] R=140 G=133 B=48  colorGroup=Por palette=1
+    dye[1] mask=[5f,00] R=217 G=153 B=153 colorGroup=Her  slotNo=1
+    dye[2] mask=[5f,00] R= 89 G= 68 B= 68 colorGroup=Her  slotNo=2
+    dye[3] mask=[5f,00] R=115 G=106 B= 21 colorGroup=Por  slotNo=3
+```
+
+slot103 holds 6 mount instances total (3 unique horses for each
+playable + 1 wild tamed horse + 1 wild Stefano + 1 balloon + 1 wagon).
+The `_isMainMercenary` flag identifies which mount is currently
+summoned (the balloon at the moment), distinct from which mount has
+dyed equipment.
+
+### Implication for the C# editor's item enumerator
+
+`crimson_save_list_inventory_items` (the existing flat enumerator)
+walks `InventorySaveData._inventoryList[N]._itemList[M]` only —
+245 mercenary-equip + 20 mercenary-inv + 18 active-equip + 22 reserve
+items are invisible to it.
+
+A future `crimson_save_list_all_items` enumerator should yield each
+item with its **container kind** + **owner identity**:
+
+```text
+container_kind ∈ { ActiveEquip, Inventory, MercenaryEquip,
+                   MercenaryInventory, UseItemReserve, FieldGimmick }
+owner = (character_key_or_zero, mercenary_no_or_zero)
+```
+
+This gives the C# editor enough info to render separate tabs for each
+of Kliff / Damine / Oongka / each mount / each follower, plus the
+shared inventory.
+
+### Probe ergonomics
+
+Three new `#[ignore]` probes added in this session, all default to
+`slot103/save.save` (override with `CRIMSON_DYE_PROBE_SAVE` or
+`CRIMSON_LIVE_SAVE`):
+
+| Probe | Purpose |
+|---|---|
+| `_probe_save_skeleton_slot103` | TOC class histogram + every host of `ItemSaveData` recursively. Use first to confirm the container shape in a new patch. |
+| `_probe_item_dye_data_anywhere_slot103` | All `_itemDyeDataList` hits across **every** ItemSaveData host, regardless of parent class. |
+| `_probe_item_dye_data_with_mercenary_resolution` | Adds CharacterKey resolution: every mercenary/mount tagged with its resolved name + `_mercenaryNo` + `_isMainMercenary` flag. |
+
+```powershell
+cargo test --lib --features c_abi _probe_save_skeleton_slot103 -- --ignored --nocapture
+cargo test --lib --features c_abi _probe_item_dye_data_with_mercenary_resolution -- --ignored --nocapture
+```
+
+---
+
 ## Cross-references
 
 - `src/c_abi/character_info.rs` — `_probe_item_dye_data` `#[ignore]`
-  probe (re-run with `--ignored --nocapture` to refresh).
+  probe (slot0 schema baseline) plus three slot103 probes added 2026-05-17
+  (`_probe_save_skeleton_slot103`, `_probe_item_dye_data_anywhere_slot103`,
+  `_probe_item_dye_data_with_mercenary_resolution`). Re-run with
+  `--ignored --nocapture` to refresh.
 - `docs/save-mutation-version.md` — staleness contract; the C# editor
   must use `get_mutation_version` to invalidate its dye snapshot
   after each edit.
