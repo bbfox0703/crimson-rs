@@ -1051,6 +1051,11 @@ pub(crate) fn scalar_as_i128(v: &ScalarValue) -> Option<i128> {
         ScalarValue::I16(x) => Some(*x as i128),
         ScalarValue::I32(x) => Some(*x as i128),
         ScalarValue::I64(x) => Some(*x as i128),
-        ScalarValue::F32(_) | ScalarValue::F64(_) | ScalarValue::Bytes(_) => None,
+        ScalarValue::F32(_)
+        | ScalarValue::F64(_)
+        | ScalarValue::F32x3(_)
+        | ScalarValue::F32x4(_)
+        | ScalarValue::U32x4(_)
+        | ScalarValue::Bytes(_) => None,
     }
 }

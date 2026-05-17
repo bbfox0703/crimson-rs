@@ -5826,4 +5826,175 @@ mod tests {
             }
         }
     }
+
+    /// Investigation probe — survey every `(type_name, meta_size, meta_kind)`
+    /// triple in a live save's decoded blocks, focusing on composite
+    /// scalar fields (meta_kind ∈ {0, 2} with `meta_size` not in
+    /// {1, 2, 4, 8}) that currently fall through `scalar_from_bytes`
+    /// to `ScalarValue::Bytes`.
+    ///
+    /// Output (sorted by occurrence count) goes to
+    /// `out/composite_scalar_survey/summary.txt`. Driver for the
+    /// "extend `ScalarValue` with typed composite variants" work — the
+    /// decision of which `F32x{2,3,4}` / color / quat variants to add
+    /// is informed by what this probe actually finds in the wild.
+    #[test]
+    #[ignore = "investigation only — composite-scalar type survey"]
+    fn _probe_save_composite_types() {
+        use crate::save::{Body, FieldValue, ObjectBlock, Save, ScalarValue};
+        use std::collections::HashMap;
+        use std::fmt::Write;
+
+        let save_path = std::env::var_os("CRIMSON_LIVE_SAVE")
+            .map(PathBuf::from)
+            .or_else(|| {
+                let appdata = std::env::var_os("LOCALAPPDATA")?;
+                let root = PathBuf::from(appdata)
+                    .join("Pearl Abyss")
+                    .join("CD")
+                    .join("save");
+                std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
+                    let p = entry.path().join("slot0").join("save.save");
+                    p.is_file().then_some(p)
+                })
+            });
+        let Some(save_path) = save_path else {
+            eprintln!("skipping: no live save");
+            return;
+        };
+        eprintln!("save: {}", save_path.display());
+
+        let raw = std::fs::read(&save_path).expect("read save");
+        let save = Save::parse(&raw).expect("parse save");
+        let body = Body::parse(&save.body).expect("parse body");
+        let blocks = body.decode_blocks(&save.body);
+
+        // Aggregation key: (type_name, meta_size, meta_kind, decoded_kind).
+        // Value: count + first sample (class_name, field_name, raw bytes).
+        type Key = (String, u16, u16, &'static str);
+        #[allow(dead_code)]
+        struct Agg {
+            count: usize,
+            sample_class: String,
+            sample_field: String,
+            sample_present: bool,
+            sample_value_kind: &'static str,
+            sample_bytes_len: usize,
+        }
+        let mut agg: HashMap<Key, Agg> = HashMap::new();
+
+        fn walk_block(b: &ObjectBlock, agg: &mut HashMap<Key, Agg>) {
+            for f in &b.fields {
+                let decoded_kind = f.kind.as_str();
+                let value_kind: &'static str = match &f.value {
+                    FieldValue::None => "none",
+                    FieldValue::Scalar(s) => match s {
+                        ScalarValue::Bool(_) => "Bool",
+                        ScalarValue::U8(_) => "U8",
+                        ScalarValue::U16(_) => "U16",
+                        ScalarValue::U32(_) => "U32",
+                        ScalarValue::U64(_) => "U64",
+                        ScalarValue::I8(_) => "I8",
+                        ScalarValue::I16(_) => "I16",
+                        ScalarValue::I32(_) => "I32",
+                        ScalarValue::I64(_) => "I64",
+                        ScalarValue::F32(_) => "F32",
+                        ScalarValue::F64(_) => "F64",
+                        ScalarValue::F32x3(_) => "F32x3",
+                        ScalarValue::F32x4(_) => "F32x4",
+                        ScalarValue::U32x4(_) => "U32x4",
+                        ScalarValue::Bytes(_) => "Bytes",
+                    },
+                    FieldValue::InlineBytes { .. } => "InlineBytes",
+                    FieldValue::DynamicArray { .. } => "DynamicArray",
+                    FieldValue::Locator { .. } => "Locator",
+                    FieldValue::ObjectList { .. } => "ObjectList",
+                };
+                let bytes_len = match &f.value {
+                    FieldValue::Scalar(ScalarValue::Bytes(b)) => b.len(),
+                    _ => 0,
+                };
+                let key: Key = (f.type_name.clone(), f.meta_size, f.meta_kind, decoded_kind);
+                let entry = agg.entry(key).or_insert_with(|| Agg {
+                    count: 0,
+                    sample_class: b.class_name.clone(),
+                    sample_field: f.name.clone(),
+                    sample_present: f.present,
+                    sample_value_kind: value_kind,
+                    sample_bytes_len: bytes_len,
+                });
+                entry.count += 1;
+                // Recurse into nested elements.
+                match &f.value {
+                    FieldValue::ObjectList { elements, .. } => {
+                        for e in elements {
+                            walk_block(e, agg);
+                        }
+                    }
+                    FieldValue::Locator { child: Some(c), .. } => walk_block(c, agg),
+                    _ => {}
+                }
+            }
+        }
+
+        for b in &blocks {
+            walk_block(b, &mut agg);
+        }
+
+        // Build summary, sorted by count descending.
+        let mut rows: Vec<(Key, Agg)> = agg.into_iter().collect();
+        rows.sort_by_key(|r| std::cmp::Reverse(r.1.count));
+
+        let mut out = String::new();
+        let _ = writeln!(
+            out,
+            "# Save composite-scalar survey — every (type_name, meta_size, meta_kind, decoded_kind) seen"
+        );
+        let _ = writeln!(
+            out,
+            "# decoded_kind = FieldKind::as_str() (fixed_prefix/inline_bytes/dynamic_array/...)"
+        );
+        let _ = writeln!(out, "# Sorted by occurrence count desc. ⚠ marks composite scalars (size ∉ {{1,2,4,8}} with meta_kind 0/2) that currently fall through to ScalarValue::Bytes\n");
+        let _ = writeln!(
+            out,
+            "{:<32} {:>4} {:>2} {:<16} {:>9} {:>15} {:<36} value_kind",
+            "type_name", "size", "mk", "decoded_kind", "count", "bytes_len", "sample"
+        );
+        let _ = writeln!(out, "{}", "-".repeat(140));
+        for ((tn, size, mk, dk), a) in &rows {
+            let composite_mark = if (*mk == 0 || *mk == 2)
+                && !matches!(*size, 1 | 2 | 4 | 8)
+            {
+                "⚠"
+            } else {
+                " "
+            };
+            let sample = format!("{}::{}", a.sample_class, a.sample_field);
+            let _ = writeln!(
+                out,
+                "{composite_mark} {tn:<30} {size:>4} {mk:>2} {dk:<16} {:>9} {:>15} {sample:<36} {}",
+                a.count, a.sample_bytes_len, a.sample_value_kind,
+            );
+        }
+
+        // Targeted summary: just the composite-scalar rows.
+        let _ = writeln!(
+            out,
+            "\n## Composite-scalar candidates (meta_kind 0/2, size ∉ {{1,2,4,8}})"
+        );
+        for ((tn, size, mk, _dk), a) in &rows {
+            if (*mk == 0 || *mk == 2) && !matches!(*size, 1 | 2 | 4 | 8) {
+                let _ = writeln!(
+                    out,
+                    "  {tn:<32}  size={size:<3}  meta_kind={mk}  occurrences={}  sample={}::{}",
+                    a.count, a.sample_class, a.sample_field
+                );
+            }
+        }
+
+        let out_dir = std::path::PathBuf::from("out/composite_scalar_survey");
+        std::fs::create_dir_all(&out_dir).ok();
+        std::fs::write(out_dir.join("summary.txt"), &out).expect("write summary");
+        eprintln!("wrote out/composite_scalar_survey/summary.txt ({} B)", out.len());
+    }
 }

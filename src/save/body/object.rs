@@ -29,8 +29,23 @@ pub enum ScalarValue {
     I64(i64),
     F32(f32),
     F64(f64),
-    /// Anything we couldn't bucket into a primitive (non-power-of-2 size,
-    /// or unrecognized type name with a weird size).
+    /// `float3` (12 bytes, 3 × f32). Used pervasively for positions
+    /// (`_spawnPosition`, `_deadPosition`, …). ~58k occurrences in the
+    /// live 1.07 sample save.
+    F32x3([f32; 3]),
+    /// `float4` / `quaternion` (16 bytes, 4 × f32). Used for rotations
+    /// and 4-vec data.
+    F32x4([f32; 4]),
+    /// `uint4` (16 bytes, 4 × u32). Used as a 128-bit UUID
+    /// (`SceneObjectUuid` etc.). ~11k occurrences in the live sample.
+    U32x4([u32; 4]),
+    /// Anything we couldn't bucket into a primitive or known composite
+    /// (non-power-of-2 size, or unrecognized type name with a weird
+    /// size). `Transform` (40 B) currently lands here — schema is
+    /// known (position 3×f32 + rotation 4×f32 + scale 3×f32) but the
+    /// byte ordering hasn't been verified against a written-then-read
+    /// round-trip yet, so the conservative `Bytes` fallback preserves
+    /// the raw payload.
     Bytes(Vec<u8>),
 }
 
@@ -250,6 +265,35 @@ pub fn scalar_from_bytes(data: &[u8], type_name: &str, size: usize) -> ScalarVal
     if lower == "bool" && size == 1 {
         return ScalarValue::Bool(data[0] != 0);
     }
+    // ── Composite vector / quaternion scalars (12 / 16 bytes) ──
+    // These cover ~70k field occurrences in a live 1.07 save where the
+    // previous fallback path emitted opaque `Bytes`. See
+    // `_probe_save_composite_types` in `src/c_abi/character_info.rs`
+    // for the survey that drove this list.
+    if lower == "float3" && size == 12 && data.len() == 12 {
+        return ScalarValue::F32x3([
+            f32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+            f32::from_le_bytes([data[4], data[5], data[6], data[7]]),
+            f32::from_le_bytes([data[8], data[9], data[10], data[11]]),
+        ]);
+    }
+    if (lower == "float4" || lower == "quaternion") && size == 16 && data.len() == 16 {
+        return ScalarValue::F32x4([
+            f32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+            f32::from_le_bytes([data[4], data[5], data[6], data[7]]),
+            f32::from_le_bytes([data[8], data[9], data[10], data[11]]),
+            f32::from_le_bytes([data[12], data[13], data[14], data[15]]),
+        ]);
+    }
+    if lower == "uint4" && size == 16 && data.len() == 16 {
+        return ScalarValue::U32x4([
+            u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+            u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
+            u32::from_le_bytes([data[8], data[9], data[10], data[11]]),
+            u32::from_le_bytes([data[12], data[13], data[14], data[15]]),
+        ]);
+    }
+    // ── Scalar floats ──
     if lower.contains("float") {
         if size == 4 {
             return ScalarValue::F32(f32::from_le_bytes(data.try_into().unwrap_or([0; 4])));
@@ -275,3 +319,115 @@ pub fn scalar_from_bytes(data: &[u8], type_name: &str, size: usize) -> ScalarVal
         _ => ScalarValue::Bytes(data.to_vec()),
     }
 }
+
+#[cfg(test)]
+mod scalar_from_bytes_tests {
+    use super::*;
+
+    #[test]
+    fn float3_decodes_three_f32() {
+        // [1.5, -2.25, 0.125] LE
+        let bytes = [
+            0x00, 0x00, 0xc0, 0x3f, // 1.5
+            0x00, 0x00, 0x10, 0xc0, // -2.25
+            0x00, 0x00, 0x00, 0x3e, // 0.125
+        ];
+        match scalar_from_bytes(&bytes, "float3", 12) {
+            ScalarValue::F32x3([a, b, c]) => {
+                assert_eq!(a, 1.5);
+                assert_eq!(b, -2.25);
+                assert_eq!(c, 0.125);
+            }
+            other => panic!("expected F32x3, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn quaternion_decodes_four_f32() {
+        let mut bytes = [0u8; 16];
+        bytes[..4].copy_from_slice(&1.0f32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&0.5f32.to_le_bytes());
+        bytes[8..12].copy_from_slice(&(-0.25f32).to_le_bytes());
+        bytes[12..16].copy_from_slice(&2.0f32.to_le_bytes());
+        match scalar_from_bytes(&bytes, "quaternion", 16) {
+            ScalarValue::F32x4([a, b, c, d]) => {
+                assert_eq!([a, b, c, d], [1.0, 0.5, -0.25, 2.0]);
+            }
+            other => panic!("expected F32x4, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn float4_decodes_four_f32() {
+        let mut bytes = [0u8; 16];
+        bytes[..4].copy_from_slice(&3.0f32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&4.0f32.to_le_bytes());
+        bytes[8..12].copy_from_slice(&5.0f32.to_le_bytes());
+        bytes[12..16].copy_from_slice(&6.0f32.to_le_bytes());
+        assert!(matches!(
+            scalar_from_bytes(&bytes, "float4", 16),
+            ScalarValue::F32x4([a, b, c, d]) if a == 3.0 && b == 4.0 && c == 5.0 && d == 6.0
+        ));
+    }
+
+    #[test]
+    fn uint4_decodes_four_u32() {
+        let bytes = [
+            0x78, 0x56, 0x34, 0x12, // 0x12345678
+            0xef, 0xcd, 0xab, 0x89, // 0x89abcdef
+            0x11, 0x22, 0x33, 0x44, // 0x44332211
+            0x55, 0x66, 0x77, 0x88, // 0x88776655
+        ];
+        match scalar_from_bytes(&bytes, "uint4", 16) {
+            ScalarValue::U32x4([a, b, c, d]) => {
+                assert_eq!([a, b, c, d], [0x12345678, 0x89abcdef, 0x44332211, 0x88776655]);
+            }
+            other => panic!("expected U32x4, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn transform_still_falls_through_to_bytes() {
+        // 40-byte Transform — schema known (3+4+3 f32) but layout
+        // verification deferred; current behaviour preserves bytes.
+        let bytes = vec![0u8; 40];
+        match scalar_from_bytes(&bytes, "Transform", 40) {
+            ScalarValue::Bytes(b) => assert_eq!(b.len(), 40),
+            other => panic!("expected Bytes(40), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn primitive_scalars_unchanged() {
+        // Regression guard — the new composite branches must NOT shadow
+        // the primitive `float`/`int*`/`uint*` paths.
+        assert!(matches!(
+            scalar_from_bytes(&[0x00, 0x00, 0x80, 0x3f], "float", 4),
+            ScalarValue::F32(x) if x == 1.0
+        ));
+        assert!(matches!(
+            scalar_from_bytes(&[0xff, 0xff, 0xff, 0xff], "int32", 4),
+            ScalarValue::I32(-1)
+        ));
+        assert!(matches!(
+            scalar_from_bytes(&[0xff, 0xff, 0xff, 0xff], "uint32", 4),
+            ScalarValue::U32(0xFFFFFFFF)
+        ));
+    }
+
+    #[test]
+    fn float3_round_trips_through_encoder() {
+        // Decode → encode → decode produces the same f32 triple.
+        let original = [1.5f32, -2.25, 0.125];
+        let mut buf = Vec::with_capacity(12);
+        for x in &original {
+            buf.extend_from_slice(&x.to_le_bytes());
+        }
+        let decoded = scalar_from_bytes(&buf, "float3", 12);
+        // Re-encode via the encoder path.
+        let mut reencoded = Vec::with_capacity(12);
+        crate::save::body::encoder::encode_scalar(&mut reencoded, &decoded, 12);
+        assert_eq!(reencoded, buf, "float3 round-trip differs");
+    }
+}
+

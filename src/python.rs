@@ -1677,6 +1677,18 @@ fn fill_field_value<'py>(
                 ScalarValue::I64(x) => (x.into_pyobject(py)?.into_any().unbind(), "i64"),
                 ScalarValue::F32(x) => (x.into_pyobject(py)?.into_any().unbind(), "f32"),
                 ScalarValue::F64(x) => (x.into_pyobject(py)?.into_any().unbind(), "f64"),
+                ScalarValue::F32x3(xs) => (
+                    pyo3::types::PyList::new(py, xs)?.into_any().unbind(),
+                    "f32x3",
+                ),
+                ScalarValue::F32x4(xs) => (
+                    pyo3::types::PyList::new(py, xs)?.into_any().unbind(),
+                    "f32x4",
+                ),
+                ScalarValue::U32x4(xs) => (
+                    pyo3::types::PyList::new(py, xs)?.into_any().unbind(),
+                    "u32x4",
+                ),
                 ScalarValue::Bytes(b) => (PyBytes::new(py, b).into_any().unbind(), "bytes"),
             };
             d.set_item("value", val_obj)?;

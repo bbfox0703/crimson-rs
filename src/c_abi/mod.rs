@@ -3406,6 +3406,21 @@ fn format_scalar(v: &ScalarValue) -> (String, &'static str) {
         ScalarValue::I64(n)  => (n.to_string(), "i64"),
         ScalarValue::F32(n)  => (format!("{n}"), "f32"),
         ScalarValue::F64(n)  => (format!("{n}"), "f64"),
+        ScalarValue::F32x3(xs) => (
+            format!("[{}, {}, {}]", xs[0], xs[1], xs[2]),
+            "f32x3",
+        ),
+        ScalarValue::F32x4(xs) => (
+            format!("[{}, {}, {}, {}]", xs[0], xs[1], xs[2], xs[3]),
+            "f32x4",
+        ),
+        ScalarValue::U32x4(xs) => (
+            format!(
+                "[0x{:08x}, 0x{:08x}, 0x{:08x}, 0x{:08x}]",
+                xs[0], xs[1], xs[2], xs[3]
+            ),
+            "u32x4",
+        ),
         ScalarValue::Bytes(b) => (format!("{} bytes", b.len()), "bytes"),
     }
 }
