@@ -341,10 +341,126 @@ and write raw extracted bytes to `out/dye_probe/` for plcli inspection.
 
 ---
 
+## Addendum (2026-05-17): slot103 multi-dye probe — model corrections
+
+`slot103/save.save` has dye applications across the active character,
+one mount, and (the previously-known) inventory test sample.
+`_probe_item_dye_data_with_mercenary_resolution` enumerates the lot.
+Three corrections to the model previously assumed in this doc:
+
+### 1. `_dyeColorGroupInfoKey` is the **theme**, not freeform colour
+
+The save's `_dyeColorR/G/B/A` are not freeform — they index into a
+**109-RGBA gradient** owned by `_dyeColorGroupInfoKey` (the bridge
+already records this layout per row). The 10 colorGroup rows
+correspond to the in-game NPC dye-menu themes
+(`Her_Color_Group_I` = 埃爾南德 / Hernand, `Por_Color_Group_I` = 波羅琳 /
+Pororin, plus Dem×3 tiers, Kwe, Del, Cal, Tom, Bar — 10 rows total).
+
+Empirical pattern from slot103: RGBA strictly clusters by theme:
+
+| Theme | colorGroup u32 | Observed RGBs |
+|---|---|---|
+| Her_Color_Group_I | `0xc88211f5` | `#a65757 #f22121 #d98585 #d99999 #594444 #a64848` (red family) |
+| Por_Color_Group_I | `0x2a85f874` | `#736e3f #403913 #59542a #736a15 #8c8530` (olive family) |
+
+**UX implication for the C# editor**: replace the freeform R/G/B
+sliders (the PyQt5 reference exposes) with **two dropdowns** — theme
+(10 options) + position-within-gradient. Off-gradient RGB values aren't
+reachable from the in-game UI.
+
+### 2. Three playable characters, one container per "active"
+
+The game has 3 playable characters (Kliff / Damine / Oongka). The
+**currently-active** character's equipment lives in `EquipmentSaveData`;
+the **other two playables** are stored under `MercenaryClanSaveData._mercenaryDataList[]`
+as if they were mercenaries, distinguished by their `_characterKey`:
+
+| Slot | `_characterKey` | Resolved name | Container |
+|---|---:|---|---|
+| Active | — | Kliff | `EquipmentSaveData._list[N]._item<child>` (18 equip slots) |
+| Mercenary[0] | 4 | Damian (= Damine) | `MercenaryClanSaveData._mercenaryDataList[0]._equipItemList[]` |
+| Mercenary[1] | 6 | Oongka | `MercenaryClanSaveData._mercenaryDataList[1]._equipItemList[]` |
+
+Switching active character in-game presumably moves the equipment
+between these two locations. **Any equipment-related editor feature
+(dye, gem socket, item swap, …) must walk both locations** or it will
+silently miss two-thirds of the player's gear.
+
+### 3. Mounts use `MercenarySaveData` too — keyed by `_characterKey`
+
+Mounts are stored in `MercenaryClanSaveData._mercenaryDataList[]` just
+like human mercenaries, distinguished by `_characterKey` internal-name
+prefix (`Riding_*` / `Animal_*` / `Vehicle_*`). The save uses
+`_characterKey` (CharacterKey u32) — NOT the 18-row MercenaryKey from
+[`mercenaryinfo.pabgb`](../src/c_abi/mercenary_info.rs) — to identify
+each mount template, with a cat-byte in the hi-byte that must be
+stripped (`& 0xFFFFFF`) before lookup against
+[`characterinfo.pabgb`](../src/character_info/mod.rs).
+
+slot103 example (the user's only dyed mount):
+
+```
+charKey=31378 mercNo=3135 name=Animal_Black_Horse_Wild_31378
+  _equipItemList[1]: itemKey=1511010
+    dye[0] mask=[de,00] R=140 G=133 B=48  colorGroup=Por palette=1
+    dye[1] mask=[5f,00] R=217 G=153 B=153 colorGroup=Her  slotNo=1
+    dye[2] mask=[5f,00] R= 89 G= 68 B= 68 colorGroup=Her  slotNo=2
+    dye[3] mask=[5f,00] R=115 G=106 B= 21 colorGroup=Por  slotNo=3
+```
+
+slot103 holds 6 mount instances total (3 unique horses for each
+playable + 1 wild tamed horse + 1 wild Stefano + 1 balloon + 1 wagon).
+The `_isMainMercenary` flag identifies which mount is currently
+summoned (the balloon at the moment), distinct from which mount has
+dyed equipment.
+
+### Implication for the C# editor's item enumerator
+
+`crimson_save_list_inventory_items` (the existing flat enumerator)
+walks `InventorySaveData._inventoryList[N]._itemList[M]` only —
+245 mercenary-equip + 20 mercenary-inv + 18 active-equip + 22 reserve
+items are invisible to it.
+
+A future `crimson_save_list_all_items` enumerator should yield each
+item with its **container kind** + **owner identity**:
+
+```text
+container_kind ∈ { ActiveEquip, Inventory, MercenaryEquip,
+                   MercenaryInventory, UseItemReserve, FieldGimmick }
+owner = (character_key_or_zero, mercenary_no_or_zero)
+```
+
+This gives the C# editor enough info to render separate tabs for each
+of Kliff / Damine / Oongka / each mount / each follower, plus the
+shared inventory.
+
+### Probe ergonomics
+
+Three new `#[ignore]` probes added in this session, all default to
+`slot103/save.save` (override with `CRIMSON_DYE_PROBE_SAVE` or
+`CRIMSON_LIVE_SAVE`):
+
+| Probe | Purpose |
+|---|---|
+| `_probe_save_skeleton_slot103` | TOC class histogram + every host of `ItemSaveData` recursively. Use first to confirm the container shape in a new patch. |
+| `_probe_item_dye_data_anywhere_slot103` | All `_itemDyeDataList` hits across **every** ItemSaveData host, regardless of parent class. |
+| `_probe_item_dye_data_with_mercenary_resolution` | Adds CharacterKey resolution: every mercenary/mount tagged with its resolved name + `_mercenaryNo` + `_isMainMercenary` flag. |
+
+```powershell
+cargo test --lib --features c_abi _probe_save_skeleton_slot103 -- --ignored --nocapture
+cargo test --lib --features c_abi _probe_item_dye_data_with_mercenary_resolution -- --ignored --nocapture
+```
+
+---
+
 ## Cross-references
 
 - `src/c_abi/character_info.rs` — `_probe_item_dye_data` `#[ignore]`
-  probe (re-run with `--ignored --nocapture` to refresh).
+  probe (slot0 schema baseline) plus three slot103 probes added 2026-05-17
+  (`_probe_save_skeleton_slot103`, `_probe_item_dye_data_anywhere_slot103`,
+  `_probe_item_dye_data_with_mercenary_resolution`). Re-run with
+  `--ignored --nocapture` to refresh.
 - `docs/save-mutation-version.md` — staleness contract; the C# editor
   must use `get_mutation_version` to invalidate its dye snapshot
   after each edit.

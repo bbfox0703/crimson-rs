@@ -6,7 +6,7 @@
 > Editor currently surfaces resolves through a shipped C ABI bridge.
 > **34 bridges shipped + the deferred-redecode batch ABI + the
 > object-list presence-toggle ABI.** Test suite: **268** with `c_abi`,
-> **76** without, **27** `#[ignore]`'d diagnostic probes. Clippy clean
+> **76** without, **30** `#[ignore]`'d diagnostic probes. Clippy clean
 > both modes.
 >
 > ### What landed this session (2026-05-17, third pass)
