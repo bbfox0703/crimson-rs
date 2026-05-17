@@ -452,3 +452,4 @@ Save Editor's `LocalizationProvider` calls.
 | SubLevelKey | ✗ not shipped (item #9, deferred) | — |
 | Knowledge category breadcrumb | ✗ not shipped (future enhancement) | reference only |
 | Quest chapter rollup ("Prologue: Dead of Night") | ✅ shipped via `main_quest_chapter` (curated static table — chapter layer not in gamedata) | 8 tests in `src/c_abi/main_quest_chapter.rs`, source [`main-quest-list.md`](./main-quest-list.md) |
+| Side quest → faction rollup | ✅ shipped via `side_quest_faction` (curated static table — sibling to `main_quest_chapter`, two-direction lookup) | 7 tests in `src/c_abi/side_quest_faction.rs`, source [`side-quest-list.md`](./side-quest-list.md) |

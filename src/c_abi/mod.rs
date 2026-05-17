@@ -59,6 +59,7 @@ pub mod quest_info;
 pub mod region_info;
 pub mod reserve_slot_info;
 pub mod royal_supply_info;
+pub mod side_quest_faction;
 pub mod skill_info;
 pub mod stage_info;
 pub mod store_info;

@@ -4,10 +4,38 @@
 >
 > **Where we are (updated 2026-05-17)**: every save-side key the C# Save
 > Editor currently surfaces resolves through a shipped C ABI bridge.
-> **33 bridges shipped + the deferred-redecode batch ABI + the
-> object-list presence-toggle ABI.** Test suite: **261** with `c_abi`,
+> **34 bridges shipped + the deferred-redecode batch ABI + the
+> object-list presence-toggle ABI.** Test suite: **268** with `c_abi`,
 > **76** without, **27** `#[ignore]`'d diagnostic probes. Clippy clean
 > both modes.
+>
+> ### What landed this session (2026-05-17, third pass)
+>
+> - **`side_quest_faction`** — sibling of `main_quest_chapter`. Curated
+>   flat `(quest_title, faction_name)` rollup sourced from
+>   [`side-quest-list.md`](./side-quest-list.md). Side quests are
+>   organized by faction rather than the Chapter/Arc structure used for
+>   main quests, so the bridge ships a two-direction lookup: quest→
+>   faction (1:1, every curated quest has exactly one faction) and
+>   faction→ordered list of quests (mirrors the
+>   `lookup_related_count` / `_at` pattern from
+>   `faction_relation_group_info`). 84 quest titles across 22 factions
+>   (8 named factions with multiple quests + 14 singletons). Each quest
+>   title is a `QuestKey` display title at `lo32=0x100` (cross-checked
+>   against `Record of the Greymanes` and other rows already pinned in
+>   the verified-mapping list). Surface:
+>   `crimson_side_quest_table_entry_count` / `_get_entry`,
+>   `_faction_for_quest`, `_quest_count_for_faction`,
+>   `_quest_at_for_faction`. No handle, no file load. 7 pure-Rust
+>   tests; no live-install dependency.
+>   - **Caveat**: source MD contains one typo preserved as-is —
+>     "Encirlement on the Cliff" (canonical English spelling
+>     "Encirclement"). If a live PALOC cross-check returns the correct
+>     spelling, the row needs a one-character fix. Flagged at the row
+>     definition site.
+>   - **Coverage caveat**: the list is user-curated, completeness vs.
+>     shipped game content not guaranteed. The bridge enumerates only
+>     what's in the MD; quests outside it will return `NOT_FOUND`.
 >
 > ### What landed this session (2026-05-17, second pass)
 >
@@ -128,14 +156,17 @@
 >    one (~0.1s). Full design + C# usage pattern in
 >    [`save-deferred-redecode.md`](./save-deferred-redecode.md).
 >
-> ### Full bridge inventory (33)
+> ### Full bridge inventory (34)
 >
 > Title-resolver bridges:
 > `mission_info`, `quest_info`, `stage_info`, `quest_gauge_info`,
 > `knowledge_info`, `sub_level_info`, `gimmick_info`,
 > `character_info` (+ `resolve_portrait` matcher), `skill_info`,
 > **`main_quest_chapter`** (curated rollup — chapter → arc → mission
-> tree from [`main-quest-list.md`](./main-quest-list.md)).
+> tree from [`main-quest-list.md`](./main-quest-list.md)),
+> **`side_quest_faction`** (curated flat rollup — quest → faction
+> from [`side-quest-list.md`](./side-quest-list.md), with reverse
+> enumeration).
 >
 > Dye / appearance gamedata bridges:
 > `dye_color_group_info`, `part_prefab_dye_texture_pallete_info`,
