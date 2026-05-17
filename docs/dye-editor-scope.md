@@ -496,11 +496,68 @@ by a playable (`_characterKey` or `_ownedCharacterKey` in
 
 Known coverage gap: two mounts (`Riding_Horse_Tiuta_Unique_2050_kliff`
 and `Animal_Stefano_Wild_31364`) have `_ownedCharacterKey` absent
-and so fall outside the strict rule. The C# editor's escape hatch
-is to resolve `owner_character_key` via the `characterinfo` bridge
-and include any mercenary whose name starts with `Riding_*` /
-`Animal_*` / `Vehicle_*`. The C ABI walker stays conservative to
-avoid coupling the all-items hot path to a gamedata load.
+and so fall outside the strict rule. The C ABI walker stays
+conservative to avoid coupling the all-items hot path to a gamedata
+load; the C# editor handles the widening client-side via the
+**escape hatch** documented below.
+
+### C# editor — `IS_PLAYER_OWNED` widening recipe
+
+For the equipment-related UI tabs (dye / gem socket / item edit /
+search), the editor walks `crimson_save_list_all_items` and decides
+per-record whether to expose it. The strict `IS_PLAYER_OWNED` flag
+covers 619 / 829 records on the slot103 baseline; two
+player-controlled mounts are missed (see above). The recommended
+pattern:
+
+```csharp
+// Pre-load characterinfo once (already loaded by the existing display-name
+// resolver elsewhere in the editor — reuse that handle).
+var charInfo = CrimsonCharacterInfo.Load(...);
+
+// Mount-name prefixes the editor treats as "player-controlled when
+// _ownedCharacterKey is absent". Pearl Abyss uses these consistently
+// across 1.07; sanity-check against a fresh save on a new patch.
+static readonly string[] MountNamePrefixes = {
+    "Riding_",   // Tiuta horses, balloons, wagons, …
+    "Animal_",   // tamed wild animals (Black Horse, Stefano, …)
+    "Vehicle_",  // generic vehicle templates
+};
+
+bool IsEditable(CrimsonItemRecord r)
+{
+    // Fast path: strict flag covers the common case (Kliff's active
+    // gear + inventory + Damine + Oongka + mounts with explicit
+    // _ownedCharacterKey).
+    if ((r.flags & CrimsonItemRecordFlags.IS_PLAYER_OWNED) != 0)
+        return true;
+
+    // Slow path: catch the two missing-_ownedCharacterKey mounts by
+    // checking the resolved template name. Only runs for ~210 NPC
+    // records on the slot103 baseline; trivial cost.
+    if (r.container_kind == CrimsonContainerKind.MERCENARY_EQUIP ||
+        r.container_kind == CrimsonContainerKind.MERCENARY_INVENTORY)
+    {
+        string? name = charInfo.LookupStringKey(r.owner_character_key);
+        if (name != null && MountNamePrefixes.Any(p => name.StartsWith(p)))
+            return true;
+    }
+
+    return false;
+}
+```
+
+This widens the slot103 acceptance from 619 to 627 records (the
+3 Tiuta_kliff equip items + 5 Stefano equip items). NPC mercenaries
+still get rejected because their template names start with `NHM_*`
+/ `NHW_*` / `NDM_*`, not `Riding_*` / `Animal_*` / `Vehicle_*`.
+
+The C ABI does NOT promote `IS_PLAYER_OWNED` automatically for these
+mounts because doing so would require the walker to parse
+`characterinfo.pabgb` (a multi-megabyte gamedata table) on every
+`crimson_save_list_all_items` call. Keeping that lookup on the C#
+side preserves the enumerator as a gamedata-free, no-allocation
+operation suitable for hot-path refresh after every edit.
 
 **Excluded by design**: `FieldGimmickSaveData._item<locator>` (world
 loot / chests, 4,260 in slot103), `StoreDataSaveData._storeSoldItemDataList`

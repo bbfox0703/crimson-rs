@@ -143,6 +143,33 @@ pub mod error {
     pub const PANIC: i32 = -99;
 }
 
+/// Build a slice from a `(ptr, len)` pair without tripping Rust 2024's
+/// stricter `slice::from_raw_parts` safety preconditions. The C ABI
+/// contract says a null pointer with `len == 0` is a valid
+/// representation of an empty buffer, but `from_raw_parts` requires
+/// non-null even when `len == 0` (since the 2024 edition tightened
+/// the unsafe precondition). This helper returns `&[]` for the empty
+/// case, side-stepping the UB.
+///
+/// All `extern "C"` entry points that build a slice from a caller-
+/// provided buffer should go through this helper instead of
+/// `slice::from_raw_parts` directly. Callers that always pre-check
+/// `ptr.is_null() && len != 0` are still vulnerable to the null+0
+/// case — the helper closes that gap.
+///
+/// # Safety
+/// When `len != 0`, `ptr` MUST be non-null and point to `len`
+/// readable elements aligned for `T`. When `len == 0`, `ptr` may be
+/// anything (null or arbitrary).
+#[inline]
+unsafe fn slice_from_raw_or_empty<'a, T>(ptr: *const T, len: usize) -> &'a [T] {
+    if len == 0 {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(ptr, len) }
+    }
+}
+
 /// Shared two-call-pattern string writer. `required` always reports
 /// `src.len() + 1` (the NUL terminator) — callers query with
 /// `buf_len = 0` first, then provide a sized buffer.
@@ -1697,7 +1724,7 @@ pub unsafe extern "C" fn crimson_save_set_scalar_field(
     }
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &mut *handle };
-        let src = unsafe { std::slice::from_raw_parts(bytes, bytes_len) };
+        let src = unsafe { slice_from_raw_or_empty(bytes, bytes_len) };
         if h.is_deferred() {
             // Deferred path: update the field's ScalarValue in place;
             // the encode at end_deferred_redecode emits the new bytes.
@@ -1788,7 +1815,7 @@ pub unsafe extern "C" fn crimson_save_set_scalar_field_path(
         } else {
             unsafe { std::slice::from_raw_parts(path, path_len) }
         };
-        let src = unsafe { std::slice::from_raw_parts(bytes, bytes_len) };
+        let src = unsafe { slice_from_raw_or_empty(bytes, bytes_len) };
         if h.is_deferred() {
             return match apply_scalar_mutation_in_blocks(
                 &mut h.blocks,
@@ -2116,7 +2143,7 @@ pub unsafe extern "C" fn crimson_save_set_scalar_fields_batch(
 
         let h = unsafe { &mut *handle };
         let ops_slice: &[CrimsonScalarBatchOp] =
-            unsafe { std::slice::from_raw_parts(ops, op_count) };
+            unsafe { slice_from_raw_or_empty(ops, op_count) };
 
         // Per-op NULL_ARG pre-check (path / bytes pointers). Mirrors
         // the single-op setter's invariants without rolling them into
@@ -2153,7 +2180,7 @@ pub unsafe extern "C" fn crimson_save_set_scalar_fields_batch(
                 } else {
                     unsafe { std::slice::from_raw_parts(op.path, op.path_len) }
                 };
-                let src = unsafe { std::slice::from_raw_parts(op.bytes, op.bytes_len) };
+                let src = unsafe { slice_from_raw_or_empty(op.bytes, op.bytes_len) };
                 if let Err(code) = apply_scalar_mutation_in_blocks(
                     &mut h.blocks,
                     op.block_idx,
@@ -2213,7 +2240,7 @@ pub unsafe extern "C" fn crimson_save_set_scalar_fields_batch(
         // write wins, exactly as if the caller had run N sequential
         // single-op setters.
         for (op, (dst_start, dst_end)) in ops_slice.iter().zip(ranges) {
-            let src = unsafe { std::slice::from_raw_parts(op.bytes, op.bytes_len) };
+            let src = unsafe { slice_from_raw_or_empty(op.bytes, op.bytes_len) };
             h.save.body[dst_start..dst_end].copy_from_slice(src);
         }
 
@@ -2358,7 +2385,7 @@ pub unsafe extern "C" fn crimson_save_list_remove_elements_batch(
         }
 
         let ops_slice: &[CrimsonListRemoveBatchOp] =
-            unsafe { std::slice::from_raw_parts(ops, op_count) };
+            unsafe { slice_from_raw_or_empty(ops, op_count) };
 
         // Per-op NULL_ARG pre-check (path pointer). Mirrors the
         // single-op API's invariants before we begin mutating.
@@ -2572,7 +2599,7 @@ pub unsafe extern "C" fn crimson_save_set_scalar_field_present(
         // Copy init_bytes out of the raw pointer up front so the closure
         // below is fully owned.
         let init: Vec<u8> = if make_present {
-            unsafe { std::slice::from_raw_parts(init_bytes, init_len) }.to_vec()
+            unsafe { slice_from_raw_or_empty(init_bytes, init_len) }.to_vec()
         } else {
             Vec::new()
         };
@@ -2986,7 +3013,7 @@ pub unsafe extern "C" fn crimson_save_set_scalar_fields_present_batch(
         }
 
         let ops_slice: &[CrimsonScalarPresentBatchOp] =
-            unsafe { std::slice::from_raw_parts(ops, op_count) };
+            unsafe { slice_from_raw_or_empty(ops, op_count) };
 
         // Per-op NULL_ARG pre-check. `path` may be NULL only when
         // `path_len == 0`; `bytes` may be NULL only when `bytes_len
@@ -3021,7 +3048,7 @@ pub unsafe extern "C" fn crimson_save_set_scalar_fields_present_batch(
             .iter()
             .map(|op| {
                 if op.make_present != 0 {
-                    unsafe { std::slice::from_raw_parts(op.bytes, op.bytes_len) }.to_vec()
+                    unsafe { slice_from_raw_or_empty(op.bytes, op.bytes_len) }.to_vec()
                 } else {
                     Vec::new()
                 }
@@ -3188,7 +3215,7 @@ pub unsafe extern "C" fn crimson_save_list_insert_element(
         // Copy the element bytes + clone the schema up front so the
         // closure below doesn't borrow `h` twice.
         let bytes_vec: Vec<u8> =
-            unsafe { std::slice::from_raw_parts(bytes, bytes_len) }.to_vec();
+            unsafe { slice_from_raw_or_empty(bytes, bytes_len) }.to_vec();
         let schema_clone = h.body.schema.clone();
         let parsed = match crate::save::decode_one_list_element_bytes(&bytes_vec, &schema_clone) {
             Ok(el) => el,
@@ -3333,7 +3360,7 @@ pub unsafe extern "C" fn crimson_save_dynamic_array_set_u32_elements(
         let new_elems: Vec<u32> = if new_count == 0 {
             Vec::new()
         } else {
-            unsafe { std::slice::from_raw_parts(new_elements, new_count) }.to_vec()
+            unsafe { slice_from_raw_or_empty(new_elements, new_count) }.to_vec()
         };
         if new_elems.len() > u32::MAX as usize {
             return error::OUT_OF_RANGE;
@@ -3540,7 +3567,7 @@ pub unsafe extern "C" fn crimson_save_set_inline_bytes_field(
         let bytes: Vec<u8> = if new_bytes_len == 0 {
             Vec::new()
         } else {
-            unsafe { std::slice::from_raw_parts(new_bytes, new_bytes_len) }.to_vec()
+            unsafe { slice_from_raw_or_empty(new_bytes, new_bytes_len) }.to_vec()
         };
         apply_length_changing_mutation(h, |blocks| {
             write_inline_bytes_in_place(blocks, block_idx, steps, field_idx, &bytes)

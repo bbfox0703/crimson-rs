@@ -1080,13 +1080,11 @@ mod tests {
             ];
             // field 14 = _itemDyeDataList on ItemSaveData (an ObjectList,
             // so writing a scalar to it = NOT_SCALAR if navigation worked).
-            // Pass a non-null bytes buffer with arbitrary length — the
-            // API short-circuits on NOT_SCALAR before reading any byte,
-            // so the buffer content is irrelevant. (A null ptr with
-            // len=0 trips `slice::from_raw_parts`'s 2024-edition UB
-            // check.)
+            // bytes/len content is irrelevant — the API short-circuits
+            // on NOT_SCALAR before reading any byte. The
+            // `slice_from_raw_or_empty` helper handles null+0 cleanly
+            // now (see `live_null_bytes_with_zero_len_is_safe`).
             const ITEM_DYE_DATA_LIST_FIELD_IDX: u32 = 14;
-            let dummy: [u8; 1] = [0];
             let rc = unsafe {
                 super::super::crimson_save_set_scalar_field_path(
                     handle,
@@ -1094,8 +1092,8 @@ mod tests {
                     path.as_ptr(),
                     path.len(),
                     ITEM_DYE_DATA_LIST_FIELD_IDX,
-                    dummy.as_ptr(),
-                    1,
+                    ptr::null(),
+                    0,
                 )
             };
             assert_eq!(
@@ -1104,6 +1102,92 @@ mod tests {
                  If rc is NOT_NAVIGABLE (-15) or OUT_OF_RANGE (-10) the path is wrong.",
             );
         }
+
+        unsafe { super::super::crimson_save_free(handle) };
+    }
+
+    /// Regression: passing `(bytes = null, bytes_len = 0)` to
+    /// `crimson_save_set_scalar_field_path` must NOT trip Rust 2024's
+    /// `slice::from_raw_parts` UB check. The fix is the
+    /// `slice_from_raw_or_empty` helper in `c_abi/mod.rs`; this test
+    /// pins the contract by calling the API with exactly that
+    /// pointer shape and asserting we get an error code (LENGTH_MISMATCH
+    /// or NOT_SCALAR) rather than a panic / process abort.
+    ///
+    /// The contract says null+0 represents an empty buffer, so the
+    /// helper returns `&[]` regardless of the pointer value. Earlier
+    /// versions hit `unsafe precondition violated: from_raw_parts
+    /// requires non-null pointer` on every call with that shape.
+    #[test]
+    fn live_null_bytes_with_zero_len_is_safe() {
+        let Some(save_path) = find_save_path() else {
+            eprintln!("skipping: no save");
+            return;
+        };
+        let path_c = std::ffi::CString::new(save_path.to_str().unwrap()).unwrap();
+        let mut handle: *mut CrimsonSaveHandle = ptr::null_mut();
+        let rc = unsafe { super::super::crimson_save_load_from_file(path_c.as_ptr(), &mut handle) };
+        assert_eq!(rc, error::OK);
+
+        // Pick any record; the field choice doesn't matter because
+        // the API should reject before reading any byte.
+        let mut count: usize = 0;
+        let _ = unsafe {
+            crimson_save_list_all_items(handle, ptr::null_mut(), 0, &mut count, ptr::null_mut())
+        };
+        let mut records = vec![
+            CrimsonItemRecord {
+                block_idx: 0, container_kind: 0, path_len: 0,
+                path_step_0_field: 0, path_step_0_element: 0,
+                path_step_1_field: 0, path_step_1_element: 0,
+                inventory_key: 0, item_key: 0, slot_no: 0,
+                flags: 0, owner_character_key: 0,
+                item_no: 0, owner_mercenary_no: 0,
+            };
+            count
+        ];
+        let mut got = 0usize;
+        let _ = unsafe {
+            crimson_save_list_all_items(handle, records.as_mut_ptr(), count, &mut got, ptr::null_mut())
+        };
+        let rec = records.iter().find(|r| r.container_kind == container_kind::ACTIVE_EQUIP)
+            .expect("active equip record");
+
+        let path = [
+            super::super::CrimsonPathStep {
+                field_idx: rec.path_step_0_field,
+                element_idx: rec.path_step_0_element,
+            },
+            super::super::CrimsonPathStep {
+                field_idx: rec.path_step_1_field,
+                element_idx: rec.path_step_1_element,
+            },
+        ];
+        // The "null bytes, zero length" path that previously aborted
+        // the process with the unsafe-precondition violation. Now it
+        // should reach LENGTH_MISMATCH (field 2 _itemKey is u32 = 4
+        // bytes; bytes_len = 0 doesn't match) or NOT_SCALAR if the
+        // field isn't fixed-size.
+        const ANY_LEAF_FIELD: u32 = 2; // _itemKey on ItemSaveData
+        let rc = unsafe {
+            super::super::crimson_save_set_scalar_field_path(
+                handle,
+                rec.block_idx,
+                path.as_ptr(),
+                path.len(),
+                ANY_LEAF_FIELD,
+                ptr::null(),
+                0,
+            )
+        };
+        // Either error is fine — the point is that we got an error
+        // code back instead of a process abort. The UB regression
+        // would manifest as the test process exiting with STATUS_STACK_BUFFER_OVERRUN
+        // (0xc0000409) before this assert runs.
+        assert!(
+            rc == error::LENGTH_MISMATCH || rc == error::NOT_SCALAR,
+            "expected LENGTH_MISMATCH or NOT_SCALAR, got rc={rc}",
+        );
 
         unsafe { super::super::crimson_save_free(handle) };
     }
