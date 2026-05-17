@@ -910,6 +910,194 @@ pub unsafe extern "C" fn crimson_save_list_inventory_items(
     .unwrap_or(error::PANIC)
 }
 
+// ── CharacterKey reference enumeration ────────────────────────────────────
+
+/// One flat record emitted by [`crimson_save_list_character_refs`] —
+/// a `repr(C)` 16-byte structure laid out for direct mmap-style read
+/// from C# / C++ consumers.
+///
+/// Field layout (little-endian, naturally aligned):
+///
+/// | Offset | Field             | Type | Purpose |
+/// |--------|-------------------|------|---------|
+/// |  0     | `block_idx`       | u32  | Top-level block index containing this reference. Pass to [`crimson_save_get_block_json`] for the full block payload. |
+/// |  4     | `character_key`   | u32  | The `CharacterKey` value. Feed through the gamedata-side `crimson_characterinfo_lookup_string_key` / `_lookup_display_name` to resolve to "Greymane" / "灰鬃" etc. |
+/// |  8     | `class_index`     | u32  | Schema class index of the top-level block — coarse hint for where in the save tree this reference lives (e.g. `CharacterStatusSaveData` vs `NPCScheduleStageManagerSaveData`). Resolve to a class_name via [`crimson_save_get_block_info`]. |
+/// | 12     | `reserved0`       | u32  | Reserved for future use; always 0. |
+///
+/// **Coverage**: every present field whose declared `type_name ==
+/// "CharacterKey"` is emitted, regardless of nesting depth. Fixed-size
+/// scalar fields (`meta_kind` 0 / 2) produce one record per field;
+/// `CharacterKey` dynamic-array fields produce one record per element.
+/// Absent fields and unrelated u32 fields that happen to hold a
+/// character key by coincidence are NOT included — only fields the
+/// schema declares as `CharacterKey`.
+///
+/// **Duplicates**: the same character may appear many times across
+/// different blocks (e.g. Greymane referenced from a `_characterKey`
+/// scalar AND from an ObjectList of party members). The enumerator
+/// emits one record per **field occurrence**, not per distinct key.
+/// Callers wanting "every character referenced in this save" dedupe
+/// on `character_key` themselves.
+///
+/// **Validity window**: `block_idx` stays valid only until the next
+/// length-changing mutation. Combine with
+/// [`crimson_save_get_mutation_version`] for staleness detection (same
+/// pattern as [`crimson_save_list_inventory_items`]).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct CrimsonCharacterRefRecord {
+    pub block_idx: u32,
+    pub character_key: u32,
+    pub class_index: u32,
+    pub reserved0: u32,
+}
+
+/// Flat-list every present `CharacterKey` field across every block in
+/// the save (top-level + nested via ObjectList / Locator). Output is a
+/// contiguous array of [`CrimsonCharacterRefRecord`] values (16 bytes
+/// each, `repr(C)`).
+///
+/// Use to answer: "which characters does this save reference, and where?"
+/// — closes the gap noted in the Save Editor's character browser
+/// (screenshot, 2026-05-17).
+///
+/// **Two-call shape** (records, not bytes):
+///
+/// - First call with `out_records = null, capacity_records = 0`
+///   returns `BUFFER_TOO_SMALL` (or `OK` if the save has zero refs).
+///   Populates `*out_count_records` and `*out_version`.
+/// - Allocate `*out_count_records` records, call again.
+///
+/// **`out_version`** (may be null) — handle's mutation counter at read
+/// time. See [`crimson_save_list_inventory_items`] for the snapshot /
+/// staleness pattern.
+///
+/// **Performance**: O(blocks × fields × nesting_depth). For the 1.07
+/// reference save this scans ~10k blocks × ~30 fields each in well
+/// under 100 ms. Single allocation up front; no per-record allocs.
+///
+/// Return codes:
+/// - `OK` — written. Populates `*out_count_records` and `*out_version`.
+/// - `BUFFER_TOO_SMALL` — `capacity_records < *out_count_records`.
+///   `*out_count_records` and `*out_version` are populated.
+/// - `NULL_ARG` — any required pointer is null.
+///
+/// # Safety
+/// `handle` must be a live handle. `out_count_records` must point to
+/// writable `usize` memory. `out_records` may be null iff
+/// `capacity_records == 0`. `out_version` may be null (then dropped).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_list_character_refs(
+    handle: *const CrimsonSaveHandle,
+    out_records: *mut CrimsonCharacterRefRecord,
+    capacity_records: usize,
+    out_count_records: *mut usize,
+    out_version: *mut u64,
+) -> i32 {
+    if handle.is_null() || out_count_records.is_null() {
+        return error::NULL_ARG;
+    }
+    if out_records.is_null() && capacity_records != 0 {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_count_records = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        if !out_version.is_null() {
+            unsafe { *out_version = h.mutation_version };
+        }
+
+        let mut records: Vec<CrimsonCharacterRefRecord> = Vec::new();
+        for (block_idx, block) in h.blocks.iter().enumerate() {
+            walk_for_character_refs(block, block_idx as u32, block.class_index, &mut records);
+        }
+
+        unsafe { *out_count_records = records.len() };
+        if records.is_empty() {
+            return error::OK;
+        }
+        if records.len() > capacity_records {
+            return error::BUFFER_TOO_SMALL;
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(records.as_ptr(), out_records, records.len());
+        }
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Recursive walker for [`crimson_save_list_character_refs`]. Emits one
+/// record per present `CharacterKey` field occurrence and descends into
+/// ObjectList elements + Locator children. `top_block_idx` and
+/// `top_class_index` always reference the OUTER top-level block — they
+/// don't change when we descend into nested elements, since the
+/// canonical record's `block_idx` always points at the top-level block.
+fn walk_for_character_refs(
+    block: &ObjectBlock,
+    top_block_idx: u32,
+    top_class_index: u32,
+    out: &mut Vec<CrimsonCharacterRefRecord>,
+) {
+    for f in &block.fields {
+        if !f.present {
+            // Don't descend into ObjectList children when the list
+            // itself is absent — there are no decoded elements to walk.
+            continue;
+        }
+        if f.type_name == "CharacterKey" {
+            match &f.value {
+                FieldValue::Scalar(ScalarValue::U32(v)) => {
+                    out.push(CrimsonCharacterRefRecord {
+                        block_idx: top_block_idx,
+                        character_key: *v,
+                        class_index: top_class_index,
+                        reserved0: 0,
+                    });
+                }
+                // DynamicArray of CharacterKey (meta_kind == 3) — each
+                // element is a u32. None seen in the 1.07 sample save
+                // but the survey probe doesn't rule it out, so handle
+                // it defensively.
+                FieldValue::DynamicArray { bytes, count, .. } if f.meta_size == 4 => {
+                    let n = (*count as usize).min(bytes.len() / 4);
+                    for i in 0..n {
+                        let off = i * 4;
+                        let v = u32::from_le_bytes([
+                            bytes[off],
+                            bytes[off + 1],
+                            bytes[off + 2],
+                            bytes[off + 3],
+                        ]);
+                        out.push(CrimsonCharacterRefRecord {
+                            block_idx: top_block_idx,
+                            character_key: v,
+                            class_index: top_class_index,
+                            reserved0: 0,
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+        // Descend regardless of type — a CharacterKey may live deep
+        // inside an unrelated parent (e.g. inside a ReflectObjectPtr
+        // sub-list).
+        match &f.value {
+            FieldValue::ObjectList { elements, .. } => {
+                for e in elements {
+                    walk_for_character_refs(e, top_block_idx, top_class_index, out);
+                }
+            }
+            FieldValue::Locator { child: Some(c), .. } => {
+                walk_for_character_refs(c, top_block_idx, top_class_index, out);
+            }
+            _ => {}
+        }
+    }
+}
+
 // ── Mutation-version counter ──────────────────────────────────────────────
 
 /// Read the handle's mutation counter — a monotonic `u64` that bumps by
@@ -1616,6 +1804,247 @@ pub unsafe extern "C" fn crimson_save_set_scalar_field_path(
         error::OK
     }))
     .unwrap_or(error::PANIC)
+}
+
+// ── Typed composite-scalar setters (ergonomic wrappers) ──────────────
+//
+// Thin wrappers around `crimson_save_set_scalar_field_path` /
+// `crimson_save_set_scalar_field_present` that pack typed values
+// (f32 / u32 triples / quadruples) into the LE byte buffer the raw
+// setters expect. They emit nothing the raw API can't already produce
+// — purely an ergonomic convenience so the C# editor doesn't have to
+// hand-pack 12/16-byte buffers for every float3 / float4 / uint4
+// edit. Mirrors the typed read side added in 2026-05-17
+// (`ScalarValue::F32x3` etc.).
+//
+// Mutation rule: each composite is atomic — there's no path to make
+// individual components absent. Either the whole vector is present
+// (with all components carrying values) or the whole vector is absent.
+// The `_present` variant flips between those two states.
+
+/// Set the value of an already-present `float3` (12-byte / 3 × f32) field.
+///
+/// Equivalent to `crimson_save_set_scalar_field_path` with a 12-byte
+/// LE payload packed from `(x, y, z)`. Validation rules identical:
+/// the leaf field must be a fixed-size scalar of size 12 (`NOT_SCALAR`
+/// / `LENGTH_MISMATCH` otherwise).
+///
+/// # Safety
+/// Same as [`crimson_save_set_scalar_field_path`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_set_float3_field_path(
+    handle: *mut CrimsonSaveHandle,
+    block_idx: u32,
+    path: *const CrimsonPathStep,
+    path_len: usize,
+    field_idx: u32,
+    x: f32,
+    y: f32,
+    z: f32,
+) -> i32 {
+    let mut buf = [0u8; 12];
+    buf[0..4].copy_from_slice(&x.to_le_bytes());
+    buf[4..8].copy_from_slice(&y.to_le_bytes());
+    buf[8..12].copy_from_slice(&z.to_le_bytes());
+    unsafe {
+        crimson_save_set_scalar_field_path(
+            handle, block_idx, path, path_len, field_idx, buf.as_ptr(), buf.len(),
+        )
+    }
+}
+
+/// Toggle the presence of a `float3` field. When `present_flag != 0`,
+/// the field becomes present with the supplied `(x, y, z)` packed into
+/// 12 LE bytes; when `present_flag == 0` the field becomes absent and
+/// `x` / `y` / `z` are ignored.
+///
+/// Equivalent to `crimson_save_set_scalar_field_present` with the
+/// packed init bytes; see that function for full validation semantics.
+///
+/// # Safety
+/// Same as [`crimson_save_set_scalar_field_present`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_set_float3_field_present(
+    handle: *mut CrimsonSaveHandle,
+    block_idx: u32,
+    path: *const CrimsonPathStep,
+    path_len: usize,
+    field_idx: u32,
+    present_flag: i32,
+    x: f32,
+    y: f32,
+    z: f32,
+) -> i32 {
+    if present_flag == 0 {
+        return unsafe {
+            crimson_save_set_scalar_field_present(
+                handle,
+                block_idx,
+                path,
+                path_len,
+                field_idx,
+                0,
+                std::ptr::null(),
+                0,
+            )
+        };
+    }
+    let mut buf = [0u8; 12];
+    buf[0..4].copy_from_slice(&x.to_le_bytes());
+    buf[4..8].copy_from_slice(&y.to_le_bytes());
+    buf[8..12].copy_from_slice(&z.to_le_bytes());
+    unsafe {
+        crimson_save_set_scalar_field_present(
+            handle, block_idx, path, path_len, field_idx, 1, buf.as_ptr(), buf.len(),
+        )
+    }
+}
+
+/// Set the value of an already-present `float4` / `quaternion`
+/// (16-byte / 4 × f32) field. See [`crimson_save_set_float3_field_path`].
+///
+/// # Safety
+/// Same as [`crimson_save_set_scalar_field_path`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_set_float4_field_path(
+    handle: *mut CrimsonSaveHandle,
+    block_idx: u32,
+    path: *const CrimsonPathStep,
+    path_len: usize,
+    field_idx: u32,
+    x: f32,
+    y: f32,
+    z: f32,
+    w: f32,
+) -> i32 {
+    let mut buf = [0u8; 16];
+    buf[0..4].copy_from_slice(&x.to_le_bytes());
+    buf[4..8].copy_from_slice(&y.to_le_bytes());
+    buf[8..12].copy_from_slice(&z.to_le_bytes());
+    buf[12..16].copy_from_slice(&w.to_le_bytes());
+    unsafe {
+        crimson_save_set_scalar_field_path(
+            handle, block_idx, path, path_len, field_idx, buf.as_ptr(), buf.len(),
+        )
+    }
+}
+
+/// Toggle the presence of a `float4` / `quaternion` field. See
+/// [`crimson_save_set_float3_field_present`] for the presence-flag
+/// contract.
+///
+/// # Safety
+/// Same as [`crimson_save_set_scalar_field_present`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_set_float4_field_present(
+    handle: *mut CrimsonSaveHandle,
+    block_idx: u32,
+    path: *const CrimsonPathStep,
+    path_len: usize,
+    field_idx: u32,
+    present_flag: i32,
+    x: f32,
+    y: f32,
+    z: f32,
+    w: f32,
+) -> i32 {
+    if present_flag == 0 {
+        return unsafe {
+            crimson_save_set_scalar_field_present(
+                handle,
+                block_idx,
+                path,
+                path_len,
+                field_idx,
+                0,
+                std::ptr::null(),
+                0,
+            )
+        };
+    }
+    let mut buf = [0u8; 16];
+    buf[0..4].copy_from_slice(&x.to_le_bytes());
+    buf[4..8].copy_from_slice(&y.to_le_bytes());
+    buf[8..12].copy_from_slice(&z.to_le_bytes());
+    buf[12..16].copy_from_slice(&w.to_le_bytes());
+    unsafe {
+        crimson_save_set_scalar_field_present(
+            handle, block_idx, path, path_len, field_idx, 1, buf.as_ptr(), buf.len(),
+        )
+    }
+}
+
+/// Set the value of an already-present `uint4` (16-byte / 4 × u32) field.
+/// `uint4` is the on-disk shape of 128-bit IDs like `SceneObjectUuid`.
+///
+/// # Safety
+/// Same as [`crimson_save_set_scalar_field_path`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_set_uint4_field_path(
+    handle: *mut CrimsonSaveHandle,
+    block_idx: u32,
+    path: *const CrimsonPathStep,
+    path_len: usize,
+    field_idx: u32,
+    a: u32,
+    b: u32,
+    c: u32,
+    d: u32,
+) -> i32 {
+    let mut buf = [0u8; 16];
+    buf[0..4].copy_from_slice(&a.to_le_bytes());
+    buf[4..8].copy_from_slice(&b.to_le_bytes());
+    buf[8..12].copy_from_slice(&c.to_le_bytes());
+    buf[12..16].copy_from_slice(&d.to_le_bytes());
+    unsafe {
+        crimson_save_set_scalar_field_path(
+            handle, block_idx, path, path_len, field_idx, buf.as_ptr(), buf.len(),
+        )
+    }
+}
+
+/// Toggle the presence of a `uint4` field. See
+/// [`crimson_save_set_float3_field_present`] for the presence-flag contract.
+///
+/// # Safety
+/// Same as [`crimson_save_set_scalar_field_present`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_set_uint4_field_present(
+    handle: *mut CrimsonSaveHandle,
+    block_idx: u32,
+    path: *const CrimsonPathStep,
+    path_len: usize,
+    field_idx: u32,
+    present_flag: i32,
+    a: u32,
+    b: u32,
+    c: u32,
+    d: u32,
+) -> i32 {
+    if present_flag == 0 {
+        return unsafe {
+            crimson_save_set_scalar_field_present(
+                handle,
+                block_idx,
+                path,
+                path_len,
+                field_idx,
+                0,
+                std::ptr::null(),
+                0,
+            )
+        };
+    }
+    let mut buf = [0u8; 16];
+    buf[0..4].copy_from_slice(&a.to_le_bytes());
+    buf[4..8].copy_from_slice(&b.to_le_bytes());
+    buf[8..12].copy_from_slice(&c.to_le_bytes());
+    buf[12..16].copy_from_slice(&d.to_le_bytes());
+    unsafe {
+        crimson_save_set_scalar_field_present(
+            handle, block_idx, path, path_len, field_idx, 1, buf.as_ptr(), buf.len(),
+        )
+    }
 }
 
 /// Apply many scalar mutations in one FFI round trip, sharing a single
@@ -3373,7 +3802,14 @@ fn format_field_value(f: &DecodedField) -> String {
             format!("<{count} items, {} bytes>", bytes.len())
         }
         (FieldKind::DynamicArray, FieldValue::DynamicArray { count, bytes, header_variant, .. }) => {
-            format!("<{count} items, {} bytes, {header_variant}>", bytes.len())
+            // Render contents inline when the element width is a simple
+            // primitive (4-byte u32 or 8-byte u64). Sizes outside that
+            // set fall back to the legacy `<N items, X bytes, variant>`
+            // summary plus a short hex preview so the editor can still
+            // see something. This is a display-only convenience — the
+            // typed read API (`crimson_save_dynamic_array_get_u32_elements`)
+            // remains the canonical accessor.
+            format_dynamic_array(*count, bytes, header_variant, f.meta_size)
         }
         (FieldKind::ObjectLocator, FieldValue::Locator { child_type_name, child_payload_offset, child, .. }) => {
             match child {
@@ -3390,6 +3826,105 @@ fn format_field_value(f: &DecodedField) -> String {
         (FieldKind::Absent, _) => "(absent)".to_string(),
         (FieldKind::Unknown, _) => "<unknown>".to_string(),
         _ => String::new(),
+    }
+}
+
+/// Render a `DynamicArray` value as a human-readable string with its
+/// element contents inlined when the element type is a simple primitive.
+///
+/// Display contract (matches the existing `format_scalar` `value <kind>`
+/// shape):
+///
+/// - `meta_size == 4` → `[v1, v2, …] <u32_dynamic_array, variant>`. Up
+///   to 12 elements rendered; longer arrays get a `…` continuation
+///   marker plus the total count.
+/// - `meta_size == 8` → `[v1, v2, …] <u64_dynamic_array, variant>`.
+/// - Other sizes → legacy summary `<N items, X bytes, variant>` plus a
+///   hex preview of the first 24 payload bytes.
+///
+/// Caveat: the typed read API
+/// [`crimson_save_dynamic_array_get_u32_elements`] remains the canonical
+/// accessor — the display string here is best-effort and not part of
+/// the stable JSON value contract. Callers parsing JSON should still
+/// rely on the field's `bytes`/`count` payload for round-trip safety.
+fn format_dynamic_array(
+    count: u32,
+    bytes: &[u8],
+    header_variant: &'static str,
+    meta_size: u16,
+) -> String {
+    const MAX_INLINE: usize = 12;
+    match meta_size {
+        4 if bytes.len() == count as usize * 4 => {
+            let mut s = String::with_capacity(64);
+            s.push('[');
+            let n = (count as usize).min(MAX_INLINE);
+            for i in 0..n {
+                if i > 0 {
+                    s.push_str(", ");
+                }
+                let off = i * 4;
+                let v = u32::from_le_bytes([
+                    bytes[off],
+                    bytes[off + 1],
+                    bytes[off + 2],
+                    bytes[off + 3],
+                ]);
+                write!(&mut s, "{v}").unwrap();
+            }
+            if (count as usize) > MAX_INLINE {
+                let rest = count as usize - MAX_INLINE;
+                write!(&mut s, ", … ({rest} more)").unwrap();
+            }
+            s.push(']');
+            write!(&mut s, " <u32_dynamic_array, {header_variant}>").unwrap();
+            s
+        }
+        8 if bytes.len() == count as usize * 8 => {
+            let mut s = String::with_capacity(80);
+            s.push('[');
+            let n = (count as usize).min(MAX_INLINE);
+            for i in 0..n {
+                if i > 0 {
+                    s.push_str(", ");
+                }
+                let off = i * 8;
+                let v = u64::from_le_bytes([
+                    bytes[off],
+                    bytes[off + 1],
+                    bytes[off + 2],
+                    bytes[off + 3],
+                    bytes[off + 4],
+                    bytes[off + 5],
+                    bytes[off + 6],
+                    bytes[off + 7],
+                ]);
+                write!(&mut s, "{v}").unwrap();
+            }
+            if (count as usize) > MAX_INLINE {
+                let rest = count as usize - MAX_INLINE;
+                write!(&mut s, ", … ({rest} more)").unwrap();
+            }
+            s.push(']');
+            write!(&mut s, " <u64_dynamic_array, {header_variant}>").unwrap();
+            s
+        }
+        _ => {
+            // Unknown / unusual element width — keep the legacy summary
+            // line and tack on a short hex preview for diagnostics.
+            let preview_n = bytes.len().min(24);
+            let mut preview = String::with_capacity(preview_n * 2 + 4);
+            for b in &bytes[..preview_n] {
+                write!(&mut preview, "{b:02x}").unwrap();
+            }
+            if bytes.len() > preview_n {
+                preview.push('…');
+            }
+            format!(
+                "<{count} items, {} bytes, {header_variant}, hex={preview}>",
+                bytes.len()
+            )
+        }
     }
 }
 
@@ -3449,6 +3984,75 @@ fn write_json_hex(out: &mut String, bytes: &[u8]) {
         write!(out, "{b:02x}").unwrap();
     }
     out.push('"');
+}
+
+#[cfg(test)]
+mod format_dynamic_array_tests {
+    use super::format_dynamic_array;
+
+    #[test]
+    fn empty_u32_array() {
+        let s = format_dynamic_array(0, &[], "prefix_00xx0100", 4);
+        assert_eq!(s, "[] <u32_dynamic_array, prefix_00xx0100>");
+    }
+
+    #[test]
+    fn three_u32_elements_inlined() {
+        // [1, 2, 3] LE → 12 bytes
+        let bytes = [
+            1, 0, 0, 0, // 1
+            2, 0, 0, 0, // 2
+            3, 0, 0, 0, // 3
+        ];
+        let s = format_dynamic_array(3, &bytes, "marker_prefix", 4);
+        assert_eq!(s, "[1, 2, 3] <u32_dynamic_array, marker_prefix>");
+    }
+
+    #[test]
+    fn truncates_at_max_inline_with_count_marker() {
+        // 14 u32 elements — should inline 12, then "… (2 more)".
+        let mut bytes = Vec::with_capacity(14 * 4);
+        for i in 0u32..14 {
+            bytes.extend_from_slice(&i.to_le_bytes());
+        }
+        let s = format_dynamic_array(14, &bytes, "marker_prefix", 4);
+        assert!(
+            s.starts_with("[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, … (2 more)]"),
+            "got {s:?}"
+        );
+        assert!(s.ends_with("<u32_dynamic_array, marker_prefix>"));
+    }
+
+    #[test]
+    fn u64_array_inlined() {
+        let bytes = [
+            // u64 = 0x0000000100000000 = 4294967296
+            0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+        ];
+        let s = format_dynamic_array(1, &bytes, "marker_prefix", 8);
+        assert_eq!(s, "[4294967296] <u64_dynamic_array, marker_prefix>");
+    }
+
+    #[test]
+    fn unusual_meta_size_falls_back_to_hex() {
+        // meta_size = 16 (e.g. uint4 SceneObjectUuid in a dynamic array).
+        let bytes = (0u8..16).collect::<Vec<u8>>();
+        let s = format_dynamic_array(1, &bytes, "marker_prefix", 16);
+        assert!(
+            s.starts_with("<1 items, 16 bytes, marker_prefix, hex=000102030405060708090a0b0c0d0e0f"),
+            "got {s:?}"
+        );
+    }
+
+    #[test]
+    fn corrupt_count_falls_back_to_legacy_summary() {
+        // bytes.len() doesn't match count * meta_size → don't try to
+        // decode, surface the legacy summary so the editor sees the
+        // anomaly rather than reading past the buffer.
+        let bytes = [1u8, 2, 3]; // 3 bytes claimed as 1 u32
+        let s = format_dynamic_array(1, &bytes, "marker_prefix", 4);
+        assert!(s.starts_with("<1 items, 3 bytes, marker_prefix, hex="), "got {s:?}");
+    }
 }
 
 #[cfg(test)]
@@ -6782,6 +7386,163 @@ mod tests {
         assert_eq!(
             unsafe {
                 crimson_save_list_inventory_items(
+                    handle,
+                    ptr::null_mut(),
+                    1,
+                    &mut sink,
+                    ptr::null_mut(),
+                )
+            },
+            error::NULL_ARG
+        );
+
+        unsafe { crimson_save_free(handle) };
+    }
+
+    /// End-to-end live-save smoke test for
+    /// [`crimson_save_list_character_refs`]. Mirrors the
+    /// `_inventory_items` test's two-call + NULL_ARG + buffer-too-small
+    /// shape. Asserts that the flat list:
+    ///
+    /// - Returns a plausible row count (≥ 50 distinct character_key
+    ///   values in a typical 1.07 save).
+    /// - Resolves each `character_key` through the gamedata-side
+    ///   `crimson_characterinfo_lookup_string_key` when the live install
+    ///   is present — every emitted key MUST exist in the catalog (no
+    ///   silent zeros / garbage).
+    /// - Reports the same `class_index` for every record from the same
+    ///   `block_idx` (the top-level class doesn't change mid-block).
+    #[test]
+    fn c_abi_list_character_refs_live() {
+        let Some(path) = find_save() else {
+            eprintln!("skipping c_abi_list_character_refs_live: no live save");
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let mut handle: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle) },
+            error::OK
+        );
+
+        // Sizing call.
+        let mut count: usize = 0;
+        let mut version: u64 = u64::MAX;
+        let rc = unsafe {
+            crimson_save_list_character_refs(
+                handle,
+                ptr::null_mut(),
+                0,
+                &mut count,
+                &mut version,
+            )
+        };
+        assert!(
+            rc == error::OK || rc == error::BUFFER_TOO_SMALL,
+            "first call returned {rc}"
+        );
+        assert_eq!(version, 0, "fresh handle: version stamp must be 0");
+        if count == 0 {
+            eprintln!("save has zero CharacterKey refs — surprising but legal");
+            unsafe { crimson_save_free(handle) };
+            return;
+        }
+        assert!(
+            count >= 50,
+            "expected ≥50 CharacterKey refs in a live save, got {count}",
+        );
+
+        // Fill phase.
+        let mut buf: Vec<CrimsonCharacterRefRecord> =
+            vec![unsafe { std::mem::zeroed() }; count];
+        let mut count2: usize = 0;
+        let mut version2: u64 = u64::MAX;
+        let rc = unsafe {
+            crimson_save_list_character_refs(
+                handle,
+                buf.as_mut_ptr(),
+                buf.len(),
+                &mut count2,
+                &mut version2,
+            )
+        };
+        assert_eq!(rc, error::OK);
+        assert_eq!(count2, count);
+        assert_eq!(version2, version);
+
+        // Record-shape invariants.
+        let mut by_block: std::collections::HashMap<u32, u32> = Default::default();
+        let mut distinct_keys: std::collections::HashSet<u32> = Default::default();
+        for r in &buf {
+            // character_key 0 is illegal — gamedata catalog uses non-zero keys.
+            assert_ne!(r.character_key, 0, "CharacterKey 0 leaked into record");
+            assert_eq!(r.reserved0, 0, "reserved0 must be zero");
+            distinct_keys.insert(r.character_key);
+            // Top-level class_index is stable per block.
+            if let Some(prev) = by_block.get(&r.block_idx) {
+                assert_eq!(
+                    *prev, r.class_index,
+                    "class_index drift within block {}",
+                    r.block_idx
+                );
+            } else {
+                by_block.insert(r.block_idx, r.class_index);
+            }
+        }
+        assert!(
+            distinct_keys.len() >= 20,
+            "expected ≥20 distinct character_key values, got {}",
+            distinct_keys.len()
+        );
+
+        // BUFFER_TOO_SMALL path.
+        if count >= 2 {
+            let mut small_buf: Vec<CrimsonCharacterRefRecord> =
+                vec![unsafe { std::mem::zeroed() }; count - 1];
+            let mut needed: usize = 0;
+            let mut v: u64 = 0;
+            let rc = unsafe {
+                crimson_save_list_character_refs(
+                    handle,
+                    small_buf.as_mut_ptr(),
+                    small_buf.len(),
+                    &mut needed,
+                    &mut v,
+                )
+            };
+            assert_eq!(rc, error::BUFFER_TOO_SMALL);
+            assert_eq!(needed, count);
+        }
+
+        // NULL_ARG paths.
+        let mut sink: usize = 0;
+        assert_eq!(
+            unsafe {
+                crimson_save_list_character_refs(
+                    ptr::null(),
+                    ptr::null_mut(),
+                    0,
+                    &mut sink,
+                    ptr::null_mut(),
+                )
+            },
+            error::NULL_ARG
+        );
+        assert_eq!(
+            unsafe {
+                crimson_save_list_character_refs(
+                    handle,
+                    ptr::null_mut(),
+                    0,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                )
+            },
+            error::NULL_ARG
+        );
+        assert_eq!(
+            unsafe {
+                crimson_save_list_character_refs(
                     handle,
                     ptr::null_mut(),
                     1,
