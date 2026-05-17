@@ -415,25 +415,83 @@ The `_isMainMercenary` flag identifies which mount is currently
 summoned (the balloon at the moment), distinct from which mount has
 dyed equipment.
 
-### Implication for the C# editor's item enumerator
+### Implication for the C# editor's item enumerator — `crimson_save_list_all_items`
 
-`crimson_save_list_inventory_items` (the existing flat enumerator)
+`crimson_save_list_inventory_items` (the original flat enumerator)
 walks `InventorySaveData._inventoryList[N]._itemList[M]` only —
-245 mercenary-equip + 20 mercenary-inv + 18 active-equip + 22 reserve
-items are invisible to it.
+245 mercenary-equip + 20 mercenary-inv + 18 active-equip + 1 active
+reserve items are invisible to it. **Shipped 2026-05-17 (later this
+iteration)**: [`crimson_save_list_all_items`](../src/c_abi/all_items.rs)
+yields each player-owned item with its container kind + owner
+identity, in one call:
 
-A future `crimson_save_list_all_items` enumerator should yield each
-item with its **container kind** + **owner identity**:
+```c
+// 64-byte repr(C) record per item — same two-call sizing pattern as
+// list_inventory_items.
+typedef struct CrimsonItemRecord {
+    uint32_t block_idx;
+    uint32_t container_kind;       // see container_kind constants
+    uint32_t path_len;              // always 2 in v1
+    uint32_t path_step_0_field;     // descent step 0: field idx
+    uint32_t path_step_0_element;   // descent step 0: list element idx
+    uint32_t path_step_1_field;
+    uint32_t path_step_1_element;
+    uint32_t inventory_key;
+    uint32_t item_key;
+    uint32_t slot_no;
+    uint32_t flags;                  // LOCKED / NEW_MARK / HAS_DYE_DATA /
+                                     //   HAS_SOCKET_DATA / OWNER_IS_MAIN_MERCENARY
+    uint32_t owner_character_key;    // cat-byte stripped
+    uint64_t item_no;
+    uint64_t owner_mercenary_no;     // 0 for active-character records
+} CrimsonItemRecord;
 
-```text
-container_kind ∈ { ActiveEquip, Inventory, MercenaryEquip,
-                   MercenaryInventory, UseItemReserve, FieldGimmick }
-owner = (character_key_or_zero, mercenary_no_or_zero)
+// Container kinds:
+//   0 = ACTIVE_EQUIP
+//   1 = ACTIVE_USE_RESERVE
+//   2 = INVENTORY
+//   3 = MERCENARY_EQUIP
+//   4 = MERCENARY_INVENTORY
 ```
 
-This gives the C# editor enough info to render separate tabs for each
-of Kliff / Damine / Oongka / each mount / each follower, plus the
-shared inventory.
+Slot103 baseline output:
+
+| container_kind | count | source path |
+|---|---:|---|
+| ACTIVE_EQUIP | 18 | `EquipmentSaveData._list[N]._item<locator>` |
+| ACTIVE_USE_RESERVE | 1 | `EquipmentSaveData._useItemSaveList[N]._reserveItem<locator>` (empty slots skipped) |
+| INVENTORY | 545 | `InventorySaveData._inventoryList[N]._itemList[M]` |
+| MERCENARY_EQUIP | 245 | `MercenaryClanSaveData._mercenaryDataList[N]._equipItemList[M]` |
+| MERCENARY_INVENTORY | 20 | `MercenaryClanSaveData._mercenaryDataList[N]._inventoryItemList[M]` |
+| **Total** | **829** | — |
+
+Owner identity:
+- **Active records** (`ACTIVE_EQUIP` / `ACTIVE_USE_RESERVE` /
+  `INVENTORY`): `owner_character_key` is filled from
+  `MercenaryClanSaveData._lastFocusCharacterKey` (cat-byte stripped),
+  `owner_mercenary_no = 0`.
+- **Mercenary records** (`MERCENARY_EQUIP` / `MERCENARY_INVENTORY`):
+  `owner_character_key` is the enclosing `MercenarySaveData._characterKey`
+  (cat-byte stripped); `owner_mercenary_no` distinguishes individual
+  instances of the same template (e.g. multiple horses).
+
+**v1 mutation caveat for mercenary records**: the recorded path is
+2 steps `[(_mercenaryDataList, N), (_equipItemList, M)]` but the real
+on-disk descent through a `MercenarySaveData` is three levels.
+Active / inventory / reserve records are directly mutation-compatible
+(their descent IS 2 steps). Mercenary-item mutation needs either a
+future `path_len = 3` extension or a dedicated mercenary-mutation
+helper — see the rustdoc on
+[`crimson_save_list_all_items`](../src/c_abi/all_items.rs) for the
+tracking note. For the dye / socket editors v1, this is enough: the
+editor can READ every player item, and WRITE every active-character /
+inventory item; mount + mercenary writes wait on the path extension.
+
+**Excluded by design**: `FieldGimmickSaveData._item<locator>` (world
+loot / chests, 4,260 in slot103), `StoreDataSaveData._storeSoldItemDataList`
+(vendor inventory, 17), `FactionNodeElementSaveData._factionOwnedItemList`
+(faction-owned, 1). Surface separately if a world-state / faction-state
+editor lands.
 
 ### Probe ergonomics
 

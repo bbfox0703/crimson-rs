@@ -1933,6 +1933,108 @@ mod tests {
         }
     }
 
+    /// Container-class schema dump — dumps the field schema of the
+    /// host classes the all-items enumerator needs to walk
+    /// (EquipmentSaveData, InventoryElementSaveData, MercenarySaveData,
+    /// MercenaryClanSaveData, UseItemReserveSlotElementSaveData). Used
+    /// to pin field-index → field-name mappings for the new
+    /// `crimson_save_list_all_items` C ABI surface.
+    #[test]
+    #[ignore = "investigation only — container class field schema dump for the all-items enumerator"]
+    fn _probe_container_classes_for_all_items() {
+        use crate::save::{Body, FieldValue, ScalarValue, Save};
+
+        let save_path = std::env::var_os("CRIMSON_LIVE_SAVE")
+            .map(PathBuf::from)
+            .or_else(|| {
+                let appdata = std::env::var_os("LOCALAPPDATA")?;
+                let root = PathBuf::from(appdata)
+                    .join("Pearl Abyss")
+                    .join("CD")
+                    .join("save");
+                std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
+                    let p = entry.path().join("slot103").join("save.save");
+                    p.is_file().then_some(p)
+                })
+            });
+        let Some(save_path) = save_path else {
+            eprintln!("skipping: no save");
+            return;
+        };
+        eprintln!("probing {}", save_path.display());
+
+        let raw = std::fs::read(&save_path).expect("read save");
+        let save = Save::parse(&raw).expect("parse save");
+        let body = Body::parse(&save.body).expect("parse body");
+        let blocks = body.decode_blocks(&save.body);
+
+        let target_classes: &[&str] = &[
+            "EquipmentSaveData",
+            "MercenaryClanSaveData",
+            "MercenarySaveData",
+            "InventoryElementSaveData",
+            "UseItemReserveSlotElementSaveData",
+            "EquipSlotElementSaveData",
+        ];
+
+        // Find one example block (recursively) for each target class and dump it.
+        let mut seen: std::collections::BTreeSet<String> = Default::default();
+        fn walk(
+            b: &crate::save::ObjectBlock,
+            targets: &[&str],
+            seen: &mut std::collections::BTreeSet<String>,
+        ) {
+            if targets.contains(&b.class_name.as_str()) && !seen.contains(&b.class_name) {
+                seen.insert(b.class_name.clone());
+                eprintln!("\n=== {} field schema ===", b.class_name);
+                for f in &b.fields {
+                    let val_str = match &f.value {
+                        FieldValue::Scalar(ScalarValue::U16(v)) => format!("U16({v})"),
+                        FieldValue::Scalar(ScalarValue::U32(v)) => format!("U32({v})"),
+                        FieldValue::Scalar(ScalarValue::U64(v)) => format!("U64({v})"),
+                        FieldValue::Scalar(s) => format!("{s:?}"),
+                        FieldValue::None => "<absent>".into(),
+                        FieldValue::ObjectList { count, .. } => format!("ObjectList(count={count})"),
+                        FieldValue::Locator { child_type_name, child: Some(_), .. } => {
+                            format!("Locator<{child_type_name}, resolved>")
+                        }
+                        FieldValue::Locator { child_type_name, .. } => format!("Locator<{child_type_name}>"),
+                        FieldValue::InlineBytes { count, .. } => format!("InlineBytes(count={count})"),
+                        FieldValue::DynamicArray { count, .. } => format!("DynamicArray(count={count})"),
+                    };
+                    eprintln!(
+                        "  [{:2}] kind={:?} type={} name={} present={} {}",
+                        f.field_index, f.kind, f.type_name, f.name, f.present, val_str,
+                    );
+                }
+            }
+            for f in &b.fields {
+                match &f.value {
+                    FieldValue::ObjectList { elements, .. } => {
+                        for e in elements {
+                            walk(e, targets, seen);
+                        }
+                    }
+                    FieldValue::Locator { child: Some(c), .. } => {
+                        walk(c, targets, seen);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for b in &blocks {
+            walk(b, target_classes, &mut seen);
+            if seen.len() == target_classes.len() { break; }
+        }
+
+        eprintln!("\n=== missing classes ===");
+        for cls in target_classes {
+            if !seen.contains(*cls) {
+                eprintln!("  {cls}: NOT FOUND");
+            }
+        }
+    }
+
     /// Save-tree skeleton probe — dumps the top-level TOC class
     /// histogram plus, for every block, the names of `ObjectList` /
     /// `Locator` fields it carries (i.e. the recursive entry points).
