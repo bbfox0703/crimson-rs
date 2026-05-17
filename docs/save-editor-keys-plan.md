@@ -5,9 +5,30 @@
 > **Where we are (updated 2026-05-17)**: every save-side key the C# Save
 > Editor currently surfaces resolves through a shipped C ABI bridge.
 > **34 bridges shipped + the deferred-redecode batch ABI + the
-> object-list presence-toggle ABI.** Test suite: **268** with `c_abi`,
-> **76** without, **30** `#[ignore]`'d diagnostic probes. Clippy clean
-> both modes.
+> object-list presence-toggle ABI + the cross-container item
+> enumerator.** Test suite: **273** with `c_abi`, **76** without,
+> **31** `#[ignore]`'d diagnostic probes. Clippy clean both modes.
+>
+> ### What landed this session (2026-05-17, fourth pass)
+>
+> - **`crimson_save_list_all_items`** — single-call cross-container
+>   item enumerator. Closes the gap left by
+>   `crimson_save_list_inventory_items` (which only walked
+>   `InventorySaveData`). The new ABI yields every player-owned item
+>   across `ActiveEquip` / `ActiveUseReserve` / `Inventory` /
+>   `MercenaryEquip` / `MercenaryInventory` as a flat 64-byte
+>   `repr(C)` record stream — container kind tag, descent-path
+>   indices for mutations, owner identity (`character_key` +
+>   `mercenary_no`), and inline flags (`LOCKED` / `NEW_MARK` /
+>   `HAS_DYE_DATA` / `HAS_SOCKET_DATA` / `OWNER_IS_MAIN_MERCENARY`).
+>   slot103 baseline: 829 records (was 545 with the inventory-only
+>   ABI) — 18 active equip + 1 active reserve + 545 inventory + 245
+>   mercenary equip + 20 mercenary inventory. v1 mutation caveat:
+>   mercenary records are read-only for now (the recorded 2-step path
+>   doesn't reach 3 levels deep into MercenarySaveData); active /
+>   inventory / reserve records ARE mutation-compatible. Full spec in
+>   [`dye-editor-scope.md`](./dye-editor-scope.md) §"Implication for
+>   the C# editor's item enumerator".
 >
 > ### What landed this session (2026-05-17, third pass)
 >

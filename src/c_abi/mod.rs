@@ -28,6 +28,7 @@ use crate::save::{
     scalar_from_bytes,
 };
 
+pub mod all_items;
 pub mod character_info;
 pub mod checksum;
 pub mod craft_tool_group_info;
