@@ -1618,6 +1618,247 @@ pub unsafe extern "C" fn crimson_save_set_scalar_field_path(
     .unwrap_or(error::PANIC)
 }
 
+// ── Typed composite-scalar setters (ergonomic wrappers) ──────────────
+//
+// Thin wrappers around `crimson_save_set_scalar_field_path` /
+// `crimson_save_set_scalar_field_present` that pack typed values
+// (f32 / u32 triples / quadruples) into the LE byte buffer the raw
+// setters expect. They emit nothing the raw API can't already produce
+// — purely an ergonomic convenience so the C# editor doesn't have to
+// hand-pack 12/16-byte buffers for every float3 / float4 / uint4
+// edit. Mirrors the typed read side added in 2026-05-17
+// (`ScalarValue::F32x3` etc.).
+//
+// Mutation rule: each composite is atomic — there's no path to make
+// individual components absent. Either the whole vector is present
+// (with all components carrying values) or the whole vector is absent.
+// The `_present` variant flips between those two states.
+
+/// Set the value of an already-present `float3` (12-byte / 3 × f32) field.
+///
+/// Equivalent to `crimson_save_set_scalar_field_path` with a 12-byte
+/// LE payload packed from `(x, y, z)`. Validation rules identical:
+/// the leaf field must be a fixed-size scalar of size 12 (`NOT_SCALAR`
+/// / `LENGTH_MISMATCH` otherwise).
+///
+/// # Safety
+/// Same as [`crimson_save_set_scalar_field_path`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_set_float3_field_path(
+    handle: *mut CrimsonSaveHandle,
+    block_idx: u32,
+    path: *const CrimsonPathStep,
+    path_len: usize,
+    field_idx: u32,
+    x: f32,
+    y: f32,
+    z: f32,
+) -> i32 {
+    let mut buf = [0u8; 12];
+    buf[0..4].copy_from_slice(&x.to_le_bytes());
+    buf[4..8].copy_from_slice(&y.to_le_bytes());
+    buf[8..12].copy_from_slice(&z.to_le_bytes());
+    unsafe {
+        crimson_save_set_scalar_field_path(
+            handle, block_idx, path, path_len, field_idx, buf.as_ptr(), buf.len(),
+        )
+    }
+}
+
+/// Toggle the presence of a `float3` field. When `present_flag != 0`,
+/// the field becomes present with the supplied `(x, y, z)` packed into
+/// 12 LE bytes; when `present_flag == 0` the field becomes absent and
+/// `x` / `y` / `z` are ignored.
+///
+/// Equivalent to `crimson_save_set_scalar_field_present` with the
+/// packed init bytes; see that function for full validation semantics.
+///
+/// # Safety
+/// Same as [`crimson_save_set_scalar_field_present`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_set_float3_field_present(
+    handle: *mut CrimsonSaveHandle,
+    block_idx: u32,
+    path: *const CrimsonPathStep,
+    path_len: usize,
+    field_idx: u32,
+    present_flag: i32,
+    x: f32,
+    y: f32,
+    z: f32,
+) -> i32 {
+    if present_flag == 0 {
+        return unsafe {
+            crimson_save_set_scalar_field_present(
+                handle,
+                block_idx,
+                path,
+                path_len,
+                field_idx,
+                0,
+                std::ptr::null(),
+                0,
+            )
+        };
+    }
+    let mut buf = [0u8; 12];
+    buf[0..4].copy_from_slice(&x.to_le_bytes());
+    buf[4..8].copy_from_slice(&y.to_le_bytes());
+    buf[8..12].copy_from_slice(&z.to_le_bytes());
+    unsafe {
+        crimson_save_set_scalar_field_present(
+            handle, block_idx, path, path_len, field_idx, 1, buf.as_ptr(), buf.len(),
+        )
+    }
+}
+
+/// Set the value of an already-present `float4` / `quaternion`
+/// (16-byte / 4 × f32) field. See [`crimson_save_set_float3_field_path`].
+///
+/// # Safety
+/// Same as [`crimson_save_set_scalar_field_path`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_set_float4_field_path(
+    handle: *mut CrimsonSaveHandle,
+    block_idx: u32,
+    path: *const CrimsonPathStep,
+    path_len: usize,
+    field_idx: u32,
+    x: f32,
+    y: f32,
+    z: f32,
+    w: f32,
+) -> i32 {
+    let mut buf = [0u8; 16];
+    buf[0..4].copy_from_slice(&x.to_le_bytes());
+    buf[4..8].copy_from_slice(&y.to_le_bytes());
+    buf[8..12].copy_from_slice(&z.to_le_bytes());
+    buf[12..16].copy_from_slice(&w.to_le_bytes());
+    unsafe {
+        crimson_save_set_scalar_field_path(
+            handle, block_idx, path, path_len, field_idx, buf.as_ptr(), buf.len(),
+        )
+    }
+}
+
+/// Toggle the presence of a `float4` / `quaternion` field. See
+/// [`crimson_save_set_float3_field_present`] for the presence-flag
+/// contract.
+///
+/// # Safety
+/// Same as [`crimson_save_set_scalar_field_present`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_set_float4_field_present(
+    handle: *mut CrimsonSaveHandle,
+    block_idx: u32,
+    path: *const CrimsonPathStep,
+    path_len: usize,
+    field_idx: u32,
+    present_flag: i32,
+    x: f32,
+    y: f32,
+    z: f32,
+    w: f32,
+) -> i32 {
+    if present_flag == 0 {
+        return unsafe {
+            crimson_save_set_scalar_field_present(
+                handle,
+                block_idx,
+                path,
+                path_len,
+                field_idx,
+                0,
+                std::ptr::null(),
+                0,
+            )
+        };
+    }
+    let mut buf = [0u8; 16];
+    buf[0..4].copy_from_slice(&x.to_le_bytes());
+    buf[4..8].copy_from_slice(&y.to_le_bytes());
+    buf[8..12].copy_from_slice(&z.to_le_bytes());
+    buf[12..16].copy_from_slice(&w.to_le_bytes());
+    unsafe {
+        crimson_save_set_scalar_field_present(
+            handle, block_idx, path, path_len, field_idx, 1, buf.as_ptr(), buf.len(),
+        )
+    }
+}
+
+/// Set the value of an already-present `uint4` (16-byte / 4 × u32) field.
+/// `uint4` is the on-disk shape of 128-bit IDs like `SceneObjectUuid`.
+///
+/// # Safety
+/// Same as [`crimson_save_set_scalar_field_path`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_set_uint4_field_path(
+    handle: *mut CrimsonSaveHandle,
+    block_idx: u32,
+    path: *const CrimsonPathStep,
+    path_len: usize,
+    field_idx: u32,
+    a: u32,
+    b: u32,
+    c: u32,
+    d: u32,
+) -> i32 {
+    let mut buf = [0u8; 16];
+    buf[0..4].copy_from_slice(&a.to_le_bytes());
+    buf[4..8].copy_from_slice(&b.to_le_bytes());
+    buf[8..12].copy_from_slice(&c.to_le_bytes());
+    buf[12..16].copy_from_slice(&d.to_le_bytes());
+    unsafe {
+        crimson_save_set_scalar_field_path(
+            handle, block_idx, path, path_len, field_idx, buf.as_ptr(), buf.len(),
+        )
+    }
+}
+
+/// Toggle the presence of a `uint4` field. See
+/// [`crimson_save_set_float3_field_present`] for the presence-flag contract.
+///
+/// # Safety
+/// Same as [`crimson_save_set_scalar_field_present`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_set_uint4_field_present(
+    handle: *mut CrimsonSaveHandle,
+    block_idx: u32,
+    path: *const CrimsonPathStep,
+    path_len: usize,
+    field_idx: u32,
+    present_flag: i32,
+    a: u32,
+    b: u32,
+    c: u32,
+    d: u32,
+) -> i32 {
+    if present_flag == 0 {
+        return unsafe {
+            crimson_save_set_scalar_field_present(
+                handle,
+                block_idx,
+                path,
+                path_len,
+                field_idx,
+                0,
+                std::ptr::null(),
+                0,
+            )
+        };
+    }
+    let mut buf = [0u8; 16];
+    buf[0..4].copy_from_slice(&a.to_le_bytes());
+    buf[4..8].copy_from_slice(&b.to_le_bytes());
+    buf[8..12].copy_from_slice(&c.to_le_bytes());
+    buf[12..16].copy_from_slice(&d.to_le_bytes());
+    unsafe {
+        crimson_save_set_scalar_field_present(
+            handle, block_idx, path, path_len, field_idx, 1, buf.as_ptr(), buf.len(),
+        )
+    }
+}
+
 /// Apply many scalar mutations in one FFI round trip, sharing a single
 /// post-batch re-decode.
 ///
