@@ -1933,6 +1933,493 @@ mod tests {
         }
     }
 
+    /// `TransformSaveData` schema dump — finds the active character's
+    /// position field on slot102 and reports the full schema for the
+    /// (singleton) TransformSaveData block.
+    #[test]
+    #[ignore = "investigation only — TransformSaveData schema + active char position"]
+    fn _probe_transform_save_data_slot102() {
+        use crate::save::{Body, FieldValue, ScalarValue, Save};
+
+        let appdata = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_default();
+        let save_path = std::env::var_os("CRIMSON_LIVE_SAVE")
+            .map(PathBuf::from)
+            .or_else(|| {
+                let root = appdata.join("Pearl Abyss").join("CD").join("save");
+                std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
+                    let p = entry.path().join("slot102").join("save.save");
+                    p.is_file().then_some(p)
+                })
+            });
+        let Some(save_path) = save_path else {
+            eprintln!("skipping: no slot102/save.save");
+            return;
+        };
+
+        let raw = std::fs::read(&save_path).expect("read save");
+        let save = Save::parse(&raw).expect("parse save");
+        let body = Body::parse(&save.body).expect("parse body");
+        let blocks = body.decode_blocks(&save.body);
+
+        eprintln!("=== Looking for active-character position fields ===\n");
+
+        // 1. TransformSaveData full dump
+        for (i, b) in blocks.iter().enumerate() {
+            if b.class_name == "TransformSaveData" {
+                eprintln!("\n=== TOC[{i}] TransformSaveData (full schema) ===");
+                for f in &b.fields {
+                    let val_str = match &f.value {
+                        FieldValue::Scalar(s) => format!("{s:?}"),
+                        FieldValue::None => "<absent>".into(),
+                        FieldValue::ObjectList { count, .. } => format!("ObjectList(count={count})"),
+                        FieldValue::Locator { child_type_name, .. } => format!("Locator<{child_type_name}>"),
+                        FieldValue::InlineBytes { count, bytes } => {
+                            format!("InlineBytes(count={count}, first16={:02x?})", &bytes[..bytes.len().min(16)])
+                        }
+                        FieldValue::DynamicArray { count, .. } => format!("DynamicArray(count={count})"),
+                    };
+                    eprintln!(
+                        "  [{:2}] kind={:?} type={} name={} present={} {}",
+                        f.field_index, f.kind, f.type_name, f.name, f.present, val_str,
+                    );
+                }
+            }
+        }
+
+        // 2. Scan every block for any field NAME containing "position",
+        //    "pos", "transform", "location" — case-insensitive — and
+        //    dump its value. Covers cases where the active char position
+        //    lives in a non-obvious class.
+        eprintln!("\n\n=== fields with name matching position/pos/location (top-level blocks only) ===");
+        let needles = ["position", "_pos", "location", "_loc", "_transform"];
+        let mut seen_classes: std::collections::HashSet<String> = Default::default();
+        for b in &blocks {
+            if !seen_classes.insert(b.class_name.clone()) { continue; }
+            for f in &b.fields {
+                if !f.present { continue; }
+                let lower = f.name.to_ascii_lowercase();
+                if needles.iter().any(|n| lower.contains(n)) {
+                    let val_str = match &f.value {
+                        FieldValue::Scalar(s) => format!("{s:?}"),
+                        FieldValue::ObjectList { count, .. } => format!("ObjectList(count={count})"),
+                        _ => format!("{:?}", f.value),
+                    };
+                    eprintln!("  {}::{} = {}", b.class_name, f.name, val_str);
+                }
+            }
+        }
+
+        // 3. Class name scan — every class containing "Transform" or
+        //    "Position" in the name across the entire decoded tree.
+        eprintln!("\n\n=== classes whose name contains Transform/Position (recursive) ===");
+        let mut hit_classes: std::collections::BTreeMap<String, u32> = Default::default();
+        fn walk(b: &crate::save::ObjectBlock, hits: &mut std::collections::BTreeMap<String, u32>) {
+            let lower = b.class_name.to_ascii_lowercase();
+            if lower.contains("transform") || lower.contains("position") {
+                *hits.entry(b.class_name.clone()).or_insert(0) += 1;
+            }
+            for f in &b.fields {
+                match &f.value {
+                    FieldValue::ObjectList { elements, .. } => {
+                        for e in elements { walk(e, hits); }
+                    }
+                    FieldValue::Locator { child: Some(c), .. } => walk(c, hits),
+                    _ => {}
+                }
+            }
+        }
+        for b in &blocks { walk(b, &mut hit_classes); }
+        for (cls, c) in &hit_classes {
+            eprintln!("  {cls}: {c} instances");
+        }
+
+        // 3b. TransformFieldSaveData full dump.
+        eprintln!("\n\n=== TransformFieldSaveData (full schema, all instances) ===");
+        fn walk3(b: &crate::save::ObjectBlock, path: &str) {
+            if b.class_name == "TransformFieldSaveData" {
+                eprintln!("\n--- at {path} ---");
+                for f in &b.fields {
+                    let val_str = match &f.value {
+                        FieldValue::Scalar(s) => format!("{s:?}"),
+                        FieldValue::None => "<absent>".into(),
+                        FieldValue::ObjectList { count, .. } => format!("ObjectList(count={count})"),
+                        FieldValue::Locator { child_type_name, .. } => format!("Locator<{child_type_name}>"),
+                        FieldValue::InlineBytes { count, bytes } => format!(
+                            "InlineBytes(count={count}, first32={:02x?})",
+                            &bytes[..bytes.len().min(32)],
+                        ),
+                        FieldValue::DynamicArray { count, .. } => format!("DynamicArray(count={count})"),
+                    };
+                    eprintln!(
+                        "  [{:2}] kind={:?} type={} name={} present={} {}",
+                        f.field_index, f.kind, f.type_name, f.name, f.present, val_str,
+                    );
+                }
+            }
+            for f in &b.fields {
+                match &f.value {
+                    FieldValue::ObjectList { elements, .. } => {
+                        for (i, e) in elements.iter().enumerate() {
+                            walk3(e, &format!("{path}.{}[{i}]", f.name));
+                        }
+                    }
+                    FieldValue::Locator { child: Some(c), .. } => walk3(c, &format!("{path}.{}<child>", f.name)),
+                    _ => {}
+                }
+            }
+        }
+        for (i, b) in blocks.iter().enumerate() {
+            walk3(b, &format!("toc[{i}]:{}", b.class_name));
+        }
+
+        // 4. Search for float3 values whose Y component is close to 610
+        //    (CE target Y) AND X close to -502.
+        eprintln!("\n\n=== float3 fields with X near -502 and Y near 610 (loose tolerance) ===");
+        struct H { class: String, name: String, value: [f32; 3], path: String }
+        let mut hits: Vec<H> = Vec::new();
+        fn walk2(b: &crate::save::ObjectBlock, path: &str, out: &mut Vec<H>) {
+            for f in &b.fields {
+                if !f.present { continue; }
+                if let FieldValue::Scalar(ScalarValue::F32x3(v)) = &f.value
+                    && (v[0] - (-502.6)).abs() < 100.0
+                    && (v[1] - 610.0).abs() < 100.0
+                {
+                    out.push(H {
+                        class: b.class_name.clone(),
+                        name: f.name.clone(),
+                        value: *v,
+                        path: path.to_string(),
+                    });
+                }
+            }
+            for f in &b.fields {
+                match &f.value {
+                    FieldValue::ObjectList { elements, .. } => {
+                        for (i, e) in elements.iter().enumerate() {
+                            walk2(e, &format!("{path}.{}[{i}]", f.name), out);
+                        }
+                    }
+                    FieldValue::Locator { child: Some(c), .. } => walk2(c, &format!("{path}.{}<child>", f.name), out),
+                    _ => {}
+                }
+            }
+        }
+        for (i, b) in blocks.iter().enumerate() {
+            walk2(b, &format!("toc[{i}]:{}", b.class_name), &mut hits);
+        }
+        for h in &hits {
+            eprintln!("  {}::{} = {:?}  at {}", h.class, h.name, h.value, h.path);
+        }
+        eprintln!("  (total: {} matches)", hits.len());
+    }
+
+    /// CE-coord vs save-coord cross-check probe.
+    ///
+    /// User provided 10 CE-injected world coordinates from slot102
+    /// (active character + 9 Abyss waypoints). This probe loads
+    /// slot102 and:
+    /// 1. Walks every TOC block + descendant looking for `float3`
+    ///    fields whose values match (or are near) the user's CE
+    ///    reading for the active character's position:
+    ///    `(-502.6116638, 610.5791016, -373.8612671)`.
+    /// 2. For each match, reports the block class + field name + raw
+    ///    value, plus the L1 distance to the CE target.
+    /// 3. Settles whether the save and CE use the same coordinate
+    ///    system, the same units, or whether there's a scale factor
+    ///    to apply. The previous merc[0] dump from slot103 had
+    ///    `_spawnPosition=F32x3([-8253.564, 524.6316, -3334.9424])`
+    ///    — a different character at a different location, so the
+    ///    8253 vs 502 magnitude difference doesn't necessarily mean
+    ///    a unit mismatch. This probe is the definitive check.
+    #[test]
+    #[ignore = "investigation only — find char position in slot102, cross-check CE coords"]
+    fn _probe_active_char_position_slot102() {
+        use crate::save::{Body, FieldValue, ScalarValue, Save};
+
+        let appdata = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_default();
+        let save_path = std::env::var_os("CRIMSON_LIVE_SAVE")
+            .map(PathBuf::from)
+            .or_else(|| {
+                let root = appdata.join("Pearl Abyss").join("CD").join("save");
+                std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
+                    let p = entry.path().join("slot102").join("save.save");
+                    p.is_file().then_some(p)
+                })
+            });
+        let Some(save_path) = save_path else {
+            eprintln!("skipping: no slot102/save.save");
+            return;
+        };
+        eprintln!("probing {}", save_path.display());
+
+        let raw = std::fs::read(&save_path).expect("read save");
+        let save = Save::parse(&raw).expect("parse save");
+        let body = Body::parse(&save.body).expect("parse body");
+        let blocks = body.decode_blocks(&save.body);
+
+        // User's CE reading for char position in slot102.
+        // (truncated to f32 precision — clippy::excessive_precision)
+        const CE_TARGET: [f32; 3] = [-502.611_66, 610.579_1, -373.861_27];
+
+        // Walk every block + descendant; collect every present float3
+        // field with its parent class + name + L1 distance to the
+        // target.
+        struct Hit {
+            path: String,
+            class: String,
+            field_name: String,
+            value: [f32; 3],
+            l1: f32,
+        }
+        let mut hits: Vec<Hit> = Vec::new();
+
+        fn walk(b: &crate::save::ObjectBlock, path: &str, target: [f32; 3], out: &mut Vec<Hit>) {
+            for f in &b.fields {
+                if !f.present {
+                    continue;
+                }
+                if let FieldValue::Scalar(ScalarValue::F32x3(v)) = &f.value {
+                    let l1 = (v[0] - target[0]).abs()
+                        + (v[1] - target[1]).abs()
+                        + (v[2] - target[2]).abs();
+                    out.push(Hit {
+                        path: path.to_string(),
+                        class: b.class_name.clone(),
+                        field_name: f.name.clone(),
+                        value: *v,
+                        l1,
+                    });
+                }
+            }
+            for f in &b.fields {
+                match &f.value {
+                    FieldValue::ObjectList { elements, .. } => {
+                        for (i, e) in elements.iter().enumerate() {
+                            walk(e, &format!("{path}.{}[{i}]", f.name), target, out);
+                        }
+                    }
+                    FieldValue::Locator { child: Some(c), .. } => {
+                        walk(c, &format!("{path}.{}<child>", f.name), target, out);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for (i, b) in blocks.iter().enumerate() {
+            walk(b, &format!("toc[{i}]:{}", b.class_name), CE_TARGET, &mut hits);
+        }
+
+        eprintln!("\n=== float3 hits sorted by L1 distance to CE target {:?} ===", CE_TARGET);
+        eprintln!("(target = active char position in slot102)\n");
+        hits.sort_by(|a, b| a.l1.partial_cmp(&b.l1).unwrap());
+        for h in hits.iter().take(20) {
+            eprintln!(
+                "  L1={:>10.2}  {}.{:<32} = {:>10.3?}  at  {}",
+                h.l1, h.class, h.field_name, h.value, h.path,
+            );
+        }
+        eprintln!("\ntotal float3 fields scanned: {}", hits.len());
+
+        if let Some(best) = hits.first() {
+            eprintln!(
+                "\nBest match L1 = {:.4}, CE target = {:?}, save value = {:?}",
+                best.l1, CE_TARGET, best.value,
+            );
+            if best.l1 < 0.01 {
+                eprintln!("=> EXACT MATCH. Save and CE use the same coordinate system + units.");
+            } else if best.l1 < 100.0 {
+                eprintln!("=> Close match. Probably same coord system; small CE-read jitter.");
+            } else {
+                eprintln!("=> No close match. Either char position isn't a float3, or units differ.");
+            }
+        }
+
+        // Also report the float3 fields with the highest absolute
+        // magnitudes — useful for finding "is this a different unit?"
+        // signatures.
+        eprintln!("\n=== top 10 float3 fields by max abs component (overall save scan) ===");
+        hits.sort_by(|a, b| {
+            let am = a.value.iter().map(|x| x.abs()).fold(0.0f32, f32::max);
+            let bm = b.value.iter().map(|x| x.abs()).fold(0.0f32, f32::max);
+            bm.partial_cmp(&am).unwrap()
+        });
+        for h in hits.iter().take(10) {
+            eprintln!(
+                "  max_abs={:>10.1}  {}.{:<32} = {:>10.3?}",
+                h.value.iter().map(|x| x.abs()).fold(0.0f32, f32::max),
+                h.class, h.field_name, h.value,
+            );
+        }
+    }
+
+    /// Extract world-map DDS textures from group 0000 to local disk
+    /// for offline decoding into PNGs (the calibration step). Writes
+    /// to `<crate_root>/out/worldmap/<filename>.dds`.
+    ///
+    /// The DDS files are stored inside Pearl Abyss's PAZ container.
+    /// This probe handles the PAZ-side decompression; the DDS body
+    /// may still have per-mip LZ4 compression (type-1 self-compressed
+    /// DDS) which the downstream decoder handles separately. The
+    /// crimsonforge Python `core.dds_reader.decode_dds_to_rgba`
+    /// understands both layers and returns flat RGBA pixels.
+    ///
+    /// Targets the basemap layers + marker atlas + the tile patterns
+    /// that the world-map UI composes:
+    ///
+    /// - `cd_uitexture_worldmap_00..04.dds` — basemap layers
+    /// - `cd_uitexture_worldmap_marker_00.dds` — marker atlas
+    /// - `cd_worldmap_land_pattern.dds` / `_sea_pattern.dds` / `_paper_pattern.dds`
+    /// - `cd_icon_worldmap_00.dds` — extra icons
+    /// - `cd_global_map_navigator_guide_00.dds` — navigator overlay
+    #[test]
+    #[ignore = "investigation only — extract world-map DDS textures to disk"]
+    fn _extract_worldmap_dds() {
+        use crate::binary::pamt::PackMeta;
+        use crate::binary::paz;
+
+        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
+            });
+        let out_dir = std::env::current_dir().unwrap().join("out").join("worldmap");
+        std::fs::create_dir_all(&out_dir).expect("create out dir");
+        eprintln!("writing to: {}", out_dir.display());
+
+        // (group, dir_path, [filenames])
+        let targets: &[(&str, &str, &[&str])] = &[
+            ("0012", "ui/texture", &[
+                "cd_uitexture_worldmap_00.dds",
+                "cd_uitexture_worldmap_01.dds",
+                "cd_uitexture_worldmap_02.dds",
+                "cd_uitexture_worldmap_04.dds",
+                "cd_uitexture_worldmap_marker_00.dds",
+                "cd_icon_worldmap_00.dds",
+                "cd_worldmap_land_pattern.dds",
+                "cd_worldmap_sea_pattern.dds",
+                "cd_worldmap_paper_pattern.dds",
+                "cd_worldmap_cloud_pattern.dds",
+            ]),
+            ("0000", "object/texture", &[
+                "cd_global_map_navigator_guide_00.dds",
+            ]),
+        ];
+
+        let mut extracted = 0usize;
+        let mut missing = 0usize;
+        for (group, dir_path, files) in targets {
+            let pamt_path = game_root.join(group).join("0.pamt");
+            let Ok(pamt_bytes) = std::fs::read(&pamt_path) else {
+                eprintln!("missing pamt: {}/0.pamt", group);
+                missing += files.len();
+                continue;
+            };
+            let Ok(pamt) = PackMeta::parse(&pamt_bytes, None) else {
+                eprintln!("pamt parse failed: {group}");
+                missing += files.len();
+                continue;
+            };
+            let enc = &pamt.header.encrypt_info.encrypt_info;
+            let group_dir = game_root.join(group);
+            let Some(d) = pamt.directories.iter().find(|d| d.path == *dir_path) else {
+                eprintln!("missing dir: {group}/{dir_path}");
+                missing += files.len();
+                continue;
+            };
+            for &name in *files {
+                let Some(file) = d.files.iter().find(|f| f.name == name) else {
+                    eprintln!("missing file: {group}/{dir_path}/{name}");
+                    missing += 1;
+                    continue;
+                };
+                let bytes = match paz::extract_file(&group_dir, file, dir_path, enc) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        eprintln!("extract failed: {group}/{dir_path}/{name}: {e:?}");
+                        missing += 1;
+                        continue;
+                    }
+                };
+                let out_path = out_dir.join(name);
+                std::fs::write(&out_path, &bytes).expect("write");
+                eprintln!("  wrote {} ({} bytes)", out_path.display(), bytes.len());
+                extracted += 1;
+            }
+        }
+        eprintln!("\nextracted: {extracted}, missing: {missing}");
+    }
+
+    /// World-map asset discovery probe — scans every PAMT group for
+    /// files whose paths suggest world-map / minimap textures. Used
+    /// to find the candidate image asset(s) the C# editor would
+    /// render as the basemap for NPC plotting.
+    #[test]
+    #[ignore = "investigation only — find world-map texture assets across all PAMT groups"]
+    fn _probe_worldmap_assets() {
+        use crate::binary::pamt::PackMeta;
+
+        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
+            });
+
+        // Walk every NNNN/0.pamt under the install. Map-like names to
+        // look for: worldmap, minimap, world_map, map_atlas, region_map,
+        // fog (fog-of-war reveal layer), continent.
+        let needles = [
+            "worldmap", "minimap", "world_map", "map_atlas",
+            "region_map", "regionmap", "fog", "continent",
+            "uimap", "ui_map", "globalmap", "global_map",
+        ];
+
+        let Ok(entries) = std::fs::read_dir(&game_root) else {
+            eprintln!("skipping: no game install at {}", game_root.display());
+            return;
+        };
+        let mut group_dirs: Vec<std::path::PathBuf> = Vec::new();
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() && p.file_name().and_then(|s| s.to_str())
+                .is_some_and(|n| n.len() == 4 && n.chars().all(|c| c.is_ascii_digit()))
+            {
+                group_dirs.push(p);
+            }
+        }
+        group_dirs.sort();
+        eprintln!("scanning {} PAMT groups in {}", group_dirs.len(), game_root.display());
+
+        let mut total_hits = 0usize;
+        for group in &group_dirs {
+            let pamt_path = group.join("0.pamt");
+            let Ok(pamt_bytes) = std::fs::read(&pamt_path) else { continue };
+            let Ok(pamt) = PackMeta::parse(&pamt_bytes, None) else { continue };
+            let group_name = group.file_name().unwrap().to_string_lossy();
+            let mut group_hits = Vec::new();
+            for d in &pamt.directories {
+                for f in &d.files {
+                    let lower = format!("{}/{}", d.path, f.name).to_ascii_lowercase();
+                    if needles.iter().any(|n| lower.contains(n)) {
+                        group_hits.push(format!(
+                            "  {}/{}  ({}c / {}u)",
+                            d.path, f.name, f.file.compressed_size, f.file.uncompressed_size,
+                        ));
+                    }
+                }
+            }
+            if !group_hits.is_empty() {
+                eprintln!("\n=== {} ({} hits) ===", group_name, group_hits.len());
+                for h in &group_hits { eprintln!("{h}"); }
+                total_hits += group_hits.len();
+            }
+        }
+        eprintln!("\nTotal map-related files: {total_hits}");
+    }
+
     /// MercenarySaveData ownership probe — dumps `(merc_idx,
     /// _characterKey, resolved name, _ownedCharacterKey)` for every
     /// MercenarySaveData block. Used to investigate why some
