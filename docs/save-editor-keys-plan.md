@@ -2,46 +2,59 @@
 
 > **🎯 New session pickup — start here.**
 >
-> **Where we are (updated 2026-05-17, end of session 5)**: every save-
+> **Where we are (updated 2026-05-17, end of session 6)**: every save-
 > side key the C# Save Editor currently surfaces resolves through a
-> shipped C ABI bridge. **34 bridges shipped + the deferred-redecode
-> batch ABI + the object-list presence-toggle ABI + the cross-
-> container item enumerator + the dye palette accessors + the
-> slice-from-raw UB fix.** Test suite: **277** with `c_abi`, **76**
-> without, **37** `#[ignore]`'d diagnostic probes (+4 from session 5's
-> world-map work). Clippy clean both modes.
+> shipped C ABI bridge. **34 bridges + the world-map positioned-entity
+> enumerator + the deferred-redecode batch ABI + the object-list
+> presence-toggle ABI + the cross-container item enumerator + the dye
+> palette accessors + the slice-from-raw UB fix.** Test suite: **287**
+> with `c_abi`, **76** without, **38** `#[ignore]`'d diagnostic probes.
+> Clippy clean both modes.
 >
-> ### Active workstream picked up next: world-map NPC plotting
+> ### What landed this session (2026-05-17, session 6)
 >
-> Investigation complete on the math side; what's left is a single C
-> ABI surface. Full writeup: [`worldmap-plotting.md`](./worldmap-plotting.md).
+> - **`crimson_save_list_field_positions`** — world-map positioned-
+>   entity enumerator. 56-byte `repr(C)` `CrimsonPositionedEntityRecord`
+>   rows; same two-call sizing-then-fill shape as
+>   [`crimson_save_list_all_items`]. Three `kind` values:
+>   `ACTIVE_CHAR` (1 — `TransformFieldSaveData._position`),
+>   `MERCENARY` (76 of 96 — `MercenarySaveData._spawnPosition` F32x3
+>   direct), `GIMMICK` (3,240 of 4,260 nested in
+>   `FieldSaveData._fieldGimmickSaveDataList` — position decoded from
+>   the 40-byte `Transform`-typed `ScalarValue::Bytes` at offset 28).
+>   Yaw is `_spawnYaw` direct for mercenaries; derived from the
+>   rotation quaternion via `2·atan2(qy, qw)` for the active char and
+>   gimmicks. Each record carries `field_info_key` for region filtering
+>   plus enough identity (`character_key` / `gimmick_info_key` /
+>   `gimmick_save_data_key` / `mercenary_no`) for the editor to render
+>   labelled markers. **Pipeline**:
+>   `list_field_positions → filter by field_info_key → apply pinned
+>   affine (0.432·X + 5937.50, −0.433·Z + 1864.08) → plot`. Live
+>   regression `live_affine_lands_in_basemap` pins the active char's
+>   pixel coords inside the 5178×5240 basemap. Full writeup:
+>   [`worldmap-plotting.md`](./worldmap-plotting.md).
 >
-> Key findings from session 5:
-> - **Save `_position` / `_spawnPosition` values are already in the
->   global coordinate frame** — same frame as the in-game teleport
->   system's "TP marker" values. No conversion needed for plotting.
-> - The in-game CE injection's char-position reading is **field-local**
->   (relative to the active sublevel chunk's origin). The original
->   calibration attempt failed (RMSE 1286 px) because we used CE coords.
->   After switching to TP-marker coords: **RMSE 6.4 px, max 15 px**.
-> - The world is partitioned into **1000×1000 game-unit chunks** on an
->   integer grid. Each chunk's global origin is at integer-multiple-of-
->   1000 coords. Verified across 9 landmarks; full chunk-origin table
->   in [`worldmap-plotting.md`](./worldmap-plotting.md) §"The chunk
->   grid".
-> - **Affine fit on the user's 5178×5240 web basemap is essentially
->   diagonal**: `map_px = 0.432·X + 5937.50`, `map_py = -0.433·Z + 1864.08`.
->   ~0.432 px / world-unit, no rotation, Z-axis flip only.
-> - Map textures extracted to `out/worldmap/` via the new
->   `_extract_worldmap_dds` probe; decoded with `scripts/decode_worldmap_dds.py`.
+>   Scope decisions vs the original spec:
+>   - **`FieldNPCSaveData` dropped** — 12 fields, none of them is a
+>     position. NPCs need a gamedata-level data bridge to plot.
+>   - **`GameData_GimmickPointData` dropped** — `_transform` is
+>     universally absent in slot103.
+>   - **Nested child gimmicks (~1,020) skipped** — they co-locate
+>     with the parent slot's transform and don't need separate
+>     markers for the editor's plotting use case.
 >
-> **Next session's primary task**: ship a positioned-entity enumerator
-> C ABI (same shape as `crimson_save_list_all_items` but for entities
-> with `_spawnPosition`). Spec in
-> [`worldmap-plotting.md`](./worldmap-plotting.md) §"What the next
-> session should ship". The editor pipeline becomes:
-> `list_field_positions → filter by field_info_key → apply pinned
-> affine → plot pixels`.
+> ### Session 5 history (collapsed — 2026-05-17 morning work)
+>
+> Investigation complete on the math side: **save `_position` /
+> `_spawnPosition` values are already in the global coord frame**
+> (same as the in-game TP marker). The in-game CE injection's
+> reading is field-local; using CE coords gave RMSE 1286 px, using
+> TP-marker coords gave **RMSE 6.4 px**. World is partitioned into
+> **1000×1000 game-unit chunks** on an integer grid. Affine fit on
+> the user's 5178×5240 basemap is essentially diagonal:
+> `map_px = 0.432·X + 5937.50`, `map_py = -0.433·Z + 1864.08`. Map
+> textures extracted to `out/worldmap/` via the
+> `_extract_worldmap_dds` probe.
 >
 > ### Session 5 history (collapsed)
 >

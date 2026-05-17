@@ -7407,4 +7407,149 @@ mod tests {
         std::fs::write(out_dir.join("summary.txt"), &out).expect("write summary");
         eprintln!("wrote out/composite_scalar_survey/summary.txt ({} B)", out.len());
     }
+
+    /// Positioned-entity schema probe — used to pin field-index +
+    /// field-name mappings for the new
+    /// `crimson_save_list_field_positions` C ABI surface. Scans the
+    /// entire save tree (top-level + nested) for every block class
+    /// that carries a present `F32x3` field, and reports
+    /// `(class_name, field_name, field_index)` with instance counts.
+    /// Also dumps the schema of the candidate host classes
+    /// (`MercenarySaveData`, `FieldNPCSaveData`, `FieldGimmickSaveData`,
+    /// `TransformFieldSaveData`, `GameData_GimmickPointData`) so the
+    /// ABI walker knows which descent path each container requires.
+    #[test]
+    #[ignore = "investigation only — positioned-entity host class schema"]
+    fn _probe_positioned_entity_hosts() {
+        use crate::save::{Body, FieldValue, ScalarValue, Save};
+
+        let save_path = std::env::var_os("CRIMSON_LIVE_SAVE")
+            .map(PathBuf::from)
+            .or_else(|| {
+                let appdata = std::env::var_os("LOCALAPPDATA")?;
+                let root = PathBuf::from(appdata)
+                    .join("Pearl Abyss")
+                    .join("CD")
+                    .join("save");
+                std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
+                    let p = entry.path().join("slot103").join("save.save");
+                    p.is_file().then_some(p)
+                })
+            });
+        let Some(save_path) = save_path else {
+            eprintln!("skipping: no save");
+            return;
+        };
+        eprintln!("probing {}", save_path.display());
+
+        let raw = std::fs::read(&save_path).expect("read save");
+        let save = Save::parse(&raw).expect("parse save");
+        let body = Body::parse(&save.body).expect("parse body");
+        let blocks = body.decode_blocks(&save.body);
+
+        // (class, field_name, field_index) -> count
+        let mut hits: std::collections::BTreeMap<(String, String, u32), u32> = Default::default();
+
+        fn walk(
+            b: &crate::save::ObjectBlock,
+            hits: &mut std::collections::BTreeMap<(String, String, u32), u32>,
+        ) {
+            for f in &b.fields {
+                if f.present
+                    && matches!(&f.value, FieldValue::Scalar(ScalarValue::F32x3(_)))
+                {
+                    *hits.entry((b.class_name.clone(), f.name.clone(), f.field_index)).or_insert(0) += 1;
+                }
+            }
+            for f in &b.fields {
+                match &f.value {
+                    FieldValue::ObjectList { elements, .. } => {
+                        for e in elements { walk(e, hits); }
+                    }
+                    FieldValue::Locator { child: Some(c), .. } => walk(c, hits),
+                    _ => {}
+                }
+            }
+        }
+        for b in &blocks { walk(b, &mut hits); }
+
+        eprintln!("\n=== Every (class, field_name, field_index) with a present F32x3 value ===");
+        for ((cls, name, idx), cnt) in &hits {
+            eprintln!("  {cls}::{name} (field_idx={idx})  x{cnt}");
+        }
+
+        // Targeted schema dump for the candidate host classes.
+        let targets: &[&str] = &[
+            "MercenaryClanSaveData",
+            "MercenarySaveData",
+            "FieldNPCSaveData",
+            "FieldGimmickSaveData",
+            "GameData_GimmickPointData",
+            "TransformFieldSaveData",
+            "TransformSaveData",
+        ];
+        let mut seen: std::collections::BTreeSet<String> = Default::default();
+        fn dump(
+            b: &crate::save::ObjectBlock,
+            targets: &[&str],
+            seen: &mut std::collections::BTreeSet<String>,
+        ) {
+            if targets.contains(&b.class_name.as_str()) && seen.insert(b.class_name.clone()) {
+                eprintln!("\n--- {} ({} fields) ---", b.class_name, b.fields.len());
+                for f in &b.fields {
+                    let val_str = match &f.value {
+                        FieldValue::Scalar(s) => format!("{s:?}"),
+                        FieldValue::None => "<absent>".into(),
+                        FieldValue::ObjectList { count, .. } => format!("ObjectList(count={count})"),
+                        FieldValue::Locator { child_type_name, child, .. } => {
+                            format!("Locator<{child_type_name}>(resolved={})", child.is_some())
+                        }
+                        FieldValue::InlineBytes { count, .. } => format!("InlineBytes(count={count})"),
+                        FieldValue::DynamicArray { count, .. } => format!("DynamicArray(count={count})"),
+                    };
+                    eprintln!(
+                        "  [{:2}] kind={:?} type={} name={} present={} {}",
+                        f.field_index, f.kind, f.type_name, f.name, f.present, val_str,
+                    );
+                }
+            }
+            for f in &b.fields {
+                match &f.value {
+                    FieldValue::ObjectList { elements, .. } => {
+                        for e in elements { dump(e, targets, seen); }
+                    }
+                    FieldValue::Locator { child: Some(c), .. } => dump(c, targets, seen),
+                    _ => {}
+                }
+            }
+        }
+        for b in &blocks { dump(b, targets, &mut seen); }
+        eprintln!("\n=== missing classes ===");
+        for cls in targets {
+            if !seen.contains(*cls) { eprintln!("  {cls}: NOT FOUND"); }
+        }
+
+        // For each top-level TOC block class, what fraction of its
+        // instances carry a position field, AND where in the TOC do
+        // they live? Useful for picking the right walker entrypoints.
+        eprintln!("\n=== TOC top-level position-carrying class histogram ===");
+        let mut toc: std::collections::BTreeMap<String, (u32, u32)> = Default::default();
+        for b in &blocks {
+            let has_pos = b.fields.iter().any(|f| {
+                f.present
+                    && matches!(&f.value, FieldValue::Scalar(ScalarValue::F32x3(_)))
+                    && (f.name.contains("Position")
+                        || f.name.contains("_pos")
+                        || f.name == "_position")
+            });
+            let e = toc.entry(b.class_name.clone()).or_insert((0, 0));
+            e.0 += 1;
+            if has_pos { e.1 += 1; }
+        }
+        for (cls, (total, with_pos)) in &toc {
+            if *with_pos > 0 {
+                eprintln!("  {cls}: {with_pos}/{total} instances carry a top-level _position");
+            }
+        }
+    }
 }
