@@ -3373,7 +3373,14 @@ fn format_field_value(f: &DecodedField) -> String {
             format!("<{count} items, {} bytes>", bytes.len())
         }
         (FieldKind::DynamicArray, FieldValue::DynamicArray { count, bytes, header_variant, .. }) => {
-            format!("<{count} items, {} bytes, {header_variant}>", bytes.len())
+            // Render contents inline when the element width is a simple
+            // primitive (4-byte u32 or 8-byte u64). Sizes outside that
+            // set fall back to the legacy `<N items, X bytes, variant>`
+            // summary plus a short hex preview so the editor can still
+            // see something. This is a display-only convenience — the
+            // typed read API (`crimson_save_dynamic_array_get_u32_elements`)
+            // remains the canonical accessor.
+            format_dynamic_array(*count, bytes, header_variant, f.meta_size)
         }
         (FieldKind::ObjectLocator, FieldValue::Locator { child_type_name, child_payload_offset, child, .. }) => {
             match child {
@@ -3390,6 +3397,105 @@ fn format_field_value(f: &DecodedField) -> String {
         (FieldKind::Absent, _) => "(absent)".to_string(),
         (FieldKind::Unknown, _) => "<unknown>".to_string(),
         _ => String::new(),
+    }
+}
+
+/// Render a `DynamicArray` value as a human-readable string with its
+/// element contents inlined when the element type is a simple primitive.
+///
+/// Display contract (matches the existing `format_scalar` `value <kind>`
+/// shape):
+///
+/// - `meta_size == 4` → `[v1, v2, …] <u32_dynamic_array, variant>`. Up
+///   to 12 elements rendered; longer arrays get a `…` continuation
+///   marker plus the total count.
+/// - `meta_size == 8` → `[v1, v2, …] <u64_dynamic_array, variant>`.
+/// - Other sizes → legacy summary `<N items, X bytes, variant>` plus a
+///   hex preview of the first 24 payload bytes.
+///
+/// Caveat: the typed read API
+/// [`crimson_save_dynamic_array_get_u32_elements`] remains the canonical
+/// accessor — the display string here is best-effort and not part of
+/// the stable JSON value contract. Callers parsing JSON should still
+/// rely on the field's `bytes`/`count` payload for round-trip safety.
+fn format_dynamic_array(
+    count: u32,
+    bytes: &[u8],
+    header_variant: &'static str,
+    meta_size: u16,
+) -> String {
+    const MAX_INLINE: usize = 12;
+    match meta_size {
+        4 if bytes.len() == count as usize * 4 => {
+            let mut s = String::with_capacity(64);
+            s.push('[');
+            let n = (count as usize).min(MAX_INLINE);
+            for i in 0..n {
+                if i > 0 {
+                    s.push_str(", ");
+                }
+                let off = i * 4;
+                let v = u32::from_le_bytes([
+                    bytes[off],
+                    bytes[off + 1],
+                    bytes[off + 2],
+                    bytes[off + 3],
+                ]);
+                write!(&mut s, "{v}").unwrap();
+            }
+            if (count as usize) > MAX_INLINE {
+                let rest = count as usize - MAX_INLINE;
+                write!(&mut s, ", … ({rest} more)").unwrap();
+            }
+            s.push(']');
+            write!(&mut s, " <u32_dynamic_array, {header_variant}>").unwrap();
+            s
+        }
+        8 if bytes.len() == count as usize * 8 => {
+            let mut s = String::with_capacity(80);
+            s.push('[');
+            let n = (count as usize).min(MAX_INLINE);
+            for i in 0..n {
+                if i > 0 {
+                    s.push_str(", ");
+                }
+                let off = i * 8;
+                let v = u64::from_le_bytes([
+                    bytes[off],
+                    bytes[off + 1],
+                    bytes[off + 2],
+                    bytes[off + 3],
+                    bytes[off + 4],
+                    bytes[off + 5],
+                    bytes[off + 6],
+                    bytes[off + 7],
+                ]);
+                write!(&mut s, "{v}").unwrap();
+            }
+            if (count as usize) > MAX_INLINE {
+                let rest = count as usize - MAX_INLINE;
+                write!(&mut s, ", … ({rest} more)").unwrap();
+            }
+            s.push(']');
+            write!(&mut s, " <u64_dynamic_array, {header_variant}>").unwrap();
+            s
+        }
+        _ => {
+            // Unknown / unusual element width — keep the legacy summary
+            // line and tack on a short hex preview for diagnostics.
+            let preview_n = bytes.len().min(24);
+            let mut preview = String::with_capacity(preview_n * 2 + 4);
+            for b in &bytes[..preview_n] {
+                write!(&mut preview, "{b:02x}").unwrap();
+            }
+            if bytes.len() > preview_n {
+                preview.push('…');
+            }
+            format!(
+                "<{count} items, {} bytes, {header_variant}, hex={preview}>",
+                bytes.len()
+            )
+        }
     }
 }
 
@@ -3449,6 +3555,75 @@ fn write_json_hex(out: &mut String, bytes: &[u8]) {
         write!(out, "{b:02x}").unwrap();
     }
     out.push('"');
+}
+
+#[cfg(test)]
+mod format_dynamic_array_tests {
+    use super::format_dynamic_array;
+
+    #[test]
+    fn empty_u32_array() {
+        let s = format_dynamic_array(0, &[], "prefix_00xx0100", 4);
+        assert_eq!(s, "[] <u32_dynamic_array, prefix_00xx0100>");
+    }
+
+    #[test]
+    fn three_u32_elements_inlined() {
+        // [1, 2, 3] LE → 12 bytes
+        let bytes = [
+            1, 0, 0, 0, // 1
+            2, 0, 0, 0, // 2
+            3, 0, 0, 0, // 3
+        ];
+        let s = format_dynamic_array(3, &bytes, "marker_prefix", 4);
+        assert_eq!(s, "[1, 2, 3] <u32_dynamic_array, marker_prefix>");
+    }
+
+    #[test]
+    fn truncates_at_max_inline_with_count_marker() {
+        // 14 u32 elements — should inline 12, then "… (2 more)".
+        let mut bytes = Vec::with_capacity(14 * 4);
+        for i in 0u32..14 {
+            bytes.extend_from_slice(&i.to_le_bytes());
+        }
+        let s = format_dynamic_array(14, &bytes, "marker_prefix", 4);
+        assert!(
+            s.starts_with("[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, … (2 more)]"),
+            "got {s:?}"
+        );
+        assert!(s.ends_with("<u32_dynamic_array, marker_prefix>"));
+    }
+
+    #[test]
+    fn u64_array_inlined() {
+        let bytes = [
+            // u64 = 0x0000000100000000 = 4294967296
+            0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+        ];
+        let s = format_dynamic_array(1, &bytes, "marker_prefix", 8);
+        assert_eq!(s, "[4294967296] <u64_dynamic_array, marker_prefix>");
+    }
+
+    #[test]
+    fn unusual_meta_size_falls_back_to_hex() {
+        // meta_size = 16 (e.g. uint4 SceneObjectUuid in a dynamic array).
+        let bytes = (0u8..16).collect::<Vec<u8>>();
+        let s = format_dynamic_array(1, &bytes, "marker_prefix", 16);
+        assert!(
+            s.starts_with("<1 items, 16 bytes, marker_prefix, hex=000102030405060708090a0b0c0d0e0f"),
+            "got {s:?}"
+        );
+    }
+
+    #[test]
+    fn corrupt_count_falls_back_to_legacy_summary() {
+        // bytes.len() doesn't match count * meta_size → don't try to
+        // decode, surface the legacy summary so the editor sees the
+        // anomaly rather than reading past the buffer.
+        let bytes = [1u8, 2, 3]; // 3 bytes claimed as 1 u32
+        let s = format_dynamic_array(1, &bytes, "marker_prefix", 4);
+        assert!(s.starts_with("<1 items, 3 bytes, marker_prefix, hex="), "got {s:?}");
+    }
 }
 
 #[cfg(test)]
