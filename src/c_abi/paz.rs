@@ -23,9 +23,10 @@
 //! `BODY_PARSE`, the same code as any other PAZ extraction failure.
 //!
 //! Not exposed here (future PR if needed):
-//! - Full PAMT enumeration (list every directory / file without
-//!   extracting). [`crimson_paz_list_npc_portraits`] is a narrow
-//!   special case covering one well-known asset class.
+//! - Full PAMT enumeration across every directory in one call.
+//!   [`crimson_paz_list_dir`] covers per-directory listing — chain it
+//!   with the directory-name list a caller already has (or wants to
+//!   discover via a future top-level enumerator) for a full walk.
 //! - Batch extraction (avoid re-parsing PAMT N times).
 
 use std::ffi::CStr;
@@ -359,6 +360,172 @@ pub unsafe extern "C" fn crimson_paz_list_npc_portraits(
             cursor += path.len() + 1;
         }
         debug_assert_eq!(cursor, serialised_bytes);
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// One entry in the [`crimson_paz_list_dir`] result array — a single
+/// file in a PAMT directory.
+///
+/// Layout is `repr(C)` and stable. Filenames are NUL-padded UTF-8 in
+/// a fixed 256-byte buffer; longest names observed in 1.07 PAMTs are
+/// ~72 chars (the `worldmapimage_skill_knowledge_*` family in
+/// `0012/`), so 256 is comfortable headroom. The `name_truncated`
+/// flag (widened to u32 for layout) is set if the underlying PAMT
+/// filename didn't fit so callers can detect breakage rather than
+/// silently feeding a truncated path back to
+/// [`crimson_paz_extract_file`].
+///
+/// | Offset | Field | Type | Purpose |
+/// |---:|---|---|---|
+/// |   0 | `name` | `[u8; 256]` | NUL-terminated UTF-8 filename, zero-padded |
+/// | 256 | `compressed_size` | u32 | Bytes the file occupies inside the `.paz` chunk |
+/// | 260 | `uncompressed_size` | u32 | Bytes after decompression — what `crimson_paz_extract_file` will return |
+/// | 264 | `is_partial` | u32 | 1 if partial-compression layout (header(128) + LZ4-with-prefix-dict / identity); 0 otherwise |
+/// | 268 | `name_truncated` | u32 | 1 if the source filename exceeded 256 bytes and was truncated to fit |
+///
+/// Total size: 272 bytes, 4-byte aligned. C# / C++ side can `Span<T>`
+/// cast a fresh `byte[]` straight into a `CrimsonPazFileEntry[]`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct CrimsonPazFileEntry {
+    pub name: [u8; 256],
+    pub compressed_size: u32,
+    pub uncompressed_size: u32,
+    pub is_partial: u32,
+    pub name_truncated: u32,
+}
+
+// Sanity guard: size + layout are part of the C ABI surface.
+const _: () = assert!(std::mem::size_of::<CrimsonPazFileEntry>() == 272);
+const _: () = assert!(std::mem::align_of::<CrimsonPazFileEntry>() == 4);
+
+/// Copy `name` into the fixed buffer, NUL-terminating + zero-padding
+/// the trailing bytes. Returns `true` when truncation happened.
+fn fill_name_buf(buf: &mut [u8; 256], name: &str) -> bool {
+    let src = name.as_bytes();
+    if src.len() < 256 {
+        buf[..src.len()].copy_from_slice(src);
+        buf[src.len()..].fill(0);
+        false
+    } else {
+        // Reserve last byte for the NUL terminator. Truncation is
+        // a real risk for callers — flag it.
+        buf[..255].copy_from_slice(&src[..255]);
+        buf[255] = 0;
+        true
+    }
+}
+
+/// List every file in a single PAMT directory, with the metadata a
+/// caller needs to drive [`crimson_paz_extract_file`] (filename) and
+/// pre-size its output buffer (uncompressed size). Built for the C#
+/// editor's world-map basemap workflow:
+///
+/// 1. Call `crimson_paz_list_dir(pamt_path = "…/0015/0.pamt",
+///    directory = "leveldata/rootlevel/terrain/color")` to enumerate
+///    the 785 terrain color tiles.
+/// 2. For each entry, call `crimson_paz_extract_file` with
+///    `(pamt_path, directory, entry.name)` to pull the DDS bytes.
+/// 3. Decode + cache locally; composite client-side.
+///
+/// `pamt_path` is the absolute path to `0.pamt` inside a group folder
+/// (e.g. `D:\\…\\Crimson Desert\\0015\\0.pamt`). `directory` is the
+/// in-archive directory path (e.g. `leveldata/rootlevel/terrain/color`).
+/// Both NUL-terminated UTF-8.
+///
+/// **Two-call shape** (record-array variant, same as
+/// [`super::all_items::crimson_save_list_all_items`]):
+///
+/// - First call with `out_entries = null, capacity_entries = 0`
+///   populates `*out_count_entries`. Returns `BUFFER_TOO_SMALL`
+///   (unless the directory has zero files, in which case returns
+///   `OK`).
+/// - Allocate `*out_count_entries` records, call again. Returns `OK`
+///   on success.
+///
+/// **Note**: each call re-parses the PAMT (no caching). For 0012's
+/// 751 KB PAMT that's a few ms; cheap but not free. Callers walking
+/// many directories from the same PAMT may want to add their own
+/// outer cache.
+///
+/// Return codes:
+/// - `OK` — list written. `*out_count_entries` is populated.
+/// - `BUFFER_TOO_SMALL` — `capacity_entries < *out_count_entries`.
+///   `*out_count_entries` is populated so the caller can allocate
+///   and re-call.
+/// - `NOT_FOUND` — `directory` isn't in the PAMT.
+/// - `IO` — the PAMT file can't be read from disk.
+/// - `BODY_PARSE` — the PAMT bytes don't parse.
+/// - `NULL_ARG` — any required pointer is null (see Safety).
+/// - `INVALID_PATH` — bad UTF-8 in `pamt_path` or `directory`.
+///
+/// # Safety
+/// `pamt_path` and `directory` must be non-null and NUL-terminated
+/// UTF-8. `out_count_entries` must point at writable memory.
+/// `out_entries` may be null iff `capacity_entries == 0`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_paz_list_dir(
+    pamt_path: *const c_char,
+    directory: *const c_char,
+    out_entries: *mut CrimsonPazFileEntry,
+    capacity_entries: usize,
+    out_count_entries: *mut usize,
+) -> i32 {
+    if pamt_path.is_null() || directory.is_null() || out_count_entries.is_null() {
+        return error::NULL_ARG;
+    }
+    if out_entries.is_null() && capacity_entries != 0 {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_count_entries = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let pamt_str = match unsafe { CStr::from_ptr(pamt_path) }.to_str() {
+            Ok(s) => s,
+            Err(_) => return error::INVALID_PATH,
+        };
+        let dir_str = match unsafe { CStr::from_ptr(directory) }.to_str() {
+            Ok(s) => s,
+            Err(_) => return error::INVALID_PATH,
+        };
+
+        let pamt_bytes = match std::fs::read(pamt_str) {
+            Ok(b) => b,
+            Err(_) => return error::IO,
+        };
+        let pamt = match PackMeta::parse(&pamt_bytes, None) {
+            Ok(p) => p,
+            Err(_) => return error::BODY_PARSE,
+        };
+
+        let Some(dir) = pamt.directories.iter().find(|d| d.path == dir_str) else {
+            return error::NOT_FOUND;
+        };
+
+        unsafe { *out_count_entries = dir.files.len() };
+
+        if dir.files.is_empty() {
+            return error::OK;
+        }
+        if capacity_entries < dir.files.len() {
+            return error::BUFFER_TOO_SMALL;
+        }
+
+        // Fill the caller's array. SAFETY: we just checked that
+        // `out_entries` is non-null and `capacity_entries >= len`.
+        for (idx, f) in dir.files.iter().enumerate() {
+            let mut name = [0u8; 256];
+            let truncated = fill_name_buf(&mut name, &f.name);
+            let entry = CrimsonPazFileEntry {
+                name,
+                compressed_size: f.file.compressed_size,
+                uncompressed_size: f.file.uncompressed_size,
+                is_partial: u32::from(f.file.is_partial),
+                name_truncated: u32::from(truncated),
+            };
+            unsafe { out_entries.add(idx).write(entry) };
+        }
         error::OK
     }))
     .unwrap_or(error::PANIC)
@@ -895,6 +1062,258 @@ mod tests {
             )
         };
         assert_eq!(rc, error::NULL_ARG);
+    }
+
+    // ── List-directory tests ───────────────────────────────────────────
+
+    #[test]
+    fn list_dir_record_layout_is_stable() {
+        // Size + alignment are part of the C ABI surface.
+        assert_eq!(std::mem::size_of::<CrimsonPazFileEntry>(), 272);
+        assert_eq!(std::mem::align_of::<CrimsonPazFileEntry>(), 4);
+
+        let e = CrimsonPazFileEntry {
+            name: [0u8; 256], compressed_size: 0, uncompressed_size: 0,
+            is_partial: 0, name_truncated: 0,
+        };
+        let base = (&e as *const CrimsonPazFileEntry).addr();
+        let off_u8 = |p: *const u8| (p as usize) - base;
+        let off_u32 = |p: *const u32| (p as usize) - base;
+        assert_eq!(off_u8(e.name.as_ptr()),       0);
+        assert_eq!(off_u32(&e.compressed_size),   256);
+        assert_eq!(off_u32(&e.uncompressed_size), 260);
+        assert_eq!(off_u32(&e.is_partial),        264);
+        assert_eq!(off_u32(&e.name_truncated),    268);
+    }
+
+    #[test]
+    fn fill_name_buf_normal_case() {
+        let mut buf = [0xFFu8; 256];
+        let truncated = fill_name_buf(&mut buf, "terrain_-5_-5_color_c.dds");
+        assert!(!truncated);
+        // Bytes 0..25 are the filename; byte 25 onwards are zero.
+        assert_eq!(&buf[..25], b"terrain_-5_-5_color_c.dds");
+        for b in &buf[25..] {
+            assert_eq!(*b, 0, "trailing bytes must be zero-padded");
+        }
+    }
+
+    #[test]
+    fn fill_name_buf_truncation() {
+        let long = "x".repeat(300);
+        let mut buf = [0u8; 256];
+        let truncated = fill_name_buf(&mut buf, &long);
+        assert!(truncated);
+        // First 255 bytes are 'x'; byte 255 is the NUL terminator.
+        assert_eq!(&buf[..255], &[b'x'; 255]);
+        assert_eq!(buf[255], 0);
+    }
+
+    /// Two-call helper for [`crimson_paz_list_dir`].
+    fn list_dir_via_abi(
+        pamt: &CStr,
+        dir: &CStr,
+    ) -> Result<Vec<CrimsonPazFileEntry>, i32> {
+        let mut count: usize = 0;
+        let rc = unsafe {
+            crimson_paz_list_dir(pamt.as_ptr(), dir.as_ptr(), ptr::null_mut(), 0, &mut count)
+        };
+        if rc == error::OK && count == 0 {
+            return Ok(Vec::new());
+        }
+        if rc != error::BUFFER_TOO_SMALL {
+            return Err(rc);
+        }
+        let mut entries = vec![CrimsonPazFileEntry {
+            name: [0u8; 256], compressed_size: 0, uncompressed_size: 0,
+            is_partial: 0, name_truncated: 0,
+        }; count];
+        let rc = unsafe {
+            crimson_paz_list_dir(
+                pamt.as_ptr(), dir.as_ptr(),
+                entries.as_mut_ptr(), entries.len(),
+                &mut count,
+            )
+        };
+        if rc != error::OK {
+            return Err(rc);
+        }
+        entries.truncate(count);
+        Ok(entries)
+    }
+
+    fn entry_name(e: &CrimsonPazFileEntry) -> &str {
+        let len = e.name.iter().position(|&b| b == 0).unwrap_or(e.name.len());
+        std::str::from_utf8(&e.name[..len]).unwrap()
+    }
+
+    /// Live: the 0015 terrain color directory must hold exactly 785
+    /// tiles in 1.07 — that's the world-map basemap working set. Pins
+    /// the per-tile size invariants too (uncompressed = 174,904 bytes,
+    /// not partial-compressed).
+    #[test]
+    fn c_abi_paz_list_dir_terrain_color_live() {
+        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
+            });
+        let pamt_path = game_root.join("0015").join("0.pamt");
+        if !pamt_path.is_file() {
+            eprintln!("skipping: no {}", pamt_path.display());
+            return;
+        }
+        let pamt_c = CString::new(pamt_path.to_str().unwrap()).unwrap();
+        let dir_c = CString::new("leveldata/rootlevel/terrain/color").unwrap();
+        let entries = list_dir_via_abi(&pamt_c, &dir_c).expect("list must succeed");
+        eprintln!("0015 terrain/color count = {}", entries.len());
+        assert!(
+            entries.len() >= 700,
+            "expected ~785 color tiles, got {}", entries.len(),
+        );
+        // Every tile name should match `terrain_X_Y_color_c.dds`. Size
+        // varies across tiles: the dominant case is 174,904 bytes
+        // (matches our 512×512 BC1 estimate) but some edge / corner
+        // tiles are smaller (e.g. terrain_-1_19_color_c.dds = 43,832 B).
+        // Asserting "plausible DDS size" rather than a hard equality.
+        let mut size_hist: std::collections::BTreeMap<u32, u32> = Default::default();
+        for e in &entries {
+            assert_eq!(e.name_truncated, 0, "name truncated unexpectedly");
+            assert!(
+                e.uncompressed_size > 1024,
+                "tile {} only {} bytes — suspicious",
+                entry_name(e), e.uncompressed_size,
+            );
+            *size_hist.entry(e.uncompressed_size).or_insert(0) += 1;
+            let n = entry_name(e);
+            assert!(n.starts_with("terrain_"), "weird name: {n}");
+            assert!(n.ends_with("_color_c.dds"), "weird name: {n}");
+        }
+        eprintln!("size histogram:");
+        for (size, count) in &size_hist {
+            eprintln!("  {size} B: {count} tiles");
+        }
+        // Dominant size should be 174904 (BC1 512² + headers + mips).
+        let dominant = size_hist.iter().max_by_key(|(_, c)| *c).unwrap();
+        assert_eq!(
+            *dominant.0, 174904,
+            "expected the dominant tile size to be 174904 B (BC1 512²)",
+        );
+    }
+
+    /// End-to-end pinning: list a directory, extract the first entry,
+    /// verify the DDS magic + size matches what list_dir reported.
+    /// Proves the round-trip C# editors will use.
+    #[test]
+    fn c_abi_paz_list_dir_then_extract_global_colormap() {
+        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
+            });
+        let pamt_path = game_root.join("0015").join("0.pamt");
+        if !pamt_path.is_file() {
+            eprintln!("skipping: no {}", pamt_path.display());
+            return;
+        }
+        let pamt_c = CString::new(pamt_path.to_str().unwrap()).unwrap();
+        let dir_c = CString::new("leveldata/rootlevel/terrain/global").unwrap();
+        let entries = list_dir_via_abi(&pamt_c, &dir_c).expect("list");
+        // 6 files in 1.07: global_colormap.dds + 5 region/tint maps.
+        assert!(entries.len() >= 4, "expected ≥4 global terrain files, got {}", entries.len());
+        let colormap = entries.iter()
+            .find(|e| entry_name(e) == "global_colormap.dds")
+            .expect("global_colormap.dds must be listed");
+        assert_eq!(colormap.uncompressed_size, 5_592_560);
+
+        // Round-trip: feed list_dir's reported name back into extract_file.
+        let name_c = CString::new("global_colormap.dds").unwrap();
+        let bytes = extract_via_abi(&pamt_c, &dir_c, &name_c).expect("extract");
+        assert_eq!(bytes.len(), colormap.uncompressed_size as usize);
+        assert_eq!(&bytes[..4], b"DDS ", "must be a valid DDS");
+    }
+
+    #[test]
+    fn c_abi_paz_list_dir_not_found() {
+        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
+            });
+        let pamt_path = game_root.join("0015").join("0.pamt");
+        if !pamt_path.is_file() {
+            eprintln!("skipping: no {}", pamt_path.display());
+            return;
+        }
+        let pamt_c = CString::new(pamt_path.to_str().unwrap()).unwrap();
+        let dir_c = CString::new("not/a/real/dir").unwrap();
+        let err = list_dir_via_abi(&pamt_c, &dir_c).unwrap_err();
+        assert_eq!(err, error::NOT_FOUND);
+    }
+
+    #[test]
+    fn c_abi_paz_list_dir_bad_pamt_path_returns_io() {
+        let pamt = CString::new("Z:\\does\\not\\exist\\0.pamt").unwrap();
+        let dir = CString::new("x").unwrap();
+        let mut count: usize = 0;
+        let rc = unsafe {
+            crimson_paz_list_dir(pamt.as_ptr(), dir.as_ptr(), ptr::null_mut(), 0, &mut count)
+        };
+        assert_eq!(rc, error::IO);
+    }
+
+    #[test]
+    fn c_abi_paz_list_dir_null_args() {
+        let pamt = CString::new("anything").unwrap();
+        let dir = CString::new("x").unwrap();
+        let mut count: usize = 0;
+        for case in 0..3 {
+            let rc = unsafe {
+                crimson_paz_list_dir(
+                    if case == 0 { ptr::null() } else { pamt.as_ptr() },
+                    if case == 1 { ptr::null() } else { dir.as_ptr() },
+                    ptr::null_mut(),
+                    0,
+                    if case == 2 { ptr::null_mut() } else { &mut count },
+                )
+            };
+            assert_eq!(rc, error::NULL_ARG, "case {case}");
+        }
+        // Null buffer with non-zero capacity is also NULL_ARG.
+        let rc = unsafe {
+            crimson_paz_list_dir(pamt.as_ptr(), dir.as_ptr(), ptr::null_mut(), 16, &mut count)
+        };
+        assert_eq!(rc, error::NULL_ARG);
+    }
+
+    /// Buffer-too-small with an undersized capacity must still
+    /// populate `*out_count_entries` so the caller can re-allocate.
+    #[test]
+    fn c_abi_paz_list_dir_buffer_too_small_populates_count() {
+        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
+            });
+        let pamt_path = game_root.join("0015").join("0.pamt");
+        if !pamt_path.is_file() {
+            eprintln!("skipping: no {}", pamt_path.display());
+            return;
+        }
+        let pamt_c = CString::new(pamt_path.to_str().unwrap()).unwrap();
+        let dir_c = CString::new("leveldata/rootlevel/terrain/color").unwrap();
+
+        // Cap at 1 entry — known to be undersized.
+        let mut entry = CrimsonPazFileEntry {
+            name: [0u8; 256], compressed_size: 0, uncompressed_size: 0,
+            is_partial: 0, name_truncated: 0,
+        };
+        let mut count: usize = 0;
+        let rc = unsafe {
+            crimson_paz_list_dir(pamt_c.as_ptr(), dir_c.as_ptr(), &mut entry, 1, &mut count)
+        };
+        assert_eq!(rc, error::BUFFER_TOO_SMALL);
+        assert!(count > 1, "real count must be reported even on BUFFER_TOO_SMALL");
     }
 
     #[test]
