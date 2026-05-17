@@ -2,11 +2,34 @@
 
 > **🎯 New session pickup — start here.**
 >
-> **Where we are (updated 2026-05-16)**: every save-side key the C# Save
+> **Where we are (updated 2026-05-17)**: every save-side key the C# Save
 > Editor currently surfaces resolves through a shipped C ABI bridge.
-> **32 bridges shipped + the deferred-redecode batch ABI.** Test suite:
-> **237** with `c_abi`, **69** without, **25** `#[ignore]`'d diagnostic
-> probes. Clippy clean both modes.
+> **32 bridges shipped + the deferred-redecode batch ABI + the
+> object-list presence-toggle ABI.** Test suite: **253** with `c_abi`,
+> **76** without, **27** `#[ignore]`'d diagnostic probes. Clippy clean
+> both modes.
+>
+> ### What landed this session (2026-05-17)
+>
+> - **`crimson_save_set_object_list_present`** — toggles an absent
+>   `ObjectList` field on / off; the make-present path auto-materializes
+>   `count=1` with one default-empty element of the field's element
+>   class (discovered by scanning the save for any sibling block of the
+>   same parent class with the field present-and-non-empty, then copying
+>   its first element's `class_index`). Closes the "add dye to undyed
+>   item" v2 path for `CrimsonAtomtic`'s dye editor — the C# side can
+>   now seed an empty `_itemDyeDataList` on items that have never been
+>   dyed, then drive RGBA / material / color-group via
+>   `set_scalar_field_present` against element 0. See
+>   [`dye-editor-scope.md`](./dye-editor-scope.md) §v2. The count=1
+>   shape is mandatory — a count=0 header is genuinely ambiguous to the
+>   decoder's `body_offset` probing (greedy-matches
+>   `marker_run_plus_zeros`, which the encoder can't re-emit with a
+>   different count); materializing one default element + the
+>   `zero1_count_u24` variant disambiguates the round-trip. Pinned by
+>   `c_abi_object_list_present_roundtrip_dye_data_list_slot104` (full
+>   absent → present → absent cycle on a live slot104 ItemSaveData,
+>   asserting byte-identity to the original body).
 >
 > ### What landed in the last sessions (2026-05-16)
 >
@@ -169,8 +192,21 @@
 > - **`storeinfo` / `mercenaryinfo` / `globalgameevent` / `royalsupply`
 >   per-row body content** — beyond the template name, each row's body
 >   carries price / item / timing / supply-item lists this bridge
->   doesn't surface. Pull the inline data only when an editor feature
->   needs it.
+>   doesn't surface. **Investigation note (2026-05-17)**: the hexpat
+>   pattern at `references/store_info.hexpat` claims uniform 105-byte
+>   `StoreItemEntry`, but the live 1.07 storeinfo file disproves it —
+>   `Store_Her_General`'s first item is 123 bytes and subsequent items
+>   have different sizes (variable-length `item_data` section).
+>   Variant landscape is now classified into 16 groups by
+>   `(field_e, format_tag)`; see the `#[ignore]`'d
+>   `_probe_store_variant_distribution` in
+>   [`src/store_info/mod.rs`](../src/store_info/mod.rs). The probe also
+>   shows 86 rows (field_e ∈ {14, 1536, 1537, 1538}) use a completely
+>   different body shape (prefix-list-then-std-family) that needs its
+>   own RE pass. **Resume next session** with a variable-length item
+>   walker (scan for `0xFFFF` separator + `item_key_dup` match) +
+>   field_e=1536 family layout RE. Pull the inline data only when an
+>   editor feature actually needs it.
 > - **`crimson_save_set_dynamic_array_present`** — toggle a
 >   `dynamic_array` field between absent and present (mirroring
 >   `set_scalar_field_present` for `meta_kind == 3`). Read / wholesale-
@@ -185,6 +221,9 @@
 >   absent → present transition; for now `set_inline_bytes_field` (for
 >   `meta_kind == 1`) and `dynamic_array_set_u32_elements` (for
 >   already-present `meta_kind == 3`) cover the common cases.
+>   (The sibling `crimson_save_set_object_list_present` for `meta_kind
+>   ∈ {6, 7}` ships 2026-05-17 — see "What landed this session" at the
+>   top of the doc.)
 > - **`crimson_save_get_inline_bytes_field`** — typed read accessor
 >   for `inline_bytes` content (e.g.
 >   `GameData_GimmickPointData.staticstringA`). Today the JSON's

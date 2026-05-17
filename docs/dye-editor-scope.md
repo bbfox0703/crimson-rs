@@ -6,9 +6,11 @@ reference editor at
 already implements this; this doc records what the in-house C# editor
 needs and what crimson-rs needs to ship (or not ship).
 
-> Status (2026-05-16): Save schema verified **and** all three
+> Status (2026-05-17): Save schema verified **and** all three
 > gamedata-side `dye*.pabgb` tables RE'd + bridged behind C ABI **and**
-> the `_itemKey → _partPrefabKey` cross-reference is now bridged.
+> the `_itemKey → _partPrefabKey` cross-reference is bridged **and**
+> the "add dye to undyed item" path lands via
+> `crimson_save_set_object_list_present` (see §v2 below).
 > Parsers + bridges shipped in
 > [`src/dye_color_group_info/`](../src/dye_color_group_info/),
 > [`src/part_prefab_dye_texture_pallete_info/`](../src/part_prefab_dye_texture_pallete_info/),
@@ -238,32 +240,60 @@ Workflow:
    the path `(block_idx, [(field=14 _itemDyeDataList, element=N)],
    field=<RGBA/grime/etc index>)`.
 
-### v2 — "add dye to previously-undyed item"
-
-Blocker: `set_scalar_field_present` rejects `ObjectList` fields
-(meta_kind 6/7). The reference editor uses a `dye_cli.exe` subprocess
-to handle PARC insertion + offset fix-up.
-
-To support this in C#, crimson-rs would need a new ABI:
+### v2 — "add dye to previously-undyed item" (shipped 2026-05-17)
 
 ```c
-// Toggle an absent ObjectList field's present-bit AND emit an empty
-// ObjectList header at the right offset, so the field becomes a
-// valid zero-element list.
 int32_t crimson_save_set_object_list_present(
     CrimsonSaveHandle* handle,
     uint32_t block_idx,
     const CrimsonPathStep* path,
     size_t path_len,
     uint32_t field_idx,
-    int32_t make_present
+    int32_t present_flag    // 1 = make present, 0 = make absent
 );
 ```
 
-Implementation outline: choose the `header_variant` based on the
-field's `meta_kind` + neighbouring lists in the same block (in
-practice probably `zero1_count_u24` — the variant `ItemSaveData`'s
-other ObjectLists use). Defer until there's a concrete user demand.
+`present_flag == 1` flips the field's mask bit and materializes the
+list as **count = 1** with a single default-empty `ItemDyeSaveData`
+element (every dye scalar absent). The caller then mutates the
+element's RGBA / material / color-group fields via
+`crimson_save_set_scalar_field_present` to fill it in.
+
+The count=1 shape is mandatory — a count=0 header is genuinely
+ambiguous to the decoder's `body_offset` probing (it greedy-matches
+`marker_run_plus_zeros`, which the encoder can't re-emit with a
+different count). Materializing one default element + the
+`zero1_count_u24` variant disambiguates the round-trip; the
+[`c_abi_object_list_present_roundtrip_dye_data_list_slot104`](../src/c_abi/mod.rs)
+integration test pins the contract.
+
+`present_flag == 0` clears the mask bit and any elements; the encoder
+emits nothing for an absent field, so `present(1) → present(0)` is
+byte-identical to the original.
+
+The element class for the default empty element is discovered by
+scanning the save tree for any sibling block of the same parent class
+where the field is present-and-non-empty, then copying its first
+element's `class_index`. If no template exists in the save (e.g. the
+user never dyed anything), the call returns `NOT_FOUND`; the C# editor
+can either prompt the user to dye one item via the in-game UI first
+or surface this as a "save state too clean to seed default class"
+edge case.
+
+C# call shape:
+```csharp
+// item dye list at ItemSaveData._itemDyeDataList (field index 14)
+var path = new[] {
+    new CrimsonPathStep { field_idx = _inventorylistIdx, element_idx = invIdx },
+    new CrimsonPathStep { field_idx = _itemListIdx, element_idx = itemIdx },
+};
+var rc = crimson_save_set_object_list_present(
+    handle, blockIdx, path, path.Length, 14, present_flag: 1
+);
+// rc == 0 (OK): the item now has one empty dye slot. Drive the RGBA
+// scalars onto element 0 via set_scalar_field_present (path extended
+// by one more step with field_idx = 14, element_idx = 0).
+```
 
 ---
 
