@@ -110,8 +110,17 @@
 >
 > Plus the `checksum` extern "C" wrapper. Plus the PAZ-layer
 > `crimson_paz_list_npc_portraits` enumerator. Save-handle
-> utilities: `list_inventory_items`, `get_mutation_version`,
-> `begin_deferred_redecode` / `end_*` / `abort_*` / `is_*_open`.
+> utilities: `list_inventory_items`, **`list_character_refs`**
+> (every present CharacterKey field across every block, ≥50/save),
+> `get_mutation_version`, `begin_deferred_redecode` / `end_*` /
+> `abort_*` / `is_*_open`. **Typed composite-scalar setters**
+> (`set_float3_field_path` / `_present`, `set_float4_field_path` /
+> `_present`, `set_uint4_field_path` / `_present`) packing
+> `(x,y,z)` / `(x,y,z,w)` / `(a,b,c,d)` into the LE bytes the raw
+> scalar setters expect. **JSON display** now inlines
+> `dynamic_array` u32/u64 element contents as
+> `[v1, v2, …] <u32_dynamic_array, variant>` (up to 12 elements
+> rendered; longer arrays get a `… (N more)` continuation marker).
 >
 > ### Remaining (optional follow-ons only)
 >
@@ -162,6 +171,28 @@
 >   carries price / item / timing / supply-item lists this bridge
 >   doesn't surface. Pull the inline data only when an editor feature
 >   needs it.
+> - **`crimson_save_set_dynamic_array_present`** — toggle a
+>   `dynamic_array` field between absent and present (mirroring
+>   `set_scalar_field_present` for `meta_kind == 3`). Read / wholesale-
+>   replace already works via `dynamic_array_set_u32_elements`; the
+>   missing piece is the **absent → present** transition, which needs
+>   header-variant template discovery (scan a sibling block for the
+>   same `(class_name, field_idx)` where the field IS present, copy
+>   the `header_variant` + adapt `header_bytes` count). Decoder
+>   recognises four variants (`prefix_00xx0100`, `marker_prefix`,
+>   `compact`, `generic`), each with different leading + trailing
+>   byte patterns. Defer until an editor surface actually needs the
+>   absent → present transition; for now `set_inline_bytes_field` (for
+>   `meta_kind == 1`) and `dynamic_array_set_u32_elements` (for
+>   already-present `meta_kind == 3`) cover the common cases.
+> - **`crimson_save_get_inline_bytes_field`** — typed read accessor
+>   for `inline_bytes` content (e.g.
+>   `GameData_GimmickPointData.staticstringA`). Today the JSON's
+>   `<N items, X bytes>` summary is the only display, and the editor
+>   has to call `get_block_json` then drill the offset. A dedicated
+>   getter (or JSON inline preview with UTF-8 / hex) would close the
+>   read side, mirroring the write side that
+>   `set_inline_bytes_field` already covers.
 >
 > ### Where to start a new session
 >
