@@ -177,6 +177,9 @@ use the two-call buffer pattern.
 | `crimson_dye_color_group_info_entry_count(handle, *out_count)` | Total rows. |
 | `crimson_dye_color_group_info_lookup_name(handle, color_group_key, buf, buf_len, *required)` | Resolve `_dyeColorGroupInfoKey` → internal name. |
 | `crimson_dye_color_group_info_get_entry(handle, idx, *out_key, buf, buf_len, *required)` | Enumerate. |
+| `crimson_dye_color_group_info_palette_size(handle, color_group_key, *out_count)` | Palette position count for the theme (109 in 1.07). |
+| `crimson_dye_color_group_info_palette_at(handle, key, idx, *out_r, *out_g, *out_b, *out_a)` | Logical-RGBA at a palette position — ready to write into `_dyeColorR/G/B/A`. See §"Addendum (2026-05-17)" for the picker UX. |
+| `crimson_dye_color_group_info_position_for_rgb(handle, key, r, g, b, *out_position)` | Reverse lookup — find the palette cell a currently-applied dye came from. |
 
 ### `part_prefab_dye_texture_pallete_info`
 
@@ -348,26 +351,82 @@ one mount, and (the previously-known) inventory test sample.
 `_probe_item_dye_data_with_mercenary_resolution` enumerates the lot.
 Three corrections to the model previously assumed in this doc:
 
-### 1. `_dyeColorGroupInfoKey` is the **theme**, not freeform colour
+### 1. `_dyeColorGroupInfoKey` is the **theme**, and the save's RGB indexes a 109-position palette inside it
 
-The save's `_dyeColorR/G/B/A` are not freeform — they index into a
-**109-RGBA gradient** owned by `_dyeColorGroupInfoKey` (the bridge
-already records this layout per row). The 10 colorGroup rows
-correspond to the in-game NPC dye-menu themes
+The save's `_dyeColorR/G/B/A` are NOT freeform — they index into a
+**109-position logical-RGBA palette** owned by `_dyeColorGroupInfoKey`.
+The 10 colorGroup rows correspond to the in-game NPC dye-menu themes
 (`Her_Color_Group_I` = 埃爾南德 / Hernand, `Por_Color_Group_I` = 波羅琳 /
-Pororin, plus Dem×3 tiers, Kwe, Del, Cal, Tom, Bar — 10 rows total).
+Pororin, plus Dem×3 tiers, Kwe, Del, Cal, Tom, Bar).
 
-Empirical pattern from slot103: RGBA strictly clusters by theme:
+**Confirmed by exhaustive cross-check (2026-05-17)**: every one of the
+11 RGBs observed in `slot103/save.save` hits an exact gradient
+position (zero off-grid values). On-disk byte order in the gradient
+is **BGRA**, NOT RGBA — the parser swaps to logical `(R, G, B, A)`
+order so the values match the save's u8 fields directly. The two
+pinned mappings:
 
-| Theme | colorGroup u32 | Observed RGBs |
+| Theme | colorGroup u32 | Observed save RGBs → palette positions |
 |---|---|---|
-| Her_Color_Group_I | `0xc88211f5` | `#a65757 #f22121 #d98585 #d99999 #594444 #a64848` (red family) |
-| Por_Color_Group_I | `0x2a85f874` | `#736e3f #403913 #59542a #736a15 #8c8530` (olive family) |
+| Her_Color_Group_I | `0xc88211f5` | `#f22121`→17, `#a65757`→43, `#d98585`→22, `#d99999`→21, `#594444`→70, `#a64848`→44 |
+| Por_Color_Group_I | `0x2a85f874` | `#736e3f`→62, `#403913`→85, `#59542a`→73, `#736a15`→66, `#8c8530`→55 |
 
-**UX implication for the C# editor**: replace the freeform R/G/B
-sliders (the PyQt5 reference exposes) with **two dropdowns** — theme
-(10 options) + position-within-gradient. Off-gradient RGB values aren't
-reachable from the in-game UI.
+**Palette layout** (109 positions per theme):
+- Positions **0-8**: 9 grayscale records (lightness ramp).
+- Positions **9-108**: 10 chromatic rows × 10 columns. Each row is a
+  lightness tier (R-channel of the swapped record steps through
+  `0xf2 → 0xd9 → 0xbf → 0xa6 → 0x8c → 0x73 → 0x59 → 0x40 → 0x26 → 0x1a`),
+  each column varies the secondary channel from "pale" (col 0) to
+  "fully saturated" (col 9). The theme determines the **hue
+  direction** baked into the row colors — Hernand uses red-dominant,
+  Pororin uses olive/yellow-dominant, etc.
+
+### C ABI for the dye picker
+
+[`src/c_abi/dye_color_group_info.rs`](../src/c_abi/dye_color_group_info.rs)
+exposes the palette to the C# editor:
+
+| Function | Purpose |
+|---|---|
+| `crimson_dye_color_group_info_palette_size(handle, key, *out_count)` | Number of positions for the theme (109 in 1.07) |
+| `crimson_dye_color_group_info_palette_at(handle, key, idx, *out_r, *out_g, *out_b, *out_a)` | RGBA at position — write these directly into `_dyeColorR/G/B/A` |
+| `crimson_dye_color_group_info_position_for_rgb(handle, key, r, g, b, *out_position)` | Reverse lookup — highlight which cell a currently-applied dye came from. Returns `NOT_FOUND` for off-grid RGBs (e.g. CE-modified saves) |
+
+### Recommended C# editor UX
+
+Replace the PyQt5 reference editor's freeform R/G/B sliders with a
+**visual palette grid per theme**:
+
+```text
+Theme dropdown:  [ Hernand (埃爾南德) ▼ ]    <-- backed by crimson_dye_color_group_info_get_entry()
+
+Palette grid (11 rows × ~10 cols):
+
+  Grayscale row:   [ ■ ][ ■ ][ ■ ][ ■ ][ ■ ][ ■ ][ ■ ][ ■ ][ ■ ]                positions 0-8
+  Tier f2:         [ ■ ][ ■ ][ ■ ][ ■ ][ ■ ][ ■ ][ ■ ][ ■ ][ ★ ][ ■ ]            positions 9-18, ★ = position 17 = #f22121
+  Tier d9:         [ ■ ][ ■ ][ ★ ][ ★ ][ ■ ][ ■ ][ ■ ][ ■ ][ ■ ][ ■ ]            positions 19-28
+  ...
+  Tier 1a:         [ ■ ][ ■ ][ ■ ][ ■ ][ ■ ][ ■ ][ ■ ][ ■ ][ ■ ][ ■ ]            positions 99-108
+```
+
+Each cell renders the RGB from `_palette_at(theme, position)`. The
+currently-applied dye is highlighted via `_position_for_rgb`. User
+clicks a cell → editor writes the cell's R/G/B back into the save's
+three u8 scalars at the chosen dye slot via the existing
+`set_scalar_field_path` API.
+
+**The dye-consumable item is bookkeeping only** — the visual is fully
+determined by the palette position. The editor doesn't need a
+`(consumable_ItemKey, theme) → position` mapping to render the
+picker. Showing a tooltip like "this matches 鮮紅色染劑 in Hernand
+theme" would require additional RE, but the v2 dye editor is fully
+shippable without it.
+
+The 4-byte tail per gradient record (`d4..cf` / `fe..f9` lightness
+keys + a constant `e1 ff ff`) is not exposed by the bridge —
+diagnostic data only, included in the
+`dye_gradient_vs_slot103_rgbs` probe output for future investigation
+if the editor wants per-tier metadata.
 
 ### 2. Three playable characters, one container per "active"
 
