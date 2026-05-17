@@ -1933,6 +1933,113 @@ mod tests {
         }
     }
 
+    /// MercenarySaveData ownership probe — dumps `(merc_idx,
+    /// _characterKey, resolved name, _ownedCharacterKey)` for every
+    /// MercenarySaveData block. Used to investigate why some
+    /// player-controlled mounts (e.g. Kliff's Riding_Horse_Tiuta,
+    /// Animal_Stefano_Wild) aren't getting flagged as player-owned
+    /// by the current `_characterKey ∈ {1,4,6} || _ownedCharacterKey
+    /// ∈ {1,4,6}` rule.
+    #[test]
+    #[ignore = "investigation only — mercenary ownership field probe"]
+    fn _probe_mercenary_ownership_slot103() {
+        use crate::binary::pamt::PackMeta;
+        use crate::binary::paz;
+        use crate::character_info::parse_character_info_lossy;
+        use crate::save::{Body, FieldValue, ScalarValue, Save};
+
+        let save_path = std::env::var_os("CRIMSON_LIVE_SAVE")
+            .map(PathBuf::from)
+            .or_else(|| {
+                let appdata = std::env::var_os("LOCALAPPDATA")?;
+                let root = PathBuf::from(appdata)
+                    .join("Pearl Abyss")
+                    .join("CD")
+                    .join("save");
+                std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
+                    let p = entry.path().join("slot103").join("save.save");
+                    p.is_file().then_some(p)
+                })
+            });
+        let Some(save_path) = save_path else {
+            eprintln!("skipping: no save");
+            return;
+        };
+
+        // Load characterinfo for name resolution.
+        let merc_name: std::collections::HashMap<u32, String> = {
+            let game_root = PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert");
+            let mut out = std::collections::HashMap::new();
+            let pamt_path = game_root.join("0008").join("0.pamt");
+            if let Ok(pamt_bytes) = std::fs::read(&pamt_path)
+                && let Ok(pamt) = PackMeta::parse(&pamt_bytes, None)
+            {
+                let dir_path = "gamedata/binary__/client/bin";
+                if let Some(dir) = pamt.directories.iter().find(|d| d.path == dir_path)
+                    && let Some(pabgb) = dir.files.iter().find(|f| f.name == "characterinfo.pabgb")
+                {
+                    let group_dir = game_root.join("0008");
+                    let enc = &pamt.header.encrypt_info.encrypt_info;
+                    if let Ok(b) = paz::extract_file(&group_dir, pabgb, dir_path, enc) {
+                        for e in parse_character_info_lossy(&b) {
+                            out.entry(e.key).or_insert(e.name);
+                        }
+                    }
+                }
+            }
+            out
+        };
+
+        let raw = std::fs::read(&save_path).expect("read save");
+        let save = Save::parse(&raw).expect("parse save");
+        let body = Body::parse(&save.body).expect("parse body");
+        let blocks = body.decode_blocks(&save.body);
+
+        fn pull_u32(b: &crate::save::ObjectBlock, n: &str) -> Option<u32> {
+            b.fields.iter().find(|f| f.name == n && f.present).and_then(|f| match &f.value {
+                FieldValue::Scalar(ScalarValue::U32(v)) => Some(*v),
+                _ => None,
+            })
+        }
+        fn pull_u64(b: &crate::save::ObjectBlock, n: &str) -> Option<u64> {
+            b.fields.iter().find(|f| f.name == n && f.present).and_then(|f| match &f.value {
+                FieldValue::Scalar(ScalarValue::U64(v)) => Some(*v),
+                _ => None,
+            })
+        }
+
+        let mut idx = 0usize;
+        eprintln!("\n=== MercenarySaveData ownership table ===");
+        eprintln!("{:>4} {:>10} {:>8} {:>8} {:<48} {:>10}",
+            "idx", "charKey", "raw", "stripped", "name", "_ownedChKey");
+        for b in &blocks {
+            if b.class_name != "MercenaryClanSaveData" { continue; }
+            for f in &b.fields {
+                if f.name != "_mercenaryDataList" { continue; }
+                let FieldValue::ObjectList { elements, .. } = &f.value else { continue };
+                for merc in elements {
+                    let char_raw = pull_u32(merc, "_characterKey").unwrap_or(0);
+                    let char_stripped = char_raw & 0xFFFFFF;
+                    let merc_no = pull_u64(merc, "_mercenaryNo").unwrap_or(0);
+                    let owned = pull_u32(merc, "_ownedCharacterKey");
+                    let name = merc_name.get(&char_stripped).cloned().unwrap_or_else(|| "<unknown>".into());
+                    // Equipment count
+                    let equip_count = merc.fields.iter()
+                        .find(|f| f.name == "_equipItemList" && f.present)
+                        .and_then(|f| if let FieldValue::ObjectList { count, .. } = &f.value { Some(*count) } else { None })
+                        .unwrap_or(0);
+                    if equip_count == 0 { idx += 1; continue; }  // skip empties
+                    let owned_str = match owned {
+                        Some(v) => format!("0x{:x}/{}", v, v & 0xFFFFFF),
+                        None => "absent".into(),
+                    };
+                    eprintln!("{idx:>4} {char_stripped:>10} 0x{char_raw:08x} (n={merc_no:>6})  {name:<48} {owned_str:>10}  equip={equip_count}");
+                    idx += 1;
+                }
+            }
+        }
+    }
+
     /// Container-class schema dump — dumps the field schema of the
     /// host classes the all-items enumerator needs to walk
     /// (EquipmentSaveData, InventoryElementSaveData, MercenarySaveData,
