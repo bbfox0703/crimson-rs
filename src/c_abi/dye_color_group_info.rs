@@ -20,12 +20,22 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use super::error;
 use crate::dye_color_group_info::parse_dye_color_group_info_lossy;
 
-/// Opaque handle exposing `(DyeColorGroupInfoKey, internal_name)` lookups
-/// against the loaded `dyecolorgroupinfo.pabgb` + `.pabgh`.
+/// Opaque handle exposing `(DyeColorGroupInfoKey, internal_name)`
+/// lookups + the 109-position **logical-RGBA palette** for each
+/// row, against the loaded `dyecolorgroupinfo.pabgb` + `.pabgh`.
+///
+/// See [`crate::dye_color_group_info`] for the BGRA-to-RGBA swap
+/// rationale + the palette layout (positions 0-8 grayscale + 9-108
+/// ten chromatic rows × ten columns).
 #[repr(C)]
 pub struct CrimsonDyeColorGroupInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,
+    /// Logical-RGBA palette per key (post-swap from on-disk BGRA).
+    /// 109 records per row in 1.07; the bridge doesn't pin the
+    /// count so a future patch with a different palette size still
+    /// resolves.
+    palettes: HashMap<u32, Vec<[u8; 4]>>,
 }
 
 impl CrimsonDyeColorGroupInfoHandle {
@@ -33,13 +43,15 @@ impl CrimsonDyeColorGroupInfoHandle {
         let raw = parse_dye_color_group_info_lossy(pabgb, pabgh);
         let mut by_key: HashMap<u32, String> = HashMap::with_capacity(raw.len());
         let mut entries: Vec<(u32, String)> = Vec::with_capacity(raw.len());
+        let mut palettes: HashMap<u32, Vec<[u8; 4]>> = HashMap::with_capacity(raw.len());
         for e in raw {
             if let std::collections::hash_map::Entry::Vacant(v) = by_key.entry(e.key) {
                 v.insert(e.name.clone());
                 entries.push((e.key, e.name));
+                palettes.insert(e.key, e.palette);
             }
         }
-        CrimsonDyeColorGroupInfoHandle { by_key, entries }
+        CrimsonDyeColorGroupInfoHandle { by_key, entries, palettes }
     }
 }
 
@@ -228,6 +240,135 @@ pub unsafe extern "C" fn crimson_dye_color_group_info_get_entry(
         };
         unsafe { *out_key = *key };
         write_str_to_buf(name, buf, buf_len, required)
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+// ── Palette accessors (dye picker UX) ─────────────────────────────────────
+//
+// The save's `_dyeColorR/G/B` u8 scalars index into the 109-position
+// palette stored on the theme row. These three functions let the C#
+// editor render the theme's palette as a visual grid, write a chosen
+// position's RGB back to the save, and reverse-look-up which cell a
+// currently-applied dye came from.
+//
+// **Logical RGBA order**: on-disk bytes are BGRA; the parser swaps to
+// (R, G, B, A) so the values returned here match the save's u8 fields
+// directly. See [`crate::dye_color_group_info`] for the rationale.
+
+/// Number of palette positions for `color_group_key` (109 in 1.07,
+/// but the ABI doesn't pin the count — a future patch with a
+/// different palette size will report the new value).
+///
+/// Returns [`error::NOT_FOUND`] if the key isn't in the table.
+///
+/// # Safety
+/// `handle` must be live; `out_count` must be non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_dye_color_group_info_palette_size(
+    handle: *const CrimsonDyeColorGroupInfoHandle,
+    color_group_key: u32,
+    out_count: *mut u32,
+) -> i32 {
+    if handle.is_null() || out_count.is_null() {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_count = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let Some(palette) = h.palettes.get(&color_group_key) else {
+            return error::NOT_FOUND;
+        };
+        unsafe { *out_count = palette.len() as u32 };
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Logical RGBA at `position_idx` inside `color_group_key`'s palette.
+/// The four output bytes are in `(R, G, B, A)` order, ready to write
+/// straight into the save's `_dyeColorR/G/B/A` u8 scalars.
+///
+/// Returns [`error::NOT_FOUND`] for an unknown key,
+/// [`error::OUT_OF_RANGE`] when `position_idx` is past the palette.
+///
+/// # Safety
+/// `handle` must be live; the four output pointers must be non-null
+/// and writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_dye_color_group_info_palette_at(
+    handle: *const CrimsonDyeColorGroupInfoHandle,
+    color_group_key: u32,
+    position_idx: u32,
+    out_r: *mut u8,
+    out_g: *mut u8,
+    out_b: *mut u8,
+    out_a: *mut u8,
+) -> i32 {
+    if handle.is_null()
+        || out_r.is_null()
+        || out_g.is_null()
+        || out_b.is_null()
+        || out_a.is_null()
+    {
+        return error::NULL_ARG;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let Some(palette) = h.palettes.get(&color_group_key) else {
+            return error::NOT_FOUND;
+        };
+        let Some(rgba) = palette.get(position_idx as usize) else {
+            return error::OUT_OF_RANGE;
+        };
+        unsafe {
+            *out_r = rgba[0];
+            *out_g = rgba[1];
+            *out_b = rgba[2];
+            *out_a = rgba[3];
+        }
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Reverse lookup — find the palette position that matches the given
+/// `(r, g, b)`. Returns [`error::NOT_FOUND`] when no position is an
+/// exact match (e.g. the save's RGB was set by a tool like Cheat
+/// Engine off-grid), [`error::NOT_FOUND`] when the key is unknown.
+/// Alpha is not part of the match (every observed position uses
+/// `0xFF`).
+///
+/// The C# editor uses this to highlight which palette cell a
+/// currently-applied dye came from in its picker grid.
+///
+/// # Safety
+/// `handle` must be live; `out_position` must be non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_dye_color_group_info_position_for_rgb(
+    handle: *const CrimsonDyeColorGroupInfoHandle,
+    color_group_key: u32,
+    r: u8,
+    g: u8,
+    b: u8,
+    out_position: *mut u32,
+) -> i32 {
+    if handle.is_null() || out_position.is_null() {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_position = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let Some(palette) = h.palettes.get(&color_group_key) else {
+            return error::NOT_FOUND;
+        };
+        for (i, rgba) in palette.iter().enumerate() {
+            if rgba[0] == r && rgba[1] == g && rgba[2] == b {
+                unsafe { *out_position = i as u32 };
+                return error::OK;
+            }
+        }
+        error::NOT_FOUND
     }))
     .unwrap_or(error::PANIC)
 }
@@ -470,6 +611,113 @@ mod tests {
             error::OK
         );
         assert_eq!(count, 0);
+        unsafe { crimson_dye_color_group_info_free(h) };
+    }
+
+    /// Pin the palette accessors against the slot103 ground truth:
+    /// every observed save RGB (6 Hernand reds + 5 Pororin olives,
+    /// from `_probe_item_dye_data_with_mercenary_resolution`) must
+    /// reverse-resolve to its exact gradient position, and the
+    /// forward lookup must return the same RGB. Closes the BGRA-byte-
+    /// order question — if a future patch reorders bytes or shifts
+    /// positions, this test fires first.
+    #[test]
+    fn c_abi_dye_color_group_info_palette_pins_slot103_observations() {
+        let Some((pabgb, pabgh)) = crate::dye_color_group_info::extract_pair_for_tests() else {
+            eprintln!("skipping: no game install");
+            return;
+        };
+        let mut h: *mut CrimsonDyeColorGroupInfoHandle = ptr::null_mut();
+        let rc = unsafe {
+            crimson_dye_color_group_info_load_from_bytes(
+                pabgb.as_ptr(), pabgb.len(),
+                pabgh.as_ptr(), pabgh.len(),
+                &mut h,
+            )
+        };
+        assert_eq!(rc, error::OK);
+
+        // (color_group_key, position_idx, expected_r, expected_g, expected_b)
+        // from the dye_gradient_vs_slot103_rgbs probe + the BGRA swap.
+        const HER: u32 = 0xc88211f5;
+        const POR: u32 = 0x2a85f874;
+        let cases: &[(u32, u32, u8, u8, u8)] = &[
+            (HER, 17, 0xf2, 0x21, 0x21),
+            (HER, 43, 0xa6, 0x57, 0x57),
+            (HER, 22, 0xd9, 0x85, 0x85),
+            (HER, 21, 0xd9, 0x99, 0x99),
+            (HER, 70, 0x59, 0x44, 0x44),
+            (HER, 44, 0xa6, 0x48, 0x48),
+            (POR, 62, 0x73, 0x6e, 0x3f),
+            (POR, 85, 0x40, 0x39, 0x13),
+            (POR, 73, 0x59, 0x54, 0x2a),
+            (POR, 66, 0x73, 0x6a, 0x15),
+            (POR, 55, 0x8c, 0x85, 0x30),
+        ];
+
+        // 1.07 palettes have 109 positions per theme. Floor at >=50 so
+        // a patch with a slightly different size doesn't false-fail.
+        let mut size: u32 = 0;
+        assert_eq!(
+            unsafe { crimson_dye_color_group_info_palette_size(h, HER, &mut size) },
+            error::OK,
+        );
+        assert!(size >= 50, "Her palette too small ({size})");
+        assert_eq!(
+            unsafe { crimson_dye_color_group_info_palette_size(h, POR, &mut size) },
+            error::OK,
+        );
+        assert!(size >= 50, "Por palette too small ({size})");
+
+        for &(key, idx, r, g, b) in cases {
+            // Forward: position_idx → (R, G, B, A)
+            let (mut or, mut og, mut ob, mut oa) = (0u8, 0u8, 0u8, 0u8);
+            let rc = unsafe {
+                crimson_dye_color_group_info_palette_at(
+                    h, key, idx, &mut or, &mut og, &mut ob, &mut oa,
+                )
+            };
+            assert_eq!(rc, error::OK, "palette_at(0x{key:08x}, {idx})");
+            assert_eq!(
+                (or, og, ob, oa),
+                (r, g, b, 0xFF),
+                "palette_at(0x{key:08x}, {idx}) RGB mismatch",
+            );
+
+            // Reverse: (R, G, B) → position_idx
+            let mut pos: u32 = u32::MAX;
+            let rc = unsafe {
+                crimson_dye_color_group_info_position_for_rgb(h, key, r, g, b, &mut pos)
+            };
+            assert_eq!(rc, error::OK, "position_for_rgb(0x{key:08x}, {r:02x}{g:02x}{b:02x})");
+            assert_eq!(pos, idx, "round-trip position mismatch");
+        }
+
+        // OOR position
+        let (mut a, mut b, mut c, mut d) = (0u8, 0u8, 0u8, 0u8);
+        assert_eq!(
+            unsafe {
+                crimson_dye_color_group_info_palette_at(
+                    h, HER, 9999, &mut a, &mut b, &mut c, &mut d,
+                )
+            },
+            error::OUT_OF_RANGE,
+        );
+
+        // Unknown key
+        assert_eq!(
+            unsafe { crimson_dye_color_group_info_palette_size(h, u32::MAX, &mut size) },
+            error::NOT_FOUND,
+        );
+        let mut pos: u32 = 0;
+        assert_eq!(
+            unsafe {
+                crimson_dye_color_group_info_position_for_rgb(h, HER, 0, 0, 0, &mut pos)
+            },
+            error::NOT_FOUND,
+            "RGB (0,0,0) shouldn't be reachable in Hernand palette",
+        );
+
         unsafe { crimson_dye_color_group_info_free(h) };
     }
 
