@@ -4,12 +4,34 @@
 >
 > **Where we are (updated 2026-05-17)**: every save-side key the C# Save
 > Editor currently surfaces resolves through a shipped C ABI bridge.
-> **32 bridges shipped + the deferred-redecode batch ABI + the
-> object-list presence-toggle ABI.** Test suite: **253** with `c_abi`,
+> **33 bridges shipped + the deferred-redecode batch ABI + the
+> object-list presence-toggle ABI.** Test suite: **261** with `c_abi`,
 > **76** without, **27** `#[ignore]`'d diagnostic probes. Clippy clean
 > both modes.
 >
-> ### What landed this session (2026-05-17)
+> ### What landed this session (2026-05-17, second pass)
+>
+> - **`main_quest_chapter`** — curated `(chapter, arc, mission)` rollup
+>   bridge sourced from [`main-quest-list.md`](./main-quest-list.md).
+>   Closes the long-deferred **"Quest chapter rollup"** follow-on —
+>   the chapter layer ("Prologue: Dead of Night", "Chapter 1: The First
+>   Encounter", …) is not present in any RE'd gamedata table, so the
+>   bridge ships the wiki-style breakdown as a static lookup. ~170 rows
+>   across Prologue + 12 chapters + Epilogue. The arc layer matches the
+>   `questinfo.pabgb` display titles at `lo32=0x100` (so callers can
+>   chain `QuestKey → arc title → chapter` directly via the existing
+>   `crimson_questinfo_lookup_display_name`); the mission layer matches
+>   `missioninfo.pabgb` display titles at `lo32=0x101`. Surface:
+>   `crimson_main_quest_table_entry_count` / `_get_entry` for
+>   enumeration, plus `_chapter_for_arc` / `_chapter_for_mission` /
+>   `_arc_for_mission` for direct lookups. No handle, no file load —
+>   pure static data with lazy `OnceLock` indices. Three mission titles
+>   repeat across chapters ("In Ashes", "Reclamation", "The Counterattack")
+>   and "Traitor" exists as both a Ch6 mission and a Ch8 arc; the
+>   bridge documents first-match-by-table-order behaviour and tests
+>   pin those edges. 8 pure-Rust tests (no live install dependency).
+>
+> ### What landed this session (2026-05-17, first pass)
 >
 > - **`crimson_save_set_object_list_present`** — toggles an absent
 >   `ObjectList` field on / off; the make-present path auto-materializes
@@ -106,12 +128,14 @@
 >    one (~0.1s). Full design + C# usage pattern in
 >    [`save-deferred-redecode.md`](./save-deferred-redecode.md).
 >
-> ### Full bridge inventory (32)
+> ### Full bridge inventory (33)
 >
 > Title-resolver bridges:
 > `mission_info`, `quest_info`, `stage_info`, `quest_gauge_info`,
 > `knowledge_info`, `sub_level_info`, `gimmick_info`,
-> `character_info` (+ `resolve_portrait` matcher), `skill_info`.
+> `character_info` (+ `resolve_portrait` matcher), `skill_info`,
+> **`main_quest_chapter`** (curated rollup — chapter → arc → mission
+> tree from [`main-quest-list.md`](./main-quest-list.md)).
 >
 > Dye / appearance gamedata bridges:
 > `dye_color_group_info`, `part_prefab_dye_texture_pallete_info`,
@@ -163,8 +187,12 @@
 >   `dye_slot_counts.json` entirely.
 > - Knowledge group breadcrumb (would need `knowledge_group_info`
 >   sibling bridge + row-body parse).
-> - Quest chapter rollup ("Prologue: Dead of Night" et al. — never
->   located).
+> - ~~Quest chapter rollup ("Prologue: Dead of Night" et al. — never
+>   located)~~ — **shipped 2026-05-17** via the `main_quest_chapter`
+>   bridge backed by the curated
+>   [`main-quest-list.md`](./main-quest-list.md). The chapter layer is
+>   genuinely not in any gamedata file; the bridge embeds the wiki-style
+>   breakdown as a static table.
 > - lo32=0x490 mission-variant meaning (Q4, partially overshadowed
 >   by the knowledge work).
 > - Broader PALOC namespace coverage for CharacterKey (the 78%
