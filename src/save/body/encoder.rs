@@ -423,7 +423,7 @@ fn write_inline_payload_fields(out: &mut Vec<u8>, child: &ObjectBlock, block_dat
 
 // ── Scalar encoders ────────────────────────────────────────────────────────
 
-fn encode_scalar(out: &mut Vec<u8>, value: &ScalarValue, meta_size: usize) {
+pub(crate) fn encode_scalar(out: &mut Vec<u8>, value: &ScalarValue, meta_size: usize) {
     match value {
         ScalarValue::Bool(b) => out.push(if *b { 1 } else { 0 }),
         ScalarValue::U8(x) => out.push(*x),
@@ -436,6 +436,21 @@ fn encode_scalar(out: &mut Vec<u8>, value: &ScalarValue, meta_size: usize) {
         ScalarValue::I64(x) => out.extend_from_slice(&x.to_le_bytes()),
         ScalarValue::F32(x) => out.extend_from_slice(&x.to_le_bytes()),
         ScalarValue::F64(x) => out.extend_from_slice(&x.to_le_bytes()),
+        ScalarValue::F32x3(xs) => {
+            for x in xs {
+                out.extend_from_slice(&x.to_le_bytes());
+            }
+        }
+        ScalarValue::F32x4(xs) => {
+            for x in xs {
+                out.extend_from_slice(&x.to_le_bytes());
+            }
+        }
+        ScalarValue::U32x4(xs) => {
+            for x in xs {
+                out.extend_from_slice(&x.to_le_bytes());
+            }
+        }
         ScalarValue::Bytes(b) => {
             // Raw-bytes fallback: emit verbatim. The decoder takes this
             // path for non-power-of-2 sizes / unrecognized type names;
