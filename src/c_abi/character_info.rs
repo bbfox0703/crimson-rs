@@ -2353,6 +2353,348 @@ mod tests {
         eprintln!("\nextracted: {extracted}, missing: {missing}");
     }
 
+    /// Wide-scope tile / heightmap / terrain hunt — the
+    /// `cd_uitexture_worldmap_00..04.dds` files we extracted earlier
+    /// turned out to be UI sprites (brush stamps, banners, masks),
+    /// NOT a basemap. `cd_global_map_navigator_guide_00.dds` is a
+    /// Korean-labelled faction overlay. The actual player-facing
+    /// map is probably composed at runtime from terrain data —
+    /// this probe goes looking for that source data.
+    ///
+    /// Scans every PAMT group's full file table for:
+    /// 1. Region-name matches (HERNAND, PILUZE, CRIMSON, DEMENISS,
+    ///    DELESYIA, VARNIA — the named regions visible on the
+    ///    player-facing map).
+    /// 2. Tile-coordinate patterns (`_NN_NN` numeric suffixes).
+    /// 3. Heightmap / terrain / landscape directory paths.
+    /// 4. Any large-ish DDS / TGA / PNG file (>4 MB uncompressed)
+    ///    in a directory whose name suggests map content.
+    /// 5. Any file path containing "tile", "atlas", "heightmap",
+    ///    "landscape", "terrain", "satellite", "topology".
+    ///
+    /// Outputs a histogram per group of how many candidate hits each
+    /// criterion produced, plus the actual filenames for inspection.
+    #[test]
+    #[ignore = "investigation only — wide-scope hunt for high-res tiled basemap source"]
+    fn _probe_worldmap_tile_hunt() {
+        use crate::binary::pamt::PackMeta;
+
+        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
+            });
+
+        let Ok(entries) = std::fs::read_dir(&game_root) else {
+            eprintln!("skipping: no game install at {}", game_root.display());
+            return;
+        };
+        let mut group_dirs: Vec<std::path::PathBuf> = Vec::new();
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() && p.file_name().and_then(|s| s.to_str())
+                .is_some_and(|n| n.len() == 4 && n.chars().all(|c| c.is_ascii_digit()))
+            {
+                group_dirs.push(p);
+            }
+        }
+        group_dirs.sort();
+        eprintln!("scanning {} PAMT groups", group_dirs.len());
+
+        // Categories of interest.
+        let region_names = [
+            "hernand", "piluze", "crimson_desert", "crimsondesert",
+            "demeniss", "delesyia", "varnia", "pywel", "kweiden",
+            "vellua", "trivana", "tabhah",
+        ];
+        let tile_kw = ["tile", "atlas", "heightmap", "landscape",
+                       "terrain", "satellite", "topology", "topo",
+                       "elevation", "ground"];
+        let map_dir_kw = ["map", "world", "minimap", "region"];
+
+        // (group, category, path, sizes)
+        let mut all_hits: Vec<(String, &'static str, String, u32, u32)> = Vec::new();
+
+        // For each group, scan all files
+        for group in &group_dirs {
+            let pamt_path = group.join("0.pamt");
+            let Ok(pamt_bytes) = std::fs::read(&pamt_path) else { continue };
+            let Ok(pamt) = PackMeta::parse(&pamt_bytes, None) else { continue };
+            let group_name = group.file_name().unwrap().to_string_lossy().to_string();
+
+            for d in &pamt.directories {
+                let dir_lower = d.path.to_ascii_lowercase();
+                let dir_is_mappy = map_dir_kw.iter().any(|k| dir_lower.contains(k));
+
+                for f in &d.files {
+                    let name_lower = f.name.to_ascii_lowercase();
+                    let full = format!("{}/{}", d.path, f.name).to_ascii_lowercase();
+
+                    // 1. Region-name hits anywhere in the path
+                    for r in &region_names {
+                        if full.contains(r) {
+                            all_hits.push((
+                                group_name.clone(), "region",
+                                format!("{}/{}", d.path, f.name),
+                                f.file.compressed_size, f.file.uncompressed_size,
+                            ));
+                            break;
+                        }
+                    }
+
+                    // 2. Tile-coordinate pattern: _NN_NN before extension
+                    if has_tile_coord_pattern(&name_lower) {
+                        all_hits.push((
+                            group_name.clone(), "tile_coord",
+                            format!("{}/{}", d.path, f.name),
+                            f.file.compressed_size, f.file.uncompressed_size,
+                        ));
+                    }
+
+                    // 3. Tile / heightmap / terrain keywords
+                    for k in &tile_kw {
+                        if full.contains(k) {
+                            all_hits.push((
+                                group_name.clone(), "tile_kw",
+                                format!("{}/{}", d.path, f.name),
+                                f.file.compressed_size, f.file.uncompressed_size,
+                            ));
+                            break;
+                        }
+                    }
+
+                    // 4. Large file in a map-like directory
+                    if dir_is_mappy && f.file.uncompressed_size > 4 * 1024 * 1024 {
+                        all_hits.push((
+                            group_name.clone(), "large_in_mapdir",
+                            format!("{}/{}", d.path, f.name),
+                            f.file.compressed_size, f.file.uncompressed_size,
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Dedup (same file might match multiple categories)
+        all_hits.sort_by(|a, b| a.2.cmp(&b.2).then(a.1.cmp(b.1)));
+        all_hits.dedup_by(|a, b| a.2 == b.2 && a.1 == b.1);
+
+        // Group by group_name + category
+        eprintln!("\n=== Hits by category ===");
+        type Hit = (String, &'static str, String, u32, u32);
+        let mut by_cat: std::collections::BTreeMap<&'static str, Vec<&Hit>> = Default::default();
+        for hit in &all_hits {
+            by_cat.entry(hit.1).or_default().push(hit);
+        }
+        for (cat, hits) in &by_cat {
+            eprintln!("\n--- [{cat}] ({} hits) ---", hits.len());
+            // Sort by uncompressed size descending, show top 40
+            let mut h = hits.clone();
+            h.sort_by_key(|b| std::cmp::Reverse(b.4));
+            for hit in h.iter().take(40) {
+                eprintln!(
+                    "  {}: {}  ({} -> {} bytes)",
+                    hit.0, hit.2, hit.3, hit.4,
+                );
+            }
+            if h.len() > 40 {
+                eprintln!("  ... ({} more)", h.len() - 40);
+            }
+        }
+
+        fn has_tile_coord_pattern(name: &str) -> bool {
+            // Match: any digit-digit-underscore-digit-digit chunk, like _12_34
+            let bytes = name.as_bytes();
+            for i in 0..bytes.len().saturating_sub(4) {
+                if bytes[i] == b'_'
+                    && bytes[i+1].is_ascii_digit() && bytes[i+2].is_ascii_digit()
+                    && bytes[i+3] == b'_'
+                    && i + 4 < bytes.len()
+                    && bytes[i+4].is_ascii_digit()
+                {
+                    return true;
+                }
+            }
+            false
+        }
+
+        // Top-level directory path frequency (helps spot directories
+        // we should look at more closely).
+        eprintln!("\n\n=== Top-level directory paths (filtered to map-related) ===");
+        let mut dir_set: std::collections::BTreeSet<String> = Default::default();
+        for group in &group_dirs {
+            let pamt_path = group.join("0.pamt");
+            let Ok(pamt_bytes) = std::fs::read(&pamt_path) else { continue };
+            let Ok(pamt) = PackMeta::parse(&pamt_bytes, None) else { continue };
+            for d in &pamt.directories {
+                let dl = d.path.to_ascii_lowercase();
+                if map_dir_kw.iter().any(|k| dl.contains(k))
+                    || tile_kw.iter().any(|k| dl.contains(k))
+                {
+                    dir_set.insert(format!("{}/{}", group.file_name().unwrap().to_string_lossy(), d.path));
+                }
+            }
+        }
+        for d in &dir_set {
+            eprintln!("  {d}");
+        }
+    }
+
+    /// Extract sample basemap candidates to disk so we can decode +
+    /// inspect them visually. Targets:
+    /// 1. `0015/leveldata/rootlevel/terrain/global/global_colormap.dds`
+    ///    — pre-stitched 5.6 MB whole-world colormap. The "is there a
+    ///    single existing rendered world image?" answer.
+    /// 2. One representative color tile from `terrain/color/` —
+    ///    confirms the per-tile resolution + coverage.
+    /// 3. `cd_worldmap_blur_height.dds` — 89 MB UI-side heightmap.
+    /// 4. `cd_worldmap_road_sdf_32768x32768.dds` — claimed 32768²
+    ///    road SDF; actual texture dims TBD.
+    #[test]
+    #[ignore = "investigation only — extract basemap candidates for visual inspection"]
+    fn _extract_basemap_candidates() {
+        use crate::binary::pamt::PackMeta;
+        use crate::binary::paz;
+
+        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
+            });
+        let out_dir = std::env::current_dir().unwrap().join("out").join("worldmap").join("basemap_candidates");
+        std::fs::create_dir_all(&out_dir).expect("create out dir");
+        eprintln!("writing to: {}", out_dir.display());
+
+        // (group, dir_path, filename)
+        let targets: &[(&str, &str, &str)] = &[
+            ("0015", "leveldata/rootlevel/terrain/global", "global_colormap.dds"),
+            ("0015", "leveldata/rootlevel/terrain/global", "global_extra_region_tintcolormap.dds"),
+            ("0015", "leveldata/rootlevel/terrain/global", "global_regionmap.dds"),
+            ("0015", "leveldata/rootlevel/terrain/global", "global_smallscalegroupmap.dds"),
+            // Pick a tile that's likely on land: -5,-5 is well inside the eastern Crimson area
+            ("0015", "leveldata/rootlevel/terrain/color", "terrain_-5_-5_color_c.dds"),
+            ("0015", "leveldata/rootlevel/terrain/color", "terrain_0_0_color_c.dds"),
+            ("0015", "leveldata/rootlevel/terrain/height16f", "terrain_-5_-5_height_h.dds"),
+            ("0015", "leveldata/rootlevel/terrain/region", "terrain_-5_-5_region_r.dds"),
+            // UI-side big files
+            ("0012", "ui/texture/image/worldmap", "cd_worldmap_blur_height.dds"),
+            ("0012", "ui/texture/image/worldmap", "cd_worldmap_road_sdf_32768x32768.dds"),
+            // Region title labels
+            ("0012", "ui/texture/image/worldmapregiontitle", "cd_worldmap_image_heranad_crime_sdf_4096x4096.dds"),
+            ("0012", "ui/texture/image/worldmapregiontitle", "cd_worldmap_image_crimsondesert_crime_sdf_4096x4096.dds"),
+        ];
+
+        let mut extracted = 0;
+        let mut missing = 0;
+        // PAMT cache to avoid re-parsing
+        let mut pamt_cache: std::collections::HashMap<String, Option<(PackMeta, std::path::PathBuf)>> = Default::default();
+        for (group, dir_path, name) in targets {
+            let cached = pamt_cache.entry((*group).to_string()).or_insert_with(|| {
+                let pamt_path = game_root.join(group).join("0.pamt");
+                let bytes = std::fs::read(&pamt_path).ok()?;
+                let pamt = PackMeta::parse(&bytes, None).ok()?;
+                Some((pamt, game_root.join(group)))
+            });
+            let Some((pamt, group_dir)) = cached.as_ref() else {
+                eprintln!("missing PAMT for group {group}");
+                missing += 1;
+                continue;
+            };
+            let enc = &pamt.header.encrypt_info.encrypt_info;
+            let Some(d) = pamt.directories.iter().find(|d| d.path == *dir_path) else {
+                eprintln!("missing dir: {group}/{dir_path}");
+                missing += 1;
+                continue;
+            };
+            let Some(file) = d.files.iter().find(|f| f.name == *name) else {
+                eprintln!("missing file: {group}/{dir_path}/{name}");
+                missing += 1;
+                continue;
+            };
+            let bytes = match paz::extract_file(group_dir, file, dir_path, enc) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("extract failed: {group}/{dir_path}/{name}: {e:?}");
+                    missing += 1;
+                    continue;
+                }
+            };
+            let out_path = out_dir.join(name);
+            std::fs::write(&out_path, &bytes).expect("write");
+            eprintln!("  wrote {} ({} bytes)", out_path.display(), bytes.len());
+            extracted += 1;
+        }
+        eprintln!("\nextracted: {extracted}, missing: {missing}");
+    }
+
+    /// Drill into the leads from `_probe_worldmap_tile_hunt`:
+    /// list every file under each of the high-priority candidate
+    /// directories so we can pick the actual basemap source.
+    #[test]
+    #[ignore = "investigation only — list contents of high-priority basemap candidate directories"]
+    fn _probe_worldmap_candidate_dirs() {
+        use crate::binary::pamt::PackMeta;
+
+        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
+            });
+
+        // (group, dir_path)
+        let targets: &[(&str, &str)] = &[
+            // Tiled terrain data — the ground-truth source
+            ("0015", "leveldata/rootlevel/terrain/color"),
+            ("0015", "leveldata/rootlevel/terrain/height16f"),
+            ("0015", "leveldata/rootlevel/terrain/normal"),
+            ("0015", "leveldata/rootlevel/terrain/global"),
+            ("0015", "leveldata/rootlevel/terrain/heighttable"),
+            ("0015", "leveldata/rootlevel/terrain/mask"),
+            ("0015", "leveldata/rootlevel/terrain/region"),
+            ("0015", "leveldata/rootlevel/terrain/addregion"),
+            ("0015", "leveldata/rootlevel/terrain/extraregion"),
+            ("0015", "leveldata/rootlevel/terrain/shorelinesdf"),
+            // UI-side world-map content
+            ("0012", "ui/texture/image/worldmap"),
+            ("0012", "ui/texture/image/worldmapfog"),
+            ("0012", "ui/texture/image/worldmapimage"),
+            ("0012", "ui/texture/image/worldmapimage_abyssgate"),
+            ("0012", "ui/texture/image/worldmapimage_knowledge"),
+            ("0012", "ui/texture/image/worldmapimage_skill"),
+            ("0012", "ui/texture/image/worldmapregiontitle"),
+            ("0012", "ui/texture/image/knowledgeworldmapimage"),
+        ];
+
+        for (group, dir_path) in targets {
+            let pamt_path = game_root.join(group).join("0.pamt");
+            let Ok(pamt_bytes) = std::fs::read(&pamt_path) else {
+                eprintln!("\n=== {group}/{dir_path} === (missing PAMT)");
+                continue;
+            };
+            let Ok(pamt) = PackMeta::parse(&pamt_bytes, None) else {
+                eprintln!("\n=== {group}/{dir_path} === (PAMT parse failed)");
+                continue;
+            };
+            let Some(d) = pamt.directories.iter().find(|d| d.path == *dir_path) else {
+                eprintln!("\n=== {group}/{dir_path} === (directory NOT FOUND)");
+                continue;
+            };
+            eprintln!("\n=== {group}/{dir_path} ({} files) ===", d.files.len());
+            // Sort by uncompressed size descending so the headline asset is first
+            let mut files = d.files.iter().collect::<Vec<_>>();
+            files.sort_by_key(|b| std::cmp::Reverse(b.file.uncompressed_size));
+            for f in files.iter().take(50) {
+                eprintln!(
+                    "  {}  ({} -> {} bytes)",
+                    f.name, f.file.compressed_size, f.file.uncompressed_size,
+                );
+            }
+            if files.len() > 50 {
+                eprintln!("  ... ({} more)", files.len() - 50);
+            }
+        }
+    }
+
     /// World-map asset discovery probe — scans every PAMT group for
     /// files whose paths suggest world-map / minimap textures. Used
     /// to find the candidate image asset(s) the C# editor would

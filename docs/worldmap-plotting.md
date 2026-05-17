@@ -198,6 +198,66 @@ Live test pinned by `live_affine_lands_in_basemap`: slot103's
 active char projects to pixel `(1399.9, 3758.3)` on the 5178×5240
 basemap — comfortably in-bounds, matches manual placement.
 
+### Basemap tile discovery + extraction (shipped 2026-05-17, session 7)
+
+The player-facing world map is **procedurally rendered at runtime** —
+the game has no single rasterised basemap file. Source ingredients
+live in two places:
+
+| Group / dir | What's there | Per-file resolution |
+|---|---|---|
+| `0015/leveldata/rootlevel/terrain/global/global_colormap.dds` | Pre-stitched whole-world colormap | **2048×2048** |
+| `0015/leveldata/rootlevel/terrain/color/` | 785 per-tile colormaps `terrain_X_Y_color_c.dds` (X, Y ∈ ~[-19,+19]) | 512×512 per tile, ~14,332² stitched |
+| `0015/leveldata/rootlevel/terrain/height16f/` | 785 16-bit float heightmap tiles | 512×512 per tile |
+| `0015/leveldata/rootlevel/terrain/normal/` | 784 surface-normal tiles | 512×512 per tile |
+| `0015/leveldata/rootlevel/terrain/region/` | 784 per-pixel region-ID tiles | 512×512 per tile |
+| `0012/ui/texture/image/worldmap/cd_worldmap_blur_height.dds` | UI-side heightmap (relief shading) | **8192×8192** |
+| `0012/ui/texture/image/worldmap/cd_worldmap_road_sdf_32768x32768.dds` | UI-side road SDF (every road in the world) | 8192×8192 (filename's 32768 is the SDF distance range, not pixel dims) |
+| `0012/ui/texture/image/worldmapregiontitle/` | 234 region-title decals (HERNAND / CRIMSON DESERT / etc.) | 1024×1024 each |
+
+**Tile ↔ chunk relationship**: each `terrain_X_Y_*` tile covers
+**1000×1000 game units** — exactly one chunk on the chunk grid pinned
+earlier in this doc. Per-pixel scale ≈ 0.5 px / game unit.
+
+### Shipped ABI: `crimson_paz_list_dir`
+
+Lists every file in a PAMT directory as 272-byte `repr(C)`
+`CrimsonPazFileEntry` records (filename + sizes + flags). Pairs with
+the existing `crimson_paz_extract_file` for the full
+discover → extract pipeline. C# editor workflow:
+
+```csharp
+string pamt = Path.Combine(gameRoot, "0015", "0.pamt");
+var tiles = CrimsonPaz.ListDir(pamt, "leveldata/rootlevel/terrain/color");
+// → 785 entries; 784 are 174,904 B, one edge tile is 43,832 B
+foreach (var entry in tiles) {
+    string cachePath = Path.Combine(localCache, entry.Name);
+    if (File.Exists(cachePath)) continue;
+    byte[] dds = CrimsonPaz.ExtractFile(pamt, "leveldata/rootlevel/terrain/color", entry.Name);
+    File.WriteAllBytes(cachePath, dds);   // editor decodes/composites locally
+}
+```
+
+See `src/c_abi/paz.rs::crimson_paz_list_dir`. Live regression
+`c_abi_paz_list_dir_terrain_color_live` pins the 785-tile count +
+174,904 B dominant size on slot103. The 1.07 game install must be on
+the host running the test, otherwise the test skips cleanly.
+
+**Scope split (decision 2026-05-17)**:
+- **Rust side**: tile / asset extraction from PAZ (existing
+  `crimson_paz_extract_file`) + directory listing (new
+  `crimson_paz_list_dir`).
+- **C# side**: DDS decoding (TBD whether to add `crimson_dds_decode`
+  later — the user's editor will try existing DDS libs first), local
+  cache management, GPU-side compositing of layers (heightmap +
+  roads + colormap + region titles), POI marker overlay via the
+  existing `crimson_save_list_field_positions` data + affine fit.
+
+The two-call sizing-then-fill shape matches every other listing ABI
+in this crate. NOT yet exposed (defer to a future PR if needed):
+DDS decode (`crimson_dds_decode_to_rgba`), top-level directory
+enumeration across an entire PAMT, or batch extraction.
+
 ### Secondary / nice-to-have (not blocking the editor)
 
 - **Field-origin lookup table from gamedata.** The chunk origins are
