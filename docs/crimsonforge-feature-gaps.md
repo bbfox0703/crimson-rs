@@ -2,21 +2,24 @@
 
 What `D:\Github\crimsonforge` (Python toolkit) can decode/extract that `crimson-rs` cannot yet — focused on **game data the user can read out**, not Blender/mesh/audio/UI/installer plumbing.
 
-Captured 2026-05-13 from a cross-repo survey, **revised 2026-05-16** to mark the gaps closed by the Save Editor key-resolver workstream. The intent is to record the gap so it can be triaged, not to plan a port.
+Captured 2026-05-13 from a cross-repo survey, **revised 2026-05-17** to reflect the full Save Editor key-resolver expansion (32 bridges total). The intent is to record the gap so it can be triaged, not to plan a port.
 
 ---
 
 ## Status snapshot
 
-crimson-rs covers the **archive layer** byte-for-byte, **and the semantic key→PALOC layer for nine gamedata tables**:
+crimson-rs covers the **archive layer** byte-for-byte, **and the semantic key→name layer for 32 gamedata tables**:
 
 - `binary/{pamt,papgt,paz,trie,paloc}` — container read/write/roundtrip + PALOC parser (`src/binary/paloc.rs`)
 - `crypto/{checksum,chacha20}` — Jenkins hashlittle2 + ChaCha20
 - `item_info/` — full schema parser for `iteminfo.pabgb` (105 fields)
 - `skill_info/` — `skill.pabgb` + `skill.pabgh` with brute-forced tail sizes
 - `string_info/` — `u32 hash → string` bridge
-- `save/` — game save read/write
-- `character_info/`, `mission_info/`, `quest_info/`, `stage_info/`, `knowledge_info/`, `quest_gauge_info/`, `sub_level_info/`, `gimmick_info/`, `dye_color_group_info/`, `part_prefab_dye_texture_pallete_info/`, `part_prefab_dye_slot_info/` — anchor-scan parsers behind C ABI bridges that chain through PALOC for display names (where the gamedata row resolves there)
+- `save/` — game save read/write + typed composite-scalar setters (F32x3/x4/U32x4) + dynamic-array JSON inlining + `list_character_refs` save-side enumerator
+- **Title-resolver bridges** (PALOC display names): `character_info/`, `mission_info/`, `quest_info/`, `stage_info/`, `knowledge_info/`, `quest_gauge_info/`, `sub_level_info/`, `gimmick_info/`
+- **Dye / appearance bridges**: `dye_color_group_info/`, `part_prefab_dye_texture_pallete_info/`, `part_prefab_dye_slot_info/`, plus the combined `item_part_prefab` (3-table join: iteminfo + stringinfo + partprefabdyeslotinfo)
+- **Faction bridges**: `faction_node_info/` (1,158 rows), `faction_spawn_data_info/` (117), `faction_relation_group_info/` (5)
+- **Catalog / template-name bridges** (name-only, no PALOC chain): `store_info` (292), `mercenary_info` (18), `house_info` (4), `royal_supply_info` (4), `craft_tool_info` (17) + `craft_tool_group_info` (10), `trigger_region_info` (12), `gameplay_variable_info` (47), `global_game_event_info` (103) + `global_game_event_group_info` (7), `game_advice_info` (461) + `game_advice_group_info` (8), `reserve_slot_info` (27), `region_info` (1,004), `item_group_info` (1,500)
 
 The remaining gap is mostly the **mesh / prefab / animation / dialogue** surface CrimsonForge built for the Blender pipeline, which is intentionally out of scope here.
 
