@@ -2,12 +2,68 @@
 
 > **🎯 New session pickup — start here.**
 >
-> **Where we are (updated 2026-05-17)**: every save-side key the C# Save
-> Editor currently surfaces resolves through a shipped C ABI bridge.
-> **34 bridges shipped + the deferred-redecode batch ABI + the
-> object-list presence-toggle ABI + the cross-container item
-> enumerator.** Test suite: **277** with `c_abi`, **76** without,
-> **33** `#[ignore]`'d diagnostic probes. Clippy clean both modes.
+> **Where we are (updated 2026-05-17, end of session 5)**: every save-
+> side key the C# Save Editor currently surfaces resolves through a
+> shipped C ABI bridge. **34 bridges shipped + the deferred-redecode
+> batch ABI + the object-list presence-toggle ABI + the cross-
+> container item enumerator + the dye palette accessors + the
+> slice-from-raw UB fix.** Test suite: **277** with `c_abi`, **76**
+> without, **37** `#[ignore]`'d diagnostic probes (+4 from session 5's
+> world-map work). Clippy clean both modes.
+>
+> ### Active workstream picked up next: world-map NPC plotting
+>
+> Investigation complete on the math side; what's left is a single C
+> ABI surface. Full writeup: [`worldmap-plotting.md`](./worldmap-plotting.md).
+>
+> Key findings from session 5:
+> - **Save `_position` / `_spawnPosition` values are already in the
+>   global coordinate frame** — same frame as the in-game teleport
+>   system's "TP marker" values. No conversion needed for plotting.
+> - The in-game CE injection's char-position reading is **field-local**
+>   (relative to the active sublevel chunk's origin). The original
+>   calibration attempt failed (RMSE 1286 px) because we used CE coords.
+>   After switching to TP-marker coords: **RMSE 6.4 px, max 15 px**.
+> - The world is partitioned into **1000×1000 game-unit chunks** on an
+>   integer grid. Each chunk's global origin is at integer-multiple-of-
+>   1000 coords. Verified across 9 landmarks; full chunk-origin table
+>   in [`worldmap-plotting.md`](./worldmap-plotting.md) §"The chunk
+>   grid".
+> - **Affine fit on the user's 5178×5240 web basemap is essentially
+>   diagonal**: `map_px = 0.432·X + 5937.50`, `map_py = -0.433·Z + 1864.08`.
+>   ~0.432 px / world-unit, no rotation, Z-axis flip only.
+> - Map textures extracted to `out/worldmap/` via the new
+>   `_extract_worldmap_dds` probe; decoded with `scripts/decode_worldmap_dds.py`.
+>
+> **Next session's primary task**: ship a positioned-entity enumerator
+> C ABI (same shape as `crimson_save_list_all_items` but for entities
+> with `_spawnPosition`). Spec in
+> [`worldmap-plotting.md`](./worldmap-plotting.md) §"What the next
+> session should ship". The editor pipeline becomes:
+> `list_field_positions → filter by field_info_key → apply pinned
+> affine → plot pixels`.
+>
+> ### Session 5 history (collapsed)
+>
+> - **Dye picker model fixed** ([PR #55](https://github.com/bbfox0703/crimson-rs/pull/55)).
+>   `_dyeColorR/G/B/A` save scalars index into a 109-position palette
+>   per `Color_Group` theme, NOT freeform RGB. On-disk byte order is
+>   **BGRA**, not RGBA — parser swaps to logical RGBA. Three new C
+>   ABI accessors (`palette_size`, `palette_at`, `position_for_rgb`)
+>   let the editor render a discrete grid picker.
+> - **`slice_from_raw_or_empty` UB fix** ([PR #54](https://github.com/bbfox0703/crimson-rs/pull/54)).
+>   All 9 unguarded `from_raw_parts` sites in `c_abi/mod.rs` now route
+>   through a helper that handles `(null, 0)` safely (Rust 2024
+>   tightened the precondition). Plus the C# editor's `IS_PLAYER_OWNED`
+>   widening recipe documented in
+>   [`dye-editor-scope.md`](./dye-editor-scope.md).
+> - **Cross-container item enumerator** ([PR #53](https://github.com/bbfox0703/crimson-rs/pull/53)).
+>   `crimson_save_list_all_items` yields all 829 player-owned + NPC-
+>   follower items across 5 container kinds. `IS_PLAYER_OWNED` flag
+>   filters to the 619 actually-editable items.
+> - **Side quest faction rollup + main quest chapter rollup**
+>   ([PR #52](https://github.com/bbfox0703/crimson-rs/pull/52)) —
+>   curated rollups for both quest categories.
 >
 > ### What landed this session (2026-05-17, fourth pass)
 >
