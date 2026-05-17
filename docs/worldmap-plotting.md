@@ -1,8 +1,11 @@
 # World-map NPC plotting — investigation notes (2026-05-17)
 
-Captured for the next session. Investigation is largely complete on
-the math side; what's left is a single C ABI surface (a positioned-
-entity enumerator) and one piece of user calibration cleanup.
+Investigation complete. The position enumerator C ABI
+(`crimson_save_list_field_positions`) shipped on 2026-05-17 — see
+[the "Shipped" section below](#shipped-position-enumerator-c-abi-2026-05-17).
+Coordinate model, affine fit, and asset extraction are pinned. Only
+the Hernand Town TP-coord re-read remains as user calibration
+cleanup; everything else is optional follow-on.
 
 ## Goal
 
@@ -140,50 +143,60 @@ Plus three Python scripts under `scripts/`:
 - `worldmap_tp_fit.py` — successful fit with TP-marker coords.
 - `worldmap_hernand_only.py` — Hernand-cluster-only fit (pre-TP-coord realization).
 
-## What the next session should ship
+## Shipped: position enumerator C ABI (2026-05-17)
 
-### Primary task: position enumerator C ABI
+`crimson_save_list_field_positions` lives in
+[`src/c_abi/positions.rs`](../src/c_abi/positions.rs). Same shape as
+`crimson_save_list_all_items` — two-call sizing-then-fill, fills a
+caller-provided buffer of 56-byte `CrimsonPositionedEntityRecord`
+rows, populates an `out_version` stamp for snapshot staleness
+detection, and panics route to `error::PANIC`.
 
-Same shape as `crimson_save_list_all_items`, but for positioned
-entities. Yields one record per `(_spawnPosition, _spawnFieldInfoKey)`
-pair across these container classes:
+### Final container coverage (slot103 baseline)
 
-| Container | slot103 count | Position field |
-|---|---:|---|
-| `MercenarySaveData` | 96 | `_spawnPosition: float3` |
-| `FieldNPCSaveData` | 228 | TBD — probe expected to confirm |
-| `FieldGimmickSaveData` | 4,260 | TBD |
-| `TransformFieldSaveData` | 1 (per visited field) | `_position: float3` (the active char) |
-| `GameData_GimmickPointData` | 857 | TBD |
+| Kind | Container | Position source | Records |
+|---|---|---|---:|
+| `ACTIVE_CHAR` | `TransformSaveData._fieldSaveDataList[0]` → `TransformFieldSaveData._position` | F32x3 direct | 1 |
+| `MERCENARY` | `MercenaryClanSaveData._mercenaryDataList[N]._spawnPosition` | F32x3 direct | 76 (of 96 — 20 mercs have no present `_spawnPosition`) |
+| `GIMMICK` | `FieldSaveData._fieldGimmickSaveDataList[N]._transform` ∥ `_originSpawnTransform` | 40-byte `Transform` scalar — scale[3] + quat[4] + pos[3], decoded from `ScalarValue::Bytes` | 3,240 (of 4,260 — 24% are state-only, no transform) |
 
-Per-record fields (suggested `repr(C)`, ~48 bytes):
+**Total: 3,317 records in slot103**.
 
-```rust
-#[repr(C)]
-pub struct CrimsonPositionedEntityRecord {
-    pub block_idx: u32,
-    pub kind: u32,                // enum: MERCENARY / FIELD_NPC / GIMMICK / ACTIVE_CHAR / ...
-    pub field_info_key: u32,      // _spawnFieldInfoKey for client-side region filtering
-    pub character_key: u32,       // for MERCENARY / FIELD_NPC; 0 otherwise
-    pub gimmick_info_key: u32,    // for GIMMICK; 0 otherwise
-    pub mercenary_no: u64,        // for MERCENARY; 0 otherwise
-    pub pos_x: f32,               // _spawnPosition[0] (already global)
-    pub pos_y: f32,               // _spawnPosition[1] — height (ignored for top-down plotting)
-    pub pos_z: f32,               // _spawnPosition[2] (already global)
-    pub yaw: f32,                 // _spawnYaw (for directional markers)
-}
-```
+### What changed vs the original spec
 
-C# editor pipeline:
+- **`FieldNPCSaveData` dropped from scope.** The 12 fields don't
+  include a position — NPC positions live in gamedata level data,
+  not the save. Plotting NPCs needs a separate gamedata-level data
+  bridge.
+- **`GameData_GimmickPointData` dropped from scope.** 857 instances
+  exist at the TOC level, but `_transform` is universally absent in
+  slot103. Revisit if a future probe finds present transforms.
+- **`FieldGimmickSaveData` lives nested**, not at TOC. The host is
+  `FieldSaveData._fieldGimmickSaveDataList` (count=4260 at `toc[873]`
+  in slot103). The walker enumerates direct children only — nested
+  child gimmicks (in `_fieldGimmickSaveData_AutoSpawnChildList` etc.)
+  co-locate with their parent and are not enumerated separately.
+- **Transform decoding**: the 40-byte `Transform` type lands in
+  `ScalarValue::Bytes(Vec<u8>)`, NOT `FieldValue::InlineBytes`.
+  Schema is `scale(0..12) + quaternion(12..28) + position(28..40)`.
+- **Yaw**: mercenaries have `_spawnYaw` (direct f32); active char
+  and gimmicks derive yaw from the quaternion as
+  `atan2(2(wy + xz), 1 - 2(y² + z²))`. Every observed transform is
+  a pure Y-axis rotation (qx ≈ qz ≈ 0), so the formula reduces to
+  `2·atan2(qy, qw)`.
+- **Final record size: 56 bytes** (12 u32/f32 + 1 u64), 8-aligned.
+  Layout pinned by `record_layout_is_stable` test.
+
+### C# editor pipeline (unchanged)
+
 1. `crimson_save_list_field_positions(handle, …)` → record array.
 2. (Optional) Filter by `field_info_key` if showing one region at a time.
 3. Apply the affine: `(px, py) = (0.432044*pos_x + 5937.50, -0.433071*pos_z + 1864.08)`.
 4. Plot at `(px, py)` on the basemap. Use `yaw` for facing direction if rendering arrows.
 
-The affine coefficients can be exposed as constants in the docs, or
-embedded in the editor — they're stable per-basemap. If a different
-basemap is used, the editor re-calibrates client-side via numpy /
-its own least-squares helper.
+Live test pinned by `live_affine_lands_in_basemap`: slot103's
+active char projects to pixel `(1399.9, 3758.3)` on the 5178×5240
+basemap — comfortably in-bounds, matches manual placement.
 
 ### Secondary / nice-to-have (not blocking the editor)
 
@@ -197,12 +210,21 @@ its own least-squares helper.
 
 - **Re-verify Hernand Town TP coord.** Single CE read in-game.
 
-- **Extend `MercenarySaveData`-tagged ABI** with the same global
-  `_spawnPosition` so the C# editor can hover a mount marker and
-  see "this is Damine's horse".
+- **Recursive gimmick walker.** Today's enumerator stops at
+  `_fieldGimmickSaveDataList[N]`. The five `_fieldGimmickSaveData_*ChildList`
+  sublists carry ~1,020 nested gimmicks that share their parent's
+  approximate position. Add a variant ABI (`*_list_all_field_positions_deep`)
+  if the editor grows a "drill into multi-slot container" feature.
+
+- **NPC positions from level data.** `FieldNPCSaveData` carries
+  `_spawnFieldInfoKey` + `_characterKey` but no position — to plot
+  NPCs, load the matching `levelinfo*.pabgb` or equivalent gamedata
+  and join against the save's NPC presence.
 
 ## Cross-references
 
+- [`src/c_abi/positions.rs`](../src/c_abi/positions.rs) — the shipped ABI surface.
+- `src/c_abi/character_info.rs::tests::_probe_positioned_entity_hosts` — schema discovery probe (run with `--ignored --nocapture` for cross-version verification).
 - `src/c_abi/character_info.rs::tests::_probe_transform_save_data_slot102` — schema of `TransformFieldSaveData` (field 2 = `_position`).
 - `src/c_abi/character_info.rs::tests::_extract_worldmap_dds` — refresh map texture extraction.
 - `scripts/worldmap_tp_fit.py` — re-run the affine fit if more calibration points land.

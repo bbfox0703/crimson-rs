@@ -55,6 +55,7 @@ pub mod paloc;
 pub mod part_prefab_dye_slot_info;
 pub mod part_prefab_dye_texture_pallete_info;
 pub mod paz;
+pub mod positions;
 pub mod quest_gauge_info;
 pub mod quest_info;
 pub mod region_info;
