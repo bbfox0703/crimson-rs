@@ -13,7 +13,7 @@
 >
 > - **`side_quest_faction`** — sibling of `main_quest_chapter`. Curated
 >   flat `(quest_title, faction_name)` rollup sourced from
->   [`side-quest-list.md`](./side-quest-list.md). Side quests are
+>   [`side-quest-list.md`](./ref-gamedata/side-quest-list.md). Side quests are
 >   organized by faction rather than the Chapter/Arc structure used for
 >   main quests, so the bridge ships a two-direction lookup: quest→
 >   faction (1:1, every curated quest has exactly one faction) and
@@ -40,7 +40,7 @@
 > ### What landed this session (2026-05-17, second pass)
 >
 > - **`main_quest_chapter`** — curated `(chapter, arc, mission)` rollup
->   bridge sourced from [`main-quest-list.md`](./main-quest-list.md).
+>   bridge sourced from [`main-quest-list.md`](./ref-gamedata/main-quest-list.md).
 >   Closes the long-deferred **"Quest chapter rollup"** follow-on —
 >   the chapter layer ("Prologue: Dead of Night", "Chapter 1: The First
 >   Encounter", …) is not present in any RE'd gamedata table, so the
@@ -163,9 +163,9 @@
 > `knowledge_info`, `sub_level_info`, `gimmick_info`,
 > `character_info` (+ `resolve_portrait` matcher), `skill_info`,
 > **`main_quest_chapter`** (curated rollup — chapter → arc → mission
-> tree from [`main-quest-list.md`](./main-quest-list.md)),
+> tree from [`main-quest-list.md`](./ref-gamedata/main-quest-list.md)),
 > **`side_quest_faction`** (curated flat rollup — quest → faction
-> from [`side-quest-list.md`](./side-quest-list.md), with reverse
+> from [`side-quest-list.md`](./ref-gamedata/side-quest-list.md), with reverse
 > enumeration).
 >
 > Dye / appearance gamedata bridges:
@@ -221,7 +221,7 @@
 > - ~~Quest chapter rollup ("Prologue: Dead of Night" et al. — never
 >   located)~~ — **shipped 2026-05-17** via the `main_quest_chapter`
 >   bridge backed by the curated
->   [`main-quest-list.md`](./main-quest-list.md). The chapter layer is
+>   [`main-quest-list.md`](./ref-gamedata/main-quest-list.md). The chapter layer is
 >   genuinely not in any gamedata file; the bridge embeds the wiki-style
 >   breakdown as a static table.
 > - lo32=0x490 mission-variant meaning (Q4, partially overshadowed

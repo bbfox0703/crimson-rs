@@ -1,7 +1,7 @@
 //! Side-quest faction rollup — C ABI surface.
 //!
 //! Static curated `(quest_title, faction_name)` table sourced from
-//! [`docs/side-quest-list.md`](../../docs/side-quest-list.md). Side
+//! [`docs/ref-gamedata/side-quest-list.md`](../../docs/ref-gamedata/side-quest-list.md). Side
 //! quests in Crimson Desert are organized by **faction** rather than
 //! the Chapter / Arc structure used for the main story (see the
 //! [sibling `main_quest_chapter` bridge](super::main_quest_chapter)

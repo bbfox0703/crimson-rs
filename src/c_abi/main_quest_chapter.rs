@@ -1,7 +1,7 @@
 //! Main-quest chapter rollup — C ABI surface.
 //!
 //! Static curated `(chapter, arc, mission)` table sourced from
-//! [`docs/main-quest-list.md`](../../docs/main-quest-list.md). Quest
+//! [`docs/ref-gamedata/main-quest-list.md`](../../docs/ref-gamedata/main-quest-list.md). Quest
 //! chapter rollups ("Prologue: Dead of Night", "Chapter 1: The First
 //! Encounter", …) are **not present in any RE'd gamedata table** —
 //! [`docs/save-editor-keys-plan.md`](../../docs/save-editor-keys-plan.md)
@@ -1159,7 +1159,7 @@ mod tests {
     //!    non-Prologue row has a non-empty arc, no row has an empty
     //!    chapter.
     //! 2. Forward / reverse lookups — the documented "trace" cases
-    //!    from `docs/main-quest-list.md` resolve in both directions.
+    //!    from `docs/ref-gamedata/main-quest-list.md` resolve in both directions.
     //! 3. Collision behaviour — the three repeated mission titles
     //!    resolve to the *first* declared chapter, and the arc lookup
     //!    surfaces the corresponding arc.
