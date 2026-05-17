@@ -6,8 +6,8 @@
 > Editor currently surfaces resolves through a shipped C ABI bridge.
 > **34 bridges shipped + the deferred-redecode batch ABI + the
 > object-list presence-toggle ABI + the cross-container item
-> enumerator.** Test suite: **273** with `c_abi`, **76** without,
-> **31** `#[ignore]`'d diagnostic probes. Clippy clean both modes.
+> enumerator.** Test suite: **275** with `c_abi`, **76** without,
+> **32** `#[ignore]`'d diagnostic probes. Clippy clean both modes.
 >
 > ### What landed this session (2026-05-17, fourth pass)
 >
@@ -23,10 +23,14 @@
 >   `HAS_DYE_DATA` / `HAS_SOCKET_DATA` / `OWNER_IS_MAIN_MERCENARY`).
 >   slot103 baseline: 829 records (was 545 with the inventory-only
 >   ABI) — 18 active equip + 1 active reserve + 545 inventory + 245
->   mercenary equip + 20 mercenary inventory. v1 mutation caveat:
->   mercenary records are read-only for now (the recorded 2-step path
->   doesn't reach 3 levels deep into MercenarySaveData); active /
->   inventory / reserve records ARE mutation-compatible. Full spec in
+>   mercenary equip + 20 mercenary inventory. All five container kinds
+>   are mutation-compatible — the recorded 2-step path plugs into
+>   `crimson_save_set_scalar_field_path` regardless of kind (verified
+>   by `live_path_navigation_reaches_item_save_data_for_every_kind`).
+>   Plus an `IS_PLAYER_OWNED` flag (set when the container's owner is
+>   in `PLAYABLE_CHARACTER_KEYS = {1, 4, 6}` or owned by one) that
+>   filters out the 210 NPC-follower records, leaving 619 player-owned
+>   items in slot103. Full spec in
 >   [`dye-editor-scope.md`](./dye-editor-scope.md) §"Implication for
 >   the C# editor's item enumerator".
 >

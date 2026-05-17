@@ -475,17 +475,32 @@ Owner identity:
   (cat-byte stripped); `owner_mercenary_no` distinguishes individual
   instances of the same template (e.g. multiple horses).
 
-**v1 mutation caveat for mercenary records**: the recorded path is
-2 steps `[(_mercenaryDataList, N), (_equipItemList, M)]` but the real
-on-disk descent through a `MercenarySaveData` is three levels.
-Active / inventory / reserve records are directly mutation-compatible
-(their descent IS 2 steps). Mercenary-item mutation needs either a
-future `path_len = 3` extension or a dedicated mercenary-mutation
-helper — see the rustdoc on
-[`crimson_save_list_all_items`](../src/c_abi/all_items.rs) for the
-tracking note. For the dye / socket editors v1, this is enough: the
-editor can READ every player item, and WRITE every active-character /
-inventory item; mount + mercenary writes wait on the path extension.
+**Mutation compatibility for every kind**: the recorded 2-step path
+plugs straight into `crimson_save_set_scalar_field_path` for ALL
+five container kinds, including the mercenary ones. The previous
+"3 levels deep" worry was a misread of the path-step semantics —
+each step navigates one level relative to the previous, so
+`[(_mercenaryDataList, N), (_equipItemList, M)]` from
+`MercenaryClanSaveData` reaches `ItemSaveData` correctly (same
+shape as `[(_inventoryList, N), (_itemList, M)]` from
+`InventorySaveData`). Pinned by the
+`live_path_navigation_reaches_item_save_data_for_every_kind` test.
+
+**Filtering player-owned items** (the user's actual concern): the
+829 records include 50+ NPC mercenary followers' gear. The
+`item_record_flags::IS_PLAYER_OWNED` flag bit is set when the
+container's owner is one of the three playables OR a mount owned
+by a playable (`_characterKey` or `_ownedCharacterKey` in
+`PLAYABLE_CHARACTER_KEYS = {1, 4, 6}`). Slot103 breakdown:
+**619 player-owned** / **210 NPC followers**.
+
+Known coverage gap: two mounts (`Riding_Horse_Tiuta_Unique_2050_kliff`
+and `Animal_Stefano_Wild_31364`) have `_ownedCharacterKey` absent
+and so fall outside the strict rule. The C# editor's escape hatch
+is to resolve `owner_character_key` via the `characterinfo` bridge
+and include any mercenary whose name starts with `Riding_*` /
+`Animal_*` / `Vehicle_*`. The C ABI walker stays conservative to
+avoid coupling the all-items hot path to a gamedata load.
 
 **Excluded by design**: `FieldGimmickSaveData._item<locator>` (world
 loot / chests, 4,260 in slot103), `StoreDataSaveData._storeSoldItemDataList`

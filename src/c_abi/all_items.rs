@@ -116,7 +116,66 @@ pub mod item_record_flags {
     /// the player's 96 mercenary slots. Always 0 for non-mercenary
     /// container kinds.
     pub const OWNER_IS_MAIN_MERCENARY: u32 = 1 << 4;
+    /// Item belongs to one of the three playable characters or to a
+    /// mount they own. Set when:
+    /// - container_kind is `ACTIVE_EQUIP` / `ACTIVE_USE_RESERVE` /
+    ///   `INVENTORY` (the active character is always one of the
+    ///   playables), **OR**
+    /// - container_kind is `MERCENARY_EQUIP` / `MERCENARY_INVENTORY`
+    ///   AND the enclosing mercenary's `_characterKey & 0xFFFFFF` is
+    ///   in [`super::PLAYABLE_CHARACTER_KEYS`] (i.e. the mercenary
+    ///   block IS one of the playables — Damine / Oongka stored
+    ///   under MercenaryClanSaveData while inactive), **OR**
+    /// - container_kind is `MERCENARY_EQUIP` / `MERCENARY_INVENTORY`
+    ///   AND the enclosing mercenary's `_ownedCharacterKey & 0xFFFFFF`
+    ///   is in [`super::PLAYABLE_CHARACTER_KEYS`] (a mount owned by a
+    ///   playable).
+    ///
+    /// Clear (0) for items inside NPC mercenary followers — the
+    /// editor uses `flags & IS_PLAYER_OWNED != 0` to filter the
+    /// 829-record full list down to the gear actually editable by
+    /// the player. See [`super::PLAYABLE_CHARACTER_KEYS`] for the
+    /// hardcoded set + rationale.
+    pub const IS_PLAYER_OWNED: u32 = 1 << 5;
 }
+
+/// `CharacterKey` values (cat-byte already stripped) for the three
+/// playable characters in 1.07:
+///
+/// | Key | Character | Container when active | Container when inactive |
+/// |---:|---|---|---|
+/// | 1 | Kliff | `EquipmentSaveData._list` | (none — Kliff is always reachable) |
+/// | 4 | Damine | `EquipmentSaveData._list` | `MercenaryClanSaveData._mercenaryDataList[0]` |
+/// | 6 | Oongka | `EquipmentSaveData._list` | `MercenaryClanSaveData._mercenaryDataList[1]` |
+///
+/// Used to compute [`item_record_flags::IS_PLAYER_OWNED`] for
+/// mercenary container kinds: a mercenary block is "playable-owned"
+/// if its `_characterKey & 0xFFFFFF` is in this set, OR its
+/// `_ownedCharacterKey & 0xFFFFFF` is (mounts inherit ownership from
+/// their playable owner).
+///
+/// ## Known coverage gap (1.07 slot103 baseline)
+///
+/// Two of the player-controlled mounts in slot103 have
+/// `_ownedCharacterKey = absent`:
+/// - `Riding_Horse_Tiuta_Unique_2050_kliff` (charKey=1003120) —
+///   Kliff's starter Tiuta horse (the `_kliff` template variant).
+/// - `Animal_Stefano_Wild_31364` — a captured wild animal.
+///
+/// Both ARE the player's mounts in-game but the strict rule treats
+/// them as unowned. The C# editor has an escape hatch: it can
+/// resolve `owner_character_key` via the existing `characterinfo`
+/// bridge and include any mercenary whose name starts with
+/// `Riding_*` / `Animal_*` / `Vehicle_*` as a player-controlled
+/// mount even without `_ownedCharacterKey`. The C ABI walker stays
+/// conservative to avoid dragging the characterinfo PABGB load into
+/// the all-items hot path; client-side widening is the recommended
+/// pattern.
+///
+/// **Maintenance**: hardcoded for 1.07. If a future patch adds a
+/// playable, extend this slice and bump the `c_abi` version note in
+/// [`docs/dye-editor-scope.md`](../../docs/dye-editor-scope.md).
+pub const PLAYABLE_CHARACTER_KEYS: &[u32] = &[1, 4, 6];
 
 /// One flat record emitted by [`crimson_save_list_all_items`] — a
 /// `repr(C)` 64-byte structure laid out for direct mmap-style read
@@ -237,6 +296,10 @@ struct RecordCtx {
     /// not the inner `ItemSaveData`. `None` falls back to the item's
     /// own `_slotNo` field.
     slot_no_override: Option<u32>,
+    /// Whether the enclosing container belongs to one of the
+    /// playable characters or a mount they own. Drives the
+    /// [`item_record_flags::IS_PLAYER_OWNED`] flag bit.
+    is_player_owned: bool,
 }
 
 /// Build a record from an `ItemSaveData` block + classifier context.
@@ -258,6 +321,9 @@ fn build_record(ctx: RecordCtx, item: &ObjectBlock) -> Option<CrimsonItemRecord>
     }
     if ctx.owner_is_main_mercenary {
         flags |= item_record_flags::OWNER_IS_MAIN_MERCENARY;
+    }
+    if ctx.is_player_owned {
+        flags |= item_record_flags::IS_PLAYER_OWNED;
     }
     // Dye / socket: present + count > 0.
     for f in &item.fields {
@@ -377,6 +443,7 @@ fn emit_active_equipment(
                 owner_mercenary_no: 0,
                 owner_is_main_mercenary: false,
                 slot_no_override,
+                is_player_owned: true, // active character is always a playable
             },
             item,
         ));
@@ -423,6 +490,7 @@ fn emit_active_use_reserve(
                 owner_mercenary_no: 0,
                 owner_is_main_mercenary: false,
                 slot_no_override,
+                is_player_owned: true,
             },
             item,
         ));
@@ -477,6 +545,7 @@ fn emit_inventory(
                     owner_mercenary_no: 0,
                     owner_is_main_mercenary: false,
                     slot_no_override: None,
+                    is_player_owned: true,
                 },
                 item,
             ));
@@ -499,8 +568,18 @@ fn emit_mercenary_lists(block: &ObjectBlock, block_idx: u32, out: &mut Vec<Crims
         let owner_char_key = pull_u32_present(merc, "_characterKey")
             .map(|k| k & 0xFFFFFF)
             .unwrap_or(0);
+        let owned_by = pull_u32_present(merc, "_ownedCharacterKey")
+            .map(|k| k & 0xFFFFFF);
         let owner_merc_no = pull_u64_present(merc, "_mercenaryNo").unwrap_or(0);
         let is_main = pull_bool_true(merc, "_isMainMercenary");
+        // Player-owned if the mercenary block IS a playable (Damine /
+        // Oongka — `_characterKey ∈ PLAYABLE_CHARACTER_KEYS`) OR a
+        // mount whose `_ownedCharacterKey` points at a playable.
+        // Kliff isn't in this branch — he's active, so his gear lives
+        // in EquipmentSaveData and gets its IS_PLAYER_OWNED set by
+        // the active-equip emitter above.
+        let is_player_owned = PLAYABLE_CHARACTER_KEYS.contains(&owner_char_key)
+            || owned_by.is_some_and(|k| PLAYABLE_CHARACTER_KEYS.contains(&k));
 
         // Equip list
         if let Some(equip_list_field) =
@@ -517,20 +596,13 @@ fn emit_mercenary_lists(block: &ObjectBlock, block_idx: u32, out: &mut Vec<Crims
             // shape the existing mutation ABIs accept (each path step
             // descends one level).
             //
-            // NOTE: The C ABI mutation paths expect each step to
-            // descend exactly one level from the current block. For
-            // mercenary items the real on-disk descent is 3 levels
-            // (mercList → merc → equipList → item), but
-            // `path_len=2` plus the recorded
-            // (path_step_0=(_mercenaryDataList, N), path_step_1=
-            // (_equipItemList, M)) is INSUFFICIENT — step 1's field
-            // index `_equipItemList` only exists on a MercenarySaveData,
-            // not on a list. This is the v1 limitation: mercenary
-            // records carry path info that locates the item for
-            // READS, but caller cannot apply mutations through this
-            // path directly. Mutating a mercenary item requires the
-            // future 3-step `path_len` extension or a dedicated
-            // mercenary-mutation helper. Tracking note below.
+            // 2-step descent: each step navigates one level relative
+            // to the previous (per `navigate_mut_to_parent`'s
+            // contract). From MercenaryClanSaveData:
+            //   step 0: _mercenaryDataList[N] → MercenarySaveData
+            //   step 1: _equipItemList[M] → ItemSaveData
+            // Mutation-compatible — pinned by
+            // `live_path_navigation_reaches_item_save_data_for_every_kind`.
             let equip_field_idx = equip_list_field.field_index;
             for (item_idx, item) in items.iter().enumerate() {
                 out.extend(build_record(
@@ -546,6 +618,7 @@ fn emit_mercenary_lists(block: &ObjectBlock, block_idx: u32, out: &mut Vec<Crims
                         owner_mercenary_no: owner_merc_no,
                         owner_is_main_mercenary: is_main,
                         slot_no_override: None,
+                        is_player_owned,
                     },
                     item,
                 ));
@@ -573,6 +646,7 @@ fn emit_mercenary_lists(block: &ObjectBlock, block_idx: u32, out: &mut Vec<Crims
                         owner_mercenary_no: owner_merc_no,
                         owner_is_main_mercenary: is_main,
                         slot_no_override: None,
+                        is_player_owned,
                     },
                     item,
                 ));
@@ -602,20 +676,17 @@ fn emit_mercenary_lists(block: &ObjectBlock, block_idx: u32, out: &mut Vec<Crims
 /// [`super::crimson_save_list_inventory_items`] — same staleness
 /// contract.
 ///
-/// **v1 mutation caveat (mercenary records)**: the
-/// `MERCENARY_EQUIP` / `MERCENARY_INVENTORY` records carry path info
-/// that locates the item for **reads** (via tools like
-/// [`super::crimson_save_get_block_json`] traversing the recorded
-/// path manually), but the path itself doesn't plug directly into
-/// `crimson_save_set_scalar_field_path` because the real on-disk
-/// descent is three levels deep (`_mercenaryDataList[N] → MercenarySaveData
-/// → _equipItemList[M] → ItemSaveData`) and `path_len = 2` only
-/// encodes two `(field, element)` steps. Active-equip / inventory /
-/// reserve records ARE directly mutation-compatible (their descent
-/// is exactly 2 steps). A future revision will either bump
-/// `path_len` to 3 for mercenary records or add a dedicated
-/// mercenary-side path-step type; until then, mercenary-item
-/// mutation should go through a separate helper ABI.
+/// **Mutation compatibility**: all five container kinds emit
+/// 2-step paths that plug straight into
+/// `crimson_save_set_scalar_field_path` (verified by
+/// `live_path_navigation_reaches_item_save_data_for_every_kind`).
+/// Each step navigates one level relative to the previous:
+/// `path_step_0` descends into the outer list (e.g.
+/// `_mercenaryDataList[N]` → `MercenarySaveData`), then
+/// `path_step_1` descends into the inner list / locator (e.g.
+/// `_equipItemList[M]` → `ItemSaveData`). The MERCENARY kinds are
+/// NOT special — they share the same path shape as active equip /
+/// inventory.
 ///
 /// Return codes:
 /// - `OK` — list written. `*out_count_records` and `*out_version` are
@@ -744,6 +815,7 @@ mod tests {
             item_record_flags::HAS_DYE_DATA,
             item_record_flags::HAS_SOCKET_DATA,
             item_record_flags::OWNER_IS_MAIN_MERCENARY,
+            item_record_flags::IS_PLAYER_OWNED,
         ];
         let combined: u32 = flags.iter().sum();
         assert_eq!(
@@ -901,6 +973,22 @@ mod tests {
             .count();
         eprintln!("OWNER_IS_MAIN_MERCENARY records: {}", main_count);
 
+        // Every active-container record has IS_PLAYER_OWNED set
+        // (the active character is always one of the three playables).
+        for r in &records {
+            match r.container_kind {
+                container_kind::ACTIVE_EQUIP
+                | container_kind::ACTIVE_USE_RESERVE
+                | container_kind::INVENTORY => {
+                    assert_ne!(
+                        r.flags & item_record_flags::IS_PLAYER_OWNED, 0,
+                        "active container missing IS_PLAYER_OWNED: {:?}", r,
+                    );
+                }
+                _ => {}
+            }
+        }
+
         // Dye flag matches the diagnostic-probe result: 5 ItemSaveData
         // hosts with present non-empty _itemDyeDataList (one of which
         // is the UseItemReserve mirror, so the all-items walker sees
@@ -915,6 +1003,231 @@ mod tests {
 
         // Version stamp pulled.
         assert_eq!(version, 0, "fresh handle should report mutation_version=0");
+
+        unsafe { super::super::crimson_save_free(handle) };
+    }
+
+    /// Verify the 2-step path recorded for **every** container kind
+    /// (including `MERCENARY_EQUIP`) actually navigates correctly
+    /// through `navigate_mut_to_parent`. The test discriminator is:
+    /// hit `_itemDyeDataList` (field 14 of `ItemSaveData`, known
+    /// ObjectList) via `set_scalar_field_path` with a zero-length
+    /// scalar write. The expected rc is `NOT_SCALAR` (field 14 IS a
+    /// field but isn't a scalar) — which only fires after navigation
+    /// has reached the ItemSaveData. If navigation failed mid-path
+    /// we'd see `NOT_NAVIGABLE` or `OUT_OF_RANGE` instead, which the
+    /// assertion catches.
+    ///
+    /// Settles the v1-caveat question raised in the previous PR: the
+    /// 2-step path IS sufficient for mercenary mutations.
+    /// `navigate_mut_to_parent` walks each step relative to the
+    /// current block, so `[(_mercenaryDataList[N]), (_equipItemList[M])]`
+    /// from `MercenaryClanSaveData` lands on `ItemSaveData` correctly
+    /// — same shape as the inventory + active-equip paths.
+    #[test]
+    fn live_path_navigation_reaches_item_save_data_for_every_kind() {
+        let Some(save_path) = find_save_path() else {
+            eprintln!("skipping: no save");
+            return;
+        };
+        let path_c = std::ffi::CString::new(save_path.to_str().unwrap()).unwrap();
+        let mut handle: *mut CrimsonSaveHandle = ptr::null_mut();
+        let rc = unsafe { super::super::crimson_save_load_from_file(path_c.as_ptr(), &mut handle) };
+        assert_eq!(rc, error::OK);
+
+        // List + filter to one record per container kind.
+        let mut count: usize = 0;
+        let _ = unsafe {
+            crimson_save_list_all_items(handle, ptr::null_mut(), 0, &mut count, ptr::null_mut())
+        };
+        let mut records = vec![
+            CrimsonItemRecord {
+                block_idx: 0, container_kind: 0, path_len: 0,
+                path_step_0_field: 0, path_step_0_element: 0,
+                path_step_1_field: 0, path_step_1_element: 0,
+                inventory_key: 0, item_key: 0, slot_no: 0,
+                flags: 0, owner_character_key: 0,
+                item_no: 0, owner_mercenary_no: 0,
+            };
+            count
+        ];
+        let mut got = 0usize;
+        let _ = unsafe {
+            crimson_save_list_all_items(handle, records.as_mut_ptr(), count, &mut got, ptr::null_mut())
+        };
+
+        // Pick one record per kind (first occurrence).
+        let mut by_kind: std::collections::BTreeMap<u32, &CrimsonItemRecord> = Default::default();
+        for r in &records {
+            by_kind.entry(r.container_kind).or_insert(r);
+        }
+        assert!(
+            by_kind.contains_key(&container_kind::MERCENARY_EQUIP),
+            "slot103 must contain at least one MERCENARY_EQUIP record",
+        );
+
+        for (kind, r) in &by_kind {
+            // Build the path the editor would use.
+            let path = [
+                super::super::CrimsonPathStep {
+                    field_idx: r.path_step_0_field,
+                    element_idx: r.path_step_0_element,
+                },
+                super::super::CrimsonPathStep {
+                    field_idx: r.path_step_1_field,
+                    element_idx: r.path_step_1_element,
+                },
+            ];
+            // field 14 = _itemDyeDataList on ItemSaveData (an ObjectList,
+            // so writing a scalar to it = NOT_SCALAR if navigation worked).
+            // Pass a non-null bytes buffer with arbitrary length — the
+            // API short-circuits on NOT_SCALAR before reading any byte,
+            // so the buffer content is irrelevant. (A null ptr with
+            // len=0 trips `slice::from_raw_parts`'s 2024-edition UB
+            // check.)
+            const ITEM_DYE_DATA_LIST_FIELD_IDX: u32 = 14;
+            let dummy: [u8; 1] = [0];
+            let rc = unsafe {
+                super::super::crimson_save_set_scalar_field_path(
+                    handle,
+                    r.block_idx,
+                    path.as_ptr(),
+                    path.len(),
+                    ITEM_DYE_DATA_LIST_FIELD_IDX,
+                    dummy.as_ptr(),
+                    1,
+                )
+            };
+            assert_eq!(
+                rc, error::NOT_SCALAR,
+                "kind {kind}: navigation reached ItemSaveData but rc={rc} (NOT_SCALAR expected). \
+                 If rc is NOT_NAVIGABLE (-15) or OUT_OF_RANGE (-10) the path is wrong.",
+            );
+        }
+
+        unsafe { super::super::crimson_save_free(handle) };
+    }
+
+    /// Live-install asserter for the `IS_PLAYER_OWNED` filter.
+    ///
+    /// In slot103, the playable-owned subset must be:
+    /// - **All** ACTIVE_EQUIP (18) + ACTIVE_USE_RESERVE (1) +
+    ///   INVENTORY (545) records — the active character is always
+    ///   one of the three playables.
+    /// - The MERCENARY_EQUIP / MERCENARY_INVENTORY records whose
+    ///   enclosing mercenary's `_characterKey ∈ {1, 4, 6}` (the
+    ///   inactive Damine + Oongka playables — slots 0 and 1 in
+    ///   `_mercenaryDataList`).
+    /// - The MERCENARY_EQUIP / MERCENARY_INVENTORY records whose
+    ///   mercenary has `_ownedCharacterKey ∈ {1, 4, 6}` (mounts of
+    ///   the three playables — the Tiuta horses + the dyed black
+    ///   wild horse + the balloon + the wagon).
+    /// - NPC mercenaries (the 50+ `NHM_Unique_*` / `NDM_Unique_*`
+    ///   followers) must be EXCLUDED — those have `_characterKey`
+    ///   outside the playable set and `_ownedCharacterKey` absent.
+    ///
+    /// The exact owned-by-playable count varies (depends on which
+    /// mounts have equipment), but two invariants hold:
+    /// 1. All active-container records are player-owned.
+    /// 2. NPC mercenary records (charKey ∉ {1,4,6} AND no
+    ///    _ownedCharacterKey) are NOT player-owned.
+    #[test]
+    fn live_slot103_player_owned_filter() {
+        let Some(save_path) = find_save_path() else {
+            eprintln!("skipping: no save");
+            return;
+        };
+        let path_c = std::ffi::CString::new(save_path.to_str().unwrap()).unwrap();
+        let mut handle: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { super::super::crimson_save_load_from_file(path_c.as_ptr(), &mut handle) },
+            error::OK,
+        );
+
+        let mut count: usize = 0;
+        let _ = unsafe {
+            crimson_save_list_all_items(handle, ptr::null_mut(), 0, &mut count, ptr::null_mut())
+        };
+        let mut records = vec![
+            CrimsonItemRecord {
+                block_idx: 0, container_kind: 0, path_len: 0,
+                path_step_0_field: 0, path_step_0_element: 0,
+                path_step_1_field: 0, path_step_1_element: 0,
+                inventory_key: 0, item_key: 0, slot_no: 0,
+                flags: 0, owner_character_key: 0,
+                item_no: 0, owner_mercenary_no: 0,
+            };
+            count
+        ];
+        let mut got = 0usize;
+        let _ = unsafe {
+            crimson_save_list_all_items(handle, records.as_mut_ptr(), count, &mut got, ptr::null_mut())
+        };
+
+        let total = records.len();
+        let owned: Vec<_> = records.iter()
+            .filter(|r| r.flags & item_record_flags::IS_PLAYER_OWNED != 0)
+            .collect();
+        let unowned: Vec<_> = records.iter()
+            .filter(|r| r.flags & item_record_flags::IS_PLAYER_OWNED == 0)
+            .collect();
+        eprintln!("total records:      {total}");
+        eprintln!("player-owned:       {}", owned.len());
+        eprintln!("not player-owned:   {}", unowned.len());
+
+        // Active-container records are always player-owned.
+        for r in &records {
+            match r.container_kind {
+                container_kind::ACTIVE_EQUIP
+                | container_kind::ACTIVE_USE_RESERVE
+                | container_kind::INVENTORY => {
+                    assert_ne!(
+                        r.flags & item_record_flags::IS_PLAYER_OWNED, 0,
+                        "active-container record without IS_PLAYER_OWNED",
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        // Unowned records must all be mercenary-container kind — the
+        // walker never emits a non-mercenary record without
+        // IS_PLAYER_OWNED.
+        for r in &unowned {
+            assert!(
+                matches!(
+                    r.container_kind,
+                    container_kind::MERCENARY_EQUIP | container_kind::MERCENARY_INVENTORY,
+                ),
+                "non-mercenary record missing IS_PLAYER_OWNED: {:?}", r,
+            );
+            // And their owner_character_key must be outside the
+            // playable set.
+            assert!(
+                !PLAYABLE_CHARACTER_KEYS.contains(&r.owner_character_key),
+                "NPC follower record has playable owner_character_key: {:?}", r,
+            );
+        }
+
+        // Sanity bounds: the filter shouldn't reject everything or
+        // include everything.
+        assert!(owned.len() < total, "filter passed all {total} records — bug in PLAYABLE_CHARACTER_KEYS?");
+        assert!(owned.len() > 500, "filter passed only {} records, expected >500 (18 + 545 + …)", owned.len());
+
+        // Histogram by owner_character_key among player-owned mercenary records.
+        let mut merc_owners: std::collections::BTreeMap<u32, usize> = Default::default();
+        for r in &owned {
+            if matches!(
+                r.container_kind,
+                container_kind::MERCENARY_EQUIP | container_kind::MERCENARY_INVENTORY,
+            ) {
+                *merc_owners.entry(r.owner_character_key).or_insert(0) += 1;
+            }
+        }
+        eprintln!("player-owned mercenary records by charKey:");
+        for (k, n) in &merc_owners {
+            eprintln!("  charKey={k}: {n}");
+        }
 
         unsafe { super::super::crimson_save_free(handle) };
     }
