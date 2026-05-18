@@ -2,59 +2,121 @@
 
 > **🎯 New session pickup — start here.**
 >
-> **Where we are (updated 2026-05-17, end of session 6)**: every save-
+> **Where we are (updated 2026-05-18, end of session 7)**: every save-
 > side key the C# Save Editor currently surfaces resolves through a
 > shipped C ABI bridge. **34 bridges + the world-map positioned-entity
-> enumerator + the deferred-redecode batch ABI + the object-list
-> presence-toggle ABI + the cross-container item enumerator + the dye
-> palette accessors + the slice-from-raw UB fix.** Test suite: **287**
-> with `c_abi`, **76** without, **38** `#[ignore]`'d diagnostic probes.
-> Clippy clean both modes.
+> enumerator + the basemap tile discovery ABI + the deferred-redecode
+> batch ABI + the object-list presence-toggle ABI + the cross-
+> container item enumerator + the dye palette accessors + the slice-
+> from-raw UB fix.** Test suite: **296** with `c_abi`, **76** without,
+> **41** `#[ignore]`'d diagnostic probes. Clippy clean both modes.
 >
-> ### What landed this session (2026-05-17, session 6)
+> ## Status: no urgent active workstream
 >
-> - **`crimson_save_list_field_positions`** — world-map positioned-
->   entity enumerator. 56-byte `repr(C)` `CrimsonPositionedEntityRecord`
->   rows; same two-call sizing-then-fill shape as
->   [`crimson_save_list_all_items`]. Three `kind` values:
+> The world-map workstream is **shipped end-to-end on the Rust side**.
+> Both halves landed:
+> - Positioned-entity enumerator (PR #56) — feeds markers
+> - PAZ directory listing (PR #57) — feeds basemap tile discovery
+>
+> The remaining work is **C#-editor-side** (DDS decode, local cache,
+> GPU compositing, marker overlay) — not crimson-rs work.
+>
+> ### What to pick up next session
+>
+> Three reasonable options, no urgency on any:
+>
+> 1. **Wait for editor feedback.** The C# editor (CrimsonAtomtic /
+>    CrimsonGameMods) will try the existing ABIs and may surface
+>    follow-on needs. Most likely next ask: **`crimson_dds_decode_to_rgba`**
+>    if C# can't handle Pearl Abyss's custom type-1 self-compressed
+>    DDS variant. The Python decoder in `crimsonforge/core/dds_reader.py`
+>    is the reference implementation to port. See
+>    [`worldmap-plotting.md`](./worldmap-plotting.md) §"Scope split"
+>    for the decision rationale.
+>
+> 2. **Pick from the optional backlog** (none blocking):
+>    - **`CharacterAppearanceIndexKey`** — deferred 2026-05-15. File
+>      located, PABGH/PABGB schema pinned, save→pabgh transform
+>      verified, but only 7% sample hit rate and 21-byte body is
+>      opaque. Full investigation in §9 of this doc.
+>    - **Knowledge group breadcrumb** — sibling of the chapter / faction
+>      rollups for `KnowledgeKey`. No source data located yet.
+>    - **Broader CharacterKey PALOC namespaces** — current bridge
+>      ships at 22% display-name coverage (§6). Expanding to dialogue
+>      / mission-specific names could push coverage higher.
+>    - **Portrait matcher with mesh / customisation tokens** —
+>      current matcher uses display-name string matching only.
+>    - **StoreKey / MercenaryKey PALOC chain probe** — no localized
+>      display names yet; both ship as name-only bridges.
+>    - **RE storeinfo per-row body** (prices, item lists).
+>
+> 3. **React to a new game patch.** If Pearl Abyss ships a patch and
+>    something breaks, follow the diagnostic flow in
+>    [`scripts/CLAUDE.md`](../scripts/CLAUDE.md) "On a new game patch".
+>    Core parsers are byte-perfect on 1.05/1.06/1.07 — drift is
+>    unlikely but possible.
+>
+> ### What landed this session (2026-05-18, session 7)
+>
+> - **`crimson_paz_list_dir`** ([PR #57](https://github.com/bbfox0703/crimson-rs/pull/57))
+>   — basemap tile discovery surface. Lists every file in a PAMT
+>   directory as 272-byte `repr(C)` `CrimsonPazFileEntry` records
+>   (filename + sizes + flags). Pairs with the existing
+>   `crimson_paz_extract_file` so the C# editor can enumerate +
+>   cache the world-map basemap tiles for high-res rendering.
+>   - **Investigation confirmed**: the player-facing world map is
+>     **procedurally rendered at runtime**. There is no single
+>     rasterised basemap file in the install. Ingredients live in
+>     two PAZ groups (`0015/leveldata/rootlevel/terrain/` for the
+>     ground-truth per-tile data; `0012/ui/texture/image/worldmap*/`
+>     for the UI-side composites + region labels).
+>   - **Tile architecture**: 785 color tiles `terrain_X_Y_color_c.dds`
+>     in `0015/leveldata/rootlevel/terrain/color/`, each 512² covering
+>     1000×1000 game units (one chunk). Stitches to ~14,332² mosaic.
+>     Plus 8192² `cd_worldmap_blur_height.dds` heightmap + 8192² road
+>     SDF (`cd_worldmap_road_sdf_32768x32768.dds` — "32768" in name is
+>     SDF distance range, not pixel dims) + 234 region-title decals
+>     at 1024² each. Full table in [`worldmap-plotting.md`](./worldmap-plotting.md)
+>     §"Basemap tile discovery + extraction".
+>   - **`cd_global_map_navigator_guide_00.dds` is NOT the basemap**
+>     — it's a Korean-labelled faction overlay (1024², found in
+>     session 6 but mis-identified). The actual player-facing map
+>     style is composed at runtime from the assets listed above.
+>   - 12 representative DDS files extracted to `out/worldmap/basemap_candidates/`
+>     for offline inspection (via `_extract_basemap_candidates` probe);
+>     gitignored.
+>   - **Scope split decision** (recorded in
+>     [`worldmap-plotting.md`](./worldmap-plotting.md)): Rust handles
+>     PAZ extraction + listing only. C# handles DDS decode, local
+>     cache, GPU compositing of layers, marker overlay. If C# can't
+>     handle the custom DDS, we add `crimson_dds_decode_to_rgba`
+>     in a future session.
+>
+> ### Session 6 history (collapsed — 2026-05-17, world-map plotting)
+>
+> - **`crimson_save_list_field_positions`** ([PR #56](https://github.com/bbfox0703/crimson-rs/pull/56))
+>   — 56-byte `repr(C)` positioned-entity enumerator. Three kinds:
 >   `ACTIVE_CHAR` (1 — `TransformFieldSaveData._position`),
->   `MERCENARY` (76 of 96 — `MercenarySaveData._spawnPosition` F32x3
->   direct), `GIMMICK` (3,240 of 4,260 nested in
->   `FieldSaveData._fieldGimmickSaveDataList` — position decoded from
->   the 40-byte `Transform`-typed `ScalarValue::Bytes` at offset 28).
->   Yaw is `_spawnYaw` direct for mercenaries; derived from the
->   rotation quaternion via `2·atan2(qy, qw)` for the active char and
->   gimmicks. Each record carries `field_info_key` for region filtering
->   plus enough identity (`character_key` / `gimmick_info_key` /
->   `gimmick_save_data_key` / `mercenary_no`) for the editor to render
->   labelled markers. **Pipeline**:
->   `list_field_positions → filter by field_info_key → apply pinned
->   affine (0.432·X + 5937.50, −0.433·Z + 1864.08) → plot`. Live
->   regression `live_affine_lands_in_basemap` pins the active char's
->   pixel coords inside the 5178×5240 basemap. Full writeup:
->   [`worldmap-plotting.md`](./worldmap-plotting.md).
+>   `MERCENARY` (76 of 96 — `_spawnPosition`),
+>   `GIMMICK` (3,240 of 4,260 nested in
+>   `FieldSaveData._fieldGimmickSaveDataList` — position decoded
+>   from 40-byte `Transform`-typed `ScalarValue::Bytes` at offset 28).
+>   slot103 baseline: 3,317 total records.
+>   - **Pipeline**: `list_field_positions → filter by field_info_key
+>     → apply pinned affine (0.432·X + 5937.50, −0.433·Z + 1864.08)
+>     → plot`. Live regression `live_affine_lands_in_basemap` pins
+>     the active char's pixel coords inside the 5178×5240 basemap.
+>   - **Scope drops**: `FieldNPCSaveData` (no position field — NPCs
+>     positioned by gamedata, not save), `GameData_GimmickPointData`
+>     (`_transform` universally absent in slot103), nested child
+>     gimmicks (co-locate with parent).
 >
->   Scope decisions vs the original spec:
->   - **`FieldNPCSaveData` dropped** — 12 fields, none of them is a
->     position. NPCs need a gamedata-level data bridge to plot.
->   - **`GameData_GimmickPointData` dropped** — `_transform` is
->     universally absent in slot103.
->   - **Nested child gimmicks (~1,020) skipped** — they co-locate
->     with the parent slot's transform and don't need separate
->     markers for the editor's plotting use case.
->
-> ### Session 5 history (collapsed — 2026-05-17 morning work)
->
-> Investigation complete on the math side: **save `_position` /
-> `_spawnPosition` values are already in the global coord frame**
-> (same as the in-game TP marker). The in-game CE injection's
-> reading is field-local; using CE coords gave RMSE 1286 px, using
-> TP-marker coords gave **RMSE 6.4 px**. World is partitioned into
-> **1000×1000 game-unit chunks** on an integer grid. Affine fit on
-> the user's 5178×5240 basemap is essentially diagonal:
-> `map_px = 0.432·X + 5937.50`, `map_py = -0.433·Z + 1864.08`. Map
-> textures extracted to `out/worldmap/` via the
-> `_extract_worldmap_dds` probe.
+> Coordinate model + affine: save `_position` / `_spawnPosition` are
+> in the global frame (same as in-game TP marker). CE-injected
+> reading is field-local — caused the original RMSE-1286 calibration
+> failure. After switching to TP-marker coords: RMSE 6.4 px.
+> World is 1000×1000 game-unit chunks; affine is essentially diagonal
+> with a Z-axis flip.
 >
 > ### Session 5 history (collapsed)
 >
