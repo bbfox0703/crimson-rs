@@ -243,6 +243,60 @@ Workflow:
    the path `(block_idx, [(field=14 _itemDyeDataList, element=N)],
    field=<RGBA/grime/etc index>)`.
 
+### v3 — one-shot "how many dye slots does this item have?" (shipped 2026-05-18)
+
+The C# editor needed to chain `crimson_item_part_prefab_lookup_count`
+→ `_lookup_key_at(0)` → `crimson_part_prefab_dye_slot_info_lookup_slot_count`
+for every dyeable item it surfaces. New convenience wrapper:
+
+```c
+int32_t crimson_item_part_prefab_resolve_dye_slot_count(
+    const CrimsonItemPartPrefabHandle* ipp,
+    const CrimsonPartPrefabDyeSlotInfoHandle* slot_info,
+    uint32_t item_key,
+    uint32_t* out_slot_count,
+    uint32_t* out_resolve_source
+);
+```
+
+Always returns `OK` (or `NULL_ARG` / `PANIC`). Resolution outcome
+communicated via `out_resolve_source`:
+
+| Constant | Value | Meaning |
+|---|---:|---|
+| `DIRECT` | 0 | `out_slot_count` is authoritative — chained both bridges cleanly. |
+| `NOT_RESOLVED_NO_PARTPREFAB` | 1 | Item has no partprefab mapping; editor should fall back to a curated default (e.g. the human-male equip-slot prefab's slot count) or show "unknown". 76% of 1.07 `is_dyeable=1` items hit this — they're body-type variants (goblin / dwarf / tribe meshes) that share the human male's dye-slot layout but aren't listed in `partprefabdyeslotinfo`. `out_slot_count = 0`. |
+| `NOT_RESOLVED_NO_SLOT_INFO` | 2 | Partprefab present but missing from the slot-info table. Shouldn't happen given how the join is built — defensive guard for cross-version safety. `out_slot_count = 0`. |
+
+**Resolution policy**: always uses `partprefab[0]` (first resolved
+prefab in iteminfo's `prefab_data_list` traversal order). Multi-prefab
+items usually share a dye-slot layout across variants; if per-variant
+resolution is needed later, drop back to the manual chain via
+`crimson_item_part_prefab_lookup_key_at`.
+
+Live regression `c_abi_item_part_prefab_resolve_dye_slot_count_live`
+pins:
+- ≥30 items resolve via DIRECT in the 1..1M key range (1.07: 45)
+- All resolved slot counts in `1..=32` (plausible range; 1.07
+  observed max is 16)
+- Wrapper output agrees with the manual chain on every resolved item
+- Unknown key → `OK + NOT_RESOLVED_NO_PARTPREFAB`
+- No `NOT_RESOLVED_NO_PARTPREFAB` leakage when iterating items
+  with a known partprefab mapping (defensive branch-logic check)
+
+C# call shape:
+
+```csharp
+var rc = crimson_item_part_prefab_resolve_dye_slot_count(
+    ippHandle, slotInfoHandle, itemKey,
+    out uint slotCount, out uint source);
+if (source == 0 /* DIRECT */) {
+    // slotCount is the answer — render slot picker with that many entries
+} else {
+    // Fallback path: either curated default or "unknown" UI
+}
+```
+
 ### v2 — "add dye to previously-undyed item" (shipped 2026-05-17)
 
 ```c
