@@ -160,6 +160,84 @@ mod tests {
         Some((pabgb, pabgh))
     }
 
+    /// Body-dump probe — reads every 1.07 mercenaryinfo row and prints
+    /// the full body (everything after `(u8 key, u32 name_len, name)`)
+    /// as hex + repr + interpretation hints. Used to RE the per-row
+    /// body schema (price / cooldown / faction / requirements).
+    ///
+    /// 18 rows × ~58 bytes/row should be small enough to identify
+    /// field boundaries by eye. Comparison vs in-game UI values
+    /// (recruitment cost, summon cooldown, required level) settles
+    /// type guesses.
+    #[test]
+    #[ignore = "investigation only — dump mercenaryinfo bodies for body-schema RE"]
+    fn _probe_mercenary_body_dump() {
+        let Some((pabgb, pabgh)) = find_table_bytes() else {
+            eprintln!("skipping: no game install");
+            return;
+        };
+        eprintln!("pabgb total: {} bytes", pabgb.len());
+
+        // Re-parse the PABGH index to get sorted (key, offset) so we
+        // can compute each row's exact length from the next offset.
+        let count = u16::from_le_bytes([pabgh[0], pabgh[1]]) as usize;
+        assert_eq!(count, 18);
+        let mut idx: Vec<(u8, u32)> = (0..count)
+            .map(|i| {
+                let off = 2 + i * 5;
+                let k = pabgh[off];
+                let o = u32::from_le_bytes([
+                    pabgh[off + 1], pabgh[off + 2], pabgh[off + 3], pabgh[off + 4],
+                ]);
+                (k, o)
+            })
+            .collect();
+        // PABGH entries are sorted by offset on-disk; preserve that
+        // order so consecutive (offset, next_offset) define row ends.
+        idx.sort_by_key(|(_k, o)| *o);
+
+        for (i, &(key, off)) in idx.iter().enumerate() {
+            let end = if i + 1 < idx.len() {
+                idx[i + 1].1 as usize
+            } else {
+                pabgb.len()
+            };
+            let row = &pabgb[off as usize..end];
+            let name_len = u32::from_le_bytes([row[1], row[2], row[3], row[4]]) as usize;
+            let name = std::str::from_utf8(&row[5..5 + name_len]).unwrap_or("<bad>");
+            let body = &row[5 + name_len..];
+            eprintln!(
+                "\n=== key={} ({:32}) offset={} row_len={} body_len={} ===",
+                key, name, off, row.len(), body.len(),
+            );
+            // Hex dump in 8-byte rows so eyeball matching is easier.
+            for (j, chunk) in body.chunks(8).enumerate() {
+                let hex: Vec<String> = chunk.iter().map(|b| format!("{b:02x}")).collect();
+                let ascii: String = chunk.iter()
+                    .map(|&b| if (0x20..=0x7e).contains(&b) { b as char } else { '.' })
+                    .collect();
+                eprintln!(
+                    "  {:04x}: {:<24}  |{}|",
+                    j * 8, hex.join(" "), ascii,
+                );
+            }
+            // Type-guess pass: try every offset as u32, u16, u8 and flag
+            // plausible values (small positive ints, recognisable patterns).
+            eprintln!("  --- numeric-field probes ---");
+            for o in (0..body.len().saturating_sub(4)).step_by(1) {
+                let u32_le = u32::from_le_bytes([body[o], body[o+1], body[o+2], body[o+3]]);
+                // Look for values that "feel like" game data:
+                // - small u32 (<= 1_000_000) → could be level / price / hash
+                // - typed u8 / u16 → flags
+                // We just print the "small u32 LE" interpretations to
+                // help spot price / cooldown fields.
+                if u32_le > 0 && u32_le < 10_000_000 {
+                    eprintln!("    @{o:>2}  u32_le={u32_le}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn mercenary_info_lossy_live() {
         let Some((pabgb, pabgh)) = find_table_bytes() else {
