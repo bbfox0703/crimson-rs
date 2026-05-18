@@ -2,14 +2,54 @@
 
 > **🎯 New session pickup — start here.**
 >
-> **Where we are (updated 2026-05-18, end of session 7)**: every save-
+> **Where we are (updated 2026-05-18, end of session 8)**: every save-
 > side key the C# Save Editor currently surfaces resolves through a
-> shipped C ABI bridge. **34 bridges + the world-map positioned-entity
-> enumerator + the basemap tile discovery ABI + the deferred-redecode
-> batch ABI + the object-list presence-toggle ABI + the cross-
-> container item enumerator + the dye palette accessors + the slice-
-> from-raw UB fix.** Test suite: **296** with `c_abi`, **76** without,
-> **41** `#[ignore]`'d diagnostic probes. Clippy clean both modes.
+> shipped C ABI bridge. **34 bridges (one promoted to "body-aware":
+> `globalgameevent` now exposes `group_key` + `paloc_key`) + the
+> world-map positioned-entity enumerator + the basemap tile discovery
+> ABI + the deferred-redecode batch ABI + the object-list presence-
+> toggle ABI + the cross-container item enumerator + the dye palette
+> accessors + the slice-from-raw UB fix.** Test suite: **303** with
+> `c_abi`, **76** without, **43** `#[ignore]`'d diagnostic probes.
+> Clippy clean both modes.
+>
+> ### What landed this session (2026-05-18, session 8)
+>
+> - **`globalgameevent` body fields**. Two new C ABI lookups expose
+>   per-row body data the existing macro-generated bridge couldn't
+>   carry:
+>   - `crimson_global_game_event_info_lookup_group_key(handle, key, *out)`
+>     — universal across all 103 rows; returns the
+>     `GlobalGameEventGroupKey` (1 of 7 — `WeatherEventGroup`,
+>     `FactionBlockEventGroup`, …) that classifies the event.
+>   - `crimson_global_game_event_info_lookup_paloc_key(handle, key, *out_u64)`
+>     — returns the 64-bit PALOC localization key
+>     (`(hi32 = event_key, lo32 = namespace)` shape) for resolving
+>     the localized display name. Returns 0 for rows whose body
+>     lacks the embedded `PalocStringRef` (RoyalSupply +
+>     FactionBlockEvent_* — 24/103 rows). Caller treats 0 as "no
+>     localized name; fall back to internal-name surface".
+>   - C ABI module rewritten hand-written (vs macro-generated) to
+>     carry the additional per-entry data. Standard 6 functions
+>     (`load_from_file`/`_bytes`, `free`, `entry_count`,
+>     `lookup_string_key`, `get_entry`) reimplemented identically;
+>     the two new lookups + `not_found` + `null_args` tests added.
+>   - Full RE writeup: [`docs/globalgameevent-body-re.md`](./globalgameevent-body-re.md).
+>     Per-group action lists (22-byte WeatherEventGroup entries,
+>     RoyalSupply cross-ref list, FactionBlock FactionNodeKey)
+>     documented but **deferred** — Tier 2 work waiting for an
+>     editor-side need.
+>
+> - **`mercenaryinfo` body RE** — documented as
+>   [`docs/mercenaryinfo-body-re.md`](./mercenaryinfo-body-re.md), no
+>   bridge change. Identified the 40-byte body schema (type_enum,
+>   group_letter, default Jenkins hash, 16-byte flag bitfield) but
+>   the most useful field guess (`max_count` at body[1..5]) doesn't
+>   match in-game observation (Pet=3 vs collection cap 30, Wagon=1 vs
+>   2-4 ownership). Probe lives in `src/mercenary_info/mod.rs`. Pick
+>   back up when an editor surface motivates resolving the open
+>   questions (most likely path: IDA pass on the recruitment UI
+>   loader).
 >
 > ## Status: no urgent active workstream
 >
