@@ -2,54 +2,57 @@
 
 > **🎯 New session pickup — start here.**
 >
-> **Where we are (updated 2026-05-18, end of session 8)**: every save-
+> **Where we are (updated 2026-05-18, end of session 9)**: every save-
 > side key the C# Save Editor currently surfaces resolves through a
 > shipped C ABI bridge. **34 bridges (one promoted to "body-aware":
-> `globalgameevent` now exposes `group_key` + `paloc_key`) + the
-> world-map positioned-entity enumerator + the basemap tile discovery
-> ABI + the deferred-redecode batch ABI + the object-list presence-
-> toggle ABI + the cross-container item enumerator + the dye palette
-> accessors + the slice-from-raw UB fix.** Test suite: **303** with
+> `globalgameevent` exposes `group_key` + `paloc_key`) + the
+> `item_part_prefab` dye-slot-count wrapper + the world-map
+> positioned-entity enumerator + the basemap tile discovery ABI +
+> the deferred-redecode batch ABI + the object-list presence-toggle
+> ABI + the cross-container item enumerator + the dye palette
+> accessors + the slice-from-raw UB fix.** Test suite: **306** with
 > `c_abi`, **76** without, **43** `#[ignore]`'d diagnostic probes.
 > Clippy clean both modes.
 >
-> ### What landed this session (2026-05-18, session 8)
+> ### What landed this session (2026-05-18, session 9)
 >
-> - **`globalgameevent` body fields**. Two new C ABI lookups expose
->   per-row body data the existing macro-generated bridge couldn't
->   carry:
->   - `crimson_global_game_event_info_lookup_group_key(handle, key, *out)`
->     — universal across all 103 rows; returns the
->     `GlobalGameEventGroupKey` (1 of 7 — `WeatherEventGroup`,
->     `FactionBlockEventGroup`, …) that classifies the event.
->   - `crimson_global_game_event_info_lookup_paloc_key(handle, key, *out_u64)`
->     — returns the 64-bit PALOC localization key
->     (`(hi32 = event_key, lo32 = namespace)` shape) for resolving
->     the localized display name. Returns 0 for rows whose body
->     lacks the embedded `PalocStringRef` (RoyalSupply +
->     FactionBlockEvent_* — 24/103 rows). Caller treats 0 as "no
->     localized name; fall back to internal-name surface".
->   - C ABI module rewritten hand-written (vs macro-generated) to
->     carry the additional per-entry data. Standard 6 functions
->     (`load_from_file`/`_bytes`, `free`, `entry_count`,
->     `lookup_string_key`, `get_entry`) reimplemented identically;
->     the two new lookups + `not_found` + `null_args` tests added.
->   - Full RE writeup: [`docs/globalgameevent-body-re.md`](./globalgameevent-body-re.md).
->     Per-group action lists (22-byte WeatherEventGroup entries,
->     RoyalSupply cross-ref list, FactionBlock FactionNodeKey)
->     documented but **deferred** — Tier 2 work waiting for an
->     editor-side need.
+> - **`crimson_item_part_prefab_resolve_dye_slot_count`**
+>   ([PR #59](https://github.com/bbfox0703/crimson-rs/pull/59))
+>   — one-shot wrapper closing the C# Dye editor's open question
+>   "how many dye slots does this equipment have? 2 or 8?". Chains
+>   the existing `item_part_prefab` join + `partprefabdyeslotinfo`
+>   bridges into a single call; returns `(out_slot_count,
+>   out_resolve_source)`. The `resolve_source` enum (`DIRECT` /
+>   `NOT_RESOLVED_NO_PARTPREFAB` / `NOT_RESOLVED_NO_SLOT_INFO`) lets
+>   the editor differentiate "authoritative count" from "fall back
+>   to curated default" without checking two error codes.
+>   - 76% of 1.07 `is_dyeable=1` items hit `NO_PARTPREFAB` — they're
+>     body-type variants (goblin / dwarf / tribe meshes) that share
+>     the human male's dye-slot layout but aren't listed in
+>     `partprefabdyeslotinfo`. Editor falls back to a curated
+>     default or shows "unknown".
+>   - Slot counts observed in 1.07 are `1..=16` (NOT the casually-
+>     expected 2-or-8 range); test asserts `[1, 32]` for defensive
+>     headroom.
+>   - 3 new tests (live sweep, NULL_ARG, constant pinning); 306
+>     with `c_abi` (was 303).
+>   - Full surface: [`docs/dye-editor-scope.md`](./dye-editor-scope.md) §v3.
 >
+> ### Session 8 history (collapsed)
+>
+> Two RE investigations, one shipped:
+> - **`globalgameevent` body fields** (PR #58 — `group_key` + `paloc_key`
+>   lookups exposed via hand-written ABI replacing the macro-generated
+>   name-only bridge). 100% / 76.7% coverage respectively. Full RE in
+>   [`docs/globalgameevent-body-re.md`](./globalgameevent-body-re.md);
+>   per-group action lists (Tier 2) outlined but deferred.
 > - **`mercenaryinfo` body RE** — documented as
 >   [`docs/mercenaryinfo-body-re.md`](./mercenaryinfo-body-re.md), no
->   bridge change. Identified the 40-byte body schema (type_enum,
->   group_letter, default Jenkins hash, 16-byte flag bitfield) but
->   the most useful field guess (`max_count` at body[1..5]) doesn't
->   match in-game observation (Pet=3 vs collection cap 30, Wagon=1 vs
->   2-4 ownership). Probe lives in `src/mercenary_info/mod.rs`. Pick
->   back up when an editor surface motivates resolving the open
->   questions (most likely path: IDA pass on the recruitment UI
->   loader).
+>   bridge change. 40-byte body schema identified (`type_enum`,
+>   `group_letter`, default Jenkins hash, 16-byte flag bitfield) but
+>   the `max_count` guess (body[1..5]) didn't match in-game
+>   observation. Pick back up when an editor surface motivates IDA
+>   work on the recruitment UI loader.
 >
 > ## Status: no urgent active workstream
 >

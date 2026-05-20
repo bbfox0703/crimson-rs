@@ -1,5 +1,7 @@
 use crate::binary::{BinaryRead, BinaryReadTracked, BinaryWrite, FieldRange};
+#[cfg(feature = "python")]
 use crate::python_traits::{ToPyValue, WritePyValue};
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
 use std::io::{self, Write};
 
@@ -33,12 +35,14 @@ macro_rules! define_key {
             }
         }
 
+        #[cfg(feature = "python")]
         impl ToPyValue for $name {
             fn to_py_value(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
                 self.0.to_py_value(py)
             }
         }
 
+        #[cfg(feature = "python")]
         impl WritePyValue for $name {
             fn write_from_py(w: &mut Vec<u8>, obj: &Bound<'_, PyAny>) -> PyResult<()> {
                 <$inner as WritePyValue>::write_from_py(w, obj)

@@ -1,3 +1,15 @@
+// Default-features build (neither `python` nor `c_abi` enabled) is a
+// minimal dev sub-surface — there's no shipping consumer that links
+// only the pure-Rust core, so save/* + paloc/* + item_info helpers that
+// the `python` facade or `c_abi` bridges would normally pull in look
+// dead to the linter. Silence dead_code globally in that combo only;
+// the two real-build clippy gates in `.github/workflows/ci.yml` keep
+// the public-surface code paths covered.
+#![cfg_attr(
+    not(any(feature = "python", feature = "c_abi")),
+    allow(dead_code, unused_imports)
+)]
+
 mod binary;
 #[cfg(feature = "c_abi")]
 mod character_info;
@@ -41,6 +53,7 @@ mod mission_info;
 mod part_prefab_dye_slot_info;
 #[cfg(feature = "c_abi")]
 mod part_prefab_dye_texture_pallete_info;
+#[cfg(feature = "python")]
 mod python;
 #[cfg(feature = "c_abi")]
 mod quest_gauge_info;
@@ -63,13 +76,16 @@ mod string_info;
 mod sub_level_info;
 #[cfg(feature = "c_abi")]
 mod trigger_region_info;
+#[cfg(feature = "python")]
 pub(crate) mod python_traits;
 
 #[cfg(feature = "c_abi")]
 mod c_abi;
 
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
 
+#[cfg(feature = "python")]
 #[pymodule]
 pub fn crimson_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     python::register(m)

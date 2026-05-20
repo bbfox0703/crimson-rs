@@ -35,8 +35,16 @@ jobs:
       # Mirror the local invariant: zero warnings.
       # Tests-and-examples are included so probe macros, doc tests, etc.
       # are also linted.
-      - name: cargo clippy --all-targets -- -D warnings
-        run: cargo clippy --all-targets --lib -- -D warnings
+      #
+      # Strict gate runs with both consumer features on simultaneously
+      # — that's the maximum reachable surface (PyO3 wheel + extern "C"
+      # bridges share the parsers underneath). The bare-default build is
+      # a dev sub-surface (see the cfg_attr in src/lib.rs); a separate
+      # `cargo check` keeps it compiling but skips the dead-code lint.
+      - name: cargo check (default features, must compile)
+        run: cargo check --lib
+      - name: clippy --features c_abi,python (strict)
+        run: cargo clippy --all-targets --lib --features c_abi,python -- -D warnings
 
       # The game-data-dependent tests skip cleanly when the install
       # paths (D:\..., G:\...) aren't present, so this exercises the
