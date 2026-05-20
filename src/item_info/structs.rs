@@ -1,12 +1,16 @@
 use std::io::{self, Write};
 
+#[cfg(feature = "python")]
 use pyo3::exceptions::PyValueError;
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
+#[cfg(feature = "python")]
 use pyo3::types::PyDict;
 
 use super::keys::*;
 use crate::binary::*;
 use crate::py_binary_struct;
+#[cfg(feature = "python")]
 use crate::python_traits::{ToPyValue, WritePyValue, get_field};
 
 // ── Simple structs ──────────────────────────────────────────────────────────
@@ -355,6 +359,7 @@ impl BinaryWrite for SubItem {
     }
 }
 
+#[cfg(feature = "python")]
 impl ToPyValue for SubItem {
     fn to_py_value(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let d = PyDict::new(py);
@@ -369,6 +374,7 @@ impl ToPyValue for SubItem {
     }
 }
 
+#[cfg(feature = "python")]
 impl WritePyValue for SubItem {
     fn write_from_py(w: &mut Vec<u8>, obj: &Bound<'_, PyAny>) -> PyResult<()> {
         let d = obj.cast::<PyDict>()?;
@@ -508,6 +514,7 @@ impl BinaryWrite for SealableItemInfo<'_> {
     }
 }
 
+#[cfg(feature = "python")]
 impl ToPyValue for SealableItemInfo<'_> {
     fn to_py_value(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let d = PyDict::new(py);
@@ -525,6 +532,7 @@ impl ToPyValue for SealableItemInfo<'_> {
     }
 }
 
+#[cfg(feature = "python")]
 impl WritePyValue for SealableItemInfo<'_> {
     fn write_from_py(w: &mut Vec<u8>, obj: &Bound<'_, PyAny>) -> PyResult<()> {
         let d = obj.cast::<PyDict>()?;

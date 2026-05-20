@@ -8,5 +8,10 @@ requires-python = ">=3.12"
 dynamic = ["version"]
 
 [tool.maturin]
-features = ["pyo3/extension-module"]
+# `python` activates the optional pyo3 dep (which always carries
+# `extension-module` in Cargo.toml — so the wheel doesn't link
+# python3.dll on Windows). The default-feature build is pure-Rust
+# core + no PyO3 link, which is what the C# / Avalonia consumers
+# get from `cargo build --features c_abi`.
+features = ["python"]
 python-source = "python"

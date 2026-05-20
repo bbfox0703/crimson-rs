@@ -8,13 +8,25 @@ name = "crimson_rs"
 crate-type = ["cdylib"]
 
 [features]
+# Default build is pure-Rust core only — no PyO3, no python3.dll
+# dependency. Suitable for consumers that LoadLibrary the cdylib
+# from a non-Python host (C# / Avalonia / etc) without bundling
+# Python; pairs with `c_abi`.
+default = []
 # Additive C ABI for native consumers (Avalonia / C# / etc).
 # When enabled, the cdylib exports a `crimson_save_*` extern "C"
-# surface alongside the existing PyO3 entry point.
+# surface. Independent of `python`; both can be enabled together
+# if a downstream wants the C ABI exposed *to* a Python build.
 c_abi = []
+# Python bindings (PyO3 #[pymodule]). Maturin selects this via
+# `[tool.maturin] features = ["python"]` in pyproject.toml.
+# `pyo3/extension-module` is always-on for the pyo3 dep below so
+# even this build never link-imports `python3.dll` on Windows —
+# the symbols are resolved by the host Python interpreter at load.
+python = ["dep:pyo3"]
 
 [dependencies]
-pyo3 = { version = "0.27.2", features = ["abi3-py312"] }
+pyo3 = { version = "0.27.2", features = ["abi3-py312", "extension-module"], optional = true }
 chacha20_crate = { package = "chacha20", version = "0.10.0" }
 lz4_flex = "0.11"
 flate2 = "1.0"

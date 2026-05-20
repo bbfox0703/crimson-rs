@@ -174,6 +174,7 @@ macro_rules! py_binary_struct {
             }
         }
 
+        #[cfg(feature = "python")]
         impl $(< $lt >)? $name $(< $lt >)? {
             pub fn to_py_dict<'py>(&self, py: pyo3::Python<'py>)
                 -> pyo3::PyResult<pyo3::Bound<'py, pyo3::types::PyDict>>
@@ -195,12 +196,14 @@ macro_rules! py_binary_struct {
             }
         }
 
+        #[cfg(feature = "python")]
         impl $(< $lt >)? $crate::python_traits::ToPyValue for $name $(< $lt >)? {
             fn to_py_value(&self, py: pyo3::Python<'_>) -> pyo3::PyResult<pyo3::Py<pyo3::PyAny>> {
                 Ok(self.to_py_dict(py)?.into_any().unbind())
             }
         }
 
+        #[cfg(feature = "python")]
         impl $(< $lt >)? $crate::python_traits::WritePyValue for $name $(< $lt >)? {
             fn write_from_py(w: &mut Vec<u8>, obj: &pyo3::Bound<'_, pyo3::PyAny>) -> pyo3::PyResult<()> {
                 Self::write_from_py_dict(w, obj.cast::<pyo3::types::PyDict>()?)
