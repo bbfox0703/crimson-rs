@@ -1,0 +1,18 @@
+# Statically link the MSVC C runtime on Windows MSVC targets so the
+# cdylib produced by `cargo build --release --features c_abi` has zero
+# transitive DLL dependencies beyond Windows system libraries.
+#
+# Without this, the dll link-imports `VCRUNTIME140.dll` and consumers
+# need the Visual C++ Redistributable installed on their target PC.
+# With static-CRT, the runtime is folded into the dll (~150 KB extra)
+# and the resulting binary is fully self-contained — the C# downstream
+# (CrimsonAtomtic) can ship `crimson_rs.dll` next to its .exe and have
+# it load on any 64-bit Windows machine with no prerequisite installer.
+#
+# Only applies to the MSVC target. The Python wheel CI in
+# `.github/workflows/build.yml` uses `x86_64-pc-windows-gnu` and is
+# unaffected; Python wheels load inside the Python interpreter which
+# already provides a CRT, so static-linking there would just bloat
+# the wheel for no benefit.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
