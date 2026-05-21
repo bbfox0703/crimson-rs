@@ -688,7 +688,7 @@ mod tests {
                     .join("CD")
                     .join("save");
                 std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
-                    let p = entry.path().join("slot103").join("save.save");
+                    let p = entry.path().join("slot107").join("save.save");
                     p.is_file().then_some(p)
                 })
             })
@@ -705,9 +705,9 @@ mod tests {
     }
 
     #[test]
-    fn live_slot103_breakdown() {
+    fn live_slot107_breakdown() {
         let Some(save_path) = find_save_path() else {
-            eprintln!("skipping live_slot103_breakdown: no slot103/save.save");
+            eprintln!("skipping live_slot107_breakdown: no slot107/save.save");
             return;
         };
         let path_c = std::ffi::CString::new(save_path.to_str().unwrap()).unwrap();
@@ -723,7 +723,7 @@ mod tests {
             crimson_save_list_field_positions(handle, ptr::null_mut(), 0, &mut count, &mut version)
         };
         // Expect thousands — the 4260 gimmicks dominate.
-        assert!(count > 1000, "expected >1000 records in slot103, got {count}");
+        assert!(count > 1000, "expected >1000 records in slot107, got {count}");
         if count > 0 {
             assert_eq!(rc, error::BUFFER_TOO_SMALL);
         }
@@ -749,7 +749,7 @@ mod tests {
         for r in &records {
             *by_kind.entry(r.kind).or_insert(0) += 1;
         }
-        eprintln!("slot103 breakdown by position kind:");
+        eprintln!("slot107 breakdown by position kind:");
         for (k, n) in &by_kind {
             let name = match *k {
                 position_kind::ACTIVE_CHAR => "ACTIVE_CHAR",

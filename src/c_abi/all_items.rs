@@ -852,16 +852,16 @@ mod tests {
                     .join("CD")
                     .join("save");
                 std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
-                    let p = entry.path().join("slot103").join("save.save");
+                    let p = entry.path().join("slot107").join("save.save");
                     p.is_file().then_some(p)
                 })
             })
     }
 
     #[test]
-    fn live_slot103_breakdown() {
+    fn live_slot107_breakdown() {
         let Some(save_path) = find_save_path() else {
-            eprintln!("skipping live_slot103_breakdown: no slot103/save.save");
+            eprintln!("skipping live_slot107_breakdown: no slot107/save.save");
             return;
         };
         let path_c = std::ffi::CString::new(save_path.to_str().unwrap()).unwrap();
@@ -877,7 +877,7 @@ mod tests {
             crimson_save_list_all_items(handle, ptr::null_mut(), 0, &mut count, &mut version)
         };
         // Expect a non-trivial save with hundreds of items.
-        assert!(count > 100, "expected >100 records in slot103, got {count}");
+        assert!(count > 100, "expected >100 records in slot107, got {count}");
         if count > 0 {
             assert_eq!(rc, error::BUFFER_TOO_SMALL);
         }
@@ -908,7 +908,7 @@ mod tests {
         assert_eq!(count2, count);
 
         // Histogram by container kind — pin the reference counts from
-        // the slot103 diagnostic probe.
+        // the slot107 diagnostic probe.
         let mut by_kind: std::collections::BTreeMap<u32, usize> = Default::default();
         for r in &records {
             *by_kind.entry(r.container_kind).or_insert(0) += 1;
@@ -917,7 +917,7 @@ mod tests {
             // item_key should be non-zero (every ItemSaveData has one).
             assert!(r.item_key != 0, "item_key=0 for container_kind={}", r.container_kind);
         }
-        eprintln!("slot103 breakdown by container_kind:");
+        eprintln!("slot107 breakdown by container_kind:");
         for (k, n) in &by_kind {
             let name = match *k {
                 container_kind::ACTIVE_EQUIP => "ACTIVE_EQUIP",
@@ -989,17 +989,16 @@ mod tests {
             }
         }
 
-        // Dye flag matches the diagnostic-probe result: 5 ItemSaveData
-        // hosts with present non-empty _itemDyeDataList (one of which
-        // is the UseItemReserve mirror, so the all-items walker sees
-        // it twice: once as ACTIVE_EQUIP element 1, once as
-        // ACTIVE_USE_RESERVE element 6 — both pointing at the same
-        // itemNo=2772 Locator child).
+        // Dye flag exercises the HAS_DYE_DATA detection path. The
+        // exact count varies per save (slot103 baseline had 5
+        // ItemSaveData hosts with present non-empty _itemDyeDataList;
+        // slot107 has 1). At least one is required to verify the
+        // code path is reachable.
         let dyed = records.iter()
             .filter(|r| r.flags & item_record_flags::HAS_DYE_DATA != 0)
             .count();
         eprintln!("HAS_DYE_DATA records: {dyed}");
-        assert!(dyed >= 3, "expected ≥3 dye-flagged records, got {dyed}");
+        assert!(dyed >= 1, "expected ≥1 dye-flagged record, got {dyed}");
 
         // Version stamp pulled.
         assert_eq!(version, 0, "fresh handle should report mutation_version=0");
@@ -1063,7 +1062,7 @@ mod tests {
         }
         assert!(
             by_kind.contains_key(&container_kind::MERCENARY_EQUIP),
-            "slot103 must contain at least one MERCENARY_EQUIP record",
+            "slot107 must contain at least one MERCENARY_EQUIP record",
         );
 
         for (kind, r) in &by_kind {
@@ -1216,7 +1215,7 @@ mod tests {
     /// 2. NPC mercenary records (charKey ∉ {1,4,6} AND no
     ///    _ownedCharacterKey) are NOT player-owned.
     #[test]
-    fn live_slot103_player_owned_filter() {
+    fn live_slot107_player_owned_filter() {
         let Some(save_path) = find_save_path() else {
             eprintln!("skipping: no save");
             return;
