@@ -5,7 +5,28 @@ use crate::py_binary_struct;
 
 // ── ItemInfo (1.05) ─────────────────────────────────────────────────────────
 //
-// Crimson Desert 1.05 changes the layout in two places relative to 1.04:
+// Crimson Desert 1.08 changes the layout in two places relative to 1.07
+// (which itself shared the 1.05 / 1.06 layout — same parser ran clean on all
+// three):
+//
+//   1. `extract_additional_drop_set_info: u32` was **removed** from between
+//      `extract_multi_change_info` and `minimum_extract_enchant_level`.
+//
+//   2. A new `u8` field (`unk_post_is_housing_only`) was **inserted** between
+//      `is_housing_only` and `quick_slot_index`. Values span the full 0..255
+//      range across the 6,314 items in 1.08 (many items hold a small value
+//      that visually mirrors `quick_slot_index`), so the field is not a
+//      boolean flag — its semantic role is unknown until a future RE pass
+//      narrows it down.
+//
+// Net per-item size delta: -3 bytes (4 removed, 1 added). The change was
+// confirmed byte-perfect by reconstructing synthetic 1.08 items from the
+// 1.07 bytes with `extract_additional_drop_set_info` excised and the new
+// u8 inserted (round-trip equality verified for Pyeonjeon_Arrow key=2200
+// and Goblin_Pot key=52006).
+//
+// Crimson Desert 1.05 had earlier introduced two layout changes relative to
+// 1.04:
 //
 //   1. Each `ItemIconData` entry grew by 5 bytes — a new `icon_path_alt`
 //      `StringInfoKey` was added between `icon_path` and
@@ -14,14 +35,12 @@ use crate::py_binary_struct;
 //
 //   2. A new 5-byte block (`unk_pre_pattern_key: u32 + unk_pre_pattern_flag: u8`)
 //      was inserted between `convert_item_info_by_drop_npc` and
-//      `pattern_description_data_list`. Across 6,236 items the u32 is always 0;
-//      the u8 is 1 only for the 48 fish-food items (`Food_Salmon`,
-//      `Food_Trout`, …) and 0 otherwise.
+//      `pattern_description_data_list`. The u32 is always 0; the u8 is 1
+//      only for the 48 fish-food items (`Food_Salmon`, `Food_Trout`, …) and
+//      0 otherwise.
 //
-// Apart from those, `ItemInfo` is byte-identical to the 1.04 layout (verified
-// by side-by-side anchor diffs of `out/baselines/1.04/iteminfo.pabgb` and
-// `out/iteminfo.pabgb` for representative items spanning every failure
-// cluster). The earlier "variant tail" interpretation
+// Those 1.05 changes remain in the 1.08 layout. The earlier "variant tail"
+// interpretation
 // (`new_icon_path` + `ammo_mid_block` + `unk_pre_repair_*`) was a
 // misinterpretation that happened to round-trip on items where the misread
 // bytes coincidentally satisfied later parser checks (e.g. ammo items where
@@ -61,7 +80,8 @@ py_binary_struct! {
         pub use_immediately: u8,
         pub apply_max_stack_cap: u8,
         pub extract_multi_change_info: MultiChangeKey,
-        pub extract_additional_drop_set_info: u32,
+        // Removed in Crimson Desert 1.08:
+        //   pub extract_additional_drop_set_info: u32,
         pub minimum_extract_enchant_level: u16,
         pub item_memo: CString<'a>,
         pub filter_type: CString<'a>,
@@ -90,6 +110,11 @@ py_binary_struct! {
         pub is_editable_grime: u8,
         pub is_destroy_when_broken: u8,
         pub is_housing_only: u8,
+        // Added in Crimson Desert 1.08: u8 between `is_housing_only` and
+        // `quick_slot_index`. Values span 0..255 across the 6,314 items, so
+        // this is not a boolean flag — semantic role unknown until a future
+        // RE pass identifies it.
+        pub unk_post_is_housing_only: u8,
         pub quick_slot_index: u8,
         pub reserve_slot_target_data_list: CArray<ReserveSlotTargetData>,
         pub item_tier: u8,

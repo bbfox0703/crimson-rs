@@ -110,7 +110,7 @@ mod tests {
             return;
         };
         let entries = parse_global_game_event_group_info_lossy(&pabgb, &pabgh);
-        assert_eq!(entries.len(), 7, "expected 7 rows in 1.07");
+        assert_eq!(entries.len(), 12, "expected 12 rows in 1.08");
         let by_key: std::collections::HashMap<u32, &str> =
             entries.iter().map(|e| (e.key, e.name.as_str())).collect();
         for &(k, expected) in KNOWN {

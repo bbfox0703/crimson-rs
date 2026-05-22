@@ -253,6 +253,16 @@ py_binary_struct! {
         pub docking_slot_key: CString<'a>,
         pub inherit_summoner: u8,
         pub summon_tag_name_hash: [u32; 4],
+        // Added in Crimson Desert 1.08: trailing u8 inside `DockingChildData`.
+        // Pinned by alignment-shift analysis on items with populated
+        // `docking_child_data` (KuKu_Lightning_TwoHandSpear key=1002175,
+        // Marni_Devotee_PlateArmor_Helm key=14510, …). All 385 items with
+        // `docking_child_data.tag = 1` carry this extra byte; items with
+        // `docking_child_data.tag = 0` are unaffected — exactly the
+        // 385-vs-5,929 split observed across the 1.08 binary. Values are
+        // 0x00 in every sampled item, so the field's semantic role is
+        // unknown until a future RE pass identifies it.
+        pub unk_post_summon_tag: u8,
     }
 }
 
