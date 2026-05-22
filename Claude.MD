@@ -1,6 +1,6 @@
 # crimson-rs — Crimson Desert Archive Toolkit
 
-Rust library with Python bindings (via PyO3/maturin) for reading, writing, and modding Crimson Desert game archives. **Personal-playground fork — not intended to flow back to the `potter420/crimson-rs` upstream.** Targets Crimson Desert 1.05 / 1.06 / 1.07 (verified byte-perfect parse + save roundtrip on the live 1.07 install, 2026-05-15).
+Rust library with Python bindings (via PyO3/maturin) for reading, writing, and modding Crimson Desert game archives. **Personal-playground fork — not intended to flow back to the `potter420/crimson-rs` upstream.** Supports Crimson Desert 1.05–1.08 across the PALOC / PAZ / PAMT containers and the save format. The `iteminfo.pabgb` parser targets the **latest patch only** — currently 1.08, byte-perfect on 6,314 items (verified on the live 1.08 install, 2026-05-22); older patches need the sibling-install recipe in [`docs/historical-parser-setup.md`](docs/historical-parser-setup.md).
 
 # Development
 - Build and install (Python wheel, maturin path): `maturin develop` (in a venv; the project uses `.venv/`) — auto-activates the `python` feature via `[tool.maturin]` in `pyproject.toml`

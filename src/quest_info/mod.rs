@@ -30,7 +30,67 @@ pub struct QuestInfoEntry {
     pub name: String,
 }
 
+/// PABGH-driven parse of `questinfo` — the authoritative path.
+///
+/// Sibling of [`crate::stage_info::parse_stage_info_via_pabgh`]; same
+/// `[u32 count][(u32 key, u32 offset)*]` PABGH shape. Bypasses the
+/// anchor-scan's `_`-in-name requirement that silently drops the two
+/// no-underscore quest rows the game ships in 1.08 (`LevelSequencerSpawn`
+/// and `StartGame`), returning the in-game-authoritative 1,019 entries
+/// instead of the anchor-scan's 1,018.
+pub fn parse_quest_info_via_pabgh(pabgh: &[u8], pabgb: &[u8]) -> Vec<QuestInfoEntry> {
+    if pabgh.len() < 4 {
+        return Vec::new();
+    }
+    let count = u32::from_le_bytes([pabgh[0], pabgh[1], pabgh[2], pabgh[3]]) as usize;
+    if pabgh.len() != 4 + 8 * count {
+        return Vec::new();
+    }
+    let mut entries = Vec::with_capacity(count);
+    for i in 0..count {
+        let pos = 4 + i * 8;
+        let key = u32::from_le_bytes([
+            pabgh[pos],
+            pabgh[pos + 1],
+            pabgh[pos + 2],
+            pabgh[pos + 3],
+        ]);
+        let off = u32::from_le_bytes([
+            pabgh[pos + 4],
+            pabgh[pos + 5],
+            pabgh[pos + 6],
+            pabgh[pos + 7],
+        ]) as usize;
+        if off + 8 > pabgb.len() {
+            continue;
+        }
+        let slen = u32::from_le_bytes([
+            pabgb[off + 4],
+            pabgb[off + 5],
+            pabgb[off + 6],
+            pabgb[off + 7],
+        ]) as usize;
+        if slen == 0 || slen > 256 || off + 8 + slen > pabgb.len() {
+            continue;
+        }
+        let name_bytes = &pabgb[off + 8..off + 8 + slen];
+        let Ok(name) = std::str::from_utf8(name_bytes) else {
+            continue;
+        };
+        entries.push(QuestInfoEntry {
+            key,
+            name: name.to_owned(),
+        });
+    }
+    entries
+}
+
 /// Lossy anchor-scan parse of an in-memory `questinfo.pabgb` blob.
+///
+/// Kept for callers that can't supply the `.pabgh` index. Under-counts
+/// by 1 row in 1.08 (the anchor-scan's `_`-in-name validation drops
+/// the no-underscore entries `LevelSequencerSpawn` and `StartGame`).
+/// Prefer [`parse_quest_info_via_pabgh`] when both files are available.
 ///
 /// See [`crate::mission_info::parse_mission_info_lossy`] for the
 /// validation rules — identical here.

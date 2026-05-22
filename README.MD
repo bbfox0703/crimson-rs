@@ -3,7 +3,7 @@
 [![Platform](https://img.shields.io/badge/Platform-Windows%20x64-0078D4)](https://www.microsoft.com/windows)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Built with Claude Code](https://img.shields.io/badge/Built%20with-Claude%20Code-CC785C?logo=claude)](https://claude.ai/code)
-[![Game Version](https://img.shields.io/badge/Game-Crimson%20Desert%201.05%20%2F%201.06%20%2F%201.07-D63B3B)](https://www.playcrimsondesert.com/)
+[![Game Version](https://img.shields.io/badge/Game-Crimson%20Desert%201.05%E2%80%931.08-D63B3B)](https://www.playcrimsondesert.com/)
 
 > **Personal playground.** This fork is where I poke at Crimson Desert internals at my own pace; the work here isn't intended to flow back upstream. Use it as you like, but don't expect upstream PRs from this branch.
 
@@ -18,11 +18,11 @@ Currently supports:
 - **32 C-ABI key resolvers** used by the save editor:
   - **Title resolvers** (PALOC hash-hop / cat-byte strip): Skill, Mission, Quest, Stage, Knowledge, QuestGauge, SubLevel, GimmickInfo, Character (+ `resolve_portrait` matcher); plus the `checksum` extern "C" wrapper.
   - **Dye / appearance gamedata**: DyeColorGroupInfo, PartPrefabDyeTexturePallete, PartPrefabDyeSlot, and the combined **ItemKey → list of PartPrefabKey** join (iteminfo + stringinfo + partprefabdyeslotinfo).
-  - **Faction gamedata**: FactionNode (1,158), FactionSpawnData (117), FactionRelationGroup (5) + per-row sibling-reference matrix.
-  - **Catalog / template names** (Save Editor browser surfaces): Store (292), Mercenary (18), House (4), RoyalSupply (4), CraftTool (17) + CraftToolGroup (10), TriggerRegion (12), GamePlayVariable (47), GlobalGameEvent (103) + GlobalGameEventGroup (7), GameAdvice (461) + GameAdviceGroup (8), ReserveSlot (27), Region (1,004), ItemGroup (1,500).
-  - Plus an `iteminfo` socket / artifact-challenge / canonical-gem advisory surface and a PAZ-layer `crimson_paz_list_npc_portraits` enumerator.
+  - **Faction gamedata**: FactionNode (1,158), FactionSpawnData (122), FactionRelationGroup (5) + per-row sibling-reference matrix.
+  - **Catalog / template names** (Save Editor browser surfaces): Store (292), Mercenary (18), House (4), RoyalSupply (4), CraftTool (17) + CraftToolGroup (10), TriggerRegion (12), GamePlayVariable (47), GlobalGameEvent (188) + GlobalGameEventGroup (12), GameAdvice (463) + GameAdviceGroup (8), ReserveSlot (27), Region (1,006), ItemGroup (1,507).
+  - Plus an `iteminfo` socket / artifact-challenge / canonical-gem advisory surface, a PAZ-layer `crimson_paz_list_npc_portraits` enumerator, and PABGH-driven `_load_from_*_with_pabgh` loaders for `stageinfo` (51,037 entries) and `questinfo` (1,019) that return the in-game-authoritative key list instead of the anchor-scan path's under-count.
 - **Save-handle helpers**: `list_inventory_items` and `list_character_refs` (flat enumeration of every present CharacterKey field across all blocks); `mutation_version` for snapshot staleness; a **deferred-redecode batch ABI** that suspends the per-call `decode_blocks` for bulk-mutation workflows — one decode at end of batch instead of N; typed `set_float3_field_path` / `set_float4_field_path` / `set_uint4_field_path` composite-scalar setters; `set_inline_bytes_field` + `set_scalar_field_path` / `_present` for finer-grained mutation; JSON `get_block_json` inlines dynamic-array u32/u64 contents directly.
-- **Crimson Desert 1.05 / 1.06 / 1.07**: byte-perfect parse on the live game `iteminfo.pabgb` — 6,236 items in 1.05, 6,253 items in 1.06 and 1.07 (1.07 ships the same item key list as 1.06; no schema drift, same parser). `serialize_iteminfo` roundtrips every item. See [`docs/1.05-parser-history.md`](docs/1.05-parser-history.md) for the RE story and [`scripts/CLAUDE.md`](scripts/CLAUDE.md) for the cross-patch validation table.
+- **Crimson Desert 1.05–1.08**: PALOC / PAZ / PAMT containers and the save format (v2 / flags 0x0080) are stable across the whole range. The `iteminfo.pabgb` parser **targets the latest patch only** (currently 1.08, 6,314 items, byte-perfect; `serialize_iteminfo` roundtrips every item) — older snapshots have minor schema differences (1.05 added two fields vs 1.04; 1.08 removed one field + added two, one of them conditional on `docking_child_data.tag = 1`) and load with the previous patch's wheel via the recipe in [`docs/historical-parser-setup.md`](docs/historical-parser-setup.md). See [`docs/1.05-parser-history.md`](docs/1.05-parser-history.md) for the full RE history and [`scripts/CLAUDE.md`](scripts/CLAUDE.md) for the per-patch validation table.
 - Generating Cheat Engine dropdown lists (item id → name) covering every in-game item key
 
 ## One-shot CE table data export
@@ -33,16 +33,16 @@ Currently supports:
 python scripts\export_for_ce.py
 ```
 
-That single command writes everything `Generate_item_id_list.ps1` needs to `out/`. The script auto-discovers every `localizationstring_<lang>.paloc` the game ships (typically 14 languages — eng, jpn, kor, zho-tw, zho-cn, …) and emits one `paloc_<lang>.json` plus one CE dropdown file per language. Counts below are for **1.06 / 1.07** (1.07 ships the same item key list as 1.06; 1.05 was 6,236 / 6,389 — see [`scripts/CLAUDE.md`](scripts/CLAUDE.md) for the cross-patch table):
+That single command writes everything `Generate_item_id_list.ps1` needs to `out/`. The script auto-discovers every `localizationstring_<lang>.paloc` the game ships (typically 14 languages — eng, jpn, kor, zho-tw, zho-cn, …) and emits one `paloc_<lang>.json` plus one CE dropdown file per language. Counts below are for **1.08** (6,314 keys; the per-patch progression — 6,236 in 1.05, 6,253 in 1.06 / 1.07, 6,314 in 1.08 — is tabulated in [`scripts/CLAUDE.md`](scripts/CLAUDE.md)):
 
-| File | Contents | 1.06 / 1.07 coverage |
+| File | Contents | 1.08 coverage |
 |---|---|---|
 | `iteminfo.pabgb` | Raw decompressed binary from group 0008 | — |
-| `items.jsonl` | One item per line; `key` + `string_key` always populated, parsed fields when the parser succeeds | 6,253 (100%) |
-| `paloc_<lang>.json` (one per language) | `{item_key: name}` lookup tables (paloc 0x70). Filenames use the raw paloc lang code, e.g. `paloc_eng.json`, `paloc_jpn.json`, `paloc_kor.json`, `paloc_zho-tw.json`, `paloc_zho-cn.json`, … | 6,405 each |
-| `output.txt` (eng) + `output_<suffix>.txt` (one per remaining language) | CE dropdown lists `idx:name/key`. eng → `output.txt`; jpn → `output_ja.txt`; kor → `output_ko.txt`; zho-tw → `output_zh-tw.txt`; everything else falls through to its raw lang code | 6,253 each |
+| `items.jsonl` | One item per line; `key` + `string_key` always populated, parsed fields when the parser succeeds | 6,314 (100%) |
+| `paloc_<lang>.json` (one per language) | `{item_key: name}` lookup tables (paloc 0x70). Filenames use the raw paloc lang code, e.g. `paloc_eng.json`, `paloc_jpn.json`, `paloc_kor.json`, `paloc_zho-tw.json`, `paloc_zho-cn.json`, … | 6,469 each |
+| `output.txt` (eng) + `output_<suffix>.txt` (one per remaining language) | CE dropdown lists `idx:name/key`. eng → `output.txt`; jpn → `output_ja.txt`; kor → `output_ko.txt`; zho-tw → `output_zh-tw.txt`; everything else falls through to its raw lang code | 6,314 each |
 
-The CE dropdown coverage is full because the script falls back to `string_key` for the ~71 dev/QA items the game itself doesn't ship localized names for (in any of 14 languages — see [`scripts/CLAUDE.md`](scripts/CLAUDE.md) for the analysis).
+The CE dropdown coverage is full because the script falls back to `string_key` for the ~71 dev/QA items the game itself doesn't ship localized names for (in any of 14 languages — see [`scripts/CLAUDE.md`](scripts/CLAUDE.md) for the analysis). 21 additional items are paloc-placeholder rows whose localized name in every language is the literal string `"Name"` — those still show as `<idx>:Name/<key>` in the dropdown lists.
 
 Override the game install path or `keys.txt` location with `--game-dir` and `--keys`. Pass `--keys ''` to skip anchor mode and fall back to lossy parsing (lower coverage, useful when no `keys.txt` is available).
 
@@ -147,9 +147,18 @@ with open("items.csv", "w", newline="") as f:
         w.writerow([item["key"], item["string_key"], item["item_type"], item["item_tier"]])
 ```
 
-### 1.05 / 1.06 / 1.07 parser
+### Per-patch parser (currently 1.08)
 
-`parse_iteminfo_from_bytes` parses 1.05, 1.06, and 1.07 binaries to 100% (6,236 / 6,236 items in 1.05; 6,253 / 6,253 items in 1.06 and 1.07; byte-perfect roundtrip via `serialize_iteminfo` on all three). The same parser handles every version — no schema drift was introduced in 1.06 or 1.07. Two helper modes are also available for diagnostic / recovery work:
+`parse_iteminfo_from_bytes` targets the **latest game patch only** — currently 1.08 (6,314 / 6,314 items, byte-perfect; `serialize_iteminfo` roundtrips every item). Older patches have minor schema differences and **will not parse with this build**:
+
+| Patch | Items | Schema drift vs previous |
+|---|---|---|
+| 1.05 | 6,236 | `+` `icon_path_alt` (StringInfoKey) + `unk_flag: u8` inside each `ItemIconData`; `+` `unk_pre_pattern_key: u32` + `unk_pre_pattern_flag: u8` before `pattern_description_data_list` |
+| 1.06 | 6,253 | none (parser unchanged from 1.05) |
+| 1.07 | 6,253 | none (same key list as 1.06) |
+| **1.08** | **6,314** | `−` `extract_additional_drop_set_info: u32`; `+` `is_equip_quick_slot_visible: u8` between `is_housing_only` and `quick_slot_index`; `+` trailing `unk_post_summon_tag: u8` inside `DockingChildData` (only present when `docking_child_data.tag = 1`, ~385 of 6,314 items) |
+
+To parse a previous-patch binary, install that patch's wheel as a sibling package via the recipe in [`docs/historical-parser-setup.md`](docs/historical-parser-setup.md) — `pip install --target=.crimson_rs_107 …` and `import` from that path. Two helper modes are also available for diagnostic / recovery work on the current target:
 
 ```python
 # Tracked mode — returns byte-range metadata for each parsed field; used by

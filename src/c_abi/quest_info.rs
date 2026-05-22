@@ -26,7 +26,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use super::error;
 use super::paloc::CrimsonPalocHandle;
 use crate::crypto::checksum::calculate_checksum;
-use crate::quest_info::parse_quest_info_lossy;
+use crate::quest_info::{parse_quest_info_lossy, parse_quest_info_via_pabgh};
 
 /// Opaque handle exposing `(QuestKey, internal_name)` lookups against
 /// the loaded `questinfo.pabgb`.
@@ -38,15 +38,27 @@ pub struct CrimsonQuestInfoHandle {
 
 impl CrimsonQuestInfoHandle {
     fn from_bytes(data: &[u8]) -> Self {
-        let raw = parse_quest_info_lossy(data);
+        Self::build(parse_quest_info_lossy(data).into_iter().map(|e| (e.key, e.name)))
+    }
+
+    fn from_pabgh_and_pabgb(pabgh: &[u8], pabgb: &[u8]) -> Self {
+        Self::build(
+            parse_quest_info_via_pabgh(pabgh, pabgb)
+                .into_iter()
+                .map(|e| (e.key, e.name)),
+        )
+    }
+
+    fn build(rows: impl Iterator<Item = (u32, String)>) -> Self {
         // First-wins dedup (see mission_info::from_bytes for the
         // rationale; same comment applies here).
-        let mut by_key: HashMap<u32, String> = HashMap::with_capacity(raw.len());
-        let mut entries: Vec<(u32, String)> = Vec::with_capacity(raw.len());
-        for e in raw {
-            if let std::collections::hash_map::Entry::Vacant(v) = by_key.entry(e.key) {
-                v.insert(e.name.clone());
-                entries.push((e.key, e.name));
+        let rows: Vec<(u32, String)> = rows.collect();
+        let mut by_key: HashMap<u32, String> = HashMap::with_capacity(rows.len());
+        let mut entries: Vec<(u32, String)> = Vec::with_capacity(rows.len());
+        for (key, name) in rows {
+            if let std::collections::hash_map::Entry::Vacant(v) = by_key.entry(key) {
+                v.insert(name.clone());
+                entries.push((key, name));
             }
         }
         CrimsonQuestInfoHandle { by_key, entries }
@@ -55,8 +67,15 @@ impl CrimsonQuestInfoHandle {
 
 // ── Load / free ────────────────────────────────────────────────────────────
 
-/// Parse `questinfo.pabgb` from disk. See [`super::mission_info`] for
-/// the full contract — identical here modulo the file name.
+/// Parse `questinfo.pabgb` from disk via the anchor-scan path.
+///
+/// Under-counts by 1 row in 1.08 (the anchor-scan's `_`-in-name
+/// validation drops `LevelSequencerSpawn` / `StartGame`, which have no
+/// underscore). **Prefer [`crimson_questinfo_load_from_file_with_pabgh`]**
+/// when both files are available — it returns the in-game-authoritative
+/// 1,019 entries instead of the anchor-scan's 1,018.
+///
+/// See [`super::mission_info`] for the full resolution-chain contract.
 ///
 /// # Safety
 /// `path` must be a NUL-terminated UTF-8 string. `out_handle` must be
@@ -86,7 +105,12 @@ pub unsafe extern "C" fn crimson_questinfo_load_from_file(
     .unwrap_or(error::PANIC)
 }
 
-/// Parse questinfo bytes already in memory.
+/// Parse questinfo bytes already in memory via the anchor-scan path.
+///
+/// Under-counts by 1 row in 1.08 (see
+/// [`crimson_questinfo_load_from_file`] for details). **Prefer
+/// [`crimson_questinfo_load_from_bytes_with_pabgh`]** for the
+/// authoritative key set.
 ///
 /// # Safety
 /// `data` must point to `data_len` readable bytes (may be null iff
@@ -111,6 +135,96 @@ pub unsafe extern "C" fn crimson_questinfo_load_from_bytes(
             unsafe { std::slice::from_raw_parts(data, data_len) }
         };
         let handle = CrimsonQuestInfoHandle::from_bytes(slice);
+        unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Parse `questinfo.pabgb` + `questinfo.pabgh` from disk — the
+/// **recommended** path.
+///
+/// Uses the PABGH `[u32 count][(u32 key, u32 offset)*]` index for the
+/// in-game-authoritative key list (1,019 on 1.08), then reads the
+/// `[u32 key_repeat][u32 slen][slen bytes]` name header at each offset
+/// from PABGB. Returns the same entries the in-game iterator does —
+/// no `_`-in-name validation rejecting legitimate rows.
+///
+/// # Safety
+/// Both paths must be NUL-terminated UTF-8. `out_handle` must be
+/// non-null and writable for the duration of the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_questinfo_load_from_file_with_pabgh(
+    pabgb_path: *const c_char,
+    pabgh_path: *const c_char,
+    out_handle: *mut *mut CrimsonQuestInfoHandle,
+) -> i32 {
+    if pabgb_path.is_null() || pabgh_path.is_null() || out_handle.is_null() {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_handle = std::ptr::null_mut() };
+    catch_unwind(AssertUnwindSafe(|| {
+        let pabgb_str = match unsafe { std::ffi::CStr::from_ptr(pabgb_path) }.to_str() {
+            Ok(s) => s,
+            Err(_) => return error::INVALID_PATH,
+        };
+        let pabgh_str = match unsafe { std::ffi::CStr::from_ptr(pabgh_path) }.to_str() {
+            Ok(s) => s,
+            Err(_) => return error::INVALID_PATH,
+        };
+        let pabgb: Vec<u8> = match std::fs::read(pabgb_str) {
+            Ok(b) => b,
+            Err(_) => return error::IO,
+        };
+        let pabgh: Vec<u8> = match std::fs::read(pabgh_str) {
+            Ok(b) => b,
+            Err(_) => return error::IO,
+        };
+        let handle = CrimsonQuestInfoHandle::from_pabgh_and_pabgb(&pabgh, &pabgb);
+        unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Parse questinfo bytes already in memory via the PABGH-driven path —
+/// the **recommended** loader for any caller that has both files.
+///
+/// See [`crimson_questinfo_load_from_file_with_pabgh`] for the contract
+/// (PABGH-authoritative key list, no anchor-scan under-count).
+///
+/// # Safety
+/// Each `*_ptr` must point to `*_len` readable bytes (may be null iff
+/// the matching `*_len == 0`). `out_handle` must be non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_questinfo_load_from_bytes_with_pabgh(
+    pabgb_ptr: *const u8,
+    pabgb_len: usize,
+    pabgh_ptr: *const u8,
+    pabgh_len: usize,
+    out_handle: *mut *mut CrimsonQuestInfoHandle,
+) -> i32 {
+    if out_handle.is_null() {
+        return error::NULL_ARG;
+    }
+    if (pabgb_ptr.is_null() && pabgb_len != 0)
+        || (pabgh_ptr.is_null() && pabgh_len != 0)
+    {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_handle = std::ptr::null_mut() };
+    catch_unwind(AssertUnwindSafe(|| {
+        let pabgb = if pabgb_len == 0 {
+            &[][..]
+        } else {
+            unsafe { std::slice::from_raw_parts(pabgb_ptr, pabgb_len) }
+        };
+        let pabgh = if pabgh_len == 0 {
+            &[][..]
+        } else {
+            unsafe { std::slice::from_raw_parts(pabgh_ptr, pabgh_len) }
+        };
+        let handle = CrimsonQuestInfoHandle::from_pabgh_and_pabgb(pabgh, pabgb);
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -490,6 +604,80 @@ mod tests {
 
         unsafe { crimson_questinfo_free(qh) };
         unsafe { crimson_paloc_free(ph) };
+    }
+
+    /// PABGH-driven loader: pins the 1,019 in-game-authoritative
+    /// questinfo rows in 1.08 and confirms the anchor-scan path drops
+    /// the two no-underscore entries (`LevelSequencerSpawn`,
+    /// `StartGame`) that PABGH loads.
+    #[test]
+    fn c_abi_questinfo_with_pabgh_recovers_no_underscore_rows() {
+        let Some(pamt_path) = find_pamt() else {
+            eprintln!("skipping c_abi_questinfo_with_pabgh_*: no game install");
+            return;
+        };
+        let pamt = CString::new(pamt_path.to_str().unwrap()).unwrap();
+        let q_pabgb = extract_file(
+            pamt.as_c_str(),
+            "gamedata/binary__/client/bin",
+            "questinfo.pabgb",
+        );
+        let q_pabgh = extract_file(
+            pamt.as_c_str(),
+            "gamedata/binary__/client/bin",
+            "questinfo.pabgh",
+        );
+
+        let mut anchor_h: *mut CrimsonQuestInfoHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                crimson_questinfo_load_from_bytes(
+                    q_pabgb.as_ptr(),
+                    q_pabgb.len(),
+                    &mut anchor_h,
+                )
+            },
+            error::OK,
+        );
+        let mut anchor_count: u32 = 0;
+        unsafe { crimson_questinfo_entry_count(anchor_h, &mut anchor_count) };
+
+        let mut pabgh_h: *mut CrimsonQuestInfoHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                crimson_questinfo_load_from_bytes_with_pabgh(
+                    q_pabgb.as_ptr(),
+                    q_pabgb.len(),
+                    q_pabgh.as_ptr(),
+                    q_pabgh.len(),
+                    &mut pabgh_h,
+                )
+            },
+            error::OK,
+        );
+        let mut pabgh_count: u32 = 0;
+        unsafe { crimson_questinfo_entry_count(pabgh_h, &mut pabgh_count) };
+
+        assert!(
+            pabgh_count >= anchor_count,
+            "pabgh path returned {pabgh_count} entries vs anchor-scan {anchor_count}",
+        );
+
+        // `LevelSequencerSpawn` (key=1000414) has no underscore in its name
+        // and is dropped by the anchor-scan `_`-in-name validation.
+        let key = 1_000_414u32;
+        let mut req: usize = 0;
+        let rc_anchor = unsafe {
+            crimson_questinfo_lookup_string_key(anchor_h, key, ptr::null_mut(), 0, &mut req)
+        };
+        let rc_pabgh = unsafe {
+            crimson_questinfo_lookup_string_key(pabgh_h, key, ptr::null_mut(), 0, &mut req)
+        };
+        assert_eq!(rc_anchor, error::NOT_FOUND);
+        assert_eq!(rc_pabgh, error::BUFFER_TOO_SMALL);
+
+        unsafe { crimson_questinfo_free(anchor_h) };
+        unsafe { crimson_questinfo_free(pabgh_h) };
     }
 
     #[test]

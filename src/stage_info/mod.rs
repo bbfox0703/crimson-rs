@@ -30,7 +30,79 @@ pub struct StageInfoEntry {
     pub name: String,
 }
 
+/// PABGH-driven parse of `stageinfo` — the authoritative path.
+///
+/// `pabgh` carries the in-game iteration order as a 4-byte count header
+/// followed by `(u32 key, u32 offset)` rows (the u32-count variant —
+/// stageinfo and questinfo are the two tables on this shape). For each
+/// pair we jump into `pabgb` at the offset and read the standard
+/// `[u32 key_repeat][u32 slen][slen bytes]` name header. This bypasses
+/// the anchor-scan's body-byte validation, so legitimate rows with
+/// punctuation in their names (e.g. `LevelSequencerSpawn_UUID_2910822923,…`,
+/// 1,403 of which are present in 1.08's stageinfo) are no longer
+/// silently dropped — the bridge returns the same key set the in-game
+/// `[u32 count][...]` index does.
+///
+/// Returns an empty vector if `pabgh` doesn't match the expected shape
+/// (`4 + 8·count == pabgh.len()`); the row loop tolerates individual
+/// malformed offsets by skipping them.
+pub fn parse_stage_info_via_pabgh(pabgh: &[u8], pabgb: &[u8]) -> Vec<StageInfoEntry> {
+    if pabgh.len() < 4 {
+        return Vec::new();
+    }
+    let count = u32::from_le_bytes([pabgh[0], pabgh[1], pabgh[2], pabgh[3]]) as usize;
+    if pabgh.len() != 4 + 8 * count {
+        return Vec::new();
+    }
+    let mut entries = Vec::with_capacity(count);
+    for i in 0..count {
+        let pos = 4 + i * 8;
+        let key = u32::from_le_bytes([
+            pabgh[pos],
+            pabgh[pos + 1],
+            pabgh[pos + 2],
+            pabgh[pos + 3],
+        ]);
+        let off = u32::from_le_bytes([
+            pabgh[pos + 4],
+            pabgh[pos + 5],
+            pabgh[pos + 6],
+            pabgh[pos + 7],
+        ]) as usize;
+        if off + 8 > pabgb.len() {
+            continue;
+        }
+        let slen = u32::from_le_bytes([
+            pabgb[off + 4],
+            pabgb[off + 5],
+            pabgb[off + 6],
+            pabgb[off + 7],
+        ]) as usize;
+        if slen == 0 || slen > 256 || off + 8 + slen > pabgb.len() {
+            continue;
+        }
+        let name_bytes = &pabgb[off + 8..off + 8 + slen];
+        let Ok(name) = std::str::from_utf8(name_bytes) else {
+            continue;
+        };
+        entries.push(StageInfoEntry {
+            key,
+            name: name.to_owned(),
+        });
+    }
+    entries
+}
+
 /// Lossy anchor-scan parse of an in-memory `stageinfo.pabgb` blob.
+///
+/// Kept for callers that can't supply the `.pabgh` index (e.g. a saved
+/// extract of just the `.pabgb`). The anchor-scan's body-byte
+/// validation rejects rows whose names contain punctuation outside the
+/// `[A-Za-z0-9_ ]+ U+0080..` set, so for the 1.08 install this
+/// path returns **49,634** entries instead of the in-game-authoritative
+/// **51,037** the `.pabgh` lists — under-counts by 1,403 due to
+/// `LevelSequencerSpawn_UUID_<uid>,<uid>,…`-style names. Prefer
+/// [`parse_stage_info_via_pabgh`] when both files are available.
 ///
 /// See [`crate::mission_info::parse_mission_info_lossy`] for the
 /// validation rules — identical here. The scanner runs over the full
