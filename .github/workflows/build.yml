@@ -52,10 +52,10 @@ jobs:
         with:
           # Tag tracks the in-game patch series this fork's parser targets.
           # Bump the minor when Pearl Abyss ships a new minor patch.
-          tag: v1.0.7.x
+          tag: v1.0.8.x
           name: Development Build
           body: |
-            Latest development wheels built from `main` (targets Crimson Desert 1.07.x).
+            Latest development wheels built from `main` (targets Crimson Desert 1.08.x).
             Updated on each push.
           artifacts: dist/*.whl
           allowUpdates: true
