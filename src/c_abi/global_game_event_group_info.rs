@@ -105,7 +105,7 @@ mod tests {
             unsafe { crimson_global_game_event_group_info_entry_count(sh, &mut count) },
             error::OK
         );
-        assert_eq!(count, 7);
+        assert_eq!(count, 12);
         for &(key, expected) in KNOWN {
             let mut req: usize = 0;
             assert_eq!(

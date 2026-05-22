@@ -338,7 +338,7 @@ mod tests {
             return;
         };
         let entries = parse_global_game_event_info_lossy(&pabgb, &pabgh);
-        assert_eq!(entries.len(), 103, "expected 103 rows in 1.07");
+        assert_eq!(entries.len(), 188, "expected 188 rows in 1.08");
         let by_key: std::collections::HashMap<u32, &str> =
             entries.iter().map(|e| (e.key, e.name.as_str())).collect();
         for &(k, expected) in KNOWN {
@@ -355,7 +355,7 @@ mod tests {
             return;
         };
         let entries = parse_global_game_event_info_lossy(&pabgb, &pabgh);
-        assert_eq!(entries.len(), 103);
+        assert_eq!(entries.len(), 188);
 
         let by_key: std::collections::HashMap<u32, &GlobalGameEventInfoEntry> =
             entries.iter().map(|e| (e.key, e)).collect();
@@ -371,10 +371,13 @@ mod tests {
             );
         }
 
-        // Every row's group_key must be in the 7 known
-        // GlobalGameEventGroupKey range — pinned in 1.07.
+        // Every row's group_key must be in the 12 known
+        // GlobalGameEventGroupKey range — pinned in 1.08 (7 in 1.07; 1.08
+        // added 0x424a–0x424e, corresponding to the new `FactionBlockEvent_*`
+        // groups Pearl Abyss added for per-node faction blocking).
         let known_groups: std::collections::HashSet<u32> = [
             0x4240, 0x4241, 0x4244, 0x4246, 0x4247, 0x4248, 0x4249,
+            0x424a, 0x424b, 0x424c, 0x424d, 0x424e,
         ].into_iter().collect();
         for e in &entries {
             assert!(

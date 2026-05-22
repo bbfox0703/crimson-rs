@@ -3,9 +3,52 @@ use super::structs::*;
 use crate::binary::*;
 use crate::py_binary_struct;
 
-// ── ItemInfo (1.05) ─────────────────────────────────────────────────────────
+// ── ItemInfo (1.08) ─────────────────────────────────────────────────────────
 //
-// Crimson Desert 1.05 changes the layout in two places relative to 1.04:
+// Crimson Desert 1.08 changes the layout in three places relative to 1.07
+// (which itself shared the 1.05 / 1.06 layout — same parser ran clean on all
+// three):
+//
+//   1. `extract_additional_drop_set_info: u32` was **removed** from between
+//      `extract_multi_change_info` and `minimum_extract_enchant_level`.
+//
+//   2. A new `u8` field (`is_equip_quick_slot_visible`) was **inserted**
+//      between `is_housing_only` and `quick_slot_index`. The field is a
+//      boolean (only 0 or 1 observed across all 6,314 items: 5,365 zero,
+//      949 one). Strongly correlates with the 1.08 patch notes about the
+//      new equip-quick-bar reorganization (added tool slot, mask/crown
+//      moved to armor slot): the 949 `1`-valued items are exactly the
+//      "real equipment" set — every weapon, armor piece, accessory, and
+//      tool-slot tool (伐木斧頭 / 鐵鎚 / 鏟子 / 掃帚 / 鐮刀 / 十字鎬 /
+//      手鑽/電鋸 / 扇子). Quest items, recipes, consumables, and the
+//      cosmetic/plot items that share an `item_type=58 cat=601` with the
+//      real tools (Notepad, Feather_Pen, Item_Scale, Abacus, Equip_Drum,
+//      Equip_Trumpet, …) all read 0. The strict implication
+//      `value=1 ⇒ equip_type_info != 0` holds; the converse does NOT (2,155
+//      items have a non-zero `equip_type_info` but `value=0` — those are
+//      the quest-flavored equipment items). Name is a best-effort guess
+//      from correlation; underlying gamedata symbol still TBD.
+//
+//   3. A new trailing `u8` field (`unk_post_summon_tag`) was **inserted**
+//      inside `DockingChildData` (see `structs.rs`). It only materialises
+//      for the 385 items with `docking_child_data.tag = 1` (items whose
+//      visual mesh attaches to a character socket — weapons, armor that
+//      docks to body sockets, etc.). Every sampled item reads `0x00`;
+//      semantic role is unknown — likely a placeholder for a future
+//      feature or a reserved field that current gamedata doesn't populate.
+//
+// Net per-item size delta: -3 bytes for items with `docking_child_data.tag = 0`
+// (the 5,929-item majority), -2 bytes for the 385 items with
+// `docking_child_data.tag = 1` (the extra `unk_post_summon_tag` cancels
+// 1 byte of the removal). Confirmed byte-perfect by reconstructing synthetic
+// 1.08 items from 1.07 bytes with `extract_additional_drop_set_info` excised
+// and the two `u8` fields inserted at their respective positions (round-trip
+// equality verified for Pyeonjeon_Arrow key=2200, Goblin_Pot key=52006,
+// Marni_Devotee_PlateArmor_Helm key=14510 and
+// KuKu_Lightning_TwoHandSpear key=1002175).
+//
+// Crimson Desert 1.05 had earlier introduced two layout changes relative to
+// 1.04:
 //
 //   1. Each `ItemIconData` entry grew by 5 bytes — a new `icon_path_alt`
 //      `StringInfoKey` was added between `icon_path` and
@@ -14,14 +57,12 @@ use crate::py_binary_struct;
 //
 //   2. A new 5-byte block (`unk_pre_pattern_key: u32 + unk_pre_pattern_flag: u8`)
 //      was inserted between `convert_item_info_by_drop_npc` and
-//      `pattern_description_data_list`. Across 6,236 items the u32 is always 0;
-//      the u8 is 1 only for the 48 fish-food items (`Food_Salmon`,
-//      `Food_Trout`, …) and 0 otherwise.
+//      `pattern_description_data_list`. The u32 is always 0; the u8 is 1
+//      only for the 48 fish-food items (`Food_Salmon`, `Food_Trout`, …) and
+//      0 otherwise.
 //
-// Apart from those, `ItemInfo` is byte-identical to the 1.04 layout (verified
-// by side-by-side anchor diffs of `out/baselines/1.04/iteminfo.pabgb` and
-// `out/iteminfo.pabgb` for representative items spanning every failure
-// cluster). The earlier "variant tail" interpretation
+// Those 1.05 changes remain in the 1.08 layout. The earlier "variant tail"
+// interpretation
 // (`new_icon_path` + `ammo_mid_block` + `unk_pre_repair_*`) was a
 // misinterpretation that happened to round-trip on items where the misread
 // bytes coincidentally satisfied later parser checks (e.g. ammo items where
@@ -61,7 +102,8 @@ py_binary_struct! {
         pub use_immediately: u8,
         pub apply_max_stack_cap: u8,
         pub extract_multi_change_info: MultiChangeKey,
-        pub extract_additional_drop_set_info: u32,
+        // Removed in Crimson Desert 1.08:
+        //   pub extract_additional_drop_set_info: u32,
         pub minimum_extract_enchant_level: u16,
         pub item_memo: CString<'a>,
         pub filter_type: CString<'a>,
@@ -90,6 +132,14 @@ py_binary_struct! {
         pub is_editable_grime: u8,
         pub is_destroy_when_broken: u8,
         pub is_housing_only: u8,
+        // Added in Crimson Desert 1.08: boolean (only 0 / 1 observed). Marks
+        // items that participate in the reorganized equip-quick-bar system
+        // — every weapon, armor piece, accessory, and tool-slot tool reads
+        // 1; quest items / recipes / consumables / cosmetic items read 0.
+        // Name is a best-effort guess from value-distribution correlation
+        // with the 1.08 patch-notes "tool slot" reorganization; revisit
+        // once the underlying gamedata symbol is known.
+        pub is_equip_quick_slot_visible: u8,
         pub quick_slot_index: u8,
         pub reserve_slot_target_data_list: CArray<ReserveSlotTargetData>,
         pub item_tier: u8,

@@ -5,7 +5,16 @@ edition = "2024"
 
 [lib]
 name = "crimson_rs"
-crate-type = ["cdylib"]
+# Both artifact kinds in one build:
+#   - cdylib   → `crimson_rs.dll` for runtime LoadLibrary / P/Invoke
+#                (the existing CrimsonAtomtic ship-the-dll-next-to-exe path).
+#   - staticlib → `crimson_rs.lib` for .NET NativeAOT consumers that want
+#                 to fold the native code straight into a single AOT exe via
+#                 `<DirectPInvoke>` + `<NativeLibrary>` (no separate dll on
+#                 disk at runtime). Pairs with `--features c_abi`; the static
+#                 CRT setting in `.cargo/config.toml` carries over, so the
+#                 .lib is self-contained too.
+crate-type = ["cdylib", "staticlib"]
 
 [features]
 # Default build is pure-Rust core only — no PyO3, no python3.dll
