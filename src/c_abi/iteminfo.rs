@@ -23,6 +23,203 @@ use super::error;
 use crate::binary::BinaryRead;
 use crate::item_info::ItemInfo;
 
+// ── Static-flag bitmask layout (CrimsonItemInfoFlags) ──────────────────────
+//
+// `crimson_iteminfo_lookup_flags` (and the `flags` field of
+// `CrimsonItemInfoSummary`) returns a u32 bitmask of the static-boolean
+// fields the gamedata defines per `ItemInfo` row. Bit indices are stable —
+// new flags get appended (next available is bit 28); the lower bits never
+// move. Mirror in C# as `[Flags] enum CrimsonItemInfoFlags : uint`.
+pub const CRIMSON_ITEMINFO_FLAG_IS_BLOCKED: u32 = 1 << 0;
+pub const CRIMSON_ITEMINFO_FLAG_IS_DYEABLE: u32 = 1 << 1;
+pub const CRIMSON_ITEMINFO_FLAG_IS_DESTROY_WHEN_BROKEN: u32 = 1 << 2;
+pub const CRIMSON_ITEMINFO_FLAG_IS_HOUSING_ONLY: u32 = 1 << 3;
+/// Added in Crimson Desert 1.08. Set on every weapon / armor /
+/// accessory / tool-slot tool (949 of 6,314 items). See
+/// `src/item_info/item.rs` for the value-distribution analysis behind
+/// the naming guess.
+pub const CRIMSON_ITEMINFO_FLAG_IS_EQUIP_QUICK_SLOT_VISIBLE: u32 = 1 << 4;
+pub const CRIMSON_ITEMINFO_FLAG_IS_IMPORTANT_ITEM: u32 = 1 << 5;
+pub const CRIMSON_ITEMINFO_FLAG_IS_SHIELD_ITEM: u32 = 1 << 6;
+pub const CRIMSON_ITEMINFO_FLAG_IS_TOWER_SHIELD_ITEM: u32 = 1 << 7;
+pub const CRIMSON_ITEMINFO_FLAG_IS_WILD: u32 = 1 << 8;
+pub const CRIMSON_ITEMINFO_FLAG_HIDE_FROM_INVENTORY_ON_POP_ITEM: u32 = 1 << 9;
+pub const CRIMSON_ITEMINFO_FLAG_DISCARDABLE: u32 = 1 << 10;
+pub const CRIMSON_ITEMINFO_FLAG_IS_REGISTER_TRADE_MARKET: u32 = 1 << 11;
+pub const CRIMSON_ITEMINFO_FLAG_IS_EDITOR_USABLE: u32 = 1 << 12;
+pub const CRIMSON_ITEMINFO_FLAG_IS_EDITABLE_GRIME: u32 = 1 << 13;
+pub const CRIMSON_ITEMINFO_FLAG_USE_IMMEDIATELY: u32 = 1 << 14;
+pub const CRIMSON_ITEMINFO_FLAG_APPLY_MAX_STACK_CAP: u32 = 1 << 15;
+pub const CRIMSON_ITEMINFO_FLAG_IS_BLOCKED_STORE_SELL: u32 = 1 << 16;
+pub const CRIMSON_ITEMINFO_FLAG_IS_PREORDER_ITEM: u32 = 1 << 17;
+pub const CRIMSON_ITEMINFO_FLAG_IS_HAS_ITEM_USE_DATA_INVENTORY_BUFF: u32 = 1 << 18;
+pub const CRIMSON_ITEMINFO_FLAG_IS_PRESERVED_ON_EXTRACT: u32 = 1 << 19;
+pub const CRIMSON_ITEMINFO_FLAG_ENABLE_ALERT_SYSTEM_TO_UI: u32 = 1 << 20;
+pub const CRIMSON_ITEMINFO_FLAG_IS_SAVE_GAME_DATA_AT_USE_ITEM: u32 = 1 << 21;
+pub const CRIMSON_ITEMINFO_FLAG_IS_LOGOUT_AT_USE_ITEM: u32 = 1 << 22;
+pub const CRIMSON_ITEMINFO_FLAG_ENABLE_EQUIP_IN_CLONE_ACTOR: u32 = 1 << 23;
+pub const CRIMSON_ITEMINFO_FLAG_CAN_DISASSEMBLE: u32 = 1 << 24;
+pub const CRIMSON_ITEMINFO_FLAG_IS_ALL_GIMMICK_SEALABLE: u32 = 1 << 25;
+pub const CRIMSON_ITEMINFO_FLAG_DELETE_BY_GIMMICK_UNLOCK: u32 = 1 << 26;
+pub const CRIMSON_ITEMINFO_FLAG_USE_DROP_SET_TARGET: u32 = 1 << 27;
+// bits 28..31 reserved for future flags — set to 0 by the encoder.
+
+fn pack_iteminfo_flags(item: &ItemInfo) -> u32 {
+    let mut f = 0u32;
+    macro_rules! set_if {
+        ($field:expr, $mask:expr) => {
+            if $field != 0 {
+                f |= $mask;
+            }
+        };
+    }
+    set_if!(item.is_blocked, CRIMSON_ITEMINFO_FLAG_IS_BLOCKED);
+    set_if!(item.is_dyeable, CRIMSON_ITEMINFO_FLAG_IS_DYEABLE);
+    set_if!(
+        item.is_destroy_when_broken,
+        CRIMSON_ITEMINFO_FLAG_IS_DESTROY_WHEN_BROKEN
+    );
+    set_if!(item.is_housing_only, CRIMSON_ITEMINFO_FLAG_IS_HOUSING_ONLY);
+    set_if!(
+        item.is_equip_quick_slot_visible,
+        CRIMSON_ITEMINFO_FLAG_IS_EQUIP_QUICK_SLOT_VISIBLE
+    );
+    set_if!(
+        item.is_important_item,
+        CRIMSON_ITEMINFO_FLAG_IS_IMPORTANT_ITEM
+    );
+    set_if!(item.is_shield_item, CRIMSON_ITEMINFO_FLAG_IS_SHIELD_ITEM);
+    set_if!(
+        item.is_tower_shield_item,
+        CRIMSON_ITEMINFO_FLAG_IS_TOWER_SHIELD_ITEM
+    );
+    set_if!(item.is_wild, CRIMSON_ITEMINFO_FLAG_IS_WILD);
+    set_if!(
+        item.hide_from_inventory_on_pop_item,
+        CRIMSON_ITEMINFO_FLAG_HIDE_FROM_INVENTORY_ON_POP_ITEM
+    );
+    set_if!(item.discardable, CRIMSON_ITEMINFO_FLAG_DISCARDABLE);
+    set_if!(
+        item.is_register_trade_market,
+        CRIMSON_ITEMINFO_FLAG_IS_REGISTER_TRADE_MARKET
+    );
+    set_if!(
+        item.is_editor_usable,
+        CRIMSON_ITEMINFO_FLAG_IS_EDITOR_USABLE
+    );
+    set_if!(
+        item.is_editable_grime,
+        CRIMSON_ITEMINFO_FLAG_IS_EDITABLE_GRIME
+    );
+    set_if!(item.use_immediately, CRIMSON_ITEMINFO_FLAG_USE_IMMEDIATELY);
+    set_if!(
+        item.apply_max_stack_cap,
+        CRIMSON_ITEMINFO_FLAG_APPLY_MAX_STACK_CAP
+    );
+    set_if!(
+        item.is_blocked_store_sell,
+        CRIMSON_ITEMINFO_FLAG_IS_BLOCKED_STORE_SELL
+    );
+    set_if!(
+        item.is_preorder_item,
+        CRIMSON_ITEMINFO_FLAG_IS_PREORDER_ITEM
+    );
+    set_if!(
+        item.is_has_item_use_data_inventory_buff,
+        CRIMSON_ITEMINFO_FLAG_IS_HAS_ITEM_USE_DATA_INVENTORY_BUFF
+    );
+    set_if!(
+        item.is_preserved_on_extract,
+        CRIMSON_ITEMINFO_FLAG_IS_PRESERVED_ON_EXTRACT
+    );
+    set_if!(
+        item.enable_alert_system_to_ui,
+        CRIMSON_ITEMINFO_FLAG_ENABLE_ALERT_SYSTEM_TO_UI
+    );
+    set_if!(
+        item.is_save_game_data_at_use_item,
+        CRIMSON_ITEMINFO_FLAG_IS_SAVE_GAME_DATA_AT_USE_ITEM
+    );
+    set_if!(
+        item.is_logout_at_use_item,
+        CRIMSON_ITEMINFO_FLAG_IS_LOGOUT_AT_USE_ITEM
+    );
+    set_if!(
+        item.enable_equip_in_clone_actor,
+        CRIMSON_ITEMINFO_FLAG_ENABLE_EQUIP_IN_CLONE_ACTOR
+    );
+    set_if!(item.can_disassemble, CRIMSON_ITEMINFO_FLAG_CAN_DISASSEMBLE);
+    set_if!(
+        item.is_all_gimmick_sealable,
+        CRIMSON_ITEMINFO_FLAG_IS_ALL_GIMMICK_SEALABLE
+    );
+    set_if!(
+        item.delete_by_gimmick_unlock,
+        CRIMSON_ITEMINFO_FLAG_DELETE_BY_GIMMICK_UNLOCK
+    );
+    set_if!(
+        item.use_drop_set_target,
+        CRIMSON_ITEMINFO_FLAG_USE_DROP_SET_TARGET
+    );
+    f
+}
+
+// ── CrimsonItemInfoSummary (one-shot static metadata struct) ───────────────
+//
+// `crimson_iteminfo_lookup_summary` populates this struct from the cached
+// per-key metadata. Field ordering picks the largest scalars first so the
+// repr(C) layout has no implicit padding mid-struct; the trailing
+// `_reserved: [u8; 5]` brings the size up to a clean 72 bytes
+// (`size_of::<CrimsonItemInfoSummary>()` is asserted in the unit tests).
+//
+// The summary intentionally omits variable-length data (string_key,
+// icon_path full string, the various Lists). Callers that need those
+// take the per-key dedicated lookups (`lookup_string_key`,
+// `lookup_socket_caps`, …).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct CrimsonItemInfoSummary {
+    pub max_stack_count: u64,
+    pub cooltime: i64,
+    pub respawn_time_seconds: i64,
+    pub key: u32,
+    pub flags: u32,
+    pub icon_path_hash: u32,
+    pub equip_type_info: u32,
+    pub equipable_hash: u32,
+    pub equipable_level: u32,
+    pub knowledge_info: u32,
+    pub material_key: u32,
+    pub gimmick_info: u32,
+    pub category_info: u16,
+    pub inventory_info: u16,
+    pub minimum_extract_enchant_level: u16,
+    pub max_endurance: u16,
+    pub item_type: u8,
+    pub item_tier: u8,
+    pub quick_slot_index: u8,
+    pub item_charge_type: u8,
+    pub usable_alert_type: u8,
+    pub knowledge_obtain_type: u8,
+    pub apply_drop_stat_type: u8,
+    pub _reserved: u8,
+}
+
+const _: () = {
+    // Catch unexpected padding at build time — the struct is part of the
+    // C ABI surface and downstream C# matches its size with
+    // [StructLayout(LayoutKind.Sequential)] + Marshal.SizeOf.
+    //
+    // Layout under repr(C):
+    //   3×u64 + 9×u32 + 4×u16 + 8×u8 = 24+36+8+8 = 76 bytes raw,
+    //   rounded up to 80 by the u64 alignment requirement (the trailing
+    //   `_reserved: u8` sits at offset 71; bytes 72..79 are pad bytes
+    //   the compiler adds to make the struct's total size a multiple
+    //   of its 8-byte alignment).
+    assert!(std::mem::size_of::<CrimsonItemInfoSummary>() == 80);
+    assert!(std::mem::align_of::<CrimsonItemInfoSummary>() == 8);
+};
+
 /// Opaque handle exposing lean per-item lookups against the loaded
 /// iteminfo: the `string_key` (internal id) and the `max_stack_count`
 /// (stack cap). The full ItemInfo parse runs once; only the bits the
@@ -103,6 +300,14 @@ pub struct CrimsonItemInfoHandle {
     /// `(key, string_key)` in file order so the caller can enumerate
     /// via [`crimson_iteminfo_get_entry`].
     entries: Vec<(u32, String)>,
+    /// Pre-built one-shot static-metadata snapshot per item, populated
+    /// once at load time so [`crimson_iteminfo_lookup_summary`] and the
+    /// individual scalar / flag getters all read from a hash lookup
+    /// instead of re-parsing the underlying bytes. The full ItemInfo
+    /// struct is dropped after extracting these — only the snapshot is
+    /// retained alongside the other lean per-field caches above. See
+    /// [`CrimsonItemInfoSummary`] for the field layout.
+    summary_by_key: HashMap<u32, CrimsonItemInfoSummary>,
 }
 
 impl CrimsonItemInfoHandle {
@@ -121,10 +326,49 @@ impl CrimsonItemInfoHandle {
         // category_info=2501 is a gem in the gamedata's own sense.
         let mut canonical_gems_set: std::collections::BTreeSet<u32> =
             std::collections::BTreeSet::new();
+        let mut summary_by_key: HashMap<u32, CrimsonItemInfoSummary> = HashMap::new();
         while offset < data.len() {
             let item = ItemInfo::read_from(data, &mut offset)?;
             entries.push((item.key.0, item.string_key.data.to_owned()));
             max_stack_by_key.insert(item.key.0, item.max_stack_count);
+            // Build the one-shot static-metadata snapshot before we
+            // start dropping field references — this is the source the
+            // `lookup_summary` and `lookup_flags` / `lookup_item_tier`
+            // / etc. getters all read from.
+            summary_by_key.insert(
+                item.key.0,
+                CrimsonItemInfoSummary {
+                    max_stack_count: item.max_stack_count,
+                    cooltime: item.cooltime,
+                    respawn_time_seconds: item.respawn_time_seconds,
+                    key: item.key.0,
+                    flags: pack_iteminfo_flags(&item),
+                    icon_path_hash: item
+                        .item_icon_list
+                        .items
+                        .first()
+                        .map(|ic| ic.icon_path.0)
+                        .unwrap_or(0),
+                    equip_type_info: item.equip_type_info.0,
+                    equipable_hash: item.equipable_hash,
+                    equipable_level: item.equipable_level,
+                    knowledge_info: item.knowledge_info.0,
+                    material_key: item.material_key,
+                    gimmick_info: item.gimmick_info.0,
+                    category_info: item.category_info.0,
+                    inventory_info: item.inventory_info.0,
+                    minimum_extract_enchant_level: item.minimum_extract_enchant_level,
+                    max_endurance: item.max_endurance,
+                    item_type: item.item_type,
+                    item_tier: item.item_tier,
+                    quick_slot_index: item.quick_slot_index,
+                    item_charge_type: item.item_charge_type,
+                    usable_alert_type: item.usable_alert_type,
+                    knowledge_obtain_type: item.knowledge_obtain_type,
+                    apply_drop_stat_type: item.apply_drop_stat_type,
+                    _reserved: 0,
+                },
+            );
             // Only capture the first per-item icon. Items without an
             // `item_icon_list` entry are intentionally skipped — the
             // lookup surface reports those as NOT_FOUND, mirroring the
@@ -219,6 +463,7 @@ impl CrimsonItemInfoHandle {
             socket_allowed_gems_by_key,
             canonical_gem_list,
             entries,
+            summary_by_key,
         })
     }
 }
@@ -762,6 +1007,165 @@ pub unsafe extern "C" fn crimson_iteminfo_canonical_gem_at(
             return error::OUT_OF_RANGE;
         };
         unsafe { *out_gem_key = *g };
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+// ── Static-metadata lookups (granular getters, share `summary_by_key`) ─────
+//
+// Each function below resolves `item_key` against the per-key
+// `CrimsonItemInfoSummary` cache built once at load time, then writes a
+// single scalar / bitmask out. Lookups are O(1) HashMap hits — no
+// re-parsing of the underlying bytes. All return `NOT_FOUND` for unknown
+// keys and `NULL_ARG` for null pointers; none of them touch `*out_*`
+// until they've successfully resolved the key.
+
+/// Read the static-flag bitmask for `item_key`. Bit definitions are the
+/// `CRIMSON_ITEMINFO_FLAG_*` constants at the top of this module. The
+/// returned value is also exposed as `CrimsonItemInfoSummary::flags`
+/// when using the one-shot summary lookup.
+///
+/// # Safety
+/// `handle` must be live, `out_flags` must be non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_iteminfo_lookup_flags(
+    handle: *const CrimsonItemInfoHandle,
+    item_key: u32,
+    out_flags: *mut u32,
+) -> i32 {
+    if handle.is_null() || out_flags.is_null() {
+        return error::NULL_ARG;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let Some(s) = h.summary_by_key.get(&item_key) else {
+            return error::NOT_FOUND;
+        };
+        unsafe { *out_flags = s.flags };
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+macro_rules! impl_iteminfo_scalar_lookup {
+    ($fn_name:ident, $out_ty:ty, $field:ident) => {
+        /// O(1) scalar lookup against the per-key summary cache.
+        ///
+        /// # Safety
+        /// `handle` must be live; `out` must be non-null.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $fn_name(
+            handle: *const CrimsonItemInfoHandle,
+            item_key: u32,
+            out: *mut $out_ty,
+        ) -> i32 {
+            if handle.is_null() || out.is_null() {
+                return error::NULL_ARG;
+            }
+            catch_unwind(AssertUnwindSafe(|| {
+                let h = unsafe { &*handle };
+                let Some(s) = h.summary_by_key.get(&item_key) else {
+                    return error::NOT_FOUND;
+                };
+                unsafe { *out = s.$field };
+                error::OK
+            }))
+            .unwrap_or(error::PANIC)
+        }
+    };
+}
+
+impl_iteminfo_scalar_lookup!(crimson_iteminfo_lookup_item_type, u8, item_type);
+impl_iteminfo_scalar_lookup!(crimson_iteminfo_lookup_item_tier, u8, item_tier);
+impl_iteminfo_scalar_lookup!(
+    crimson_iteminfo_lookup_quick_slot_index,
+    u8,
+    quick_slot_index
+);
+impl_iteminfo_scalar_lookup!(
+    crimson_iteminfo_lookup_item_charge_type,
+    u8,
+    item_charge_type
+);
+impl_iteminfo_scalar_lookup!(
+    crimson_iteminfo_lookup_usable_alert_type,
+    u8,
+    usable_alert_type
+);
+impl_iteminfo_scalar_lookup!(
+    crimson_iteminfo_lookup_knowledge_obtain_type,
+    u8,
+    knowledge_obtain_type
+);
+impl_iteminfo_scalar_lookup!(
+    crimson_iteminfo_lookup_apply_drop_stat_type,
+    u8,
+    apply_drop_stat_type
+);
+impl_iteminfo_scalar_lookup!(crimson_iteminfo_lookup_category_info, u16, category_info);
+impl_iteminfo_scalar_lookup!(
+    crimson_iteminfo_lookup_inventory_info,
+    u16,
+    inventory_info
+);
+impl_iteminfo_scalar_lookup!(crimson_iteminfo_lookup_max_endurance, u16, max_endurance);
+impl_iteminfo_scalar_lookup!(
+    crimson_iteminfo_lookup_minimum_extract_enchant_level,
+    u16,
+    minimum_extract_enchant_level
+);
+impl_iteminfo_scalar_lookup!(
+    crimson_iteminfo_lookup_equip_type_info,
+    u32,
+    equip_type_info
+);
+impl_iteminfo_scalar_lookup!(crimson_iteminfo_lookup_equipable_hash, u32, equipable_hash);
+impl_iteminfo_scalar_lookup!(
+    crimson_iteminfo_lookup_equipable_level,
+    u32,
+    equipable_level
+);
+impl_iteminfo_scalar_lookup!(crimson_iteminfo_lookup_knowledge_info, u32, knowledge_info);
+impl_iteminfo_scalar_lookup!(crimson_iteminfo_lookup_material_key, u32, material_key);
+impl_iteminfo_scalar_lookup!(crimson_iteminfo_lookup_gimmick_info, u32, gimmick_info);
+impl_iteminfo_scalar_lookup!(crimson_iteminfo_lookup_cooltime, i64, cooltime);
+impl_iteminfo_scalar_lookup!(
+    crimson_iteminfo_lookup_respawn_time_seconds,
+    i64,
+    respawn_time_seconds
+);
+
+// ── CrimsonItemInfoSummary (one-shot summary lookup) ───────────────────────
+
+/// One-shot lookup that fills the entire static-metadata snapshot for
+/// `item_key`. Saves a round-trip per scalar for callers that need most
+/// fields at once (e.g. an editor refreshing its detail panel when the
+/// user selects an inventory entry).
+///
+/// `*out_summary` is written only on success (`error::OK`); on
+/// `NOT_FOUND` it's left untouched. The struct layout is frozen — see
+/// `CrimsonItemInfoSummary` above; downstream consumers mirror it as a
+/// `[StructLayout(LayoutKind.Sequential)]` C# struct.
+///
+/// # Safety
+/// `handle` must be live; `out_summary` must be a writable pointer to
+/// at least `sizeof(CrimsonItemInfoSummary) = 80` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_iteminfo_lookup_summary(
+    handle: *const CrimsonItemInfoHandle,
+    item_key: u32,
+    out_summary: *mut CrimsonItemInfoSummary,
+) -> i32 {
+    if handle.is_null() || out_summary.is_null() {
+        return error::NULL_ARG;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let Some(s) = h.summary_by_key.get(&item_key) else {
+            return error::NOT_FOUND;
+        };
+        unsafe { *out_summary = *s };
         error::OK
     }))
     .unwrap_or(error::PANIC)
@@ -2035,5 +2439,210 @@ mod tests {
             crimson_paloc_free(paloc_handle);
             crimson_iteminfo_free(iteminfo_handle);
         }
+    }
+
+    // ── Static-metadata lookup tests (Option A + Option B) ────────────────
+    //
+    // Pin the granular flag / scalar getters and the one-shot summary
+    // struct against two known items in 1.08:
+    //   - Pyeonjeon_Arrow (key=2200): a consumable arrow with
+    //     item_type=0, item_tier=0, and is_equip_quick_slot_visible=0
+    //     (it's a quiver/consumable, not equipment).
+    //   - Marni_Devotee_PlateArmor_Helm (key=14510): equipment with
+    //     item_type=24, is_equip_quick_slot_visible=1, populated
+    //     docking_child_data, and a real `equip_type_info`.
+    #[test]
+    fn c_abi_iteminfo_static_lookups_live() {
+        let Some(pamt_path) = find_pamt_for_iteminfo() else {
+            eprintln!("skipping c_abi_iteminfo_static_lookups_live: no game install");
+            return;
+        };
+        let pamt = CString::new(pamt_path.to_str().unwrap()).unwrap();
+        let bytes = extract_iteminfo_bytes(pamt.as_c_str());
+
+        let mut handle: *mut CrimsonItemInfoHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_iteminfo_load_from_bytes(bytes.as_ptr(), bytes.len(), &mut handle) },
+            error::OK
+        );
+        assert!(!handle.is_null());
+
+        // ── Pyeonjeon_Arrow (key=2200) ──────────────────────────────
+        let mut item_type: u8 = 0xff;
+        let mut item_tier: u8 = 0xff;
+        let mut qs_idx: u8 = 0xff;
+        let mut flags: u32 = 0;
+        assert_eq!(
+            unsafe { crimson_iteminfo_lookup_item_type(handle, 2200, &mut item_type) },
+            error::OK
+        );
+        assert_eq!(
+            unsafe { crimson_iteminfo_lookup_item_tier(handle, 2200, &mut item_tier) },
+            error::OK
+        );
+        assert_eq!(
+            unsafe { crimson_iteminfo_lookup_quick_slot_index(handle, 2200, &mut qs_idx) },
+            error::OK
+        );
+        assert_eq!(
+            unsafe { crimson_iteminfo_lookup_flags(handle, 2200, &mut flags) },
+            error::OK
+        );
+        assert_eq!(item_type, 0, "Pyeonjeon_Arrow item_type drifted");
+        assert_eq!(item_tier, 0, "Pyeonjeon_Arrow item_tier drifted");
+        assert_eq!(qs_idx, 1, "Pyeonjeon_Arrow quick_slot_index drifted");
+        // Consumable arrow — should NOT be on the new equip-quick-bar
+        // (only weapons / armor / accessories / tool-slot tools are).
+        assert_eq!(
+            flags & CRIMSON_ITEMINFO_FLAG_IS_EQUIP_QUICK_SLOT_VISIBLE,
+            0,
+            "Pyeonjeon_Arrow should not have IS_EQUIP_QUICK_SLOT_VISIBLE set",
+        );
+        assert_eq!(
+            flags & CRIMSON_ITEMINFO_FLAG_IS_HOUSING_ONLY,
+            0,
+            "Pyeonjeon_Arrow should not be housing-only",
+        );
+
+        // ── Marni_Devotee_PlateArmor_Helm (key=14510) ───────────────
+        assert_eq!(
+            unsafe { crimson_iteminfo_lookup_item_type(handle, 14510, &mut item_type) },
+            error::OK
+        );
+        assert_eq!(
+            unsafe { crimson_iteminfo_lookup_flags(handle, 14510, &mut flags) },
+            error::OK
+        );
+        assert_eq!(item_type, 24, "Marni helm item_type drifted (was 24 in 1.08)");
+        // Equipment — must have the new 1.08 quick-slot-visible bit set.
+        assert!(
+            flags & CRIMSON_ITEMINFO_FLAG_IS_EQUIP_QUICK_SLOT_VISIBLE != 0,
+            "Marni helm missing IS_EQUIP_QUICK_SLOT_VISIBLE; flags=0x{flags:08x}",
+        );
+        // Helms are not housing-only.
+        assert_eq!(
+            flags & CRIMSON_ITEMINFO_FLAG_IS_HOUSING_ONLY,
+            0,
+            "Marni helm should not be housing-only",
+        );
+
+        // ── Summary one-shot lookup ────────────────────────────────
+        let mut summary = CrimsonItemInfoSummary {
+            max_stack_count: 0,
+            cooltime: 0,
+            respawn_time_seconds: 0,
+            key: 0,
+            flags: 0,
+            icon_path_hash: 0,
+            equip_type_info: 0,
+            equipable_hash: 0,
+            equipable_level: 0,
+            knowledge_info: 0,
+            material_key: 0,
+            gimmick_info: 0,
+            category_info: 0,
+            inventory_info: 0,
+            minimum_extract_enchant_level: 0,
+            max_endurance: 0,
+            item_type: 0,
+            item_tier: 0,
+            quick_slot_index: 0,
+            item_charge_type: 0,
+            usable_alert_type: 0,
+            knowledge_obtain_type: 0,
+            apply_drop_stat_type: 0,
+            _reserved: 0,
+        };
+        assert_eq!(
+            unsafe { crimson_iteminfo_lookup_summary(handle, 14510, &mut summary) },
+            error::OK
+        );
+        assert_eq!(summary.key, 14510);
+        assert_eq!(summary.item_type, 24);
+        assert_eq!(summary.flags, flags, "summary.flags must match per-key flag lookup");
+        // Summary's max_stack_count should agree with the dedicated
+        // max-stack lookup — different code paths reading the same
+        // cache.
+        let mut max_stack: u64 = 0;
+        assert_eq!(
+            unsafe { crimson_iteminfo_lookup_max_stack(handle, 14510, &mut max_stack) },
+            error::OK
+        );
+        assert_eq!(summary.max_stack_count, max_stack);
+
+        // ── Cross-check: count of items with IS_EQUIP_QUICK_SLOT_VISIBLE
+        // matches the 949 figure from the pre-commit value-distribution
+        // analysis on 1.08. A regression here flags either a parser bug
+        // or a game-content drift large enough to need re-validation.
+        let mut count = 0u32;
+        assert_eq!(
+            unsafe { crimson_iteminfo_entry_count(handle, &mut count) },
+            error::OK
+        );
+        let mut visible = 0u32;
+        for i in 0..count {
+            let mut k: u32 = 0;
+            let mut required: usize = 0;
+            let _ = unsafe {
+                crimson_iteminfo_get_entry(handle, i, &mut k, ptr::null_mut(), 0, &mut required)
+            };
+            let mut f: u32 = 0;
+            if unsafe { crimson_iteminfo_lookup_flags(handle, k, &mut f) } == error::OK
+                && f & CRIMSON_ITEMINFO_FLAG_IS_EQUIP_QUICK_SLOT_VISIBLE != 0
+            {
+                visible += 1;
+            }
+        }
+        assert_eq!(
+            visible, 949,
+            "IS_EQUIP_QUICK_SLOT_VISIBLE count drifted from the 1.08 baseline (was 949)",
+        );
+
+        // ── Negative path: unknown key → NOT_FOUND ─────────────────
+        assert_eq!(
+            unsafe { crimson_iteminfo_lookup_flags(handle, u32::MAX, &mut flags) },
+            error::NOT_FOUND
+        );
+        assert_eq!(
+            unsafe { crimson_iteminfo_lookup_summary(handle, u32::MAX, &mut summary) },
+            error::NOT_FOUND
+        );
+
+        unsafe { crimson_iteminfo_free(handle) };
+    }
+
+    /// NULL_ARG coverage for the new static-metadata getters.
+    #[test]
+    fn c_abi_iteminfo_static_lookups_null_args() {
+        // Pass null handle on each getter and verify NULL_ARG comes back
+        // before any out-pointer touch.
+        let mut u8_out: u8 = 0;
+        let mut u16_out: u16 = 0;
+        let mut u32_out: u32 = 0;
+        let mut i64_out: i64 = 0;
+        let mut summary = unsafe {
+            // Default-zeroed; safe since the function returns before reading.
+            std::mem::zeroed::<CrimsonItemInfoSummary>()
+        };
+        assert_eq!(
+            unsafe { crimson_iteminfo_lookup_flags(ptr::null(), 0, &mut u32_out) },
+            error::NULL_ARG,
+        );
+        assert_eq!(
+            unsafe { crimson_iteminfo_lookup_item_type(ptr::null(), 0, &mut u8_out) },
+            error::NULL_ARG,
+        );
+        assert_eq!(
+            unsafe { crimson_iteminfo_lookup_category_info(ptr::null(), 0, &mut u16_out) },
+            error::NULL_ARG,
+        );
+        assert_eq!(
+            unsafe { crimson_iteminfo_lookup_cooltime(ptr::null(), 0, &mut i64_out) },
+            error::NULL_ARG,
+        );
+        assert_eq!(
+            unsafe { crimson_iteminfo_lookup_summary(ptr::null(), 0, &mut summary) },
+            error::NULL_ARG,
+        );
     }
 }
