@@ -259,9 +259,11 @@ py_binary_struct! {
         // Marni_Devotee_PlateArmor_Helm key=14510, …). All 385 items with
         // `docking_child_data.tag = 1` carry this extra byte; items with
         // `docking_child_data.tag = 0` are unaffected — exactly the
-        // 385-vs-5,929 split observed across the 1.08 binary. Values are
-        // 0x00 in every sampled item, so the field's semantic role is
-        // unknown until a future RE pass identifies it.
+        // 385-vs-5,929 split observed across the 1.08 binary. Every
+        // sampled item reads 0x00 (zero non-zero values across the 385),
+        // so the field is likely a placeholder for a future feature or a
+        // reserved field that current gamedata doesn't populate; semantic
+        // role is unknown until a future RE pass identifies it.
         pub unk_post_summon_tag: u8,
     }
 }

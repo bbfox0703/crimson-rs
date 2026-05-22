@@ -3,27 +3,49 @@ use super::structs::*;
 use crate::binary::*;
 use crate::py_binary_struct;
 
-// ── ItemInfo (1.05) ─────────────────────────────────────────────────────────
+// ── ItemInfo (1.08) ─────────────────────────────────────────────────────────
 //
-// Crimson Desert 1.08 changes the layout in two places relative to 1.07
+// Crimson Desert 1.08 changes the layout in three places relative to 1.07
 // (which itself shared the 1.05 / 1.06 layout — same parser ran clean on all
 // three):
 //
 //   1. `extract_additional_drop_set_info: u32` was **removed** from between
 //      `extract_multi_change_info` and `minimum_extract_enchant_level`.
 //
-//   2. A new `u8` field (`unk_post_is_housing_only`) was **inserted** between
-//      `is_housing_only` and `quick_slot_index`. Values span the full 0..255
-//      range across the 6,314 items in 1.08 (many items hold a small value
-//      that visually mirrors `quick_slot_index`), so the field is not a
-//      boolean flag — its semantic role is unknown until a future RE pass
-//      narrows it down.
+//   2. A new `u8` field (`is_equip_quick_slot_visible`) was **inserted**
+//      between `is_housing_only` and `quick_slot_index`. The field is a
+//      boolean (only 0 or 1 observed across all 6,314 items: 5,365 zero,
+//      949 one). Strongly correlates with the 1.08 patch notes about the
+//      new equip-quick-bar reorganization (added tool slot, mask/crown
+//      moved to armor slot): the 949 `1`-valued items are exactly the
+//      "real equipment" set — every weapon, armor piece, accessory, and
+//      tool-slot tool (伐木斧頭 / 鐵鎚 / 鏟子 / 掃帚 / 鐮刀 / 十字鎬 /
+//      手鑽/電鋸 / 扇子). Quest items, recipes, consumables, and the
+//      cosmetic/plot items that share an `item_type=58 cat=601` with the
+//      real tools (Notepad, Feather_Pen, Item_Scale, Abacus, Equip_Drum,
+//      Equip_Trumpet, …) all read 0. The strict implication
+//      `value=1 ⇒ equip_type_info != 0` holds; the converse does NOT (2,155
+//      items have a non-zero `equip_type_info` but `value=0` — those are
+//      the quest-flavored equipment items). Name is a best-effort guess
+//      from correlation; underlying gamedata symbol still TBD.
 //
-// Net per-item size delta: -3 bytes (4 removed, 1 added). The change was
-// confirmed byte-perfect by reconstructing synthetic 1.08 items from the
-// 1.07 bytes with `extract_additional_drop_set_info` excised and the new
-// u8 inserted (round-trip equality verified for Pyeonjeon_Arrow key=2200
-// and Goblin_Pot key=52006).
+//   3. A new trailing `u8` field (`unk_post_summon_tag`) was **inserted**
+//      inside `DockingChildData` (see `structs.rs`). It only materialises
+//      for the 385 items with `docking_child_data.tag = 1` (items whose
+//      visual mesh attaches to a character socket — weapons, armor that
+//      docks to body sockets, etc.). Every sampled item reads `0x00`;
+//      semantic role is unknown — likely a placeholder for a future
+//      feature or a reserved field that current gamedata doesn't populate.
+//
+// Net per-item size delta: -3 bytes for items with `docking_child_data.tag = 0`
+// (the 5,929-item majority), -2 bytes for the 385 items with
+// `docking_child_data.tag = 1` (the extra `unk_post_summon_tag` cancels
+// 1 byte of the removal). Confirmed byte-perfect by reconstructing synthetic
+// 1.08 items from 1.07 bytes with `extract_additional_drop_set_info` excised
+// and the two `u8` fields inserted at their respective positions (round-trip
+// equality verified for Pyeonjeon_Arrow key=2200, Goblin_Pot key=52006,
+// Marni_Devotee_PlateArmor_Helm key=14510 and
+// KuKu_Lightning_TwoHandSpear key=1002175).
 //
 // Crimson Desert 1.05 had earlier introduced two layout changes relative to
 // 1.04:
@@ -110,11 +132,14 @@ py_binary_struct! {
         pub is_editable_grime: u8,
         pub is_destroy_when_broken: u8,
         pub is_housing_only: u8,
-        // Added in Crimson Desert 1.08: u8 between `is_housing_only` and
-        // `quick_slot_index`. Values span 0..255 across the 6,314 items, so
-        // this is not a boolean flag — semantic role unknown until a future
-        // RE pass identifies it.
-        pub unk_post_is_housing_only: u8,
+        // Added in Crimson Desert 1.08: boolean (only 0 / 1 observed). Marks
+        // items that participate in the reorganized equip-quick-bar system
+        // — every weapon, armor piece, accessory, and tool-slot tool reads
+        // 1; quest items / recipes / consumables / cosmetic items read 0.
+        // Name is a best-effort guess from value-distribution correlation
+        // with the 1.08 patch-notes "tool slot" reorganization; revisit
+        // once the underlying gamedata symbol is known.
+        pub is_equip_quick_slot_visible: u8,
         pub quick_slot_index: u8,
         pub reserve_slot_target_data_list: CArray<ReserveSlotTargetData>,
         pub item_tier: u8,
