@@ -23,6 +23,7 @@ One command, three deliverables (`out\items.jsonl`, three `paloc_*.json`, three 
 |---|---|---|---|
 | [`export_for_ce.py`](export_for_ce.py) | **Main one-shot pipeline.** Extracts iteminfo + paloc, builds items.jsonl + paloc JSONs + CE dropdown lists. | game install + `data\keys.txt` | `out\iteminfo.pabgb`, `out\items.jsonl`, `out\paloc_*.json`, `out\output*.txt` |
 | [`build_items_jsonl.py`](build_items_jsonl.py) | Standalone anchor-based items.jsonl builder (subset of `export_for_ce.py`). | `keys.txt` + raw `iteminfo.pabgb` | `items.jsonl` |
+| [`dump_gamedata_keys.py`](dump_gamedata_keys.py) | Snapshot per-version key lists for the 30 non-iteminfo gamedata tables (skill, mission, quest, stage, gimmick, character, faction triple, store, mercenary, dye triple, niche bridges, …). Auto-detects four PABGH shapes. Mirrors the role `keys.txt` plays for iteminfo. | live install | `data\gamedata-keys-<ver>\<table>.txt` |
 
 ### Diagnostic / analysis scripts
 
