@@ -2,6 +2,7 @@ mod arrays;
 pub(crate) mod paloc;
 pub(crate) mod pamt;
 pub(crate) mod papgt;
+pub(crate) mod paver;
 pub(crate) mod paz;
 mod primitives;
 pub(crate) mod trie;
