@@ -7,7 +7,7 @@
 //!
 //! `u16 count + (u16 key, u32 offset)*` PABGH. Body: `[u16 key][u32
 //! name_len][name]` followed by per-event payload (timing, action list,
-//! cross-references). See [`docs/globalgameevent-body-re.md`](../../docs/globalgameevent-body-re.md)
+//! cross-references). See [`docs/archive/globalgameevent-body-re.md`](../../docs/archive/globalgameevent-body-re.md)
 //! for the full body-schema analysis.
 //!
 //! ## Bridge surface (v1)
@@ -78,7 +78,7 @@ pub fn parse_global_game_event_info_lossy(
         };
         // Per-row payload (everything after the name) — used to extract
         // group_key + paloc_key per the body schema in
-        // docs/globalgameevent-body-re.md.
+        // docs/archive/globalgameevent-body-re.md.
         let payload = &body[6 + name_len..];
         let group_key = extract_group_key(payload).unwrap_or(0);
         let paloc_key = extract_paloc_key(payload).unwrap_or(0);

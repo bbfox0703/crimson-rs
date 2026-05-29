@@ -2,7 +2,7 @@
 //!
 //! Resolves save-side `GlobalGameEventInfoKey (u16-widened-u32)` and
 //! exposes the per-event body fields documented in
-//! [`docs/globalgameevent-body-re.md`](../../docs/globalgameevent-body-re.md):
+//! [`docs/archive/globalgameevent-body-re.md`](../../docs/archive/globalgameevent-body-re.md):
 //!
 //! - `crimson_global_game_event_info_lookup_string_key` — internal
 //!   template name (e.g. `"Drought_Varnian"`). Universal coverage.

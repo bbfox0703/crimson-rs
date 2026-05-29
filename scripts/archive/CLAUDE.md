@@ -5,7 +5,7 @@ These scripts are **archived**. Don't run them, don't import from them, don't ex
 1. The cross-version diff family (`align_104_105.py`, `diff_104_105*.py`, `dump_104_spans.py`, `probe_new_5b_field.py`) is the **template** for the next-patch RE workflow. When the game ships a structural change, copy them, rename to the new version pair, and adapt.
 2. The "hypotheses that turned out wrong" group (`probe_new_layout.py`, `dump_post_bytes.py`, `refine_discriminator.py`, `debug_post31.py`) documents a path the 1.05 RE went down and abandoned. Keep them so the failure modes are recorded in code rather than rumor.
 
-If you're tempted to use these from the active pipeline, **stop and use the active scripts** in [`../`](../) instead. The full RE history (including why the wrong-hypothesis scripts exist) is in [`../../docs/1.05-parser-history.md`](../../docs/1.05-parser-history.md).
+If you're tempted to use these from the active pipeline, **stop and use the active scripts** in [`../`](../) instead. The full RE history (including why the wrong-hypothesis scripts exist) is in [`../../docs/archive/1.05-parser-history.md`](../../docs/archive/1.05-parser-history.md).
 
 ## Don't
 

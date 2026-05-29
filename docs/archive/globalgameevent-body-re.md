@@ -161,7 +161,7 @@ pub struct GlobalGameEventInfoEntry {
 }
 ```
 
-C ABI (in [`src/c_abi/global_game_event_info.rs`](../src/c_abi/global_game_event_info.rs)):
+C ABI (in [`src/c_abi/global_game_event_info.rs`](../../src/c_abi/global_game_event_info.rs)):
 - `crimson_global_game_event_info_lookup_string_key` — internal name
 - `crimson_global_game_event_info_lookup_group_key` — `(handle, key, *out_group_key) → i32`
 - `crimson_global_game_event_info_lookup_paloc_key` — `(handle, key, *out_paloc_key) → i32`
@@ -204,7 +204,7 @@ cargo test --lib --features c_abi _probe_global_game_event_body_dump \
   -- --ignored --nocapture
 ```
 
-Lives in [`src/global_game_event_info/mod.rs`](../src/global_game_event_info/mod.rs).
+Lives in [`src/global_game_event_info/mod.rs`](../../src/global_game_event_info/mod.rs).
 Dumps body-size histogram, first 8 rows in full, one example per
 distinct size, plus per-offset cross-row analysis (constant detection,
 distinct-value count, magnitude buckets).

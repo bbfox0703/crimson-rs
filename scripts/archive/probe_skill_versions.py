@@ -4,7 +4,7 @@ When a new game patch ships, run this against the new version's archive
 alongside earlier baselines to see how the skill binary format moved
 (format flag, BuffData tail sizes, entry count). Used to drive the
 item-2 strategy decision in this repo's history (see
-`docs/downstream-api-gaps.md` table); promoted here as a template for
+`docs/archive/downstream-api-gaps.md` table); promoted here as a template for
 the next time a Crimson Desert patch needs the skill parser
 re-validated.
 
