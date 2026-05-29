@@ -196,6 +196,6 @@ cargo test --lib --features c_abi _probe_mercenary_body_dump \
   -- --ignored --nocapture
 ```
 
-Lives in [`src/mercenary_info/mod.rs`](../src/mercenary_info/mod.rs).
+Lives in [`src/mercenary_info/mod.rs`](../../src/mercenary_info/mod.rs).
 Dumps all 18 rows' bodies as hex + 8-byte rows + numeric-field probes.
 Refresh after a new game patch to spot schema drift.

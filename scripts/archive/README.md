@@ -2,7 +2,7 @@
 
 Reverse-engineering scripts that have outlived their immediate purpose. They're kept as **reference / templates** for the next time the game ships a structure-changing patch — copy, rename, and adapt.
 
-These scripts are **not** wired into the production pipeline (`scripts/export_for_ce.py`). Active production / general-purpose scripts live one level up in [`../`](../). For the full story of what these scripts found, see [`../../docs/1.05-parser-history.md`](../../docs/1.05-parser-history.md).
+These scripts are **not** wired into the production pipeline (`scripts/export_for_ce.py`). Active production / general-purpose scripts live one level up in [`../`](../). For the full story of what these scripts found, see [`../../docs/archive/1.05-parser-history.md`](../../docs/archive/1.05-parser-history.md).
 
 ## Index
 
@@ -33,7 +33,7 @@ The 1.05 RE went down a wrong path before the 1.04-anchored cross-version diff f
 | [`refine_discriminator.py`](refine_discriminator.py) | Searched for a static predicate distinguishing the 18 ammo items from misc Class B items in the old `new_icon_path == ""` branch. |
 | [`debug_post31.py`](debug_post31.py) | Listed the 18 items the old runtime ammo detector matched. |
 
-The lesson — see [`../../docs/1.05-parser-history.md`](../../docs/1.05-parser-history.md) for details — was that the schema is unchanged from 1.04 apart from two small documented additions, and what looked like a "variant tail" was the **anchor scanner** mis-anchoring on duplicate `key` values embedded inside other items. Don't chase schema mysteries before sanity-checking your anchors.
+The lesson — see [`../../docs/archive/1.05-parser-history.md`](../../docs/archive/1.05-parser-history.md) for details — was that the schema is unchanged from 1.04 apart from two small documented additions, and what looked like a "variant tail" was the **anchor scanner** mis-anchoring on duplicate `key` values embedded inside other items. Don't chase schema mysteries before sanity-checking your anchors.
 
 ## When to revive a script from here
 

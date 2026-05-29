@@ -109,7 +109,7 @@ Also relevant:
 | Quest-key → display title (via Jenkins hash hop into PALOC `lo32=0x100/0x101`) | ✓ `crimson_missioninfo_*` / `crimson_questinfo_*` / `crimson_stageinfo_*` / `crimson_knowledgeinfo_*` |
 | Quest-key → internal name fallback | ✓ `lookup_string_key` on every bridge |
 | Generic gamedata table search-by-key | ✗ — only the schema-aware bridges above; no body-byte scan |
-| `StaticInfo:Quest:…` / `StaticInfo:Character:…` token resolution in dialogue | ✗ — see [`paloc-template-survey.md`](paloc-template-survey.md) for the decision to defer until descriptions / dialogue land |
+| `StaticInfo:Quest:…` / `StaticInfo:Character:…` token resolution in dialogue | ✗ — see [`paloc-template-survey.md`](../paloc-template-survey.md) for the decision to defer until descriptions / dialogue land |
 
 ---
 
@@ -121,7 +121,7 @@ Also relevant:
 - Numeric key ↔ text pairs (legacy IDs, 6+ digits)
 - Filters header sentinels (`@`, `#`)
 
-**crimson-rs (2026-05-16)**: shipped as [`src/binary/paloc.rs`](../src/binary/paloc.rs) (Python: `parse_paloc_bytes` / `serialize_paloc`; C ABI: `crimson_paloc_*` with length-prefixed numeric + symbolic key lookups). Both numeric and symbolic keys round-trip; the 1.07 English file is 179,571 entries (124,800 numeric + 54,713 symbolic).
+**crimson-rs (2026-05-16)**: shipped as [`src/binary/paloc.rs`](../../src/binary/paloc.rs) (Python: `parse_paloc_bytes` / `serialize_paloc`; C ABI: `crimson_paloc_*` with length-prefixed numeric + symbolic key lookups). Both numeric and symbolic keys round-trip; the 1.07 English file is 179,571 entries (124,800 numeric + 54,713 symbolic).
 
 ---
 

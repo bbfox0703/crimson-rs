@@ -422,11 +422,11 @@ Save Editor's `LocalizationProvider` calls.
   roadmap, decisions log, and architecture for the bridges
   themselves. This reference doc is the *data*; the plan doc is the
   *design*.
-- [`crimsonforge-feature-gaps.md`](./crimsonforge-feature-gaps.md) —
+- [`crimsonforge-feature-gaps.md`](./archive/crimsonforge-feature-gaps.md) —
   what CrimsonForge (the Python toolkit) can parse that crimson-rs
   doesn't (yet); useful when extending coverage beyond the keys
   shipped so far.
-- [`1.05-parser-history.md`](./1.05-parser-history.md) — the RE
+- [`1.05-parser-history.md`](./archive/1.05-parser-history.md) — the RE
   history of the 1.05 iteminfo parser. Useful when the schema in a
   new patch shifts and the anchor scanner needs adjustment.
 - [`scripts/CLAUDE.md`](../scripts/CLAUDE.md) "On a new game patch"

@@ -55,7 +55,7 @@ One command, three deliverables (`out\items.jsonl`, three `paloc_*.json`, three 
 
 ### Archived scripts
 
-[`archive/`](archive/) holds (a) cross-version diff *templates* tied to the 1.04 → 1.05 transition and (b) scripts that validated and then dis-proved the wrong "variant tail" hypothesis during 1.05 RE. They're kept on disk as reference but **not** wired into any active workflow. See [`archive/README.md`](archive/README.md) for the per-script index and [`../docs/1.05-parser-history.md`](../docs/1.05-parser-history.md) for the full story.
+[`archive/`](archive/) holds (a) cross-version diff *templates* tied to the 1.04 → 1.05 transition and (b) scripts that validated and then dis-proved the wrong "variant tail" hypothesis during 1.05 RE. They're kept on disk as reference but **not** wired into any active workflow. See [`archive/README.md`](archive/README.md) for the per-script index and [`../docs/archive/1.05-parser-history.md`](../docs/archive/1.05-parser-history.md) for the full story.
 
 ## Common arguments
 
@@ -95,7 +95,7 @@ python scripts\inspect_leftover_bytes.py `
     --leftover 88
 ```
 
-For a fail-mode check: **start with the anchor scanner**, not the schema. The 1.05 RE wasted significant effort on phantom schema drift before realizing the issue was in `looks_like_item_start`. See [`../docs/1.05-parser-history.md`](../docs/1.05-parser-history.md) Phase 3.
+For a fail-mode check: **start with the anchor scanner**, not the schema. The 1.05 RE wasted significant effort on phantom schema drift before realizing the issue was in `looks_like_item_start`. See [`../docs/archive/1.05-parser-history.md`](../docs/archive/1.05-parser-history.md) Phase 3.
 
 ### Find a string the game displays — which paloc holds it?
 

@@ -1,10 +1,10 @@
 # scripts/ — Claude context
 
-Engineering notes for the next session. User-facing docs live in [`README.md`](README.md). Full RE history (the long version) is in [`../docs/1.05-parser-history.md`](../docs/1.05-parser-history.md).
+Engineering notes for the next session. User-facing docs live in [`README.md`](README.md). Full RE history (the long version) is in [`../docs/archive/1.05-parser-history.md`](../docs/archive/1.05-parser-history.md).
 
 ## Status
 
-- **ItemInfo parser**: byte-perfect on **1.05** (6,236 items), **1.06 / 1.07** (6,253 items — 1.07 ships an identical key list to 1.06) and **1.08** (6,314 items — +61 vs 1.07; 1.08 ships three schema drifts vs 1.07, see `src/item_info/item.rs` header). `serialize_iteminfo` roundtrips every item; the pipeline (`scripts\export_for_ce.py`) runs end-to-end clean on every version.
+- **ItemInfo parser**: byte-perfect on **1.05** (6,236 items), **1.06 / 1.07** (6,253 items — 1.07 ships an identical key list to 1.06), **1.08** (6,314 items — +61 vs 1.07; 1.08 ships three schema drifts vs 1.07, see `src/item_info/item.rs` header) and **1.09** (6,314 items — key list byte-identical to 1.08, no schema drift). `serialize_iteminfo` roundtrips every item; the pipeline (`scripts\export_for_ce.py`) runs end-to-end clean on every version.
 - **Skill parser** (`src/skill_info/`): byte-perfect roundtrip on 1.03 / 1.04 / 1.05; the `c_abi_skillinfo_live_roundtrip` test runs against the live install and is green on 1.07 (so 1.06 / 1.07 are covered too, even without a dedicated re-probe). The brute-force BuffData subclass-tail probe absorbs size drift, so unless the format flag flips, no change is expected. The brute-force probe is essential — cross-version probing in May 2026 showed 11 `type_id` sizes drift between 1.03–1.05, so the size table cannot be hardcoded.
 - **CI gate** (`.github/workflows/ci.yml`): every push to `main`/`dev` and every PR runs `cargo clippy --all-targets --lib -- -D warnings` + `cargo test --lib` on Ubuntu. Branch protection on `main` requires the check before merge.
 
@@ -50,6 +50,7 @@ The fastest "did Pearl Abyss break anything?" loop:
 | 1.06 | 6,253 | 100% ok | live-roundtrip test green (no dedicated re-probe) | +17 items vs 1.05; no schema drift |
 | 1.07 | 6,253 | 100% ok | live-roundtrip test green | identical item key list to 1.06; save format unchanged (v2 / flags 0x0080); slot100 + slot105 full-body roundtrip idempotent |
 | **1.08** | **6,314** | **100% ok** | live-roundtrip test green | +61 items vs 1.07; **three schema drifts** in iteminfo (removed `extract_additional_drop_set_info: u32`; added `is_equip_quick_slot_visible: u8` between `is_housing_only` and `quick_slot_index`; added trailing `unk_post_summon_tag: u8` inside `DockingChildData`) — see `src/item_info/item.rs` header. Save format unchanged (v2 / flags 0x0080); slot100..slot107 + slot2 all full-body roundtrip. Cross-version-diff workflow that pinned the drifts is documented under "Investigation order" step 2 below. |
+| **1.09** | **6,314** | **100% ok** (`leftover=0 fail=0 no_anchor=0`) | live-roundtrip test green | **content-only delta, NO schema drift.** `keys-1.09.txt` byte-identical to `keys-1.08.txt`. Gamedata-key snapshot diff vs 1.08: characterinfo +6 (7074), skill +5 (1980), knowledgeinfo +5 (6097), factionspawndatainfo +1 (123), gimmickinfo −8 (13073); all 25 other tables unchanged. Save format unchanged (v2 / flags 0x0080); slot105/slot107 (1.09 saves) parse + full-body decode + mutate→write→reload roundtrip clean; composite-scalar survey on slot105 matches 1.08 (Transform 40 B the only opaque fall-through). Full suite green after bumping the paver live-install pin 1.08→1.09 (only change needed). Verified on the live 1.09 install 2026-05-29. |
 
 ## Sanity-check on a fresh checkout / new patch
 
@@ -69,7 +70,7 @@ python scripts\analyze_per_item.py --anchors out\anchors.json --pabgb out\itemin
 
 ## Investigation order if a future patch breaks parsing
 
-1. **Sanity-check the anchor scanner first.** [`build_items_jsonl.py`](build_items_jsonl.py) `looks_like_item_start` validates `[u32 key, u32 slen, slen identifier-bytes, u8 zero]`. If the new patch introduces longer names (`slen > 128`) or new identifier bytes, the scanner mis-anchors and downstream looks like a schema bug. Lesson from the 1.05 RE — see [`../docs/1.05-parser-history.md`](../docs/1.05-parser-history.md) Phase 3.
+1. **Sanity-check the anchor scanner first.** [`build_items_jsonl.py`](build_items_jsonl.py) `looks_like_item_start` validates `[u32 key, u32 slen, slen identifier-bytes, u8 zero]`. If the new patch introduces longer names (`slen > 128`) or new identifier bytes, the scanner mis-anchors and downstream looks like a schema bug. Lesson from the 1.05 RE — see [`../docs/archive/1.05-parser-history.md`](../docs/archive/1.05-parser-history.md) Phase 3.
 2. **Then check for genuine schema drift.** Two workflows; pick whichever the situation calls for:
     - **Lightweight (no sibling parser) — used for the 1.07 → 1.08 RE.** Keep one copy of the *previous* version's extracted `iteminfo.pabgb` next to the new one (e.g. snapshot `out/iteminfo.pabgb` to `out/iteminfo.<old>.pabgb` before refreshing the live install). The current parser fails on the new binary; the OLD binary still parses, so `crimson_rs.parse_iteminfo_tracked` gives you the old per-item span/offset map. Then for every key in `keys.txt` that's also in the old binary, run a precise per-byte tandem walk between the two item chunks: at each mismatch, brute-force shifts in `[1..8]` bytes on each side, accept the shift that yields ≥30 consecutive matching bytes downstream, and record `(old_offset, new_offset, removed_bytes_hex, inserted_bytes_hex)`. The detected drift events identify exactly which fields were added/removed; cross-checking against three or more items (one minimal, one with populated optionals like `docking_child_data`, one with stat arrays) immediately exposes conditional schema branches. Final validation: reconstruct synthetic new-version bytes by applying the detected removals/insertions to the old item bytes and assert byte-equality with the real new bytes. This single check is what turned the 1.08 RE from "three failure clusters in the parser" into "three confirmed schema changes" without ever building a 1.07 sibling parser.
     - **Sibling-parser (for when the structural change is too large to byte-diff).** Set up the historical parser as a sibling install (recipe in [`../docs/historical-parser-setup.md`](../docs/historical-parser-setup.md)). Use the cross-version diff templates in [`archive/`](archive/) — copy, rename to the new version pair, adapt path constants. This was the workflow for the larger 1.04 → 1.05 RE; the lightweight workflow above is enough for incremental patches.
@@ -94,7 +95,7 @@ The in-game itemKey array lives at runtime as a packed `[u32 key][u32 unk]` tabl
 
 ## Don't
 
-- Don't reintroduce the `new_icon_path` / `ammo_mid_block` / `ItemInfoTail` (3u8 + sentinel) variant-tail model. It coincidentally round-trips on a subset of items but is fundamentally wrong; see [`../docs/1.05-parser-history.md`](../docs/1.05-parser-history.md) Phase 1.
+- Don't reintroduce the `new_icon_path` / `ammo_mid_block` / `ItemInfoTail` (3u8 + sentinel) variant-tail model. It coincidentally round-trips on a subset of items but is fundamentally wrong; see [`../docs/archive/1.05-parser-history.md`](../docs/archive/1.05-parser-history.md) Phase 1.
 - Don't tighten the anchor scanner's `slen` bound or `is_ident_byte` set without checking real items first — Pearl Abyss has used UTF-8 (Ⅲ/Ⅳ/Ⅵ Roman numerals) and 70+-byte names in 1.05.
 - Don't remove `parse_iteminfo_lossy` or the anchor pipeline. They're the user-facing safety net for any future patch that introduces unexpected schema drift.
 - Don't commit anything under `out/`, `references/samples/`, `out/baselines/`, or `.crimson_rs_*/`. Those contain extracted Pearl Abyss content and locally-built historical wheels. `.gitignore` already excludes them; double-check after edits.
@@ -104,7 +105,7 @@ The in-game itemKey array lives at runtime as a packed `[u32 key][u32 unk]` tabl
 - Active diagnostic / production scripts → this directory ([`README.md`](README.md) has the index)
 - 1.04 → 1.05 cross-version diff templates → [`archive/`](archive/)
 - Skill cross-version drift probe (run on new game patches) → [`archive/probe_skill_versions.py`](archive/probe_skill_versions.py)
-- Full iteminfo RE history → [`../docs/1.05-parser-history.md`](../docs/1.05-parser-history.md)
+- Full iteminfo RE history → [`../docs/archive/1.05-parser-history.md`](../docs/archive/1.05-parser-history.md)
 - Historical parser setup → [`../docs/historical-parser-setup.md`](../docs/historical-parser-setup.md)
 - 71 dev/QA items investigation → [`../docs/paloc-71-dev-items.md`](../docs/paloc-71-dev-items.md)
-- Status of downstream Python bindings (all done as of 2026-05) → [`../docs/downstream-api-gaps.md`](../docs/downstream-api-gaps.md)
+- Status of downstream Python bindings (all done as of 2026-05) → [`../docs/archive/downstream-api-gaps.md`](../docs/archive/downstream-api-gaps.md)

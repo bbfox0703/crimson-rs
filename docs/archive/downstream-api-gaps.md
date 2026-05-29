@@ -24,7 +24,7 @@ that GameMods runs on top.
   (`crimson_rs/crimson_rs.pyd` + `crimson_rs/_legacy/crimson_rs.pyd`,
   commits `b038c2d` + `dd3c1d3`); see the dual-parser doc inside the GameMods
   tree. crimson-rs uses the sibling-install + cross-version diff workflow in
-  `docs/historical-parser-setup.md` and `docs/1.05-parser-history.md`.
+  `docs/historical-parser-setup.md` and `docs/archive/1.05-parser-history.md`.
 
 ## TODO — bindings to add
 

@@ -3,7 +3,7 @@
 [![Platform](https://img.shields.io/badge/Platform-Windows%20x64-0078D4)](https://www.microsoft.com/windows)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Built with Claude Code](https://img.shields.io/badge/Built%20with-Claude%20Code-CC785C?logo=claude)](https://claude.ai/code)
-[![Game Version](https://img.shields.io/badge/Game-Crimson%20Desert%201.05%E2%80%931.08-D63B3B)](https://www.playcrimsondesert.com/)
+[![Game Version](https://img.shields.io/badge/Game-Crimson%20Desert%201.05%E2%80%931.09-D63B3B)](https://www.playcrimsondesert.com/)
 
 > **Personal playground.** This fork is where I poke at Crimson Desert internals at my own pace; the work here isn't intended to flow back upstream. Use it as you like, but don't expect upstream PRs from this branch.
 
@@ -15,15 +15,27 @@ Currently supports:
 - Extracting and parsing `.paz` archives, plus PAPGT / PAMT / PALOC containers
 - Parsing, editing, and byte-perfect roundtripping `iteminfo.pabgb` from Python
 - Save-file (`save.save`) read / write — ChaCha20 + HMAC + LZ4 header, full body decoder and encoder; idempotent full-body roundtrip on every live save tested
-- **32 C-ABI key resolvers** used by the save editor:
+- **34 C-ABI key resolvers** used by the save editor:
   - **Title resolvers** (PALOC hash-hop / cat-byte strip): Skill, Mission, Quest, Stage, Knowledge, QuestGauge, SubLevel, GimmickInfo, Character (+ `resolve_portrait` matcher); plus the `checksum` extern "C" wrapper.
   - **Dye / appearance gamedata**: DyeColorGroupInfo, PartPrefabDyeTexturePallete, PartPrefabDyeSlot, and the combined **ItemKey → list of PartPrefabKey** join (iteminfo + stringinfo + partprefabdyeslotinfo).
-  - **Faction gamedata**: FactionNode (1,158), FactionSpawnData (122), FactionRelationGroup (5) + per-row sibling-reference matrix.
+  - **Faction gamedata**: FactionNode (1,158), FactionSpawnData (123), FactionRelationGroup (5) + per-row sibling-reference matrix.
   - **Catalog / template names** (Save Editor browser surfaces): Store (292), Mercenary (18), House (4), RoyalSupply (4), CraftTool (17) + CraftToolGroup (10), TriggerRegion (12), GamePlayVariable (47), GlobalGameEvent (188) + GlobalGameEventGroup (12), GameAdvice (463) + GameAdviceGroup (8), ReserveSlot (27), Region (1,006), ItemGroup (1,507).
   - Plus an `iteminfo` socket / artifact-challenge / canonical-gem advisory surface, a PAZ-layer `crimson_paz_list_npc_portraits` enumerator, and PABGH-driven `_load_from_*_with_pabgh` loaders for `stageinfo` (51,037 entries) and `questinfo` (1,019) that return the in-game-authoritative key list instead of the anchor-scan path's under-count.
 - **Save-handle helpers**: `list_inventory_items` and `list_character_refs` (flat enumeration of every present CharacterKey field across all blocks); `mutation_version` for snapshot staleness; a **deferred-redecode batch ABI** that suspends the per-call `decode_blocks` for bulk-mutation workflows — one decode at end of batch instead of N; typed `set_float3_field_path` / `set_float4_field_path` / `set_uint4_field_path` composite-scalar setters; `set_inline_bytes_field` + `set_scalar_field_path` / `_present` for finer-grained mutation; JSON `get_block_json` inlines dynamic-array u32/u64 contents directly.
-- **Crimson Desert 1.05–1.08**: PALOC / PAZ / PAMT containers and the save format (v2 / flags 0x0080) are stable across the whole range. The `iteminfo.pabgb` parser **targets the latest patch only** (currently 1.08, 6,314 items, byte-perfect; `serialize_iteminfo` roundtrips every item) — older snapshots have minor schema differences (1.05 added two fields vs 1.04; 1.08 removed one field + added two, one of them conditional on `docking_child_data.tag = 1`) and load with the previous patch's wheel via the recipe in [`docs/historical-parser-setup.md`](docs/historical-parser-setup.md). See [`docs/1.05-parser-history.md`](docs/1.05-parser-history.md) for the full RE history and [`scripts/CLAUDE.md`](scripts/CLAUDE.md) for the per-patch validation table.
+- **Crimson Desert 1.05–1.09**: PALOC / PAZ / PAMT containers and the save format (v2 / flags 0x0080) are stable across the whole range. The `iteminfo.pabgb` parser **targets the latest patch only** (currently 1.09, 6,314 items, byte-perfect; `serialize_iteminfo` roundtrips every item — 1.09 is a content-only delta over 1.08 with no schema drift) — older snapshots have minor schema differences (1.05 added two fields vs 1.04; 1.08 removed one field + added two, one of them conditional on `docking_child_data.tag = 1`) and load with the previous patch's wheel via the recipe in [`docs/historical-parser-setup.md`](docs/historical-parser-setup.md). See [`docs/archive/1.05-parser-history.md`](docs/archive/1.05-parser-history.md) for the full RE history and [`scripts/CLAUDE.md`](scripts/CLAUDE.md) for the per-patch validation table.
 - Generating Cheat Engine dropdown lists (item id → name) covering every in-game item key
+
+## Build & features
+
+The crate ships **three composable Cargo features**, and the FFI surfaces are **opt-in** — the default build is a bare pure-Rust core with no foreign bindings at all:
+
+| Feature | Default? | What it adds | How to build |
+|---|---|---|---|
+| `default = []` | — | Bare pure-Rust core (parsers + containers); no C-ABI, no PyO3 | `cargo build` |
+| `c_abi` | **off** | `extern "C"` surface for native / C# consumers → `crimson_rs.dll` + `crimson_rs.lib` (PyO3 **not** linked) | `cargo build --release --features c_abi` |
+| `python` | **off** | PyO3 bindings (`extension-module`) → the importable `crimson_rs` wheel | `maturin develop` / `maturin build --release` |
+
+So **PyO3 is not built by default** — it only links when the `python` feature is active (which `[tool.maturin]` auto-enables for the wheel). Likewise the C-ABI surface only exists under `--features c_abi`. The two consumer features are independent and composable; CI lints their union (`--features c_abi,python`). The prebuilt **wheel** in releases is the `python` build; the **`.dll` / `.lib`** are the `c_abi` build (zero transitive DLL dependencies — see [`docs/c-sharp-nativeaot-integration.md`](docs/c-sharp-nativeaot-integration.md)).
 
 ## One-shot CE table data export
 
@@ -33,13 +45,13 @@ Currently supports:
 python scripts\export_for_ce.py
 ```
 
-That single command writes everything `Generate_item_id_list.ps1` needs to `out/`. The script auto-discovers every `localizationstring_<lang>.paloc` the game ships (typically 14 languages — eng, jpn, kor, zho-tw, zho-cn, …) and emits one `paloc_<lang>.json` plus one CE dropdown file per language. Counts below are for **1.08** (6,314 keys; the per-patch progression — 6,236 in 1.05, 6,253 in 1.06 / 1.07, 6,314 in 1.08 — is tabulated in [`scripts/CLAUDE.md`](scripts/CLAUDE.md)):
+That single command writes everything `Generate_item_id_list.ps1` needs to `out/`. The script auto-discovers every `localizationstring_<lang>.paloc` the game ships (typically 14 languages — eng, jpn, kor, zho-tw, zho-cn, …) and emits one `paloc_<lang>.json` plus one CE dropdown file per language. Counts below are for **1.09** (6,314 keys; the per-patch progression — 6,236 in 1.05, 6,253 in 1.06 / 1.07, 6,314 in 1.08 and 1.09 (identical key list) — is tabulated in [`scripts/CLAUDE.md`](scripts/CLAUDE.md)):
 
-| File | Contents | 1.08 coverage |
+| File | Contents | 1.09 coverage |
 |---|---|---|
 | `iteminfo.pabgb` | Raw decompressed binary from group 0008 | — |
 | `items.jsonl` | One item per line; `key` + `string_key` always populated, parsed fields when the parser succeeds | 6,314 (100%) |
-| `paloc_<lang>.json` (one per language) | `{item_key: name}` lookup tables (paloc 0x70). Filenames use the raw paloc lang code, e.g. `paloc_eng.json`, `paloc_jpn.json`, `paloc_kor.json`, `paloc_zho-tw.json`, `paloc_zho-cn.json`, … | 6,469 each |
+| `paloc_<lang>.json` (one per language) | `{item_key: name}` lookup tables (paloc 0x70). Filenames use the raw paloc lang code, e.g. `paloc_eng.json`, `paloc_jpn.json`, `paloc_kor.json`, `paloc_zho-tw.json`, `paloc_zho-cn.json`, … | 6,471 each |
 | `output.txt` (eng) + `output_<suffix>.txt` (one per remaining language) | CE dropdown lists `idx:name/key`. eng → `output.txt`; jpn → `output_ja.txt`; kor → `output_ko.txt`; zho-tw → `output_zh-tw.txt`; everything else falls through to its raw lang code | 6,314 each |
 
 The CE dropdown coverage is full because the script falls back to `string_key` for the ~71 dev/QA items the game itself doesn't ship localized names for (in any of 14 languages — see [`scripts/CLAUDE.md`](scripts/CLAUDE.md) for the analysis). 21 additional items are paloc-placeholder rows whose localized name in every language is the literal string `"Name"` — those still show as `<idx>:Name/<key>` in the dropdown lists.
@@ -52,8 +64,8 @@ Override the game install path or `keys.txt` location with `--game-dir` and `--k
 crimson-rs/
 ├─ src/                    Rust library (PyO3 bindings → crimson_rs.pyd)
 ├─ python/crimson_rs/      Python wrapper package
-├─ docs/                   Format references + RE history (api.md, archive-format.md, 1.05-parser-history.md, …)
-├─ examples/               Standalone Python examples
+├─ docs/                   Format references + API docs (api.md, archive-format.md, c-abi-surface.md, …)
+│   └─ archive/                ← completed-RE write-ups + historical notes
 ├─ scripts/                Driver + diagnostic scripts (this is what most users run)
 │   ├─ export_for_ce.py        ← one-shot exporter (the main entry point)
 │   ├─ anchor_diff.py          ← key-by-key cross-version anchor analysis
@@ -147,16 +159,17 @@ with open("items.csv", "w", newline="") as f:
         w.writerow([item["key"], item["string_key"], item["item_type"], item["item_tier"]])
 ```
 
-### Per-patch parser (currently 1.08)
+### Per-patch parser (currently 1.09)
 
-`parse_iteminfo_from_bytes` targets the **latest game patch only** — currently 1.08 (6,314 / 6,314 items, byte-perfect; `serialize_iteminfo` roundtrips every item). Older patches have minor schema differences and **will not parse with this build**:
+`parse_iteminfo_from_bytes` targets the **latest game patch only** — currently 1.09 (6,314 / 6,314 items, byte-perfect; `serialize_iteminfo` roundtrips every item). Older patches have minor schema differences and **will not parse with this build**:
 
 | Patch | Items | Schema drift vs previous |
 |---|---|---|
 | 1.05 | 6,236 | `+` `icon_path_alt` (StringInfoKey) + `unk_flag: u8` inside each `ItemIconData`; `+` `unk_pre_pattern_key: u32` + `unk_pre_pattern_flag: u8` before `pattern_description_data_list` |
 | 1.06 | 6,253 | none (parser unchanged from 1.05) |
 | 1.07 | 6,253 | none (same key list as 1.06) |
-| **1.08** | **6,314** | `−` `extract_additional_drop_set_info: u32`; `+` `is_equip_quick_slot_visible: u8` between `is_housing_only` and `quick_slot_index`; `+` trailing `unk_post_summon_tag: u8` inside `DockingChildData` (only present when `docking_child_data.tag = 1`, ~385 of 6,314 items) |
+| 1.08 | 6,314 | `−` `extract_additional_drop_set_info: u32`; `+` `is_equip_quick_slot_visible: u8` between `is_housing_only` and `quick_slot_index`; `+` trailing `unk_post_summon_tag: u8` inside `DockingChildData` (only present when `docking_child_data.tag = 1`, ~385 of 6,314 items) |
+| **1.09** | **6,314** | none (key list byte-identical to 1.08; content-only delta, no schema drift) |
 
 To parse a previous-patch binary, install that patch's wheel as a sibling package via the recipe in [`docs/historical-parser-setup.md`](docs/historical-parser-setup.md) — `pip install --target=.crimson_rs_107 …` and `import` from that path. Two helper modes are also available for diagnostic / recovery work on the current target:
 
@@ -186,4 +199,3 @@ This is a personal-playground fork. The repos below are where the real upstream 
 
 - [pycrimson](https://github.com/LukeFZ/pycrimson) — the original Python reference implementation
 - [potter420/crimson-rs](https://github.com/potter420/crimson-rs) — the Rust upstream this fork branched from
-- [NattKh/crimson-rs](https://github.com/NattKh/crimson-rs) — fork with April-2026 game-update patches

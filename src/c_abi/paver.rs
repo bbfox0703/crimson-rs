@@ -153,6 +153,8 @@ mod tests {
 
     const PAVER_1_08_LIVE: [u8; 10] =
         [0x01, 0x00, 0x08, 0x00, 0x00, 0x00, 0x3e, 0xb0, 0x39, 0xdc];
+    const PAVER_1_09_LIVE: [u8; 10] =
+        [0x01, 0x00, 0x09, 0x00, 0x00, 0x00, 0x24, 0x48, 0xf3, 0xbb];
 
     #[test]
     fn read_from_bytes_happy_path() {
@@ -172,6 +174,26 @@ mod tests {
         };
         assert_eq!(rc, error::OK);
         assert_eq!((major, minor, patch, build), (1, 8, 0, 0xdc39b03e));
+    }
+
+    #[test]
+    fn read_from_bytes_happy_path_1_09() {
+        let mut major = 0u16;
+        let mut minor = 0u16;
+        let mut patch = 0u16;
+        let mut build = 0u32;
+        let rc = unsafe {
+            crimson_paver_read_from_bytes(
+                PAVER_1_09_LIVE.as_ptr(),
+                PAVER_1_09_LIVE.len(),
+                &mut major,
+                &mut minor,
+                &mut patch,
+                &mut build,
+            )
+        };
+        assert_eq!(rc, error::OK);
+        assert_eq!((major, minor, patch, build), (1, 9, 0, 0xbbf34824));
     }
 
     #[test]
@@ -239,12 +261,12 @@ mod tests {
             )
         };
         assert_eq!(rc, error::OK);
-        // Live install we test against is 1.08 today. Pin the major
+        // Live install we test against is 1.09 today. Pin the major
         // (always 1 in the shipped versions) and the live minor; the
         // patch / build are version-specific informational fields and
         // would drift across patches.
         assert_eq!(major, 1);
-        assert_eq!(minor, 8, "live game install should be 1.08 in this test environment");
+        assert_eq!(minor, 9, "live game install should be 1.09 in this test environment");
     }
 
     #[test]

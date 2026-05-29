@@ -19,7 +19,7 @@ Six investigation scripts in [`../scripts/`](../scripts/) established this findi
 
 ## Implication for the 1.05 parser
 
-The numeric `item_name.default` strings (e.g. `"4295766159917168"` — a 16-digit decimal that happens to equal `(1000186 << 32) | 0x70`) on these 71 items are what tripped up the anchor scanner during Phase 3 of the parser RE. The scanner saw the numeric string sitting at the right structural position and locked onto it as a "fake" item start. See [`1.05-parser-history.md`](1.05-parser-history.md) for the full story.
+The numeric `item_name.default` strings (e.g. `"4295766159917168"` — a 16-digit decimal that happens to equal `(1000186 << 32) | 0x70`) on these 71 items are what tripped up the anchor scanner during Phase 3 of the parser RE. The scanner saw the numeric string sitting at the right structural position and locked onto it as a "fake" item start. See [`1.05-parser-history.md`](archive/1.05-parser-history.md) for the full story.
 
 ## Implication for downstream
 

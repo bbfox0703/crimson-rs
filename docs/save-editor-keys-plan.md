@@ -44,10 +44,10 @@
 > - **`globalgameevent` body fields** (PR #58 — `group_key` + `paloc_key`
 >   lookups exposed via hand-written ABI replacing the macro-generated
 >   name-only bridge). 100% / 76.7% coverage respectively. Full RE in
->   [`docs/globalgameevent-body-re.md`](./globalgameevent-body-re.md);
+>   [`docs/archive/globalgameevent-body-re.md`](./archive/globalgameevent-body-re.md);
 >   per-group action lists (Tier 2) outlined but deferred.
 > - **`mercenaryinfo` body RE** — documented as
->   [`docs/mercenaryinfo-body-re.md`](./mercenaryinfo-body-re.md), no
+>   [`docs/archive/mercenaryinfo-body-re.md`](./archive/mercenaryinfo-body-re.md), no
 >   bridge change. 40-byte body schema identified (`type_enum`,
 >   `group_letter`, default Jenkins hash, 16-byte flag bitfield) but
 >   the `max_count` guess (body[1..5]) didn't match in-game
@@ -533,7 +533,7 @@ and PALOC. This doc records the current state and the RE roadmap for each
 key category — what's shipped, what's blocked on what, and the recommended
 order to tackle the rest.
 
-Companion to [`crimsonforge-feature-gaps.md`](./crimsonforge-feature-gaps.md);
+Companion to [`crimsonforge-feature-gaps.md`](./archive/crimsonforge-feature-gaps.md);
 that doc surveyed CrimsonForge in general, this one targets the specific keys
 the Save Editor consumes.
 
