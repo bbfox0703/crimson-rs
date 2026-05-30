@@ -107,10 +107,10 @@ pub mod error {
     /// (which means "key found, but caller's buffer is too small").
     pub const NOT_FOUND: i32 = -16;
     /// A length-changing list mutation targeted an `object_list` whose
-    /// header `header_variant` doesn't have a fixed-size header we know
-    /// how to rewrite (e.g. `marker_run_plus_zeros`, whose leading `01`
-    /// run length we don't capture separately). Inserts / removes on
-    /// this variant are rejected until the encoder learns to patch it.
+    /// `header_variant` is none of the count-patchable shapes
+    /// (`zero1_count_u24`, `zero4_count_u32`, `ones_then_count`,
+    /// `one_count_u16be`, `marker_run_plus_zeros`). Reserved for any
+    /// future header variant whose count position we can't yet locate.
     pub const LIST_VARIANT_UNSUPPORTED: i32 = -17;
     /// A length-changing mutation targeted a field whose schema
     /// `meta_kind` isn't a fixed-size scalar (0 or 2). For example,
@@ -1607,31 +1607,45 @@ fn apply_scalar_mutation_in_blocks(
 
 /// Rewrite the count bytes of an `object_list` variant header in place.
 ///
-/// Variants whose header has a fixed size (everything except
-/// `marker_run_plus_zeros`) are supported. The count's byte position is
-/// derived as `(header_bytes.len() - fixed_size) + variant_offset`,
-/// where `header_bytes.len() - fixed_size` is the heuristic-skip
-/// padding the decoder captured at the front.
+/// Fixed-size variants locate the count as
+/// `(header_bytes.len() - fixed_size) + variant_offset`, where
+/// `header_bytes.len() - fixed_size` is the heuristic-skip padding the
+/// decoder captured at the front. `marker_run_plus_zeros` has a
+/// variable-length leading `01` run so that rule can't place its count;
+/// its header is fixed at the TAIL instead (see below).
 fn update_object_list_count_in_header(
     header_bytes: &mut [u8],
     header_variant: &str,
     new_count: u32,
 ) -> Result<(), i32> {
-    // (variant_name, fixed_header_size, count_offset_from_body_cursor,
-    //  count_size_in_bytes, max_count, count_endian)
     enum Endian {
         LeU24,
         LeU32,
         BeU16,
     }
+    // `marker_run_plus_zeros` carries a variable-length leading run of
+    // `01` marker bytes, so the `pad + fixed_offset` rule used below
+    // can't locate its count. The header is fixed at the tail instead —
+    // `[01 …][00][u32 count LE][13 zero bytes]` (the decoder records
+    // `header_size = run + 1 + 4 + 13`) — so the count is always the u32
+    // sitting 17 bytes before the end of `header_bytes`, independent of
+    // the run length and the decoder's 0..=3 probe pad. Patch it there.
+    if header_variant == "marker_run_plus_zeros" {
+        let len = header_bytes.len();
+        if len < 17 {
+            return Err(error::OUT_OF_RANGE);
+        }
+        let off = len - 17;
+        header_bytes[off..off + 4].copy_from_slice(&new_count.to_le_bytes());
+        return Ok(());
+    }
+    // (variant_name, fixed_header_size, count_offset_from_body_cursor,
+    //  count_endian)
     let (fixed_size, count_offset, count_endian) = match header_variant {
         "zero1_count_u24" => (18usize, 1usize, Endian::LeU24),
         "zero4_count_u32" => (18, 4, Endian::LeU32),
         "ones_then_count" => (21, 4, Endian::LeU32),
         "one_count_u16be" => (19, 1, Endian::BeU16),
-        // marker_run_plus_zeros: header has 1+N leading `01` bytes that
-        // aren't captured separately. Until we add `marker_count` to
-        // `FieldValue::ObjectList` we can't reliably re-emit a new count.
         _ => return Err(error::LIST_VARIANT_UNSUPPORTED),
     };
     if header_bytes.len() < fixed_size {
@@ -2272,12 +2286,11 @@ pub unsafe extern "C" fn crimson_save_set_scalar_fields_batch(
 ///   (overloaded — "not a list either"; the existing code maps non-list
 ///   leaves to this).
 /// - `element_idx` must be `< current count`; else `OUT_OF_RANGE`.
-/// - The list's `header_variant` must be one of the fixed-size variants
-///   (`zero1_count_u24`, `zero4_count_u32`, `ones_then_count`,
-///   `one_count_u16be`); else `LIST_VARIANT_UNSUPPORTED`. The
-///   `marker_run_plus_zeros` variant is deferred — its header's leading
-///   `01` run length isn't separately captured, so we can't reliably
-///   re-emit a different count.
+/// - The list's `header_variant` must be one whose count we can patch:
+///   `zero1_count_u24`, `zero4_count_u32`, `ones_then_count`,
+///   `one_count_u16be` (fixed-size headers) or `marker_run_plus_zeros`
+///   (variable-length `01` run, but its count is a fixed u32 sitting 17
+///   bytes from the header's end); else `LIST_VARIANT_UNSUPPORTED`.
 ///
 /// On success the in-memory body is fully replaced and the cached
 /// decoded blocks are refreshed. On any error the handle is left
@@ -2477,8 +2490,8 @@ fn remove_one_list_element_in_place(
 /// - `src_element_idx` must be `< current count`; else `OUT_OF_RANGE`.
 /// - `dst_element_idx` must be `<= count + 1`; else `OUT_OF_RANGE`.
 ///   (`<= count` is also OK; the comparison uses the post-clone count.)
-/// - The list's `header_variant` must be a fixed-size variant; else
-///   `LIST_VARIANT_UNSUPPORTED`.
+/// - The list's `header_variant` must be count-patchable — a fixed-size
+///   variant or `marker_run_plus_zeros`; else `LIST_VARIANT_UNSUPPORTED`.
 ///
 /// # Safety
 /// `handle` must be a live, exclusive handle. `path` must point to
@@ -3175,8 +3188,8 @@ pub unsafe extern "C" fn crimson_save_make_empty_element_bytes(
 /// - `bytes` must parse as a valid list element of a class known to
 ///   the schema; else `BODY_PARSE`.
 /// - `insert_at` must be `<= current count`; else `OUT_OF_RANGE`.
-/// - The list's `header_variant` must be a fixed-size variant; else
-///   `LIST_VARIANT_UNSUPPORTED`.
+/// - The list's `header_variant` must be count-patchable — a fixed-size
+///   variant or `marker_run_plus_zeros`; else `LIST_VARIANT_UNSUPPORTED`.
 ///
 /// On success the list grows by one element, the variant header's
 /// count bytes are rewritten, and the body is re-encoded + re-parsed
@@ -5462,6 +5475,123 @@ mod tests {
         );
 
         unsafe { crimson_save_free(handle) };
+    }
+
+    /// Clone-then-remove on a `marker_run_plus_zeros` list (e.g.
+    /// `MercenaryClanSaveData._mercenaryDataList`) must round-trip
+    /// byte-identically. Regression guard for the variant the
+    /// length-changing ops used to reject with `LIST_VARIANT_UNSUPPORTED`
+    /// (the blocker for save-side mount/mercenary insertion). Skips
+    /// cleanly when no live save — or no marker-variant list — is present.
+    #[test]
+    fn c_abi_list_clone_then_remove_roundtrip_marker_variant() {
+        let Some(path) = find_save() else {
+            eprintln!(
+                "skipping c_abi_list_clone_then_remove_roundtrip_marker_variant: no live save"
+            );
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+
+        let mut handle: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle) },
+            error::OK
+        );
+
+        // Find the first top-level block whose field is a
+        // marker_run_plus_zeros object_list with at least one element.
+        let target = {
+            let h = unsafe { &*handle };
+            let mut found: Option<(u32, u32)> = None;
+            'outer: for (bi, block) in h.blocks.iter().enumerate() {
+                for (fi, field) in block.fields.iter().enumerate() {
+                    if let FieldValue::ObjectList {
+                        elements,
+                        header_variant,
+                        ..
+                    } = &field.value
+                        && *header_variant == "marker_run_plus_zeros"
+                        && !elements.is_empty()
+                    {
+                        found = Some((bi as u32, fi as u32));
+                        break 'outer;
+                    }
+                }
+            }
+            found
+        };
+        let Some((block_idx, field_idx)) = target else {
+            eprintln!(
+                "skipping c_abi_list_clone_then_remove_roundtrip_marker_variant: \
+                 no marker_run_plus_zeros list with elements in this save"
+            );
+            unsafe { crimson_save_free(handle) };
+            return;
+        };
+
+        let original_body = unsafe { (*handle).save.body.clone() };
+
+        // Clone element 0 into slot 1 (the count u32 lives 17 bytes from
+        // the end of the variant header) …
+        let rc = unsafe {
+            crimson_save_list_clone_element(handle, block_idx, ptr::null(), 0, field_idx, 0, 1)
+        };
+        assert_eq!(rc, error::OK, "marker-variant clone failed with rc={rc}");
+        let after_clone = unsafe { (*handle).save.body.clone() };
+        assert!(
+            after_clone.len() > original_body.len(),
+            "cloning a marker-variant element should grow the body"
+        );
+
+        // … then remove it again; the body must return to byte-identity,
+        // proving the count was incremented and decremented in place.
+        let rc = unsafe {
+            crimson_save_list_remove_element(handle, block_idx, ptr::null(), 0, field_idx, 1)
+        };
+        assert_eq!(rc, error::OK, "marker-variant remove failed with rc={rc}");
+        let after_remove = unsafe { (*handle).save.body.clone() };
+        assert_eq!(
+            after_remove, original_body,
+            "marker-variant clone-then-remove must be byte-identical to the original body"
+        );
+
+        unsafe { crimson_save_free(handle) };
+    }
+
+    /// Pure-logic guard for the `marker_run_plus_zeros` count patch: the
+    /// count is the u32 sitting 17 bytes before the end of `header_bytes`,
+    /// independent of the leading pad / run length — even when a pad byte
+    /// is itself `0x01` and mimics the marker run.
+    #[test]
+    fn update_marker_run_count_patches_tail_u32() {
+        // Layout: [pad][01 run][00][u32 count LE][13 zero bytes].
+        // Case A: no pad, 3-byte run, count 5 -> 7.
+        let mut h = vec![0x01u8, 0x01, 0x01, 0x00];
+        h.extend_from_slice(&5u32.to_le_bytes());
+        h.extend_from_slice(&[0u8; 13]);
+        let original = h.clone();
+        update_object_list_count_in_header(&mut h, "marker_run_plus_zeros", 7).unwrap();
+        let off = h.len() - 17;
+        assert_eq!(&h[off..off + 4], &7u32.to_le_bytes(), "count not patched");
+        assert_eq!(&h[..off], &original[..off], "bytes before count changed");
+        assert_eq!(&h[off + 4..], &original[off + 4..], "trailing zeros changed");
+
+        // Case B: a leading `0x01` pad byte that looks like a marker —
+        // the tail-anchored offset must still land on the count.
+        let mut h2 = vec![0x01u8 /* pad */, 0x01, 0x01 /* run */, 0x00];
+        h2.extend_from_slice(&9u32.to_le_bytes());
+        h2.extend_from_slice(&[0u8; 13]);
+        update_object_list_count_in_header(&mut h2, "marker_run_plus_zeros", 42).unwrap();
+        let off2 = h2.len() - 17;
+        assert_eq!(&h2[off2..off2 + 4], &42u32.to_le_bytes());
+
+        // Too-short header is rejected, not panicked.
+        let mut tiny = vec![0u8; 10];
+        assert_eq!(
+            update_object_list_count_in_header(&mut tiny, "marker_run_plus_zeros", 1),
+            Err(error::OUT_OF_RANGE)
+        );
     }
 
     /// `list_remove_element` then bring the same element back by cloning
@@ -8407,8 +8537,9 @@ mod tests {
                     } = &field.value
                     {
                         if *header_variant == "marker_run_plus_zeros" {
-                            // Insert is rejected on this variant —
-                            // pick another list.
+                            // Prefer a fixed-size-header list here to keep
+                            // this mixed-batch test's target simple; the
+                            // marker variant has its own dedicated tests.
                             continue;
                         }
                         if let Some((eli, _el)) = elements.iter().enumerate().next() {
