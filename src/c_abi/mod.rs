@@ -142,6 +142,12 @@ pub mod error {
     /// the type mismatch separately from `NOT_SCALAR_FIELD_KIND` so the
     /// caller can route to the right toggle entry point.
     pub const NOT_OBJECT_LIST: i32 = -23;
+    /// `crimson_save_transplant_list_element` could not map a class name
+    /// carried by the source element to a type in the TARGET save's
+    /// schema (the target save has never serialized that type, so it has
+    /// no index for it). The transplant is rejected; the target is
+    /// untouched.
+    pub const TRANSPLANT_TYPE_MISSING: i32 = -24;
     pub const PANIC: i32 = -99;
 }
 
@@ -2540,6 +2546,173 @@ pub unsafe extern "C" fn crimson_save_list_clone_element(
             }
             let cloned = elements[src_element_idx as usize].clone();
             elements.insert(dst_element_idx as usize, cloned);
+            *count = elements.len() as u32;
+            update_object_list_count_in_header(header_bytes, header_variant, *count)?;
+            Ok(())
+        })
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Recursively retarget every embedded schema type-index in a decoded
+/// element so it is valid under `target_name_to_index` (the TARGET save's
+/// `class name -> schema index` map). The decoded tree carries class
+/// NAMES verbatim — `ObjectBlock::class_name` (also the locator-wrapper's
+/// type) and `FieldValue::Locator::child_type_name` — so the remap is
+/// purely name-keyed and needs no source schema. Returns the first class
+/// name the target schema doesn't define.
+fn remap_block_type_indices(
+    block: &mut ObjectBlock,
+    target_name_to_index: &std::collections::HashMap<String, u32>,
+) -> Result<(), String> {
+    let idx = *target_name_to_index
+        .get(block.class_name.as_str())
+        .ok_or_else(|| block.class_name.clone())?;
+    block.class_index = idx;
+    if let Some(w) = block.locator_wrapper.as_mut() {
+        // A list element's / inline child's wrapper type IS the block class.
+        w.type_index = idx as u16;
+    }
+    for field in &mut block.fields {
+        match &mut field.value {
+            FieldValue::Locator {
+                child_type_index,
+                child_type_name,
+                child,
+                ..
+            } => {
+                let ci = *target_name_to_index
+                    .get(child_type_name.as_str())
+                    .ok_or_else(|| child_type_name.clone())?;
+                *child_type_index = ci as u16;
+                if let Some(c) = child.as_mut() {
+                    remap_block_type_indices(c, target_name_to_index)?;
+                }
+            }
+            FieldValue::ObjectList { elements, .. } => {
+                for el in elements.iter_mut() {
+                    remap_block_type_indices(el, target_name_to_index)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Transplant one `object_list` element from a SOURCE save into a TARGET
+/// save's list, retargeting the element's embedded schema type-indices
+/// from the source's numbering to the target's (keyed by class name).
+///
+/// Cross-save counterpart to [`crimson_save_list_clone_element`] (which
+/// duplicates within one save): lifts e.g. a fully-formed mount element
+/// out of a save that owns it and grafts it into a save that doesn't. The
+/// element's scalar values (charKey, level, spawn data, …) copy verbatim;
+/// only type-indices are retargeted. Callers typically follow with
+/// [`crimson_save_set_scalar_field_path`] to make instance-unique fields
+/// distinct (e.g. `_mercenaryNo`).
+///
+/// Both saves must share the same field DEFINITIONS for every class the
+/// element references (same game version) — only the per-save type-index
+/// numbering may differ. On a definition mismatch the post-insert
+/// re-decode rejects the bytes with `MUTATION_INVALID` and the target is
+/// rolled back.
+///
+/// Errors: `NULL_ARG`, `OUT_OF_RANGE` (bad block/path/element idx, or
+/// `insert_at > count`), `NOT_OBJECT_LIST` (source/target field isn't a
+/// list), `TRANSPLANT_TYPE_MISSING` (target schema lacks a needed class),
+/// `LIST_VARIANT_UNSUPPORTED`, `MUTATION_INVALID`.
+///
+/// # Safety
+/// `target_handle` and `source_handle` must be live and **distinct**
+/// handles (aliasing one save as both is UB). Each `*_path` must point to
+/// `*_path_len` readable [`CrimsonPathStep`]s (or NULL with len 0).
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn crimson_save_transplant_list_element(
+    target_handle: *mut CrimsonSaveHandle,
+    target_block_idx: u32,
+    target_path: *const CrimsonPathStep,
+    target_path_len: usize,
+    target_field_idx: u32,
+    insert_at: u32,
+    source_handle: *const CrimsonSaveHandle,
+    source_block_idx: u32,
+    source_path: *const CrimsonPathStep,
+    source_path_len: usize,
+    source_field_idx: u32,
+    source_element_idx: u32,
+) -> i32 {
+    if target_handle.is_null() || source_handle.is_null() {
+        return error::NULL_ARG;
+    }
+    if (target_path.is_null() && target_path_len != 0)
+        || (source_path.is_null() && source_path_len != 0)
+    {
+        return error::NULL_ARG;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let target = unsafe { &mut *target_handle };
+        let source = unsafe { &*source_handle };
+        let t_steps: &[CrimsonPathStep] = if target_path_len == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(target_path, target_path_len) }
+        };
+        let s_steps: &[CrimsonPathStep] = if source_path_len == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(source_path, source_path_len) }
+        };
+
+        // 1) Lift + clone the source element (read-only).
+        let src_parent = match navigate_to_parent_ref(&source.blocks, source_block_idx, s_steps) {
+            Ok(p) => p,
+            Err(e) => return e,
+        };
+        let Some(src_field) = src_parent.fields.get(source_field_idx as usize) else {
+            return error::OUT_OF_RANGE;
+        };
+        let FieldValue::ObjectList { elements: src_elems, .. } = &src_field.value else {
+            return error::NOT_OBJECT_LIST;
+        };
+        let Some(src_el) = src_elems.get(source_element_idx as usize) else {
+            return error::OUT_OF_RANGE;
+        };
+        let mut transplanted = src_el.clone();
+
+        // 2) Retarget type-indices to the target schema (owned-key map so
+        //    it doesn't borrow `target` across the &mut mutation below).
+        let target_map: std::collections::HashMap<String, u32> = target
+            .body
+            .schema
+            .types
+            .iter()
+            .map(|t| (t.name.clone(), t.index))
+            .collect();
+        if remap_block_type_indices(&mut transplanted, &target_map).is_err() {
+            return error::TRANSPLANT_TYPE_MISSING;
+        }
+
+        // 3) Splice into the target list. The re-encode + re-decode inside
+        //    apply_length_changing_mutation validates the grafted bytes;
+        //    a definition mismatch surfaces as MUTATION_INVALID + rollback.
+        apply_length_changing_mutation(target, move |blocks| {
+            let field =
+                navigate_mut_to_field(blocks, target_block_idx, t_steps, target_field_idx)?;
+            let FieldValue::ObjectList {
+                count,
+                header_variant,
+                header_bytes,
+                elements,
+            } = &mut field.value
+            else {
+                return Err(error::NOT_OBJECT_LIST);
+            };
+            if insert_at as usize > elements.len() {
+                return Err(error::OUT_OF_RANGE);
+            }
+            elements.insert(insert_at as usize, transplanted);
             *count = elements.len() as u32;
             update_object_list_count_in_header(header_bytes, header_variant, *count)?;
             Ok(())
@@ -5592,6 +5765,95 @@ mod tests {
             update_object_list_count_in_header(&mut tiny, "marker_run_plus_zeros", 1),
             Err(error::OUT_OF_RANGE)
         );
+    }
+
+    /// Cross-handle element transplant: load the live save into two
+    /// handles, lift a mercenary element from handle A's
+    /// _mercenaryDataList into handle B's, and verify B's list grew by one
+    /// with the source charKey. Same file => the type-index remap is an
+    /// identity, so this exercises the lift + insert + re-encode +
+    /// re-decode plumbing end-to-end (cross-schema remap is covered by the
+    /// downstream C# dragon transplant). Skips cleanly with no live save.
+    #[test]
+    fn c_abi_transplant_list_element_same_file() {
+        let Some(path) = find_save() else {
+            eprintln!("skipping c_abi_transplant_list_element_same_file: no live save");
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+
+        let mut a: *mut CrimsonSaveHandle = ptr::null_mut();
+        let mut b: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut a) }, error::OK);
+        assert_eq!(unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut b) }, error::OK);
+
+        // Find a marker_run_plus_zeros list with >=1 element + element 0's charKey.
+        let (block_idx, field_idx, src_charkey) = {
+            let h = unsafe { &*a };
+            let mut found: Option<(u32, u32, u32)> = None;
+            'outer: for (bi, block) in h.blocks.iter().enumerate() {
+                for (fi, field) in block.fields.iter().enumerate() {
+                    if let FieldValue::ObjectList { elements, header_variant, .. } = &field.value
+                        && *header_variant == "marker_run_plus_zeros"
+                        && !elements.is_empty()
+                    {
+                        let mut ck = 0u32;
+                        for f in &elements[0].fields {
+                            if f.name == "_characterKey"
+                                && let FieldValue::Scalar(ScalarValue::U32(v)) = f.value
+                            {
+                                ck = v;
+                            }
+                        }
+                        found = Some((bi as u32, fi as u32, ck));
+                        break 'outer;
+                    }
+                }
+            }
+            match found {
+                Some(t) => t,
+                None => {
+                    eprintln!("skipping c_abi_transplant_list_element_same_file: no marker list");
+                    unsafe { crimson_save_free(a) };
+                    unsafe { crimson_save_free(b) };
+                    return;
+                }
+            }
+        };
+
+        let b_count_before = {
+            let h = unsafe { &*b };
+            let FieldValue::ObjectList { elements, .. } =
+                &h.blocks[block_idx as usize].fields[field_idx as usize].value
+            else { panic!("target field not a list"); };
+            elements.len()
+        };
+
+        let rc = unsafe {
+            crimson_save_transplant_list_element(
+                b, block_idx, ptr::null(), 0, field_idx, b_count_before as u32,
+                a, block_idx, ptr::null(), 0, field_idx, 0,
+            )
+        };
+        assert_eq!(rc, error::OK, "transplant failed rc={rc}");
+
+        let h = unsafe { &*b };
+        let FieldValue::ObjectList { elements, .. } =
+            &h.blocks[block_idx as usize].fields[field_idx as usize].value
+        else { panic!("target field not a list after transplant"); };
+        assert_eq!(elements.len(), b_count_before + 1, "target list should grow by one");
+        let mut ck = 0u32;
+        for f in &elements[b_count_before].fields {
+            if f.name == "_characterKey"
+                && let FieldValue::Scalar(ScalarValue::U32(v)) = f.value
+            {
+                ck = v;
+            }
+        }
+        assert_eq!(ck, src_charkey, "transplanted element charKey mismatch");
+
+        unsafe { crimson_save_free(a) };
+        unsafe { crimson_save_free(b) };
     }
 
     /// `list_remove_element` then bring the same element back by cloning
