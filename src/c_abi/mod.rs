@@ -205,6 +205,34 @@ pub(crate) fn write_str_to_buf(
     error::OK
 }
 
+/// Two-call-pattern **raw bytes** writer — the no-NUL sibling of
+/// [`write_str_to_buf`]. `required` reports `src.len()` exactly (no
+/// terminator); the payload is copied verbatim. Used by
+/// [`crimson_save_get_inline_bytes_field`], whose payload is arbitrary
+/// bytes (length-prefixed UTF-8 etc.) the caller already knows the
+/// length of.
+///
+/// # Safety
+/// `buf` may be null iff `buf_len == 0`. `required` must be non-null.
+pub(crate) fn write_bytes_to_buf(
+    src: &[u8],
+    buf: *mut u8,
+    buf_len: usize,
+    required: *mut usize,
+) -> i32 {
+    let needed = src.len();
+    unsafe { *required = needed };
+    if buf_len < needed {
+        return error::BUFFER_TOO_SMALL;
+    }
+    if needed > 0 {
+        unsafe {
+            std::ptr::copy_nonoverlapping(src.as_ptr(), buf, needed);
+        }
+    }
+    error::OK
+}
+
 /// Macro for the "name-only key resolver" bridge family — issues the
 /// standard handle struct + six `extern "C"` functions (load_from_file,
 /// load_from_bytes, free, entry_count, lookup_string_key, get_entry).
@@ -3760,6 +3788,74 @@ pub unsafe extern "C" fn crimson_save_set_inline_bytes_field(
         apply_length_changing_mutation(h, |blocks| {
             write_inline_bytes_in_place(blocks, block_idx, steps, field_idx, &bytes)
         })
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Read the raw payload bytes of an `inline_bytes` field — the read
+/// counterpart to [`crimson_save_set_inline_bytes_field`]. Two-call
+/// pattern: probe with `buf_len == 0` to learn the byte count via
+/// `out_required`, then call again with a sized buffer.
+///
+/// Unlike the name-resolver string getters, the payload is copied
+/// **verbatim with no NUL terminator** — it's arbitrary bytes (e.g. the
+/// length-prefixed UTF-8 of `_mercenaryName`) and the caller already
+/// knows the length. Decode the bytes caller-side.
+///
+/// Validation mirrors the setter: the leaf field's `meta_kind` must be
+/// `1`, else `NOT_INLINE_BYTES`. A present-but-empty (or absent-value)
+/// inline_bytes field reads back as zero bytes (`OK`, `out_required == 0`).
+///
+/// # Safety
+/// `handle` must be a live handle and `out_required` non-null. `path`
+/// must point to `path_len` readable [`CrimsonPathStep`] values for the
+/// call (or be NULL with `path_len == 0`). `buf` may be NULL iff
+/// `buf_len == 0`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_get_inline_bytes_field(
+    handle: *const CrimsonSaveHandle,
+    block_idx: u32,
+    path: *const CrimsonPathStep,
+    path_len: usize,
+    field_idx: u32,
+    buf: *mut u8,
+    buf_len: usize,
+    out_required: *mut usize,
+) -> i32 {
+    if handle.is_null() || out_required.is_null() {
+        return error::NULL_ARG;
+    }
+    if path.is_null() && path_len != 0 {
+        return error::NULL_ARG;
+    }
+    if buf.is_null() && buf_len != 0 {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_required = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let steps: &[CrimsonPathStep] = if path_len == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(path, path_len) }
+        };
+        let parent = match navigate_to_parent_ref(&h.blocks, block_idx, steps) {
+            Ok(p) => p,
+            Err(e) => return e,
+        };
+        let Some(field) = parent.fields.get(field_idx as usize) else {
+            return error::OUT_OF_RANGE;
+        };
+        if field.meta_kind != 1 {
+            return error::NOT_INLINE_BYTES;
+        }
+        let payload: &[u8] = match &field.value {
+            FieldValue::InlineBytes { bytes, .. } => bytes,
+            // present meta_kind==1 but a non-inline value (absent etc.) →
+            // read back as empty rather than erroring.
+            _ => &[],
+        };
+        write_bytes_to_buf(payload, buf, buf_len, out_required)
     }))
     .unwrap_or(error::PANIC)
 }
@@ -7944,6 +8040,78 @@ mod tests {
             after_restore, original_body,
             "round-trip rewrite-to-original must reproduce the original body"
         );
+
+        unsafe { crimson_save_free(handle) };
+    }
+
+    /// `get_inline_bytes_field` round-trip: load a real save, locate any
+    /// present `inline_bytes` field, and assert the two-call getter
+    /// returns exactly the bytes the decoder holds. Also checks the
+    /// probe (`buf_len == 0`) reports the right `required` length and
+    /// `BUFFER_TOO_SMALL` when the payload is non-empty.
+    #[test]
+    fn c_abi_get_inline_bytes_field_roundtrip() {
+        let Some(path) = find_save() else {
+            eprintln!("skipping c_abi_get_inline_bytes_field_roundtrip: no live save");
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let mut handle: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle) },
+            error::OK
+        );
+
+        let target = unsafe {
+            let h = &*handle;
+            let mut chosen: Option<(u32, u32, Vec<u8>)> = None;
+            'outer: for (b_idx, block) in h.blocks.iter().enumerate() {
+                for (f_idx, field) in block.fields.iter().enumerate() {
+                    if field.meta_kind != 1 || !field.present {
+                        continue;
+                    }
+                    if let FieldValue::InlineBytes { bytes, .. } = &field.value {
+                        chosen = Some((b_idx as u32, f_idx as u32, bytes.clone()));
+                        break 'outer;
+                    }
+                }
+            }
+            chosen
+        };
+        let Some((block_idx, field_idx, expected)) = target else {
+            eprintln!("skipping c_abi_get_inline_bytes_field_roundtrip: no present inline_bytes field");
+            unsafe { crimson_save_free(handle) };
+            return;
+        };
+
+        // Probe: buf_len = 0 reports the byte count; non-empty payload
+        // also yields BUFFER_TOO_SMALL.
+        let mut required: usize = 0;
+        let rc_probe = unsafe {
+            crimson_save_get_inline_bytes_field(
+                handle, block_idx, ptr::null(), 0, field_idx,
+                ptr::null_mut(), 0, &mut required,
+            )
+        };
+        assert_eq!(required, expected.len(), "probe required must equal payload length");
+        if expected.is_empty() {
+            assert_eq!(rc_probe, error::OK);
+        } else {
+            assert_eq!(rc_probe, error::BUFFER_TOO_SMALL);
+        }
+
+        // Fill: sized buffer returns OK and the exact bytes.
+        let mut buf = vec![0u8; required];
+        let mut req2: usize = 0;
+        let rc_fill = unsafe {
+            crimson_save_get_inline_bytes_field(
+                handle, block_idx, ptr::null(), 0, field_idx,
+                buf.as_mut_ptr(), buf.len(), &mut req2,
+            )
+        };
+        assert_eq!(rc_fill, error::OK, "get_inline_bytes_field fill failed rc={rc_fill}");
+        assert_eq!(req2, expected.len());
+        assert_eq!(buf, expected, "returned bytes must match the decoder payload");
 
         unsafe { crimson_save_free(handle) };
     }
