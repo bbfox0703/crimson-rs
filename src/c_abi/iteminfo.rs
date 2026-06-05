@@ -2570,10 +2570,10 @@ mod tests {
         );
         assert_eq!(summary.max_stack_count, max_stack);
 
-        // ── Cross-check: count of items with IS_EQUIP_QUICK_SLOT_VISIBLE
-        // matches the 949 figure from the pre-commit value-distribution
-        // analysis on 1.08. A regression here flags either a parser bug
-        // or a game-content drift large enough to need re-validation.
+        // ── Cross-check: count of items with IS_EQUIP_QUICK_SLOT_VISIBLE.
+        // Was 949 on 1.08/1.09; 1.10 adds one more equip item → 950.
+        // A regression here flags either a parser bug or a game-content
+        // drift large enough to need re-validation.
         let mut count = 0u32;
         assert_eq!(
             unsafe { crimson_iteminfo_entry_count(handle, &mut count) },
@@ -2594,8 +2594,8 @@ mod tests {
             }
         }
         assert_eq!(
-            visible, 949,
-            "IS_EQUIP_QUICK_SLOT_VISIBLE count drifted from the 1.08 baseline (was 949)",
+            visible, 950,
+            "IS_EQUIP_QUICK_SLOT_VISIBLE count drifted (1.10 baseline 950; was 949 on 1.08/1.09)",
         );
 
         // ── Negative path: unknown key → NOT_FOUND ─────────────────

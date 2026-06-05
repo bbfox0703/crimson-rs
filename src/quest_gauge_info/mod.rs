@@ -196,13 +196,19 @@ mod tests {
             );
         }
 
-        // Every name should begin with the QuestGauge_ prefix — sanity
-        // check that the tighter scanner is doing its job and not
-        // letting body-byte sequences slip in. The leading-letter rule
-        // alone doesn't guarantee this; the prefix check does.
+        // Every name should be a real row name, not a body-byte garbage
+        // sequence the looser scanners would let through. The vast
+        // majority follow the `QuestGauge_<region_or_theme>` convention;
+        // 1.10's reconstruction phase introduced exactly one
+        // mission-linked gauge whose name uses the `Mission_` prefix
+        // instead (`Mission_Reconstruction_Node_Her_KarinQuarry`,
+        // key=1000488 — confirmed a real questgaugeinfo PABGH entry, see
+        // data/gamedata-keys-1.10/questgaugeinfo.txt). The scanner found
+        // exactly 509 rows = the PABGH key count, so no false positives
+        // slipped in. Accept both known-good prefixes.
         for e in &entries {
             assert!(
-                e.name.starts_with("QuestGauge_"),
+                e.name.starts_with("QuestGauge_") || e.name.starts_with("Mission_"),
                 "non-gauge name slipped through: key={}, name={:?}",
                 e.key,
                 e.name,

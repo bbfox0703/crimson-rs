@@ -199,6 +199,13 @@ py_binary_struct! {
         pub ui_component: CString<'a>,
         pub minimum: u32,
         pub icon_path: StringInfoKey,
+        // 1.10 added a new u32 here. For Money_Copper's two
+        // MoneyUnitEntries the value is `0xc52007c6` (decimal 3,306,518,982);
+        // its in-game name is unknown — likely another StringInfoKey-shaped
+        // hash. Confirmed by hand-decoding Money_Copper bytes (both entries
+        // gained +4 B at the same UnitData-relative position, net item delta
+        // +4 = -4 from money_icon_path removal + 2 × +4 from this field).
+        pub unk_post_icon_path: u32,
         pub item_name: LocalizableString<'a>,
         pub item_desc: LocalizableString<'a>,
     }

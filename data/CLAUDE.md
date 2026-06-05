@@ -41,6 +41,8 @@ The game keeps the itemKey table in process memory as a packed `[u32 itemKey][u3
 | 1.05 | 6,236 keys | [`keys-1.05.01.txt`](keys-1.05.01.txt) (frozen 2026-05) |
 | 1.06 | 6,253 keys | [`keys-1.06.txt`](keys-1.06.txt) (byte-identical to `keys-1.07.txt`) |
 | 1.07 | 6,253 keys | [`keys-1.07.txt`](keys-1.07.txt) — 1.06 and 1.07 ship identical key lists |
-| **1.08** | **6,314 keys** | [`keys.txt`](keys.txt) (current) + [`keys-1.08.txt`](keys-1.08.txt) snapshot. +61 keys vs 1.07. |
+| 1.08 | 6,314 keys | [`keys-1.08.txt`](keys-1.08.txt) snapshot. +61 keys vs 1.07. |
+| 1.09 | 6,314 keys | [`keys-1.09.txt`](keys-1.09.txt) — byte-identical to `keys-1.08.txt` (content-only patch, no item add/remove). |
+| **1.10** | **6,325 keys** | [`keys.txt`](keys.txt) (current) + [`keys-1.10.txt`](keys-1.10.txt) snapshot. +11 keys vs 1.09. 1.10 also ships two iteminfo schema drifts — see `src/item_info/item.rs`. |
 
-The other 30 gamedata tables get the same treatment under [`gamedata-keys-1.08/`](gamedata-keys-1.08/) — per-version snapshots so the next patch's drift can be diffed table-by-table without needing the previous game install on disk.
+The other 30 gamedata tables get the same treatment under [`gamedata-keys-1.08/`](gamedata-keys-1.08/), [`gamedata-keys-1.09/`](gamedata-keys-1.09/) and [`gamedata-keys-1.10/`](gamedata-keys-1.10/) — per-version snapshots so the next patch's drift can be diffed table-by-table without needing the previous game install on disk. 1.10 deltas vs 1.09 (diff the dirs): missioninfo +134, stageinfo +358, gimmickinfo +282, questinfo +65, knowledgeinfo +43, questgaugeinfo +43, itemgroupinfo +14, characterinfo/skill/factionspawndatainfo +8, gameadviceinfo +7, partprefabdyeslotinfo +6, regioninfo/storeinfo +1, factionnode −17.

@@ -1069,4 +1069,91 @@ mod tests {
             );
         }
     }
+
+    /// Compare the `ContentsMiscSaveData` block between two saves
+    /// (default: slot104 = 1.09, slot107 = 1.10). Dumps each field's
+    /// decode kind + object_list count/variant, and the leading bytes of
+    /// any undecoded region. Used to RE the 1.10 `_contentsNpcSchedule`
+    /// drift.
+    ///
+    /// ```text
+    /// cargo test --lib --features c_abi _probe_contents_misc_drift -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "investigation only — uses the user's live save files"]
+    fn _probe_contents_misc_drift() {
+        use crate::save::{Body, FieldValue, Save};
+        use std::path::PathBuf;
+
+        let base = std::env::var_os("LOCALAPPDATA").map(|l| {
+            PathBuf::from(l).join("Pearl Abyss").join("CD").join("save")
+        });
+        let Some(base) = base else {
+            eprintln!("skipping: no LOCALAPPDATA");
+            return;
+        };
+        // Find the account dir.
+        let account = std::fs::read_dir(&base)
+            .ok()
+            .and_then(|rd| rd.flatten().map(|e| e.path()).find(|p| p.is_dir()));
+        let Some(account) = account else {
+            eprintln!("skipping: no account dir under {}", base.display());
+            return;
+        };
+
+        let probe_one = |slot: &str| {
+            let path = account.join(slot).join("save.save");
+            if !path.is_file() {
+                eprintln!("  {slot}: not found");
+                return;
+            }
+            let raw = std::fs::read(&path).expect("read save");
+            let save = Save::parse(&raw).expect("parse save");
+            let body = Body::parse(&save.body).expect("parse body");
+            let blocks = body.decode_blocks(&save.body);
+            let Some(cms) = blocks.iter().find(|b| b.class_name == "ContentsMiscSaveData") else {
+                eprintln!("  {slot}: no ContentsMiscSaveData block");
+                return;
+            };
+            eprintln!(
+                "\n=== {slot}: ContentsMiscSaveData (data_offset={}, size={}) ===",
+                cms.data_offset, cms.data_size
+            );
+            eprintln!("  undecoded_ranges: {:?}", cms.undecoded_ranges);
+            for f in &cms.fields {
+                let detail = match &f.value {
+                    FieldValue::ObjectList { count, header_variant, elements, header_bytes } => {
+                        format!(
+                            "list count={count} variant={header_variant} elements_decoded={} header_bytes={:02x?}",
+                            elements.len(),
+                            &header_bytes[..header_bytes.len().min(24)],
+                        )
+                    }
+                    FieldValue::Scalar(_) => "scalar".to_string(),
+                    FieldValue::None => "none".to_string(),
+                    other => format!("{other:?}").chars().take(60).collect(),
+                };
+                eprintln!(
+                    "  [{:2}] present={} kind={:?} name={} start={} end={} :: {}",
+                    f.field_index, f.present, f.kind, f.name, f.start, f.end, detail
+                );
+            }
+            // Dump leading bytes of each undecoded range.
+            for (s, e) in &cms.undecoded_ranges {
+                let end = (*s + 96).min(*e);
+                eprintln!("  undecoded [{s},{e}) leading bytes:");
+                let mut o = *s;
+                while o < end {
+                    let stop = (o + 16).min(end);
+                    eprintln!("    +{:>5} {:02x?}", o - *s, &save.body[o..stop]);
+                    o = stop;
+                }
+            }
+        };
+
+        let slot_a = std::env::var("CRIMSON_SAVE_A").unwrap_or_else(|_| "slot104".into());
+        let slot_b = std::env::var("CRIMSON_SAVE_B").unwrap_or_else(|_| "slot107".into());
+        probe_one(&slot_a);
+        probe_one(&slot_b);
+    }
 }

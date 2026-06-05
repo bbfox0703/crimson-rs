@@ -778,10 +778,22 @@ fn decode_object_list(
     // result whose decode reached the furthest. We do the same — header
     // shapes vary across game versions and a couple of bytes of padding
     // sometimes precede the real header.
+    //
+    // 1.10 widened the leading-pad on `ContentsMiscSaveData`'s
+    // `ReflectObject` lists (e.g. `_alertHistorySaveDataList`) from 3 pad
+    // bytes to 4 — the real `zero1_count_u24` header now sits at
+    // body_offset 4 instead of 3. Without offset 4 in the scan the first
+    // list mis-reads its count, decodes zero elements, and every
+    // downstream field in the block desyncs (107 KB undecoded on a 1.10
+    // save). The furthest-reach tiebreak keeps older saves unaffected:
+    // their correct offset (≤3) still wins, and offset 4 lands on a
+    // non-header byte that errors out. See `_probe_contents_misc_drift`
+    // in `lib.rs` for the 1.09↔1.10 comparison that pinned this.
+    const MAX_LEADING_PAD: usize = 4;
     let mut best: Option<(usize, FieldValue, &'static str)> = None;
     let mut last_err: Option<io::Error> = None;
 
-    for body_offset in 0..=3 {
+    for body_offset in 0..=MAX_LEADING_PAD {
         let body_cursor = cursor + body_offset;
         if body_cursor + 18 > tail_cursor {
             continue;

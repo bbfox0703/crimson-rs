@@ -1,6 +1,6 @@
 # crimson-rs — Crimson Desert Archive Toolkit
 
-Rust library with Python bindings (via PyO3/maturin) for reading, writing, and modding Crimson Desert game archives. **Personal-playground fork — not intended to flow back to the `potter420/crimson-rs` upstream.** Supports Crimson Desert 1.05–1.09 across the PALOC / PAZ / PAMT containers and the save format. The `iteminfo.pabgb` parser targets the **latest patch only** — currently 1.09, byte-perfect on 6,314 items (verified on the live 1.09 install, 2026-05-29; 1.09 is a content-only delta over 1.08 with no schema drift — see the "Validated patches" table in [`scripts/CLAUDE.md`](scripts/CLAUDE.md)); older patches need the sibling-install recipe in [`docs/historical-parser-setup.md`](docs/historical-parser-setup.md).
+Rust library with Python bindings (via PyO3/maturin) for reading, writing, and modding Crimson Desert game archives. **Personal-playground fork — not intended to flow back to the `potter420/crimson-rs` upstream.** Supports Crimson Desert 1.05–1.10 across the PALOC / PAZ / PAMT containers and the save format. The `iteminfo.pabgb` parser targets the **latest patch only** — currently 1.10, byte-perfect on 6,325 items (verified on the live 1.10 install, 2026-06-05; 1.10 ships two iteminfo schema drifts + one save-body `ContentsMiscSaveData` drift vs 1.09 — see the "Validated patches" table in [`scripts/CLAUDE.md`](scripts/CLAUDE.md)); older patches need the sibling-install recipe in [`docs/historical-parser-setup.md`](docs/historical-parser-setup.md).
 
 This file is intentionally a **minimal index** — detailed reference lives in the linked docs.
 
@@ -14,7 +14,7 @@ This file is intentionally a **minimal index** — detailed reference lives in t
 
 # Active workstreams
 1. **Save Editor key-resolver bridges** — 34 bridges shipped. Full catalog + per-module source map: [`docs/c-abi-surface.md`](docs/c-abi-surface.md). Roadmap / decisions log: [`docs/save-editor-keys-plan.md`](docs/save-editor-keys-plan.md) (start at the "🎯 New session pickup" callout). Regression baseline: [`docs/save-editor-keys-reference.md`](docs/save-editor-keys-reference.md). Remaining work is optional follow-ons only (listed in c-abi-surface.md).
-2. **New game patch breaks parsing** (fallback workstream) — core parsers (iteminfo + skill) and all gamedata bridges have version-drift risk; their tests skip cleanly when the live install isn't present. Diagnostic flow + per-patch validation table: [`scripts/CLAUDE.md`](scripts/CLAUDE.md) ("On a new game patch"). Latest validated: **1.09** (content-only delta, no schema drift).
+2. **New game patch breaks parsing** (fallback workstream) — core parsers (iteminfo + skill) and all gamedata bridges have version-drift risk; their tests skip cleanly when the live install isn't present. Diagnostic flow + per-patch validation table: [`scripts/CLAUDE.md`](scripts/CLAUDE.md) ("On a new game patch"). Latest validated: **1.10** (two iteminfo schema drifts + one save-body `ContentsMiscSaveData` drift, all RE'd and fixed; verified 2026-06-05).
 
 # Documentation
 Active reference:

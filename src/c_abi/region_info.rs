@@ -106,7 +106,7 @@ mod tests {
             unsafe { crimson_region_info_entry_count(sh, &mut count) },
             error::OK
         );
-        assert_eq!(count, 1006);
+        assert_eq!(count, 1007); // 1.10 (was 1006 in 1.08/1.09)
         for &(key, expected) in KNOWN {
             let mut req: usize = 0;
             assert_eq!(
