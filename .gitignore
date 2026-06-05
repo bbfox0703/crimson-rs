@@ -33,3 +33,10 @@ python/**/*.pdb
 # of the in-game itemKey array). Keep them on disk for current-session use,
 # but never commit — they reveal game-side memory layout.
 *.CEM
+
+# git-crypt symmetric key: NEVER commit it. The live key lives in
+# .git/git-crypt/ (which git already never tracks) and is exported OUTSIDE
+# the repo. This guard catches a key file accidentally copied into the tree.
+# (The encrypted *.save fixtures themselves are committed — see .gitattributes.)
+*.key
+/.git-crypt/

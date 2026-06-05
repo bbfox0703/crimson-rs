@@ -1,0 +1,7 @@
+# git-crypt: transparently encrypt the reference save files.
+#
+# Only the FILE CONTENTS are encrypted in the committed blobs — paths and
+# this .gitattributes stay in the clear. The symmetric key lives in
+# .git/git-crypt/ (never committed) and is exported to a file kept OUTSIDE
+# the repo. See tests/fixtures/saves/README.md for the unlock recipe.
+tests/fixtures/saves/**/*.save filter=git-crypt diff=git-crypt
