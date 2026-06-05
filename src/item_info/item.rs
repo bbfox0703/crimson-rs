@@ -3,11 +3,44 @@ use super::structs::*;
 use crate::binary::*;
 use crate::py_binary_struct;
 
-// ── ItemInfo (1.08) ─────────────────────────────────────────────────────────
+// ── ItemInfo (1.10) ─────────────────────────────────────────────────────────
 //
-// Crimson Desert 1.08 changes the layout in three places relative to 1.07
-// (which itself shared the 1.05 / 1.06 layout — same parser ran clean on all
-// three):
+// Crimson Desert 1.10 makes two layout changes relative to 1.09 (which
+// itself shared the 1.08 layout — same parser ran clean on both):
+//
+//   1. The `money_icon_path: StringInfoKey` field (4 bytes) between
+//      `map_icon_path` and `use_map_icon_alert` was **removed**. Verified
+//      against `out/1.09/iteminfo.pabgb` (1.09 sibling install) by
+//      reconstructing every common item from 1.09 bytes with the 4-byte
+//      money_icon_path span deleted: 4,459 / 6,314 items match byte-perfect
+//      after this single edit; the remaining 1,855 items split into 1,435
+//      content-only drifts (multi_change_info growth, weapon stat tweaks,
+//      item_memo string changes for flags/carpets) + 420 with an additional
+//      schema drift (see #2). The constant `0x73e1c5ea` (LE u32
+//      = 0xeac5e173 — a Jenkins hash that was never referenced by anything
+//      in the game install) shows up in the deleted span for ~78% of
+//      items, suggesting Pearl Abyss had been packing a stub "no money
+//      icon" sentinel into this field for years; the 1.10 cleanup just
+//      removes the field outright.
+//
+//   2. `UnitData` (in `structs.rs`) gained a new `u32` field
+//      (`unk_post_icon_path`) between `icon_path` and `item_name`. Affects
+//      every populated `MoneyTypeDefine` — for Money_Copper's two
+//      `MoneyUnitEntry` entries the value is `0xc52007c6` in both. The 1.10
+//      patch notes (新增了「交戰」與「重建」階段, 貢獻管理員 / contribution
+//      manager reorg, new camp/contribution currencies) match the 17 items
+//      that toggled `money_type_define` from None→Some in 1.10
+//      (`Money_Camp_*`, `Contribution_*`, `Money_Pearl`, `Cog`,
+//      `Item_Pinball_Coin`, etc.).
+//
+// The RE workflow that pinned both edits lives in
+// `scripts/diff_109_110.py` + `verify_109_to_110.py` +
+// `scripts/trace_size_mismatch.py`. Result after both edits applied:
+// `parser status: ok=6,325  leftover=0  fail=0  no_anchor=0`.
+//
+// Crimson Desert 1.08 had earlier changed the layout in three places relative
+// to 1.07 (which itself shared the 1.05 / 1.06 layout — same parser ran clean
+// on all three):
 //
 //   1. `extract_additional_drop_set_info: u32` was **removed** from between
 //      `extract_multi_change_info` and `minimum_extract_enchant_level`.
@@ -86,7 +119,7 @@ py_binary_struct! {
         pub item_use_info_list: CArray<ItemUseKey>,
         pub item_icon_list: CArray<ItemIconData>,
         pub map_icon_path: StringInfoKey,
-        pub money_icon_path: StringInfoKey,
+        // money_icon_path: StringInfoKey  — removed in 1.10. See header comment.
         pub use_map_icon_alert: u8,
         pub item_type: u8,
         pub material_key: u32,
