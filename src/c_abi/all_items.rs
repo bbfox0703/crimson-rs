@@ -273,7 +273,7 @@ fn pull_u64_present(b: &ObjectBlock, name: &str) -> Option<u64> {
 }
 fn pull_bool_true(b: &ObjectBlock, name: &str) -> bool {
     b.fields.iter().any(|f| {
-        f.name == name && f.present && matches!(f.value, FieldValue::Scalar(ScalarValue::Bool(true)))
+        f.name == name && f.present && matches!(f.value, FieldValue::Scalar(ScalarValue::Bool(b)) if b != 0)
     })
 }
 

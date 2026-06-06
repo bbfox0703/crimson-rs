@@ -1662,7 +1662,7 @@ mod tests {
                         let val_str = match &f.value {
                             FieldValue::Scalar(ScalarValue::U32(v)) => format!("U32({v})"),
                             FieldValue::Scalar(ScalarValue::U64(v)) => format!("U64({v})"),
-                            FieldValue::Scalar(ScalarValue::Bool(v)) => format!("Bool({v})"),
+                            FieldValue::Scalar(ScalarValue::Bool(v)) => format!("Bool({})", *v != 0),
                             _ => format!("{:?}", f.value),
                         };
                         eprintln!(
@@ -3882,7 +3882,7 @@ mod tests {
                         init_state_hash = Some(*v);
                     }
                     ("_isLockState", FieldValue::Scalar(ScalarValue::Bool(v))) => {
-                        is_lock_state = Some(*v);
+                        is_lock_state = Some(*v != 0);
                     }
                     ("_fieldGimmickSaveDataKey", FieldValue::Scalar(ScalarValue::U32(v))) => {
                         slot_key = Some(*v);
@@ -4713,7 +4713,7 @@ mod tests {
                     FieldValue::Scalar(ScalarValue::U32(v)) => format!("U32(0x{v:08x} = {v})"),
                     FieldValue::Scalar(ScalarValue::U64(v)) => format!("U64({v})"),
                     FieldValue::Scalar(ScalarValue::I64(v)) => format!("I64({v})"),
-                    FieldValue::Scalar(ScalarValue::Bool(v)) => format!("Bool({v})"),
+                    FieldValue::Scalar(ScalarValue::Bool(v)) => format!("Bool({})", *v != 0),
                     FieldValue::None => "<absent>".into(),
                     FieldValue::ObjectList { count, elements, .. } => {
                         format!("ObjectList count={count} elements_parsed={}", elements.len())
@@ -4762,7 +4762,7 @@ mod tests {
                                 }
                                 FieldValue::Scalar(ScalarValue::U64(v)) => format!("U64({v})"),
                                 FieldValue::Scalar(ScalarValue::I64(v)) => format!("I64({v})"),
-                                FieldValue::Scalar(ScalarValue::Bool(v)) => format!("Bool({v})"),
+                                FieldValue::Scalar(ScalarValue::Bool(v)) => format!("Bool({})", *v != 0),
                                 FieldValue::None => "<absent>".into(),
                                 _ => format!("{:?}", sf.value),
                             };
@@ -4795,7 +4795,7 @@ mod tests {
                         FieldValue::Scalar(ScalarValue::U32(v)) => format!("U32({v})"),
                         FieldValue::Scalar(ScalarValue::U64(v)) => format!("U64({v})"),
                         FieldValue::Scalar(ScalarValue::I64(v)) => format!("I64({v})"),
-                        FieldValue::Scalar(ScalarValue::Bool(v)) => format!("Bool({v})"),
+                        FieldValue::Scalar(ScalarValue::Bool(v)) => format!("Bool({})", *v != 0),
                         _ => format!("{:?}", f.value),
                     };
                     eprintln!("    [{:2}] {} = {}", f.field_index, f.name, val);

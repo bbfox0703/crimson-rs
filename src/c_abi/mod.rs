@@ -946,14 +946,14 @@ pub unsafe extern "C" fn crimson_save_list_inventory_items(
                                     }
                                     (
                                         "_isLocked",
-                                        FieldValue::Scalar(ScalarValue::Bool(true)),
-                                    ) => {
+                                        FieldValue::Scalar(ScalarValue::Bool(b)),
+                                    ) if *b != 0 => {
                                         rec.flags |= inventory_item_flags::LOCKED;
                                     }
                                     (
                                         "_isNewMark",
-                                        FieldValue::Scalar(ScalarValue::Bool(true)),
-                                    ) => {
+                                        FieldValue::Scalar(ScalarValue::Bool(b)),
+                                    ) if *b != 0 => {
                                         rec.flags |= inventory_item_flags::NEW_MARK;
                                     }
                                     _ => {}
@@ -4523,7 +4523,7 @@ fn format_dynamic_array(
 
 fn format_scalar(v: &ScalarValue) -> (String, &'static str) {
     match v {
-        ScalarValue::Bool(b) => (b.to_string(), "bool"),
+        ScalarValue::Bool(b) => ((*b != 0).to_string(), "bool"),
         ScalarValue::U8(n)   => (n.to_string(), "u8"),
         ScalarValue::U16(n)  => (n.to_string(), "u16"),
         ScalarValue::U32(n)  => (n.to_string(), "u32"),

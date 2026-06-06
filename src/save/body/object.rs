@@ -18,7 +18,13 @@ use super::schema::{FieldDef, TypeDef};
 /// size, and odd sizes fall through to `Bytes`.
 #[derive(Debug, Clone)]
 pub enum ScalarValue {
-    Bool(bool),
+    /// Boolean, stored as its **raw byte**. The game writes `true` as
+    /// either `0x01` or `0xff` (both occur in the same save — e.g.
+    /// `_isNewMark` is `0xff` while most flags are `0x01`), so collapsing
+    /// to a Rust `bool` and re-emitting a canonical `0x01` would corrupt
+    /// the `0xff` ones. Preserving the exact byte is required for
+    /// byte-perfect round-trip. Truthiness is `!= 0`.
+    Bool(u8),
     U8(u8),
     U16(u16),
     U32(u32),
@@ -263,7 +269,9 @@ pub(crate) fn decode_scalar(data: &[u8], field: &FieldDef) -> ScalarValue {
 pub fn scalar_from_bytes(data: &[u8], type_name: &str, size: usize) -> ScalarValue {
     let lower = type_name.to_ascii_lowercase();
     if lower == "bool" && size == 1 {
-        return ScalarValue::Bool(data[0] != 0);
+        // Preserve the exact byte (0x00 / 0x01 / 0xff / …) for round-trip;
+        // truthiness is `!= 0`. See the `Bool` variant doc.
+        return ScalarValue::Bool(data[0]);
     }
     // ── Composite vector / quaternion scalars (12 / 16 bytes) ──
     // These cover ~70k field occurrences in a live 1.07 save where the
@@ -413,6 +421,26 @@ mod scalar_from_bytes_tests {
             scalar_from_bytes(&[0xff, 0xff, 0xff, 0xff], "uint32", 4),
             ScalarValue::U32(0xFFFFFFFF)
         ));
+    }
+
+    #[test]
+    fn bool_preserves_raw_byte_round_trip() {
+        // Regression: the game stores `true` as BOTH 0x01 and 0xFF in the
+        // same save (e.g. `_isNewMark` is 0xFF, most other flags are 0x01).
+        // Collapsing to a Rust `bool` and re-emitting a canonical 0x01
+        // corrupted the 0xFF ones — a round-trip violation that produces a
+        // save the game's loader rejects after any length-changing edit.
+        // The exact byte must survive decode -> encode unchanged.
+        for raw in [0x00u8, 0x01, 0xff] {
+            let v = scalar_from_bytes(&[raw], "bool", 1);
+            assert!(
+                matches!(v, ScalarValue::Bool(b) if b == raw),
+                "bool 0x{raw:02x} should decode to Bool({raw})"
+            );
+            let mut out = Vec::new();
+            crate::save::body::encoder::encode_scalar(&mut out, &v, 1);
+            assert_eq!(out, vec![raw], "bool 0x{raw:02x} must round-trip");
+        }
     }
 
     #[test]

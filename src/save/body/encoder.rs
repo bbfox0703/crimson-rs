@@ -425,7 +425,7 @@ fn write_inline_payload_fields(out: &mut Vec<u8>, child: &ObjectBlock, block_dat
 
 pub(crate) fn encode_scalar(out: &mut Vec<u8>, value: &ScalarValue, meta_size: usize) {
     match value {
-        ScalarValue::Bool(b) => out.push(if *b { 1 } else { 0 }),
+        ScalarValue::Bool(b) => out.push(*b),
         ScalarValue::U8(x) => out.push(*x),
         ScalarValue::U16(x) => out.extend_from_slice(&x.to_le_bytes()),
         ScalarValue::U32(x) => out.extend_from_slice(&x.to_le_bytes()),
