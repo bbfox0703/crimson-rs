@@ -3,6 +3,17 @@ name: Build and Publish Wheels
 on:
   push:
     branches: [main]
+    # Skip the wheel rebuild/republish for documentation-only pushes — the
+    # compiled wheel can't change when only markdown / docs assets move.
+    # (ci.yml is intentionally NOT path-filtered: it's the required status
+    # check on main, and a path-filtered required check would never report,
+    # blocking docs PRs. The lint/test gate running on docs is cheap + safe.)
+    # workflow_dispatch ignores paths-ignore, so manual republish still works.
+    paths-ignore:
+      - '**.md'
+      - '**.MD'
+      - 'docs/**'
+      - 'LICENSE'
   workflow_dispatch:
     inputs:
       reason:
