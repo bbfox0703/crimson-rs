@@ -1662,9 +1662,11 @@ fn fill_field_value<'py>(
         FieldValue::Scalar(s) => {
             let (val_obj, val_type): (Py<PyAny>, &'static str) = match s {
                 ScalarValue::Bool(b) => (
-                    // `bool::into_pyobject` returns a `Borrowed` (PyBool is a
-                    // singleton); take ownership before chaining `into_any`.
-                    b.into_pyobject(py)?.to_owned().into_any().unbind(),
+                    // Expose truthiness as a Python bool (the raw byte 0x01/0xff
+                    // is an encoder round-trip detail). `bool::into_pyobject`
+                    // returns a `Borrowed` (PyBool is a singleton); take
+                    // ownership before chaining `into_any`.
+                    (*b != 0).into_pyobject(py)?.to_owned().into_any().unbind(),
                     "bool",
                 ),
                 ScalarValue::U8(x) => (x.into_pyobject(py)?.into_any().unbind(), "u8"),

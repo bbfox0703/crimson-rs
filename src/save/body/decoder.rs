@@ -1054,7 +1054,7 @@ pub(crate) fn decode_one_list_element_bytes(
 #[allow(dead_code)]
 pub(crate) fn scalar_as_i128(v: &ScalarValue) -> Option<i128> {
     match v {
-        ScalarValue::Bool(b) => Some(*b as i128),
+        ScalarValue::Bool(b) => Some((*b != 0) as i128),
         ScalarValue::U8(x) => Some(*x as i128),
         ScalarValue::U16(x) => Some(*x as i128),
         ScalarValue::U32(x) => Some(*x as i128),
