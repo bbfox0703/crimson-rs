@@ -28,6 +28,7 @@ Active reference:
 - [`docs/artifact-challenge-mapping.md`](docs/artifact-challenge-mapping.md) — Artifact ↔ Challenge 1:1 bidirectional mapping.
 - [`docs/save-mutation-version.md`](docs/save-mutation-version.md) — Mutation-version cache-coherency contract for C-ABI snapshot consumers.
 - [`docs/save-deferred-redecode.md`](docs/save-deferred-redecode.md) — Deferred-redecode batch ABI for bulk mutations.
+- [`docs/save-loader-length-change-crash.md`](docs/save-loader-length-change-crash.md) — Game-side `memcpy` overflow that crashes the game's loader on length-changing edits to some saves (root-cause + dump + repro fixtures). Not a crimson-rs bug.
 - [`docs/paloc-template-survey.md`](docs/paloc-template-survey.md) — Template-density per PALOC namespace (settles the template-resolver question: titles no, descriptions yes).
 - [`docs/ref-gamedata/main-quest-list.md`](docs/ref-gamedata/main-quest-list.md) — Curated Chapter→Arc→Mission table (`main_quest_chapter` bridge source).
 - [`docs/ref-gamedata/side-quest-list.md`](docs/ref-gamedata/side-quest-list.md) — Curated quest→faction table (`side_quest_faction` bridge source).
