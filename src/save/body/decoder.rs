@@ -397,6 +397,40 @@ fn decode_dynamic_array(
                 "prefix_00xx0100",
             ));
         }
+
+        // No-trailer sub-variant: same `00 00 XX 01 00` header + u32 count +
+        // data, but the field ends immediately after the data — no
+        // `01 01 01 01 01` sentinel. Observed on a non-empty
+        // `FactionNodeElementSaveData._reviveQuestList` when the *next* field
+        // (`_factionNodeApplySkillList`, an object_list) begins right after,
+        // so its `01 ..` prefix sits where the sentinel would be. Only reached
+        // when the with-trailer match above did NOT return, so the common
+        // (trailer-present) arrays are unaffected. Without this, the forward
+        // walk breaks here and dumps the following object_list — including its
+        // relocatable wrapper `payload_offset` — into `trailing_pad` as opaque
+        // bytes that the encoder then fails to relocate on a length-changing
+        // edit (docs/save-loader-length-change-crash.md). The `1..=0xFFF`
+        // count bound + in-range check keep a stray header from over-reading;
+        // any mis-parse is caught by the golden round-trip test.
+        if field.meta_size > 0 && (1..=0x0FFF).contains(&count) {
+            let data_offset = offset + 9;
+            let data_end = data_offset + (count as usize) * (field.meta_size as usize);
+            if data_end <= tail_cursor {
+                let bytes = raw[data_offset..data_end].to_vec();
+                let header_bytes = raw[offset..data_offset].to_vec();
+                return Ok((
+                    data_end,
+                    FieldValue::DynamicArray {
+                        count,
+                        bytes,
+                        header_variant: "prefix_00xx0100_notrailer",
+                        header_bytes,
+                        trailer_bytes: Vec::new(),
+                    },
+                    "prefix_00xx0100_notrailer",
+                ));
+            }
+        }
     }
 
     // Variant 2: 1..N leading `0x01` bytes, then `0x00`, then u32 count.

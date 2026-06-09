@@ -3,15 +3,17 @@
 **Status (2026-06-06): root-caused (provisional).** Pinned to a fixed-buffer
 `memcpy` overflow in the game's loader (dump below).
 
-**Status (2026-06-09): re-root-caused — it is a fixable crimson-rs ENCODER bug,
-not a game loader bug.** A controlled "add sugar" A/B/C set
-(`tests/fixtures/saves/1.10/broken_save_after_length_change/`) traced the CTD to
-**two stale absolute `payload_offset`s the encoder fails to relocate** on a
-length-changing edit. The game-side `memcpy` overflow in the WER dump is the
-*downstream symptom* of the editor save's dangling pointer — not an independent
-game bug. Everything in the original "## Root cause" section below is the correct
-description of the *crash site*; this section is the correct description of *what
-puts a bad pointer there*.
+**Status (2026-06-09): FIXED.** Re-root-caused to a crimson-rs **decoder/encoder**
+bug (not a game loader bug): on a length-changing edit the encoder failed to
+relocate two absolute `payload_offset`s, leaving dangling pointers that crash the
+game's loader (the WER-dump `memcpy` overflow is the *downstream symptom*). The
+controlled "add sugar" set (`tests/fixtures/saves/1.10/broken_save_after_length_change/`)
+pinned it; repro save **C** (offsets hand-relocated `+241`) **loads in-game —
+confirmed by the user**. Fixed by the `prefix_00xx0100_notrailer` dynamic-array
+variant in `src/save/body/decoder.rs`; regression test
+`test_faction_revive_quest_no_trailer_relocates` in `src/lib.rs`. Everything in
+the original "## Root cause" section below correctly describes the *crash site*;
+this section describes *what put a bad pointer there*.
 
 ## 2026-06-09: the real root cause — a non-relocated `_factionNodeApplySkillList` offset
 
@@ -72,21 +74,24 @@ This explains **why the game's own (larger) edit loads** (it re-serializes the
 whole body, relocating every offset) and **why scalar in-place edits never crash**
 (no shift → the `trailing_pad` offsets stay valid).
 
-**Confirmation — repro save C.** `src/save/sugar_probe.rs` (investigation scaffold)
-counts exactly **2** broken nodes in the editor body and writes
-`target/sugar/repro/C_offsets_relocated/` — the editor save with those two
-`payload_offset`s patched `+241` (5545036→5545277, 5545292→5545533), re-sealed
-(HMAC valid). **If C loads in-game, the relocation bug is confirmed as the sole
-cause.** (Variants A / `A_game_item_structure` and B / `B_editor_minus_field18`
-predate this finding and still carry the stale offsets — ignore them.)
+**Confirmation (done).** Exactly **2** broken nodes in the editor body; repro save
+C (the editor save with those two `payload_offset`s patched `+241`:
+5545036→5545277, 5545292→5545533, re-sealed) **loaded in-game** — the user
+confirmed it. That isolates the two stale offsets as the sole cause.
 
-**The fix (crimson-rs):** teach the decoder `_reviveQuestList`'s `dynamic_array`
-header variant so the forward walk reaches `_factionNodeApplySkillList` and the
-encoder relocates its `payload_offset` like any other list element. Narrower
-fallback: when emitting a shifted block's `trailing_pad`, relocate any
-self-referential wrapper offset (a u32 whose value == its own absolute position + 4)
-by the block's shift. The root fix is preferred — it also recovers the
-`_reviveQuestList` / `_factionNodeApplySkillList` data for editing.
+**The fix (shipped).** The decoder now parses `_reviveQuestList`'s no-trailer
+`dynamic_array` shape — variant `prefix_00xx0100_notrailer` in
+`src/save/body/decoder.rs` (same `00 00 XX 01 00` header + `u32` count + data,
+ending right after the data; only taken when the trailer-present match fails, so
+the 6 trailer-bearing arrays in `base_sample` are untouched). The forward walk
+then reaches `_factionNodeApplySkillList`, which decodes as an `object_list`, and
+`encode_list_element_wrapper` relocates its `payload_offset` like any other list
+element. Verified: all golden round-trips stay byte-identical; the two formerly
+stale offsets now move with the block (`5545036→base+shift`); a full
+`Body::write` add-item edit leaves **0** stale offsets. Regression:
+`test_faction_revive_quest_no_trailer_relocates` (`src/lib.rs`) asserts 0 broken
+nodes and that all 1542 self-referential wrapper offsets in `FactionSaveData`
+relocate on a shifted re-encode.
 
 ## Symptom
 
