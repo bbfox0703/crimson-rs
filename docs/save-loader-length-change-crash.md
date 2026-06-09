@@ -1,8 +1,97 @@
 # Crimson Desert save-loader crash on length-changing edits
 
-**Status (2026-06-06): root-caused.** Game-side bug, not a crimson-rs / editor
-data bug. Captured here because it cost a long investigation and constrains
-what save edits are safe to ship.
+**Status (2026-06-06): root-caused (provisional).** Pinned to a fixed-buffer
+`memcpy` overflow in the game's loader (dump below).
+
+**Status (2026-06-09): re-opened — the trigger is more specific.** A controlled
+"add sugar" A/B pair (`tests/fixtures/saves/1.10/broken_save_after_length_change/`)
+shows the editor writes an `ItemSaveData` that is **not byte-faithful** to what
+the game writes for the same item, and that — not "the body grew" — is what
+correlates with the crash. The size-threshold framing below is **refuted** by the
+new data (the game's own add-sugar grows the body *more* and still loads). See
+the **2026-06-09 revision** section first. Whether the item drift triggers the
+loader `memcpy` path or a separate validation is pending an in-game load test of
+the two repro saves.
+
+## 2026-06-09 revision: the editor writes a non-faithful item
+
+A clean controlled experiment (`broken_save_after_length_change/`): same logical
+edit — **add sugar (`_itemKey = 752003`) to inventory** — produced three ways:
+
+| Save | Origin | Loads? | `save.save` |
+|---|---|---|---|
+| `base_sample` | pristine (another player's slot) | yes | 1,730,173 |
+| `add_2_sugar_in_game` | **game-written** (bought in shop) | **yes** | 1,730,636 (**+463**) |
+| `use_editor_add_sugar` | **editor-written** (crimson-rs splice) | **CTD** | 1,730,518 (**+345**) |
+
+Decoding all three (every block round-trips byte-perfectly, `undecoded = []`):
+
+1. **Size is not the trigger.** The game's own add-sugar grows the decompressed
+   body by **+351**; the editor's by **+241**. The bigger one loads. So the old
+   "the relocated body got too big / crossed a buffer" story is wrong.
+
+2. **The game does more than add an item** — buying sugar also touches
+   `StoreSaveData`, `QuestSaveData`, `FieldSaveData` (purchase side-effects) and
+   deducts gold; the editor touches only `InventorySaveData`. Those side-effects
+   are unrelated to the crash (an absent quest/store delta can't desync a reader).
+
+3. **Both add exactly one `ItemSaveData`** to
+   `InventorySaveData._inventorylist[1]._itemList` (count 191 → 192). The two
+   added items differ:
+
+   | field | game sugar (237 B) | editor sugar (241 B) |
+   |---|---|---|
+   | `[18] _maxChargeUseableCount` | **absent** | **present = 65536** |
+   | `[4] _stackCount` | 2 | 1 |
+   | `[23] _isNewMark` | 0 | 1 |
+   | `_slotNo` | 164 | 220 |
+   | `_chargedUseableCount` | (packed value) | 0 |
+
+   `241 − 237 = 4` = exactly field `[18]`. **The editor marks
+   `_maxChargeUseableCount` present (mask bit + 4 bytes) on an item type the game
+   leaves it absent for** — almost certainly a stale add-item *template* in the
+   CrimsonAtomtic editor (a chargeable-item template reused for a plain
+   consumable). The remaining differences are values the editor chose.
+
+### Why this reframes the "game loader bug" conclusion
+
+crimson-rs round-trips the editor save perfectly, so it is self-consistent *by
+crimson-rs's schema model*. But that does not prove it is consistent with the
+**game's** deserializer. If the game's `ItemSaveData` reader does not honour the
+presence mask identically (e.g. a hand-written fast path), the extra 4 bytes
+desync the sequential read; a few records later a `u16` length is misread (the
+`0xAEBF = 44735` seen in the dump) and `memcpy`'d into the fixed stack buffer →
+overflow. That single mechanism explains every observation, including why the
+game's own (larger) save loads: it is perfectly in sync.
+
+### Pending confirmation — two repro saves
+
+Built by `src/save/sugar_probe.rs` (investigation scaffold) into
+`target/sugar/repro/`, both decode cleanly + HMAC-valid:
+
+- **A — `A_game_item_structure/`**: editor body, sugar element replaced by the
+  game's *exact* item (mask + fields + values). Isolates "is a game-faithful
+  item, spliced by crimson-rs, loadable?"
+- **B — `B_editor_minus_field18/`**: editor body, sugar with **only** field `[18]`
+  removed (editor's other values kept). Isolates field `[18]` as the single var.
+
+Load each in-game (copy `save.save` + `lobby.save` into the slot folder):
+
+- **B loads** → field `[18]` presence is the culprit; fix = the editor must not
+  set `_maxChargeUseableCount` for this item class.
+- **B CTDs, A loads** → a *value* (not just field 18) matters; narrow next.
+- **both CTD** → item content is *not* the cause; it is the splice/relocation →
+  the original loader-buffer theory stands.
+
+### Not compression (the "LZW" question)
+
+The body is **LZ4 block** (not LZW), compressed *after* the body is built; the
+game decompresses before deserializing, so compression cannot change the bytes
+the loader sees. crimson-rs's `lz4_flex` output is **not** byte-identical to the
+game's LZ4 (it is ~250 B larger on these saves) — but `use_editor_add_sugar` was
+compressed by `lz4_flex` and the game decompressed it fine (it reached the body
+deserializer to crash). So matching the game's exact compressor is unnecessary
+and would not change the crash.
 
 ## Symptom
 
