@@ -93,6 +93,26 @@ stale offsets now move with the block (`5545036→base+shift`); a full
 nodes and that all 1542 self-referential wrapper offsets in `FactionSaveData`
 relocate on a shifted re-encode.
 
+**Double-confirmed on the original repro (`sealed-artifact-challenge/`).** The
+`editor-edit/after` save (the one that first exposed this) carries **exactly 2**
+stale `FactionSaveData` `payload_offset`s — found two independent ways: a raw
+`before→after` self-referential scan (a correct wrapper offset always == its own
+position + 4) and the fixed decoder's wrapper check both report 2. `editor-edit`
+now decodes with **0** broken nodes. (This also retires the WER dump's
+`FactionSpawnStageManagerSaveData` attribution — that was nearest-export noise;
+the real stale offsets live in `FactionSaveData._factionNodeElementSaveDataList`.)
+
+**Known residual (not the editor repro).** `engine-natural/before` (a *different*,
+more-progressed slot, game-written, loads fine) still has **1** node the fix
+doesn't cover: its `_reviveQuestList` uses a **4-byte `00 01 01 00`** header
+instead of the handled 5-byte `00 00 XX 01 00` (every upstream field aligns
+cleanly, so it is a genuine second variant, not an over-read). This is
+pre-existing — the fix *reduced* this save's broken count, didn't add to it — and
+the shipped editor repros never hit it. But a length-changing edit on a save that
+*does* contain this richer-node variant could still strand that one node's offset.
+Closing it needs the `00 01 01 00` header RE'd (more examples across saves would
+help pin it safely).
+
 ## Symptom
 
 A heavily-progressed save, edited with a **length-changing** operation
