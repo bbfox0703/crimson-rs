@@ -49,9 +49,20 @@ Decoding all three (every block round-trips byte-perfectly, `undecoded = []`):
 
    `241 − 237 = 4` = exactly field `[18]`. **The editor marks
    `_maxChargeUseableCount` present (mask bit + 4 bytes) on an item type the game
-   leaves it absent for** — almost certainly a stale add-item *template* in the
-   CrimsonAtomtic editor (a chargeable-item template reused for a plain
-   consumable). The remaining differences are values the editor chose.
+   leaves it absent for.** Field `[18]` is the **only** presence-mask difference
+   between the two items (editor `[…,16,18,19,20,…]` vs game `[…,16,19,20,…]`);
+   everything else is values.
+
+   **Confirmed in the editor source.** `CrimsonAtomtic`'s
+   `MainWindowViewModel.AddItemToCurrentListAsync` clones a *donor* list element
+   (`ISaveLoader.ListCloneElement` — copies the donor's **whole presence mask**)
+   and then only patches scalar *values* (`_itemKey`, `_stackCount`, `_slotNo`,
+   `_itemNo`, `_transferredItemKey`, `_isNewMark`). It never reconciles the
+   cloned **mask** to the target item's iteminfo profile, so a donor that is a
+   chargeable item (has `_maxChargeUseableCount`) bleeds field `[18]` onto a
+   plain consumable. The editor author's own comment there already notes "the
+   game's load-time validation crashes on mask shapes that don't match the
+   item's iteminfo profile" — this case is exactly that.
 
 ### Why this reframes the "game loader bug" conclusion
 
