@@ -1070,6 +1070,166 @@ mod tests {
         }
     }
 
+    /// Regression for the save-loader length-change crash
+    /// (docs/save-loader-length-change-crash.md). A non-empty
+    /// `_reviveQuestList` with no `01 01 01 01 01` trailer must decode (via the
+    /// `prefix_00xx0100_notrailer` dynamic-array variant) so the following
+    /// `_factionNodeApplySkillList` object_list is parsed as a field. Before the
+    /// fix the forward walk broke at `_reviveQuestList`, dumping that object_list
+    /// — wrapper `payload_offset` and all — into `trailing_pad`; the encoder
+    /// wrote it verbatim, so on a length-changing edit the offset went stale and
+    /// the game's loader crashed on the dangling pointer.
+    #[test]
+    fn test_faction_revive_quest_no_trailer_relocates() {
+        use crate::save::{Body, FieldKind, FieldValue, Save, encode_top_level_block};
+        use std::path::PathBuf;
+
+        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "tests/fixtures/saves/1.10/broken_save_after_length_change/base_sample/save.save",
+        );
+        let Ok(data) = std::fs::read(&p) else {
+            eprintln!("skipping: {} not present", p.display());
+            return;
+        };
+        // git-crypt-locked clones check the file out as its encrypted blob.
+        if data.get(..4) != Some(b"SAVE") {
+            eprintln!("skipping: base_sample is git-crypt locked (no key)");
+            return;
+        }
+
+        let save = Save::parse(&data).unwrap();
+        let body = Body::parse(&save.body).unwrap();
+        let blocks = body.decode_blocks(&save.body);
+
+        // (a) No FactionNodeElementSaveData may have `_factionNodeApplySkillList`
+        // present-but-undecoded — the signature of the broken forward walk.
+        fn scan(fields: &[crate::save::DecodedField], broken: &mut usize) {
+            for f in fields {
+                match &f.value {
+                    FieldValue::ObjectList { elements, .. } => {
+                        for el in elements {
+                            if el.class_name == "FactionNodeElementSaveData"
+                                && el.fields.iter().any(|ff| {
+                                    ff.name == "_factionNodeApplySkillList"
+                                        && ff.present
+                                        && ff.kind == FieldKind::Unknown
+                                })
+                            {
+                                *broken += 1;
+                            }
+                            scan(&el.fields, broken);
+                        }
+                    }
+                    FieldValue::Locator { child: Some(c), .. } => scan(&c.fields, broken),
+                    _ => {}
+                }
+            }
+        }
+        let mut broken = 0;
+        for b in &blocks {
+            scan(&b.fields, &mut broken);
+        }
+        assert_eq!(
+            broken, 0,
+            "_reviveQuestList must decode so _factionNodeApplySkillList is a field, not trailing_pad",
+        );
+
+        // (b) Every self-referential wrapper `payload_offset` in the
+        // FactionSaveData block must relocate when the block is re-encoded at a
+        // shifted offset (this is what the editor's length-changing edit does).
+        let fac = blocks
+            .iter()
+            .find(|b| b.fields.iter().any(|f| f.name == "_factionNodeElementSaveDataList"))
+            .expect("FactionSaveData block present");
+        let o = fac.data_offset;
+        let at_o = encode_top_level_block(fac, o).unwrap();
+        assert_eq!(
+            &at_o[..],
+            &save.body[o as usize..o as usize + fac.data_size as usize],
+            "no-op re-encode of FactionSaveData must be byte-identical",
+        );
+        let shift = 0x100u32;
+        let at_shift = encode_top_level_block(fac, o + shift).unwrap();
+        let mut relocated = 0usize;
+        let mut p = 0usize;
+        while p + 4 <= at_o.len() {
+            let v = u32::from_le_bytes(at_o[p..p + 4].try_into().unwrap());
+            // self-referential wrapper end: value == its own absolute position + 4
+            if v == o + p as u32 + 4 {
+                let v2 = u32::from_le_bytes(at_shift[p..p + 4].try_into().unwrap());
+                assert_eq!(
+                    v2,
+                    o + shift + p as u32 + 4,
+                    "wrapper payload_offset at +{p} must relocate by the block shift",
+                );
+                relocated += 1;
+            }
+            p += 1;
+        }
+        assert!(relocated > 0, "expected at least one relocatable wrapper offset");
+        eprintln!("faction relocation regression: {relocated} wrapper offsets relocate, 0 broken nodes");
+    }
+
+    /// Companion to the above for the `_reviveQuestList` header variants the
+    /// decoder still can't parse (`00 00 01 00` / `00 01 01 00`): their
+    /// `_factionNodeApplySkillList` stays in `trailing_pad`, but the encoder's
+    /// self-referential relocation pass must still move its wrapper
+    /// `payload_offset` when the block shifts. `engine-natural/before` carries
+    /// such a node, so EVERY self-referential offset there must relocate even
+    /// though some nodes don't fully decode.
+    #[test]
+    fn test_faction_node_offset_relocates_through_trailing_pad() {
+        use crate::save::{Body, Save, encode_top_level_block};
+        use std::path::PathBuf;
+
+        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "tests/fixtures/saves/1.10/sealed-artifact-challenge/engine-natural/before/save.save",
+        );
+        let Ok(data) = std::fs::read(&p) else {
+            eprintln!("skipping: {} not present", p.display());
+            return;
+        };
+        if data.get(..4) != Some(b"SAVE") {
+            eprintln!("skipping: fixture is git-crypt locked (no key)");
+            return;
+        }
+
+        let save = Save::parse(&data).unwrap();
+        let body = Body::parse(&save.body).unwrap();
+        let blocks = body.decode_blocks(&save.body);
+        let fac = blocks
+            .iter()
+            .find(|b| b.fields.iter().any(|f| f.name == "_factionNodeElementSaveDataList"))
+            .expect("FactionSaveData block present");
+
+        let o = fac.data_offset;
+        let at_o = encode_top_level_block(fac, o).unwrap();
+        assert_eq!(
+            &at_o[..],
+            &save.body[o as usize..o as usize + fac.data_size as usize],
+            "no-op re-encode must be byte-identical (clean game save)",
+        );
+        let shift = 0x100u32;
+        let at_shift = encode_top_level_block(fac, o + shift).unwrap();
+        let mut relocated = 0usize;
+        let mut p = 0usize;
+        while p + 4 <= at_o.len() {
+            let v = u32::from_le_bytes(at_o[p..p + 4].try_into().unwrap());
+            if v == o + p as u32 + 4 {
+                let v2 = u32::from_le_bytes(at_shift[p..p + 4].try_into().unwrap());
+                assert_eq!(
+                    v2,
+                    o + shift + p as u32 + 4,
+                    "offset at +{p} did not relocate (stranded in trailing_pad?)",
+                );
+                relocated += 1;
+            }
+            p += 1;
+        }
+        assert!(relocated > 0, "expected relocatable wrapper offsets");
+        eprintln!("trailing_pad relocation regression: {relocated} offsets relocate");
+    }
+
     /// Compare the `ContentsMiscSaveData` block between two saves
     /// (default: slot104 = 1.09, slot107 = 1.10). Dumps each field's
     /// decode kind + object_list count/variant, and the leading bytes of

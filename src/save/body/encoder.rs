@@ -66,7 +66,42 @@ pub fn encode_top_level_block(block: &ObjectBlock, block_data_offset: u32) -> io
     let mut out = Vec::with_capacity(block.data_size as usize);
     write_block_header(&mut out, block);
     write_block_fields(&mut out, block, block_data_offset)?;
+    relocate_trailing_pad_offsets(&mut out, block.data_offset, block_data_offset);
     Ok(out)
+}
+
+/// Relocate self-referential wrapper `payload_offset`s that the field walk
+/// could not decode and therefore left verbatim inside a `trailing_pad`
+/// region (e.g. an `object_list` hidden behind a `_reviveQuestList`
+/// dynamic-array header variant the decoder doesn't recognize — see
+/// `docs/save-loader-length-change-crash.md`).
+///
+/// An inline list-element wrapper's `payload_offset` always equals its own
+/// absolute body position + 4. When the containing block moves from `old_off`
+/// to `new_off`, a verbatim-copied offset still points at the OLD wrapper end
+/// (`old_off + p + 4`); the game's loader then chases a dangling pointer and
+/// crashes. We rewrite any u32 that matches that stale self-reference to the
+/// new position (`new_off + p + 4`).
+///
+/// This is a safety net independent of how the surrounding bytes were decoded,
+/// so it covers every `_reviveQuestList` micro-variant (decoded or not). It is
+/// a no-op when the block didn't move (`old_off == new_off`), so unmodified
+/// round-trips stay byte-identical. Correctly relocated wrappers (written by
+/// `encode_list_element_wrapper` at `new_off + p + 4`) never match the stale
+/// `old_off + p + 4` test, so they're left alone. A non-offset u32 that
+/// coincidentally equals `old_off + p + 4` is, by definition, already a valid
+/// self-reference, so rewriting it to `new_off + p + 4` is harmless.
+fn relocate_trailing_pad_offsets(out: &mut [u8], old_off: u32, new_off: u32) {
+    if old_off == new_off || out.len() < 4 {
+        return;
+    }
+    for p in 0..=out.len() - 4 {
+        let v = u32::from_le_bytes(out[p..p + 4].try_into().unwrap());
+        if v == old_off.wrapping_add(p as u32).wrapping_add(4) {
+            let nv = new_off.wrapping_add(p as u32).wrapping_add(4);
+            out[p..p + 4].copy_from_slice(&nv.to_le_bytes());
+        }
+    }
 }
 
 /// Encode every block in `blocks` plus the surrounding body structure
