@@ -1170,6 +1170,66 @@ mod tests {
         eprintln!("faction relocation regression: {relocated} wrapper offsets relocate, 0 broken nodes");
     }
 
+    /// Companion to the above for the `_reviveQuestList` header variants the
+    /// decoder still can't parse (`00 00 01 00` / `00 01 01 00`): their
+    /// `_factionNodeApplySkillList` stays in `trailing_pad`, but the encoder's
+    /// self-referential relocation pass must still move its wrapper
+    /// `payload_offset` when the block shifts. `engine-natural/before` carries
+    /// such a node, so EVERY self-referential offset there must relocate even
+    /// though some nodes don't fully decode.
+    #[test]
+    fn test_faction_node_offset_relocates_through_trailing_pad() {
+        use crate::save::{Body, Save, encode_top_level_block};
+        use std::path::PathBuf;
+
+        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "tests/fixtures/saves/1.10/sealed-artifact-challenge/engine-natural/before/save.save",
+        );
+        let Ok(data) = std::fs::read(&p) else {
+            eprintln!("skipping: {} not present", p.display());
+            return;
+        };
+        if data.get(..4) != Some(b"SAVE") {
+            eprintln!("skipping: fixture is git-crypt locked (no key)");
+            return;
+        }
+
+        let save = Save::parse(&data).unwrap();
+        let body = Body::parse(&save.body).unwrap();
+        let blocks = body.decode_blocks(&save.body);
+        let fac = blocks
+            .iter()
+            .find(|b| b.fields.iter().any(|f| f.name == "_factionNodeElementSaveDataList"))
+            .expect("FactionSaveData block present");
+
+        let o = fac.data_offset;
+        let at_o = encode_top_level_block(fac, o).unwrap();
+        assert_eq!(
+            &at_o[..],
+            &save.body[o as usize..o as usize + fac.data_size as usize],
+            "no-op re-encode must be byte-identical (clean game save)",
+        );
+        let shift = 0x100u32;
+        let at_shift = encode_top_level_block(fac, o + shift).unwrap();
+        let mut relocated = 0usize;
+        let mut p = 0usize;
+        while p + 4 <= at_o.len() {
+            let v = u32::from_le_bytes(at_o[p..p + 4].try_into().unwrap());
+            if v == o + p as u32 + 4 {
+                let v2 = u32::from_le_bytes(at_shift[p..p + 4].try_into().unwrap());
+                assert_eq!(
+                    v2,
+                    o + shift + p as u32 + 4,
+                    "offset at +{p} did not relocate (stranded in trailing_pad?)",
+                );
+                relocated += 1;
+            }
+            p += 1;
+        }
+        assert!(relocated > 0, "expected relocatable wrapper offsets");
+        eprintln!("trailing_pad relocation regression: {relocated} offsets relocate");
+    }
+
     /// Compare the `ContentsMiscSaveData` block between two saves
     /// (default: slot104 = 1.09, slot107 = 1.10). Dumps each field's
     /// decode kind + object_list count/variant, and the leading bytes of

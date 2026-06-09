@@ -79,19 +79,34 @@ C (the editor save with those two `payload_offset`s patched `+241`:
 5545036→5545277, 5545292→5545533, re-sealed) **loaded in-game** — the user
 confirmed it. That isolates the two stale offsets as the sole cause.
 
-**The fix (shipped).** The decoder now parses `_reviveQuestList`'s no-trailer
-`dynamic_array` shape — variant `prefix_00xx0100_notrailer` in
-`src/save/body/decoder.rs` (same `00 00 XX 01 00` header + `u32` count + data,
-ending right after the data; only taken when the trailer-present match fails, so
-the 6 trailer-bearing arrays in `base_sample` are untouched). The forward walk
-then reaches `_factionNodeApplySkillList`, which decodes as an `object_list`, and
-`encode_list_element_wrapper` relocates its `payload_offset` like any other list
-element. Verified: all golden round-trips stay byte-identical; the two formerly
-stale offsets now move with the block (`5545036→base+shift`); a full
-`Body::write` add-item edit leaves **0** stale offsets. Regression:
-`test_faction_revive_quest_no_trailer_relocates` (`src/lib.rs`) asserts 0 broken
-nodes and that all 1542 self-referential wrapper offsets in `FactionSaveData`
-relocate on a shifted re-encode.
+**The fix (shipped) — two layers.**
+
+1. **Decoder (`src/save/body/decoder.rs`)** — a `prefix_00xx0100_notrailer`
+   `dynamic_array` variant (same `00 00 XX 01 00` header + `u32` count + data,
+   ending right after the data; only taken when the trailer-present match fails,
+   so the trailer-bearing arrays are untouched). The forward walk then reaches
+   `_factionNodeApplySkillList`, decodes it as an `object_list`, and
+   `encode_list_element_wrapper` relocates its `payload_offset` normally. This
+   recovers the data for the common variant.
+
+2. **Encoder safety net (`encode_top_level_block`)** — after emitting a block,
+   `relocate_trailing_pad_offsets` rewrites any **self-referential wrapper
+   offset** (a u32 whose value == its own absolute position + 4) that was copied
+   verbatim from `trailing_pad`, moving it by the block's shift. This is
+   independent of how the bytes decoded, so it covers **every**
+   `_reviveQuestList` micro-variant — including the ones the decoder still can't
+   parse (`00 00 01 00`, `00 01 01 00`) and any future shape. No-op when the
+   block didn't move, so round-trips stay byte-identical.
+
+A 22-save survey (fixtures + live install) found `_reviveQuestList` in 5 header
+shapes, 2 still undecoded; layer 2 relocates **all 31,834** self-referential
+wrapper offsets across every save on a shifted re-encode. Verified: golden
+round-trips byte-identical; the sugar repro's 2 offsets move with the block; a
+full `Body::write` add-item edit leaves **0** stale offsets. Regressions
+(`src/lib.rs`): `test_faction_revive_quest_no_trailer_relocates` (decoder path,
+`base_sample`) and `test_faction_node_offset_relocates_through_trailing_pad`
+(encoder safety net, `engine-natural/before`, which carries an undecoded
+variant).
 
 **Double-confirmed on the original repro (`sealed-artifact-challenge/`).** The
 `editor-edit/after` save (the one that first exposed this) carries **exactly 2**
@@ -102,16 +117,17 @@ now decodes with **0** broken nodes. (This also retires the WER dump's
 `FactionSpawnStageManagerSaveData` attribution — that was nearest-export noise;
 the real stale offsets live in `FactionSaveData._factionNodeElementSaveDataList`.)
 
-**Known residual (not the editor repro).** `engine-natural/before` (a *different*,
-more-progressed slot, game-written, loads fine) still has **1** node the fix
-doesn't cover: its `_reviveQuestList` uses a **4-byte `00 01 01 00`** header
-instead of the handled 5-byte `00 00 XX 01 00` (every upstream field aligns
-cleanly, so it is a genuine second variant, not an over-read). This is
-pre-existing — the fix *reduced* this save's broken count, didn't add to it — and
-the shipped editor repros never hit it. But a length-changing edit on a save that
-*does* contain this richer-node variant could still strand that one node's offset.
-Closing it needs the `00 01 01 00` header RE'd (more examples across saves would
-help pin it safely).
+**Second `_reviveQuestList` variant — also covered (by layer 2).** A 22-save
+survey found two header shapes the decoder still can't parse — `00 00 01 00` (16
+nodes) and `00 01 01 00` (3 nodes), both 4-byte headers (verified genuine
+variants, not over-reads: every upstream field aligns cleanly). The decoder
+leaves their `_factionNodeApplySkillList` in `trailing_pad`, but the encoder
+safety net (layer 2) relocates the buried `payload_offset` anyway, so a
+length-changing edit on a save carrying these variants no longer strands them.
+Confirmed by `test_faction_node_offset_relocates_through_trailing_pad` and the
+all-saves survey. RE'ing the `00 XX 01 00` header into a proper decoder variant
+is still worthwhile for *editability* of those quest/skill lists, but is no
+longer needed for crash-safety.
 
 ## Symptom
 
