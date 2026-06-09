@@ -7,7 +7,7 @@ Real Crimson Desert save slots, kept as parser/round-trip reference data:
 | `1.09/` | 1.09 | 14 fields (no `_miniGameLeaderboardSaveDataList`) | pre-reconstruction-phase schema |
 | `1.10/` | 1.10 | 15 fields | the object-list leading-pad widened 3→4 bytes (see `src/save/body/decoder.rs`) |
 | `1.10/sealed-artifact-challenge/` | 1.10 | — | before/after pairs (engine-natural vs editor-edit) for the length-change loader crash |
-| `1.10/broken_save_after_length_change/` | 1.10 | — | "add sugar" A/B/C set: `base_sample` (pristine), `add_2_sugar_in_game` (game-written, loads), `use_editor_add_sugar` (editor-written, CTDs). Controlled pair that pins the editor's item-fidelity drift — see [`docs/save-loader-length-change-crash.md`](../../../docs/save-loader-length-change-crash.md) |
+| `1.10/broken_save_after_length_change/` | 1.10 | — | "add sugar" set: `base_sample` (pristine), `add_2_sugar_in_game` (game-written, loads), `use_editor_add_sugar` (editor-written, CTDs). Pins the encoder relocation bug (stale `_factionNodeApplySkillList` offset) — see [`docs/save-loader-length-change-crash.md`](../../../docs/save-loader-length-change-crash.md) |
 
 Each dir holds the full slot: `save.save` (main body — ChaCha20 + HMAC + LZ4)
 and `lobby.save` (lobby/character-select metadata).

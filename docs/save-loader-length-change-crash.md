@@ -3,106 +3,90 @@
 **Status (2026-06-06): root-caused (provisional).** Pinned to a fixed-buffer
 `memcpy` overflow in the game's loader (dump below).
 
-**Status (2026-06-09): re-opened — the trigger is more specific.** A controlled
-"add sugar" A/B pair (`tests/fixtures/saves/1.10/broken_save_after_length_change/`)
-shows the editor writes an `ItemSaveData` that is **not byte-faithful** to what
-the game writes for the same item, and that — not "the body grew" — is what
-correlates with the crash. The size-threshold framing below is **refuted** by the
-new data (the game's own add-sugar grows the body *more* and still loads). See
-the **2026-06-09 revision** section first. Whether the item drift triggers the
-loader `memcpy` path or a separate validation is pending an in-game load test of
-the two repro saves.
+**Status (2026-06-09): re-root-caused — it is a fixable crimson-rs ENCODER bug,
+not a game loader bug.** A controlled "add sugar" A/B/C set
+(`tests/fixtures/saves/1.10/broken_save_after_length_change/`) traced the CTD to
+**two stale absolute `payload_offset`s the encoder fails to relocate** on a
+length-changing edit. The game-side `memcpy` overflow in the WER dump is the
+*downstream symptom* of the editor save's dangling pointer — not an independent
+game bug. Everything in the original "## Root cause" section below is the correct
+description of the *crash site*; this section is the correct description of *what
+puts a bad pointer there*.
 
-## 2026-06-09 revision: the editor writes a non-faithful item
+## 2026-06-09: the real root cause — a non-relocated `_factionNodeApplySkillList` offset
 
-A clean controlled experiment (`broken_save_after_length_change/`): same logical
-edit — **add sugar (`_itemKey = 752003`) to inventory** — produced three ways:
+Controlled experiment (`broken_save_after_length_change/`): same logical edit —
+**add sugar (`_itemKey = 752003`)** — three ways. `base_sample` (pristine, loads),
+`add_2_sugar_in_game` (game-written, loads, +351 B body), `use_editor_add_sugar`
+(editor-written, **CTD**, +241 B body). All three decode + round-trip
+byte-perfectly.
 
-| Save | Origin | Loads? | `save.save` |
-|---|---|---|---|
-| `base_sample` | pristine (another player's slot) | yes | 1,730,173 |
-| `add_2_sugar_in_game` | **game-written** (bought in shop) | **yes** | 1,730,636 (**+463**) |
-| `use_editor_add_sugar` | **editor-written** (crimson-rs splice) | **CTD** | 1,730,518 (**+345**) |
+**Hypotheses that the data REFUTES (do not chase these again):**
 
-Decoding all three (every block round-trips byte-perfectly, `undecoded = []`):
+- **Body size / "got too big."** The game's own add-sugar grows the body **more**
+  (+351 vs +241) and loads. Size is not the trigger.
+- **Item field-presence (`_maxChargeUseableCount`, field 18).** The editor's sugar
+  carries field 18 and the game's freshly-bought sugar does not — but field 18 is
+  present on **490/490** items in `base_sample` (which loads). Its presence is
+  universal and harmless. Earlier commits in this file's history blamed field 18;
+  **that was wrong.**
+- **`_itemNo` / `_slotNo` collision.** The editor's `_itemNo` (1000192) and
+  `_slotNo` (220) do not collide with any existing item.
+- **Compression ("LZW").** The body is **LZ4 block** (not LZW), decompressed
+  *before* deserialize. `lz4_flex` output isn't byte-identical to the game's LZ4
+  (~250 B larger) but the game decompressed `use_editor_add_sugar` fine (it
+  reached the body deserializer to crash). Compression is irrelevant.
 
-1. **Size is not the trigger.** The game's own add-sugar grows the decompressed
-   body by **+351**; the editor's by **+241**. The bigger one loads. So the old
-   "the relocated body got too big / crossed a buffer" story is wrong.
+**What actually differs:** comparing every unchanged-size block base-vs-game-vs-editor
+for u32s the *game* relocated but the *editor* left at the base value found exactly
+**two**, both in `FactionSaveData` (block #1428):
 
-2. **The game does more than add an item** — buying sugar also touches
-   `StoreSaveData`, `QuestSaveData`, `FieldSaveData` (purchase side-effects) and
-   deducts gold; the editor touches only `InventorySaveData`. Those side-effects
-   are unrelated to the crash (an absent quest/store delta can't desync a reader).
+```
+FactionSaveData +39708 : base 5545036  game 5545387 (+351)  editor 5545036  (STALE)
+FactionSaveData +39964 : base 5545292  game 5545643 (+351)  editor 5545292  (STALE)
+```
 
-3. **Both add exactly one `ItemSaveData`** to
-   `InventorySaveData._inventorylist[1]._itemList` (count 191 → 192). The two
-   added items differ:
+`game − base = +351` = the game's exact body growth, and the values are valid body
+offsets → these are **absolute `payload_offset`s**. The game shifted them by its
+body delta; the editor left them at the base value, so after the editor's +241
+shift they dangle **241 bytes short**.
 
-   | field | game sugar (237 B) | editor sugar (241 B) |
-   |---|---|---|
-   | `[18] _maxChargeUseableCount` | **absent** | **present = 65536** |
-   | `[4] _stackCount` | 2 | 1 |
-   | `[23] _isNewMark` | 0 | 1 |
-   | `_slotNo` | 164 | 220 |
-   | `_chargedUseableCount` | (packed value) | 0 |
+**Why the encoder misses them (the bug):** both offsets sit in
+`_factionNodeElementSaveDataList` elements (`FactionNodeElementSaveData`, class 98)
+[401] and [403]. Those two elements have `_reviveQuestList` (field 40, a
+`dynamic_array`) in a **header variant the decoder can't parse**, so the forward
+field-walk **breaks** at field 40 and dumps the rest of the element — including the
+next field `_factionNodeApplySkillList` (field 42, an `object_list` whose element
+wrapper holds the relocatable `payload_offset`) — into the element's
+`trailing_pad` as **opaque bytes** (86 / 94 B). The encoder writes `trailing_pad`
+**verbatim** (`encode_inline_payload`: `out.extend_from_slice(&child.trailing_pad)`),
+so the embedded `payload_offset` is **never recomputed**. Sibling elements [402]/[404],
+whose `_factionNodeApplySkillList` *does* decode as an `object_list`, relocate
+correctly (their wrapper `payload_offset` is recomputed by `encode_list_element_wrapper`).
 
-   `241 − 237 = 4` = exactly field `[18]`. **The editor marks
-   `_maxChargeUseableCount` present (mask bit + 4 bytes) on an item type the game
-   leaves it absent for.** Field `[18]` is the **only** presence-mask difference
-   between the two items (editor `[…,16,18,19,20,…]` vs game `[…,16,19,20,…]`);
-   everything else is values.
+**Mechanism end-to-end:** length-changing edit shifts `FactionSaveData` → the two
+`payload_offset`s stay stale (−241) → on load the game follows a dangling pointer
+→ sequential read desyncs → a few records later a `u16` length is misread (the
+`0xAEBF = 44735` in the WER dump) → `memcpy` into the fixed stack buffer overflows.
+This explains **why the game's own (larger) edit loads** (it re-serializes the
+whole body, relocating every offset) and **why scalar in-place edits never crash**
+(no shift → the `trailing_pad` offsets stay valid).
 
-   **Confirmed in the editor source.** `CrimsonAtomtic`'s
-   `MainWindowViewModel.AddItemToCurrentListAsync` clones a *donor* list element
-   (`ISaveLoader.ListCloneElement` — copies the donor's **whole presence mask**)
-   and then only patches scalar *values* (`_itemKey`, `_stackCount`, `_slotNo`,
-   `_itemNo`, `_transferredItemKey`, `_isNewMark`). It never reconciles the
-   cloned **mask** to the target item's iteminfo profile, so a donor that is a
-   chargeable item (has `_maxChargeUseableCount`) bleeds field `[18]` onto a
-   plain consumable. The editor author's own comment there already notes "the
-   game's load-time validation crashes on mask shapes that don't match the
-   item's iteminfo profile" — this case is exactly that.
+**Confirmation — repro save C.** `src/save/sugar_probe.rs` (investigation scaffold)
+counts exactly **2** broken nodes in the editor body and writes
+`target/sugar/repro/C_offsets_relocated/` — the editor save with those two
+`payload_offset`s patched `+241` (5545036→5545277, 5545292→5545533), re-sealed
+(HMAC valid). **If C loads in-game, the relocation bug is confirmed as the sole
+cause.** (Variants A / `A_game_item_structure` and B / `B_editor_minus_field18`
+predate this finding and still carry the stale offsets — ignore them.)
 
-### Why this reframes the "game loader bug" conclusion
-
-crimson-rs round-trips the editor save perfectly, so it is self-consistent *by
-crimson-rs's schema model*. But that does not prove it is consistent with the
-**game's** deserializer. If the game's `ItemSaveData` reader does not honour the
-presence mask identically (e.g. a hand-written fast path), the extra 4 bytes
-desync the sequential read; a few records later a `u16` length is misread (the
-`0xAEBF = 44735` seen in the dump) and `memcpy`'d into the fixed stack buffer →
-overflow. That single mechanism explains every observation, including why the
-game's own (larger) save loads: it is perfectly in sync.
-
-### Pending confirmation — two repro saves
-
-Built by `src/save/sugar_probe.rs` (investigation scaffold) into
-`target/sugar/repro/`, both decode cleanly + HMAC-valid:
-
-- **A — `A_game_item_structure/`**: editor body, sugar element replaced by the
-  game's *exact* item (mask + fields + values). Isolates "is a game-faithful
-  item, spliced by crimson-rs, loadable?"
-- **B — `B_editor_minus_field18/`**: editor body, sugar with **only** field `[18]`
-  removed (editor's other values kept). Isolates field `[18]` as the single var.
-
-Load each in-game (copy `save.save` + `lobby.save` into the slot folder):
-
-- **B loads** → field `[18]` presence is the culprit; fix = the editor must not
-  set `_maxChargeUseableCount` for this item class.
-- **B CTDs, A loads** → a *value* (not just field 18) matters; narrow next.
-- **both CTD** → item content is *not* the cause; it is the splice/relocation →
-  the original loader-buffer theory stands.
-
-### Not compression (the "LZW" question)
-
-The body is **LZ4 block** (not LZW), compressed *after* the body is built; the
-game decompresses before deserializing, so compression cannot change the bytes
-the loader sees. crimson-rs's `lz4_flex` output is **not** byte-identical to the
-game's LZ4 (it is ~250 B larger on these saves) — but `use_editor_add_sugar` was
-compressed by `lz4_flex` and the game decompressed it fine (it reached the body
-deserializer to crash). So matching the game's exact compressor is unnecessary
-and would not change the crash.
+**The fix (crimson-rs):** teach the decoder `_reviveQuestList`'s `dynamic_array`
+header variant so the forward walk reaches `_factionNodeApplySkillList` and the
+encoder relocates its `payload_offset` like any other list element. Narrower
+fallback: when emitting a shifted block's `trailing_pad`, relocate any
+self-referential wrapper offset (a u32 whose value == its own absolute position + 4)
+by the block's shift. The root fix is preferred — it also recovers the
+`_reviveQuestList` / `_factionNodeApplySkillList` data for editing.
 
 ## Symptom
 
@@ -166,9 +150,12 @@ noise — ignore them).
 - The dump is `INVALID_POINTER_WRITE` (a plain `memcpy` past mapped memory), not
   a detected stack-cookie / GS overrun.
 
-## What is verified correct (it is NOT a crimson-rs / editor bug)
+## What was checked in the first pass (necessary but NOT sufficient)
 
-Checked exhaustively against the repro saves (`tests/fixtures/saves/1.10/sealed-artifact-challenge/`):
+These checks all passed and were read as "not a crimson-rs bug" — but a **no-op**
+round-trip does not move any block, so it never exercises the relocation of
+`payload_offset`s buried in `trailing_pad`. That blind spot is exactly the
+2026-06-09 bug. Checked against the repro saves (`tests/fixtures/saves/1.10/sealed-artifact-challenge/`):
 
 - **Encoder fidelity** — a no-op decode→encode of the game's own save diffs
   **0 bytes** (after the `Bool(u8)` round-trip fix, commit history `fix(save):
@@ -193,8 +180,11 @@ Checked exhaustively against the repro saves (`tests/fixtures/saves/1.10/sealed-
 
 ## If someone wants to actually fix the load
 
-It is in the game binary, so crimson-rs/editor can't patch it. The only path to
-making length-changing edits safe on these saves would be to reverse the game's
-deserializer enough to reproduce its **exact** layout/relocation so the loader's
-reader never lands on the oversized record's length at the wrong spot — large,
-no-symbols RE. The repro saves + this dump context are the starting point.
+**Superseded by the 2026-06-09 root cause above.** This was written when the crash
+looked unfixable ("it's in the game binary"). It is in fact a **crimson-rs encoder
+relocation bug** — the loader's `memcpy` only overflows because the editor save
+contains a dangling `payload_offset` the encoder failed to relocate. Fix it in
+crimson-rs (decode `_reviveQuestList` so `_factionNodeApplySkillList` relocates, or
+relocate self-referential offsets inside `trailing_pad` on a shifted block) and the
+length-changing edit loads. The original "reverse the game's deserializer" plan is
+unnecessary.
