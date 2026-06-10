@@ -868,6 +868,7 @@ pub unsafe extern "C" fn crimson_save_list_inventory_items(
     }
     unsafe { *out_count_records = 0 };
     catch_unwind(AssertUnwindSafe(|| {
+        let _ffi_guard = save_ffi_lock();
         let h = unsafe { &*handle };
         if !out_version.is_null() {
             unsafe { *out_version = h.mutation_version };
@@ -1074,6 +1075,7 @@ pub unsafe extern "C" fn crimson_save_list_character_refs(
     }
     unsafe { *out_count_records = 0 };
     catch_unwind(AssertUnwindSafe(|| {
+        let _ffi_guard = save_ffi_lock();
         let h = unsafe { &*handle };
         if !out_version.is_null() {
             unsafe { *out_version = h.mutation_version };
@@ -1211,6 +1213,7 @@ pub unsafe extern "C" fn crimson_save_get_mutation_version(
         return error::NULL_ARG;
     }
     catch_unwind(AssertUnwindSafe(|| {
+        let _ffi_guard = save_ffi_lock();
         let h = unsafe { &*handle };
         unsafe { *out_version = h.mutation_version };
         error::OK
@@ -1347,6 +1350,7 @@ pub unsafe extern "C" fn crimson_save_get_block_class_name(
         return error::NULL_ARG;
     }
     catch_unwind(AssertUnwindSafe(|| {
+        let _ffi_guard = save_ffi_lock();
         let h = unsafe { &*handle };
         let Some(block) = h.blocks.get(index as usize) else {
             return error::OUT_OF_RANGE;
@@ -1414,6 +1418,7 @@ pub unsafe extern "C" fn crimson_save_get_block_json(
         return error::NULL_ARG;
     }
     catch_unwind(AssertUnwindSafe(|| {
+        let _ffi_guard = save_ffi_lock();
         let h = unsafe { &*handle };
         let Some(block) = h.blocks.get(index as usize) else {
             return error::OUT_OF_RANGE;
@@ -1773,6 +1778,7 @@ pub unsafe extern "C" fn crimson_save_set_scalar_field(
         return error::NULL_ARG;
     }
     catch_unwind(AssertUnwindSafe(|| {
+        let _ffi_guard = save_ffi_lock();
         let h = unsafe { &mut *handle };
         let src = unsafe { slice_from_raw_or_empty(bytes, bytes_len) };
         if h.is_deferred() {
@@ -1859,6 +1865,7 @@ pub unsafe extern "C" fn crimson_save_set_scalar_field_path(
         return error::NULL_ARG;
     }
     catch_unwind(AssertUnwindSafe(|| {
+        let _ffi_guard = save_ffi_lock();
         let h = unsafe { &mut *handle };
         let steps: &[CrimsonPathStep] = if path_len == 0 {
             &[]
@@ -2191,6 +2198,7 @@ pub unsafe extern "C" fn crimson_save_set_scalar_fields_batch(
             return error::OK;
         }
 
+        let _ffi_guard = save_ffi_lock();
         let h = unsafe { &mut *handle };
         let ops_slice: &[CrimsonScalarBatchOp] =
             unsafe { slice_from_raw_or_empty(ops, op_count) };
@@ -2350,6 +2358,7 @@ pub unsafe extern "C" fn crimson_save_list_remove_element(
         return error::NULL_ARG;
     }
     catch_unwind(AssertUnwindSafe(|| {
+        let _ffi_guard = save_ffi_lock();
         let h = unsafe { &mut *handle };
         let steps: &[CrimsonPathStep] = if path_len == 0 {
             &[]
@@ -2449,6 +2458,7 @@ pub unsafe extern "C" fn crimson_save_list_remove_elements_batch(
             }
         }
 
+        let _ffi_guard = save_ffi_lock();
         let h = unsafe { &mut *handle };
         let mut failed_op: Option<usize> = None;
         let rc = apply_length_changing_mutation(h, |blocks| {
@@ -2548,6 +2558,7 @@ pub unsafe extern "C" fn crimson_save_list_clone_element(
         return error::NULL_ARG;
     }
     catch_unwind(AssertUnwindSafe(|| {
+        let _ffi_guard = save_ffi_lock();
         let h = unsafe { &mut *handle };
         let steps: &[CrimsonPathStep] = if path_len == 0 {
             &[]
@@ -2680,6 +2691,10 @@ pub unsafe extern "C" fn crimson_save_transplant_list_element(
         return error::NULL_ARG;
     }
     catch_unwind(AssertUnwindSafe(|| {
+        // One global lock covers both handles — no two-lock ordering /
+        // deadlock concern, and the C# wrapper already rejects target ==
+        // source so the `&mut`/`&` below never alias the same save.
+        let _ffi_guard = save_ffi_lock();
         let target = unsafe { &mut *target_handle };
         let source = unsafe { &*source_handle };
         let t_steps: &[CrimsonPathStep] = if target_path_len == 0 {
@@ -2806,6 +2821,7 @@ pub unsafe extern "C" fn crimson_save_set_scalar_field_present(
         return error::NULL_ARG;
     }
     catch_unwind(AssertUnwindSafe(|| {
+        let _ffi_guard = save_ffi_lock();
         let h = unsafe { &mut *handle };
         let steps: &[CrimsonPathStep] = if path_len == 0 {
             &[]
@@ -2980,6 +2996,7 @@ pub unsafe extern "C" fn crimson_save_set_object_list_present(
     }
     let make_present = present_flag != 0;
     catch_unwind(AssertUnwindSafe(|| {
+        let _ffi_guard = save_ffi_lock();
         let h = unsafe { &mut *handle };
         let steps: &[CrimsonPathStep] = if path_len == 0 {
             &[]
@@ -3271,6 +3288,7 @@ pub unsafe extern "C" fn crimson_save_set_scalar_fields_present_batch(
             })
             .collect();
 
+        let _ffi_guard = save_ffi_lock();
         let h = unsafe { &mut *handle };
         let mut failed_op: Option<usize> = None;
         let rc = apply_length_changing_mutation(h, |blocks| {
@@ -3353,6 +3371,7 @@ pub unsafe extern "C" fn crimson_save_make_empty_element_bytes(
         return error::NULL_ARG;
     }
     catch_unwind(AssertUnwindSafe(|| {
+        let _ffi_guard = save_ffi_lock();
         let h = unsafe { &*handle };
         let bytes = match build_empty_element_bytes(class_index, &h.body) {
             Ok(b) => b,
@@ -3422,6 +3441,7 @@ pub unsafe extern "C" fn crimson_save_list_insert_element(
         return error::NULL_ARG;
     }
     catch_unwind(AssertUnwindSafe(|| {
+        let _ffi_guard = save_ffi_lock();
         let h = unsafe { &mut *handle };
         let steps: &[CrimsonPathStep] = if path_len == 0 {
             &[]
@@ -3564,6 +3584,7 @@ pub unsafe extern "C" fn crimson_save_dynamic_array_set_u32_elements(
         return error::NULL_ARG;
     }
     catch_unwind(AssertUnwindSafe(|| {
+        let _ffi_guard = save_ffi_lock();
         let h = unsafe { &mut *handle };
         let steps: &[CrimsonPathStep] = if path_len == 0 {
             &[]
@@ -3656,6 +3677,7 @@ pub unsafe extern "C" fn crimson_save_dynamic_array_get_u32_elements(
         return error::NULL_ARG;
     }
     catch_unwind(AssertUnwindSafe(|| {
+        let _ffi_guard = save_ffi_lock();
         let h = unsafe { &*handle };
         let steps: &[CrimsonPathStep] = if path_len == 0 {
             &[]
@@ -3771,6 +3793,7 @@ pub unsafe extern "C" fn crimson_save_set_inline_bytes_field(
         return error::NULL_ARG;
     }
     catch_unwind(AssertUnwindSafe(|| {
+        let _ffi_guard = save_ffi_lock();
         let h = unsafe { &mut *handle };
         let steps: &[CrimsonPathStep] = if path_len == 0 {
             &[]
@@ -3833,6 +3856,7 @@ pub unsafe extern "C" fn crimson_save_get_inline_bytes_field(
     }
     unsafe { *out_required = 0 };
     catch_unwind(AssertUnwindSafe(|| {
+        let _ffi_guard = save_ffi_lock();
         let h = unsafe { &*handle };
         let steps: &[CrimsonPathStep] = if path_len == 0 {
             &[]
@@ -4024,6 +4048,7 @@ pub unsafe extern "C" fn crimson_save_write_to_file(
         return error::NULL_ARG;
     }
     catch_unwind(AssertUnwindSafe(|| {
+        let _ffi_guard = save_ffi_lock();
         let h = unsafe { &*handle };
         if h.is_deferred() {
             // Writing during an open batch would emit the pre-batch
@@ -4097,6 +4122,7 @@ pub unsafe extern "C" fn crimson_save_begin_deferred_redecode(
         return error::NULL_ARG;
     }
     catch_unwind(AssertUnwindSafe(|| {
+        let _ffi_guard = save_ffi_lock();
         let h = unsafe { &mut *handle };
         if h.is_deferred() {
             return error::BATCH_IN_PROGRESS;
@@ -4142,6 +4168,7 @@ pub unsafe extern "C" fn crimson_save_end_deferred_redecode(
         return error::NULL_ARG;
     }
     catch_unwind(AssertUnwindSafe(|| {
+        let _ffi_guard = save_ffi_lock();
         let h = unsafe { &mut *handle };
         let Some(state) = h.deferred_state.take() else {
             return error::BATCH_NOT_OPEN;
@@ -4196,6 +4223,7 @@ pub unsafe extern "C" fn crimson_save_abort_deferred_redecode(
         return error::NULL_ARG;
     }
     catch_unwind(AssertUnwindSafe(|| {
+        let _ffi_guard = save_ffi_lock();
         let h = unsafe { &mut *handle };
         let Some(state) = h.deferred_state.take() else {
             return error::BATCH_NOT_OPEN;
@@ -4224,6 +4252,7 @@ pub unsafe extern "C" fn crimson_save_is_deferred_redecode_open(
         return error::NULL_ARG;
     }
     catch_unwind(AssertUnwindSafe(|| {
+        let _ffi_guard = save_ffi_lock();
         let h = unsafe { &*handle };
         unsafe { *out_open = if h.is_deferred() { 1 } else { 0 } };
         error::OK
@@ -4233,6 +4262,41 @@ pub unsafe extern "C" fn crimson_save_is_deferred_redecode_open(
 
 // ── Internal helpers ───────────────────────────────────────────────────────
 
+/// Process-global serialization lock for the `crimson_save_*` C ABI.
+///
+/// The opaque `*mut CrimsonSaveHandle` the C side holds carries no interior
+/// synchronization, and the handle's `&mut`/`&` borrows are formed straight
+/// from that raw pointer. If two threads enter the save ABI on the same
+/// handle at once — e.g. the C# app's background bulk-mutation worker
+/// overlapping a UI-thread block read — they would hold a `&mut` and a `&`
+/// to the same `Save`/`Body`/`Vec<ObjectBlock>` simultaneously, which is
+/// undefined behaviour (and can free the blocks vec out from under an
+/// in-flight reader).
+///
+/// Every save entry point takes this lock for the duration of its
+/// `&mut`/`&` access via [`save_ffi_lock`], so those borrows are never live
+/// on two threads at once. The lock is process-global rather than
+/// per-handle: it lives outside the handle data (so it can be held *before*
+/// the raw pointer is dereferenced — a per-handle field would have to be
+/// reached through the very `&*handle` it is meant to guard), and in
+/// practice the app keeps a single save open, so global ≈ per-handle. The
+/// read-only catalog bridges (iteminfo/missioninfo/…) deliberately do NOT
+/// take it — they are immutable after load and must not stall behind a save
+/// bulk-op.
+static SAVE_FFI_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Acquire [`SAVE_FFI_LOCK`], recovering from poison.
+///
+/// A panic mid-mutation is already surfaced to the caller as `PANIC` (the
+/// `catch_unwind` wrapper), and the length-changing mutations roll their
+/// state back on error, so a poisoned lock should not wedge every later
+/// call — recover the guard and carry on.
+fn save_ffi_lock() -> std::sync::MutexGuard<'static, ()> {
+    SAVE_FFI_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn with_handle<T, F>(handle: *const CrimsonSaveHandle, out: *mut T, body: F) -> i32
 where
     F: FnOnce(&CrimsonSaveHandle, *mut T) -> i32,
@@ -4241,6 +4305,7 @@ where
         return error::NULL_ARG;
     }
     catch_unwind(AssertUnwindSafe(|| {
+        let _ffi_guard = save_ffi_lock();
         let h = unsafe { &*handle };
         body(h, out)
     }))
