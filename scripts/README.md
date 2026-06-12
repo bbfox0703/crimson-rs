@@ -12,8 +12,8 @@ One command, three deliverables (`out\items.jsonl`, three `paloc_*.json`, three 
 
 **Prerequisites:**
 1. Crimson Desert installed (the script auto-detects D:/F:/E:/C: SteamLibrary paths; override with `--game-dir`).
-2. `crimson_rs` Python wheel installed (`maturin build --release && pip install target/wheels/crimson_rs-*.whl` from the repo root).
-3. `data/keys.txt` (bundled — 6,236 itemKey list dumped from game memory; see [`../data/README.md`](../data/README.md)).
+2. `crimson_rs` Python wheel installed — build into a **Python 3.12** venv (the wheel is `abi3` for ≥ 3.12): `maturin develop --release` inside `.venv`, or `maturin build --release && pip install target/wheels/crimson_rs-*.whl` from the repo root. Run this script from that same env.
+3. `data/keys.txt` (bundled — 6,333 itemKey list dumped from game memory; see [`../data/README.md`](../data/README.md)).
 
 ## Index
 

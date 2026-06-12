@@ -105,7 +105,7 @@ mod tests {
             unsafe { crimson_gameplay_variable_info_entry_count(sh, &mut count) },
             error::OK
         );
-        assert_eq!(count, 47);
+        assert_eq!(count, 55); // 1.11 (was 47 through 1.10)
         for &(key, expected) in KNOWN {
             let mut req: usize = 0;
             assert_eq!(
