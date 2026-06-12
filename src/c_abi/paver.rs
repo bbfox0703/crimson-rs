@@ -261,12 +261,12 @@ mod tests {
             )
         };
         assert_eq!(rc, error::OK);
-        // Live install we test against is 1.10 today. Pin the major
+        // Live install we test against is 1.11 today. Pin the major
         // (always 1 in the shipped versions) and the live minor; the
         // patch / build are version-specific informational fields and
         // would drift across patches.
         assert_eq!(major, 1);
-        assert_eq!(minor, 10, "live game install should be 1.10 in this test environment");
+        assert_eq!(minor, 11, "live game install should be 1.11 in this test environment");
     }
 
     #[test]

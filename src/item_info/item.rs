@@ -3,6 +3,28 @@ use super::structs::*;
 use crate::binary::*;
 use crate::py_binary_struct;
 
+// ── ItemInfo (1.11) ─────────────────────────────────────────────────────────
+//
+// Crimson Desert 1.11 makes a single layout change relative to 1.10: a new
+// boolean `u8` field (`unk_post_apply_drop_stat_type`) was **inserted**
+// between `apply_drop_stat_type` and `drop_default_data`. Every item gains
+// exactly one byte (net per-item delta +1 on 6,321 / 6,325 items common to
+// 1.10 and 1.11; the remaining 4 carry additional content-only drifts on top
+// of the +1). On the cleanly-isolatable subset the value reads 0 or 1 only
+// (4,861 one, 266 zero) — a boolean whose semantic role / gamedata symbol is
+// still unknown; named for its position pending RE.
+//
+// RE workflow (lightweight tandem byte-walk, no sibling parser): the current
+// parser parses the kept real-1.10 binary (`X:\Crimson Desert\iteminfo.1.10.pabgb`,
+// 5,532,062 B) at ok=6,325 leftover=0 but fails on every 1.11 item at
+// `prefab_data_list[0].prefab_names`. A per-item tandem walk between the two
+// binaries (matched by key) found one inserted byte at the `drop_default_data`
+// boundary for all common items. Result after this edit applied:
+// `parser status: ok=6,333  leftover=0  fail=0  no_anchor=0`.
+// (Heads-up: `X:\Crimson Desert\1.10.01\` is NOT a real 1.10 install — its
+// 0008 container is byte-identical to the 1.11 D: install; use the kept
+// `X:\Crimson Desert\iteminfo.1.10.pabgb` root file for cross-version diffs.)
+//
 // ── ItemInfo (1.10) ─────────────────────────────────────────────────────────
 //
 // Crimson Desert 1.10 makes two layout changes relative to 1.09 (which
@@ -178,6 +200,10 @@ py_binary_struct! {
         pub item_tier: u8,
         pub is_important_item: u8,
         pub apply_drop_stat_type: u8,
+        // 1.11 inserted a new boolean u8 here (between `apply_drop_stat_type`
+        // and `drop_default_data`). Reads 0/1 only; semantic role unknown.
+        // See the "ItemInfo (1.11)" header note above.
+        pub unk_post_apply_drop_stat_type: u8,
         pub drop_default_data: DropDefaultData,
         pub prefab_data_list: CArray<PrefabData>,
         pub enchant_data_list: CArray<EnchantData>,
