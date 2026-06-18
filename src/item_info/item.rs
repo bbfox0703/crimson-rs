@@ -15,15 +15,17 @@ use crate::py_binary_struct;
 // still unknown; named for its position pending RE.
 //
 // RE workflow (lightweight tandem byte-walk, no sibling parser): the current
-// parser parses the kept real-1.10 binary (`X:\Crimson Desert\iteminfo.1.10.pabgb`,
+// parser parses the kept real-1.10 binary (`gamedata-bin/1.10/iteminfo.pabgb`,
 // 5,532,062 B) at ok=6,325 leftover=0 but fails on every 1.11 item at
 // `prefab_data_list[0].prefab_names`. A per-item tandem walk between the two
 // binaries (matched by key) found one inserted byte at the `drop_default_data`
 // boundary for all common items. Result after this edit applied:
 // `parser status: ok=6,333  leftover=0  fail=0  no_anchor=0`.
-// (Heads-up: `X:\Crimson Desert\1.10.01\` is NOT a real 1.10 install — its
-// 0008 container is byte-identical to the 1.11 D: install; use the kept
-// `X:\Crimson Desert\iteminfo.1.10.pabgb` root file for cross-version diffs.)
+// (Heads-up: the 1.10.01 hotfix install is NOT a real 1.10 — its 0008
+// container is byte-identical to the 1.11 D: install; use the kept
+// `gamedata-bin/1.10/iteminfo.pabgb` baseline for cross-version diffs. These
+// per-version baselines are gitignored game content kept in a portable local
+// archive — drive letter irrelevant, copy the folder wherever it's needed.)
 //
 // ── ItemInfo (1.10) ─────────────────────────────────────────────────────────
 //
