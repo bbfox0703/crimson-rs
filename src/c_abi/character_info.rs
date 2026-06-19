@@ -1089,7 +1089,7 @@ mod tests {
                     .join("CD")
                     .join("save");
                 std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
-                    let p = entry.path().join("slot0").join("save.save");
+                    let p = entry.path().join("slot107").join("save.save");
                     p.is_file().then_some(p)
                 })
             });
@@ -1339,7 +1339,7 @@ mod tests {
                     .join("save");
                 let entries = std::fs::read_dir(&root).ok()?;
                 for entry in entries.flatten() {
-                    let candidate = entry.path().join("slot0").join("save.save");
+                    let candidate = entry.path().join("slot107").join("save.save");
                     if candidate.is_file() {
                         return Some(candidate);
                     }
@@ -1574,7 +1574,7 @@ mod tests {
                 let appdata = std::env::var_os("LOCALAPPDATA")?;
                 let root = PathBuf::from(appdata).join("Pearl Abyss").join("CD").join("save");
                 std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
-                    let p = entry.path().join("slot0").join("save.save");
+                    let p = entry.path().join("slot107").join("save.save");
                     p.is_file().then_some(p)
                 })
             });
@@ -1749,7 +1749,7 @@ mod tests {
                     .join("CD")
                     .join("save");
                 std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
-                    let p = entry.path().join("slot0").join("save.save");
+                    let p = entry.path().join("slot107").join("save.save");
                     p.is_file().then_some(p)
                 })
             });
@@ -1938,7 +1938,7 @@ mod tests {
     /// (singleton) TransformSaveData block.
     #[test]
     #[ignore = "investigation only — TransformSaveData schema + active char position"]
-    fn _probe_transform_save_data_slot102() {
+    fn _probe_transform_save_data_slot107() {
         use crate::save::{Body, FieldValue, ScalarValue, Save};
 
         let appdata = std::env::var_os("LOCALAPPDATA")
@@ -1949,12 +1949,12 @@ mod tests {
             .or_else(|| {
                 let root = appdata.join("Pearl Abyss").join("CD").join("save");
                 std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
-                    let p = entry.path().join("slot102").join("save.save");
+                    let p = entry.path().join("slot107").join("save.save");
                     p.is_file().then_some(p)
                 })
             });
         let Some(save_path) = save_path else {
-            eprintln!("skipping: no slot102/save.save");
+            eprintln!("skipping: no slot107/save.save");
             return;
         };
 
@@ -2135,7 +2135,7 @@ mod tests {
     ///    a unit mismatch. This probe is the definitive check.
     #[test]
     #[ignore = "investigation only — find char position in slot102, cross-check CE coords"]
-    fn _probe_active_char_position_slot102() {
+    fn _probe_active_char_position_slot107() {
         use crate::save::{Body, FieldValue, ScalarValue, Save};
 
         let appdata = std::env::var_os("LOCALAPPDATA")
@@ -2146,12 +2146,12 @@ mod tests {
             .or_else(|| {
                 let root = appdata.join("Pearl Abyss").join("CD").join("save");
                 std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
-                    let p = entry.path().join("slot102").join("save.save");
+                    let p = entry.path().join("slot107").join("save.save");
                     p.is_file().then_some(p)
                 })
             });
         let Some(save_path) = save_path else {
-            eprintln!("skipping: no slot102/save.save");
+            eprintln!("skipping: no slot107/save.save");
             return;
         };
         eprintln!("probing {}", save_path.display());
@@ -2771,7 +2771,7 @@ mod tests {
     /// ∈ {1,4,6}` rule.
     #[test]
     #[ignore = "investigation only — mercenary ownership field probe"]
-    fn _probe_mercenary_ownership_slot103() {
+    fn _probe_mercenary_ownership_slot107() {
         use crate::binary::pamt::PackMeta;
         use crate::binary::paz;
         use crate::character_info::parse_character_info_lossy;
@@ -2786,7 +2786,7 @@ mod tests {
                     .join("CD")
                     .join("save");
                 std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
-                    let p = entry.path().join("slot103").join("save.save");
+                    let p = entry.path().join("slot107").join("save.save");
                     p.is_file().then_some(p)
                 })
             });
@@ -2889,7 +2889,7 @@ mod tests {
                     .join("CD")
                     .join("save");
                 std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
-                    let p = entry.path().join("slot103").join("save.save");
+                    let p = entry.path().join("slot107").join("save.save");
                     p.is_file().then_some(p)
                 })
             });
@@ -2978,7 +2978,7 @@ mod tests {
     /// equipment, inactive-character equipment, etc.
     #[test]
     #[ignore = "investigation only — TOC skeleton + container fields dump"]
-    fn _probe_save_skeleton_slot103() {
+    fn _probe_save_skeleton_slot107() {
         use crate::save::{Body, FieldValue, Save};
 
         let save_path = std::env::var_os("CRIMSON_DYE_PROBE_SAVE")
@@ -2991,12 +2991,12 @@ mod tests {
                     .join("CD")
                     .join("save");
                 std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
-                    let p = entry.path().join("slot103").join("save.save");
+                    let p = entry.path().join("slot107").join("save.save");
                     p.is_file().then_some(p)
                 })
             });
         let Some(save_path) = save_path else {
-            eprintln!("skipping: no slot103/save.save");
+            eprintln!("skipping: no slot107/save.save");
             return;
         };
         eprintln!("probing {}", save_path.display());
@@ -3091,7 +3091,7 @@ mod tests {
     /// probe: it doesn't enforce a schema, it just enumerates.
     #[test]
     #[ignore = "investigation only — full dye enumeration anywhere in tree (default slot103)"]
-    fn _probe_item_dye_data_anywhere_slot103() {
+    fn _probe_item_dye_data_anywhere_slot107() {
         use crate::save::{Body, FieldValue, ScalarValue, Save};
 
         let save_path = std::env::var_os("CRIMSON_DYE_PROBE_SAVE")
@@ -3104,12 +3104,12 @@ mod tests {
                     .join("CD")
                     .join("save");
                 std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
-                    let p = entry.path().join("slot103").join("save.save");
+                    let p = entry.path().join("slot107").join("save.save");
                     p.is_file().then_some(p)
                 })
             });
         let Some(save_path) = save_path else {
-            eprintln!("skipping: no slot103/save.save");
+            eprintln!("skipping: no slot107/save.save");
             return;
         };
         eprintln!("probing {}", save_path.display());
@@ -3310,7 +3310,7 @@ mod tests {
 
     /// Full dye enumeration with mercenary-template resolution.
     ///
-    /// Sibling of [`_probe_item_dye_data_anywhere_slot103`]. The
+    /// Sibling of [`_probe_item_dye_data_anywhere_slot107`]. The
     /// earlier probe walks the same tree but doesn't distinguish
     /// mercenary classes (mounts vs human mercenaries) — both share
     /// `MercenarySaveData` and only the `_mercenaryKey` template ID
@@ -3349,12 +3349,12 @@ mod tests {
                     .join("CD")
                     .join("save");
                 std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
-                    let p = entry.path().join("slot103").join("save.save");
+                    let p = entry.path().join("slot107").join("save.save");
                     p.is_file().then_some(p)
                 })
             });
         let Some(save_path) = save_path else {
-            eprintln!("skipping: no slot103/save.save");
+            eprintln!("skipping: no slot107/save.save");
             return;
         };
         eprintln!("probing {}", save_path.display());
@@ -3764,7 +3764,7 @@ mod tests {
                     .join("CD")
                     .join("save");
                 std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
-                    let p = entry.path().join("slot0").join("save.save");
+                    let p = entry.path().join("slot107").join("save.save");
                     p.is_file().then_some(p)
                 })
             });
@@ -4601,12 +4601,12 @@ mod tests {
                     .join("CD")
                     .join("save");
                 std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
-                    let p = entry.path().join("slot104").join("save.save");
+                    let p = entry.path().join("slot107").join("save.save");
                     p.is_file().then_some(p)
                 })
             });
         let Some(save_path) = save_path else {
-            eprintln!("skipping: no slot104/save.save");
+            eprintln!("skipping: no slot107/save.save");
             return;
         };
         eprintln!("probing {}", save_path.display());
@@ -4843,12 +4843,12 @@ mod tests {
                     .join("CD")
                     .join("save");
                 std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
-                    let p = entry.path().join("slot104").join("save.save");
+                    let p = entry.path().join("slot107").join("save.save");
                     p.is_file().then_some(p)
                 })
             });
         let Some(save_path) = save_path else {
-            eprintln!("skipping: no slot104/save.save");
+            eprintln!("skipping: no slot107/save.save");
             return;
         };
         eprintln!("probing {}", save_path.display());
@@ -5301,12 +5301,12 @@ mod tests {
                     .join("CD")
                     .join("save");
                 std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
-                    let p = entry.path().join("slot104").join("save.save");
+                    let p = entry.path().join("slot107").join("save.save");
                     p.is_file().then_some(p)
                 })
             });
         let Some(save_path) = save_path else {
-            eprintln!("skipping: no slot104/save.save");
+            eprintln!("skipping: no slot107/save.save");
             return;
         };
         eprintln!("probing {}", save_path.display());
@@ -7606,7 +7606,7 @@ mod tests {
                     .join("CD")
                     .join("save");
                 std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
-                    let p = entry.path().join("slot0").join("save.save");
+                    let p = entry.path().join("slot107").join("save.save");
                     p.is_file().then_some(p)
                 })
             });
@@ -7774,7 +7774,7 @@ mod tests {
                     .join("CD")
                     .join("save");
                 std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
-                    let p = entry.path().join("slot103").join("save.save");
+                    let p = entry.path().join("slot107").join("save.save");
                     p.is_file().then_some(p)
                 })
             });
