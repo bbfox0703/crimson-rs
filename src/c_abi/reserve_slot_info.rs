@@ -106,7 +106,7 @@ mod tests {
             unsafe { crimson_reserve_slot_info_entry_count(sh, &mut count) },
             error::OK
         );
-        assert_eq!(count, 27);
+        assert_eq!(count, 31); // 1.12 (was 27 through 1.11)
         for &(key, expected) in KNOWN {
             let mut req: usize = 0;
             assert_eq!(

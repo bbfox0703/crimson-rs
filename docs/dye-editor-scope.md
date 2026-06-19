@@ -95,7 +95,7 @@ The `binarygimmickchart__` `*dye*` / `dyewater` `.binarygimmick` files
 in the scan output are decorative gimmicks (basecamp props, fabric
 deco), NOT item-dye gamedata — ignore those.
 
-### Verified row schemas (2026-05-16, live 1.07)
+### Verified row schemas (2026-05-16, live 1.07; partprefabdyeslotinfo re-verified on 1.12 2026-06-19)
 
 **`dyecolorgroupinfo.pabgb`** — standard PABGH (`u16 count + (u32 key, u32 offset)*`):
 
@@ -150,6 +150,9 @@ Slot {
     u8 mat_indices[3],        // material indices for this slot
     CString material_a / b / c, // 3 default material names (often empty)
     u8 mask[3],               // active/visible flags
+    // 1.12 ONLY: u8 + u32 inserted here, observed uniformly (0xFF, 0)
+    //   across all 3,893 live slots (semantics not yet RE'd). Absent
+    //   in 1.07-1.11. See "Cross-version drift (1.12)" below.
     CString tail_name,        // next sub-prefab name; for the LAST slot in a row,
                               //   the full .pac asset path
 }
@@ -157,6 +160,21 @@ Slot {
 
 `CString` here is `[u32 len][len bytes]` with NO trailing NUL — same
 shape iteminfo.pabgb uses.
+
+#### Cross-version drift (1.12)
+
+1.12 inserted a 5-byte per-slot field (a `u8` + a `u32`, uniformly
+`(0xFF, 0)`) between `mask` and `tail_name`, and removed 143 rows
+(**1,111 → 968**). The two per-slot layouts are **empirically disjoint**
+— across the full 1.11 (1,111 rows) and 1.12 (968 rows) tables every row
+walks cleanly under exactly one layout and **zero** rows parse cleanly
+under both. [`parse_part_prefab_dye_slot_info_lossy`](../src/part_prefab_dye_slot_info/mod.rs)
+therefore tries the 1.12 layout first and falls back to the 1.07-1.11
+layout per row, keeping older-install support while reading the live
+1.12 table. The cross-version byte-walk that pinned this lives in
+[`scripts/diff_dyeslot_111_112.py`](../scripts/diff_dyeslot_111_112.py).
+Verified byte-perfect across the full live 1.12 table 2026-06-19. (Peak
+1.12 `slot_count` is 36, for vehicle/robot meshes, vs ~30 in 1.07-1.11.)
 
 ---
 

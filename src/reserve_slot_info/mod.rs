@@ -103,7 +103,7 @@ mod tests {
             return;
         };
         let entries = parse_reserve_slot_info_lossy(&pabgb, &pabgh);
-        assert_eq!(entries.len(), 27, "expected 27 rows in 1.07");
+        assert_eq!(entries.len(), 31, "expected 31 rows in 1.12 (was 27 through 1.11)");
         let by_key: std::collections::HashMap<u32, &str> =
             entries.iter().map(|e| (e.key, e.name.as_str())).collect();
         for &(k, expected) in KNOWN {

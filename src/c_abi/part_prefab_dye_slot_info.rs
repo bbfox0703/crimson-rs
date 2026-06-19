@@ -425,15 +425,17 @@ mod tests {
     use std::path::PathBuf;
     use std::ptr;
 
-    /// (key, expected prefab_name, expected slot_count). From the
-    /// 2026-05-16 probe pass against the live 1.07 install.
+    /// (key, expected prefab_name, expected slot_count). Verified on the
+    /// live 1.12 install (2026-06-19). First three carry over unchanged
+    /// from the 1.07 probe pass; the last three replace 1.07 keys that
+    /// 1.12 removed (the −143-row drop, 1,111 → 968).
     const KNOWN: &[(u32, &str, u32)] = &[
         (0xc7bbaada, "cd_phm_00_lb_00_0054", 1),
         (0xfbad5654, "cd_phm_00_hel_0057_02_inside", 2),
-        (0x7a5dda1c, "cd_phm_00_cloak_0054_hair_spline", 1),
-        (0x6ecff454, "cd_phw_00_vest_belt_0137_00", 10),
-        (0xe3713ebc, "cd_phw_00_vest_acc_0043_01", 8),
         (0xddb61e2e, "cd_phm_00_vest_0051_01", 4),
+        (0x4905cceb, "cd_phm_00_lb_0002", 1),
+        (0xf8042604, "cd_phm_00_lb_00_0342_belt", 3),
+        (0xd5394f4c, "cd_phm_00_hand_belt_0245_01", 5),
     ];
 
     fn extract_pair() -> Option<(Vec<u8>, Vec<u8>)> {

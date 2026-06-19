@@ -3,6 +3,53 @@ use super::structs::*;
 use crate::binary::*;
 use crate::py_binary_struct;
 
+// ── ItemInfo (1.12) ─────────────────────────────────────────────────────────
+//
+// Crimson Desert 1.12 makes FOUR layout changes relative to 1.11 (the largest
+// schema drift since 1.08). +150 net items (6,333 → 6,483). RE'd with the
+// lightweight tandem byte-walk vs the kept 1.11 binary
+// (`gamedata-bin/1.11/iteminfo.pabgb`, 5,543,339 B) — `scripts/diff_111_112.py`
+// + per-boundary byte dumps. Result after all four edits:
+// `parser status: ok=6,483  leftover=0  fail=0  no_anchor=0`, and a full
+// `serialize_iteminfo` round-trip on the live binary is byte-identical
+// (5,754,919 B in == out). The four drifts:
+//
+//   1. `SubItem` (structs.rs) gained `type_id == 16` — a new payload-free
+//      variant. Items that read tag 15 (None) in 1.11 now read 16; verified
+//      byte-aligned (no payload, like 14/15). Affects both SubItem sites
+//      (`drop_default_data.default_sub_item` and the item-level
+//      `default_sub_item`). 4,496 items flipped 15→16.
+//
+//   2. A new `u32` (`unk_pre_max_endurance`, always 0) was inserted between
+//      `respawn_time_seconds` and `max_endurance`. **Unconditional** (every
+//      item). 4,496 items show it cleanly (the rest carry content drift on
+//      top).
+//
+//   3. A new `u32` (`unk_pre_gimmick_visual`, always 0) was inserted between
+//      `enchant_data_list` and `gimmick_visual_prefab_data_list`, but only for
+//      **equipment** (`equip_type_info != 0`) and **gems** (`item_type == 74`
+//      / `category_info == 2501`). The discriminator partitions all 4,496
+//      cleanly-diffable common items perfectly (fp=0 fn=0; the 15 gem
+//      exceptions are exactly `item_type==74`). Modeled as a conditional field
+//      via the `=> <cond>` clause newly added to `py_binary_struct!`
+//      (read-gated, stored `Option<u32>`; write/to_py drive off Option
+//      presence — see `src/binary/mod.rs`). This is the first conditional
+//      field gated on a *sibling value* rather than a `COptional`/`CArray`
+//      length, hence the macro work.
+//
+//   4. `enchant_data_list` is no longer `CArray<EnchantData>`: 1.12 inserts a
+//      `u32` (always 0) **between** consecutive `EnchantData` elements — N
+//      elements carry N-1 separators (none before [0], none after the last).
+//      Confirmed by a per-boundary byte-walk on key=1000019's 6 enchant rows
+//      (the +4 appears only at the [1]…[5] boundaries, never before [0]).
+//      Modeled by the custom `EnchantDataList` type (structs.rs); this is why
+//      single-enchant items round-tripped fine under the 3-fix parser while
+//      multi-enchant items failed at `enchant_data_list[1].max_stat_list`.
+//
+// No save-body drift in 1.12 (slot107 / the live 1.12 save: hmac_ok, body
+// decode undecoded_bytes=0, body-stable write round-trip; format unchanged
+// v2 / flags 0x0080).
+//
 // ── ItemInfo (1.11) ─────────────────────────────────────────────────────────
 //
 // Crimson Desert 1.11 makes a single layout change relative to 1.10: a new
@@ -208,7 +255,19 @@ py_binary_struct! {
         pub unk_post_apply_drop_stat_type: u8,
         pub drop_default_data: DropDefaultData,
         pub prefab_data_list: CArray<PrefabData>,
-        pub enchant_data_list: CArray<EnchantData>,
+        // 1.12: `EnchantData` elements are now separated by a u32 (always 0);
+        // N elements carry N-1 separators. Modeled by the custom
+        // `EnchantDataList` (see structs.rs) rather than `CArray<EnchantData>`.
+        pub enchant_data_list: EnchantDataList,
+        // 1.12 inserted a new u32 here (between `enchant_data_list` and
+        // `gimmick_visual_prefab_data_list`), but only for equipment items
+        // (`equip_type_info != 0`) and gems (`item_type == 74`,
+        // `category_info == 2501`). The discriminator partitions all 4,496
+        // cleanly-diffable common items perfectly (fp=0 fn=0). Reads 0 on
+        // every sampled item; stored as `Option<u32>` (None when absent) so
+        // the byte roundtrip stays exact. Semantic role unknown — named for
+        // its position pending RE. See the "ItemInfo (1.12)" header note above.
+        pub unk_pre_gimmick_visual: u32 => equip_type_info.0 != 0 || item_type == 74,
         pub gimmick_visual_prefab_data_list: CArray<GimmickVisualPrefabData>,
         pub price_list: CArray<ItemPriceInfo>,
         pub docking_child_data: COptional<DockingChildData<'a>>,
@@ -260,6 +319,12 @@ py_binary_struct! {
         pub is_has_item_use_data_inventory_buff: u8,
         pub is_preserved_on_extract: u8,
         pub respawn_time_seconds: i64,
+        // 1.12 inserted a new u32 here (between `respawn_time_seconds` and
+        // `max_endurance`). Reads 0 on every sampled item; width pinned by
+        // the byte-perfect roundtrip on all 6,483 items. Semantic role
+        // unknown — named for its position pending RE. See the
+        // "ItemInfo (1.12)" header note above.
+        pub unk_pre_max_endurance: u32,
         pub max_endurance: u16,
         pub repair_data_list: CArray<RepairData>,
     }
