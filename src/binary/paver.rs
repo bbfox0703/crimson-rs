@@ -35,13 +35,34 @@ use crate::binary::{BinaryRead, BinaryWrite};
 /// On-disk size of `meta/0.paver`.
 pub const PAVER_SIZE: usize = 10;
 
+/// The Crimson Desert gamedata `minor` version this build's parsers
+/// (iteminfo / skill / save body + the gamedata bridges) target.
+///
+/// **Single source of truth** for "which game patch does this build support".
+/// Bump it (and [`COMPATIBLE_GAMEDATA_MINORS`]) when the parsers are validated
+/// against a new patch — that one edit is what the rolling-release flow and
+/// every downstream consumer key off. Consumers read it through the
+/// `crimson_parser_target_gamedata_minor()` C ABI instead of duplicating the
+/// number; before that bridge existed this had to be hand-bumped in lock-step
+/// on the C# side every patch (8 → 9 → 10 → 11 → 12).
+pub const PARSER_TARGET_GAMEDATA_MINOR: u16 = 12;
+
+/// Every gamedata `minor` this build's parsers can load without mis-decoding.
+///
+/// Always includes [`PARSER_TARGET_GAMEDATA_MINOR`]. Currently a single-element
+/// allow-list: 1.12 changed the iteminfo layout vs 1.11 (four schema drifts),
+/// so older minors are not byte-compatible and item-name resolution would fail
+/// against them. Widen it when a patch ships data an existing parser still
+/// reads byte-perfectly (a content-only patch, e.g. 1.06→1.07 or 1.08→1.09).
+pub const COMPATIBLE_GAMEDATA_MINORS: &[u16] = &[PARSER_TARGET_GAMEDATA_MINOR];
+
 /// Parsed version stamp from `meta/0.paver`.
 ///
 /// `(major, minor)` identifies the parser-compatible schema: callers
-/// that target a single `minor` (e.g. the iteminfo parser, currently
-/// `minor = 8`) should refuse / warn on mismatched values rather than
-/// risk a parse crash. `patch` and `build` change within a compatible
-/// minor and are informational only.
+/// that target a single `minor` (e.g. the parsers, currently
+/// [`PARSER_TARGET_GAMEDATA_MINOR`]) should refuse / warn on mismatched values
+/// rather than risk a parse crash. `patch` and `build` change within a
+/// compatible minor and are informational only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Paver {
     pub major: u16,

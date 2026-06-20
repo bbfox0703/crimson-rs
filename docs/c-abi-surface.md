@@ -62,6 +62,25 @@ PALOC display name → fuzzy match → NPC head-shot DDS path.
   undyed item" path for CrimsonAtomtic's dye editor, see
   [`dye-editor-scope.md`](dye-editor-scope.md) §v2).
 
+### Version / parser-target
+
+- `crimson_paver_read_from_file` / `crimson_paver_read_from_bytes` — decode the
+  install's `meta/0.paver` version stamp into `(major, minor, patch, build)`
+  (accepts the file path or the install root, auto-appending `meta/0.paver`).
+- `crimson_parser_target_gamedata_minor() -> u16` — the gamedata `minor` this
+  build's parsers target (currently 12). **Single source of truth**: the value
+  lives in `crate::binary::paver::PARSER_TARGET_GAMEDATA_MINOR`, so a new patch
+  is one Rust bump and every consumer follows — no more lock-step
+  `ParserTargetMinor` edits on the C# side (promoting this killed the 5th such
+  manual bump, 8→9→10→11→12). Infallible direct return (the only non-`i32`
+  surface — a pure compile-time constant has no error path).
+- `crimson_parser_compatible_gamedata_minors(out_buf, cap, out_count) -> i32` —
+  the allow-list of gamedata minors this build can load (first-call sizing:
+  `null`/`cap=0` → `BUFFER_TOO_SMALL` with `out_count`; refill at that size →
+  `OK`). Drives the consumer's `CompatibleMinors` / `IsCompatibleWithParser`;
+  the target minor is always present in the set. Both back onto
+  `crate::binary::paver::COMPATIBLE_GAMEDATA_MINORS`.
+
 ### Status & remaining work
 
 322 tests pass with `c_abi` (+43 ignored diagnostic probes); the bare-default
