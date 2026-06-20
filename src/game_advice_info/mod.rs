@@ -107,7 +107,7 @@ mod tests {
             return;
         };
         let entries = parse_game_advice_info_lossy(&pabgb, &pabgh);
-        assert_eq!(entries.len(), 470, "expected 470 rows in 1.10 (was 463 in 1.08/1.09)");
+        assert_eq!(entries.len(), 472, "expected 472 rows in 1.12 (was 470 in 1.10/1.11)");
         let by_key: std::collections::HashMap<u32, &str> =
             entries.iter().map(|e| (e.key, e.name.as_str())).collect();
         for &(k, expected) in KNOWN {

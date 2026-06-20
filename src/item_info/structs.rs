@@ -110,6 +110,156 @@ py_binary_struct! {
     }
 }
 
+// ── EnchantDataList (1.12 inter-element separator) ──────────────────────────
+//
+// Crimson Desert 1.12 inserts a `u32` (always 0) **between** consecutive
+// `EnchantData` elements — N elements carry N-1 separators (element [0] has
+// no leading separator; the last element has no trailing one). Verified by a
+// per-boundary byte-walk vs the 1.11 binary: e.g. key=1000019's 6 enchant rows
+// show the +4 only at the [1]…[5] boundaries (offsets 417/495/573/651/729),
+// never before [0] (339). This is NOT a per-element field (that would be N, and
+// would collide with the separate item-level `unk_pre_gimmick_visual` +4 that
+// equipment/gem items also carry just past the list). Semantic role unknown —
+// likely a per-pair delimiter Pearl Abyss added to the enchant table.
+//
+// Serialized to Python as a plain list of EnchantData dicts (the all-zero
+// separators are reconstructed on write), so the items.jsonl shape is
+// unchanged. The Rust round-trip stores the separators verbatim for byte
+// fidelity.
+#[derive(Debug)]
+pub struct EnchantDataList {
+    pub items: Vec<EnchantData>,
+    /// `items.len().saturating_sub(1)` separators, in element order. Always
+    /// zero on every 1.12 item observed; kept for exact byte round-trip.
+    pub separators: Vec<u32>,
+}
+
+impl<'a> BinaryRead<'a> for EnchantDataList {
+    fn read_from(data: &'a [u8], offset: &mut usize) -> io::Result<Self> {
+        let count = u32::read_from(data, offset)? as usize;
+        let remaining = data.len().saturating_sub(*offset);
+        if count > remaining {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "EnchantDataList count {} exceeds remaining bytes {} at offset {}",
+                    count, remaining, *offset,
+                ),
+            ));
+        }
+        let mut items = Vec::with_capacity(count);
+        let mut separators = Vec::with_capacity(count.saturating_sub(1));
+        for i in 0..count {
+            if i > 0 {
+                separators.push(u32::read_from(data, offset)?);
+            }
+            items.push(EnchantData::read_from(data, offset)?);
+        }
+        Ok(EnchantDataList { items, separators })
+    }
+}
+
+impl BinaryWrite for EnchantDataList {
+    fn write_to(&self, w: &mut dyn Write) -> io::Result<()> {
+        (self.items.len() as u32).write_to(w)?;
+        for (i, item) in self.items.iter().enumerate() {
+            if i > 0 {
+                // Reuse the stored separator when present; default to 0 (the
+                // only value ever observed) when the list came from Python.
+                let sep = self.separators.get(i - 1).copied().unwrap_or(0);
+                sep.write_to(w)?;
+            }
+            item.write_to(w)?;
+        }
+        Ok(())
+    }
+}
+
+impl<'a> BinaryReadTracked<'a> for EnchantDataList {
+    fn read_tracked(
+        data: &'a [u8],
+        offset: &mut usize,
+        path: &mut String,
+        ranges: &mut Vec<FieldRange>,
+    ) -> io::Result<Self> {
+        let count_start = *offset;
+        let count = u32::read_from(data, offset)? as usize;
+        let saved = crate::binary::push_path(path, "__count__");
+        ranges.push(FieldRange {
+            path: path.clone(),
+            start: count_start,
+            end: *offset,
+            ty: "EnchantDataList.count",
+        });
+        crate::binary::pop_path(path, saved);
+
+        let remaining = data.len().saturating_sub(*offset);
+        if count > remaining {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "EnchantDataList count {} exceeds remaining bytes {} at offset {}",
+                    count, remaining, *offset,
+                ),
+            ));
+        }
+
+        let mut items = Vec::with_capacity(count);
+        let mut separators = Vec::with_capacity(count.saturating_sub(1));
+        for i in 0..count {
+            if i > 0 {
+                let sep_start = *offset;
+                let sep = u32::read_from(data, offset)?;
+                let saved = crate::binary::push_index(path, i);
+                let saved2 = crate::binary::push_path(path, "__sep__");
+                ranges.push(FieldRange {
+                    path: path.clone(),
+                    start: sep_start,
+                    end: *offset,
+                    ty: "EnchantDataList.sep",
+                });
+                crate::binary::pop_path(path, saved2);
+                crate::binary::pop_path(path, saved);
+                separators.push(sep);
+            }
+            let saved = crate::binary::push_index(path, i);
+            items.push(EnchantData::read_tracked(data, offset, path, ranges)?);
+            crate::binary::pop_path(path, saved);
+        }
+        Ok(EnchantDataList { items, separators })
+    }
+}
+
+#[cfg(feature = "python")]
+impl ToPyValue for EnchantDataList {
+    fn to_py_value(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        use pyo3::types::{PyList, PyListMethods};
+        let list = PyList::empty(py);
+        for item in &self.items {
+            list.append(item.to_py_value(py)?)?;
+        }
+        Ok(list.into_any().unbind())
+    }
+}
+
+#[cfg(feature = "python")]
+impl WritePyValue for EnchantDataList {
+    fn write_from_py(w: &mut Vec<u8>, obj: &Bound<'_, PyAny>) -> PyResult<()> {
+        use pyo3::types::{PyList, PyListMethods};
+        let list = obj.cast::<PyList>()?;
+        let n = list.len();
+        w.extend_from_slice(&(n as u32).to_le_bytes());
+        for (i, item) in list.iter().enumerate() {
+            if i > 0 {
+                // All observed separators are 0; reconstruct them on write.
+                w.extend_from_slice(&0u32.to_le_bytes());
+            }
+            EnchantData::write_from_py(w, &item)?;
+        }
+        Ok(())
+    }
+}
+
 py_binary_struct! {
     pub struct GimmickVisualPrefabData {
         pub tag_name_hash: u32,
@@ -325,7 +475,10 @@ impl<'a> BinaryRead<'a> for SubItem {
             9 => SubItemValue::Gimmick(GimmickInfoKey::read_from(data, offset)?),
             // Crimson Desert 1.05: tag 15 is a new "None"-style variant
             // (no payload), seen alongside the existing tag 14.
-            14 | 15 => SubItemValue::None,
+            // 1.12: tag 16 — items that read tag 15 (None) in 1.11 now read
+            // tag 16; still payload-free (verified byte-aligned vs 1.11), so
+            // it joins the None arm. Affects both SubItem sites.
+            14..=16 => SubItemValue::None,
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -353,7 +506,7 @@ impl<'a> BinaryReadTracked<'a> for SubItem {
             0 => SubItemValue::Item(ItemKey::read_tracked(data, offset, path, ranges)?),
             3 => SubItemValue::Character(CharacterKey::read_tracked(data, offset, path, ranges)?),
             9 => SubItemValue::Gimmick(GimmickInfoKey::read_tracked(data, offset, path, ranges)?),
-            14 | 15 => SubItemValue::None,
+            14..=16 => SubItemValue::None,
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -404,7 +557,7 @@ impl WritePyValue for SubItem {
                 let v: u32 = get_field(d, "value")?.extract()?;
                 w.extend_from_slice(&v.to_le_bytes());
             }
-            14 | 15 => {}
+            14..=16 => {}
             _ => {
                 return Err(PyValueError::new_err(format!(
                     "invalid SubItem type_id: {}",

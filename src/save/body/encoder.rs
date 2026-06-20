@@ -64,9 +64,14 @@ use super::object::{
 /// `payload_offset` values point at the new wrapper-end locations.
 pub fn encode_top_level_block(block: &ObjectBlock, block_data_offset: u32) -> io::Result<Vec<u8>> {
     let mut out = Vec::with_capacity(block.data_size as usize);
+    // Byte ranges in `out` that were emitted verbatim as `trailing_pad`
+    // — the only regions that can carry an undecoded, stale wrapper
+    // `payload_offset`. Collected during the field walk so the relocation
+    // pass can be confined to them (see `relocate_trailing_pad_offsets`).
+    let mut pad_ranges: Vec<(usize, usize)> = Vec::new();
     write_block_header(&mut out, block);
-    write_block_fields(&mut out, block, block_data_offset)?;
-    relocate_trailing_pad_offsets(&mut out, block.data_offset, block_data_offset);
+    write_block_fields(&mut out, block, block_data_offset, &mut pad_ranges)?;
+    relocate_trailing_pad_offsets(&mut out, block.data_offset, block_data_offset, &pad_ranges);
     Ok(out)
 }
 
@@ -83,23 +88,41 @@ pub fn encode_top_level_block(block: &ObjectBlock, block_data_offset: u32) -> io
 /// crashes. We rewrite any u32 that matches that stale self-reference to the
 /// new position (`new_off + p + 4`).
 ///
-/// This is a safety net independent of how the surrounding bytes were decoded,
-/// so it covers every `_reviveQuestList` micro-variant (decoded or not). It is
-/// a no-op when the block didn't move (`old_off == new_off`), so unmodified
-/// round-trips stay byte-identical. Correctly relocated wrappers (written by
-/// `encode_list_element_wrapper` at `new_off + p + 4`) never match the stale
-/// `old_off + p + 4` test, so they're left alone. A non-offset u32 that
-/// coincidentally equals `old_off + p + 4` is, by definition, already a valid
-/// self-reference, so rewriting it to `new_off + p + 4` is harmless.
-fn relocate_trailing_pad_offsets(out: &mut [u8], old_off: u32, new_off: u32) {
-    if old_off == new_off || out.len() < 4 {
+/// **Scope: `pad_ranges` only.** The scan is confined to the byte ranges that
+/// the field walk emitted verbatim as `trailing_pad` — never decoded field
+/// content. Decoded wrapper offsets are already recomputed for the new
+/// position by `encode_locator_field` / `encode_list_element_wrapper`, so they
+/// don't need this pass; scanning over them only risks a false positive. A
+/// fully-decoded scalar / count / hash u32 can coincidentally equal
+/// `old_off + p + 4` (e.g. a `StoreItemSaveData` field whose constant value
+/// `0x000C0000` lands exactly 4 bytes past its own absolute position after a
+/// block shift); rewriting it to `new_off + p + 4` would silently corrupt
+/// content, desync the decoder, and grow the block on re-encode. Restricting
+/// the pass to `trailing_pad` — the only region that can legitimately hold an
+/// undecoded, stale offset — eliminates that whole class of false positive.
+///
+/// A no-op when the block didn't move (`old_off == new_off`), so unmodified
+/// round-trips stay byte-identical.
+fn relocate_trailing_pad_offsets(
+    out: &mut [u8],
+    old_off: u32,
+    new_off: u32,
+    pad_ranges: &[(usize, usize)],
+) {
+    if old_off == new_off {
         return;
     }
-    for p in 0..=out.len() - 4 {
-        let v = u32::from_le_bytes(out[p..p + 4].try_into().unwrap());
-        if v == old_off.wrapping_add(p as u32).wrapping_add(4) {
-            let nv = new_off.wrapping_add(p as u32).wrapping_add(4);
-            out[p..p + 4].copy_from_slice(&nv.to_le_bytes());
+    for &(start, end) in pad_ranges {
+        let end = end.min(out.len());
+        if end < start + 4 {
+            continue;
+        }
+        for p in start..=end - 4 {
+            let v = u32::from_le_bytes(out[p..p + 4].try_into().unwrap());
+            if v == old_off.wrapping_add(p as u32).wrapping_add(4) {
+                let nv = new_off.wrapping_add(p as u32).wrapping_add(4);
+                out[p..p + 4].copy_from_slice(&nv.to_le_bytes());
+            }
         }
     }
 }
@@ -228,27 +251,43 @@ fn write_block_header(out: &mut Vec<u8>, block: &ObjectBlock) {
     write_u32(out, block.reserved_u32);
 }
 
-fn write_block_fields(out: &mut Vec<u8>, block: &ObjectBlock, block_data_offset: u32) -> io::Result<()> {
+fn write_block_fields(
+    out: &mut Vec<u8>,
+    block: &ObjectBlock,
+    block_data_offset: u32,
+    pad_ranges: &mut Vec<(usize, usize)>,
+) -> io::Result<()> {
     // Forward pass: emit every field except FixedSuffix in index order.
     for field in &block.fields {
         if field.kind == FieldKind::FixedSuffix {
             continue;
         }
-        encode_field(out, field, block_data_offset)?;
+        encode_field(out, field, block_data_offset, pad_ranges)?;
     }
     // Trailing pad sits between forward fields and the reverse-peeled tail.
+    // Record its range so the relocation pass can scan it (it may carry an
+    // undecoded wrapper offset) without touching decoded field content.
+    let pad_start = out.len();
     out.extend_from_slice(&block.trailing_pad);
+    if !block.trailing_pad.is_empty() {
+        pad_ranges.push((pad_start, out.len()));
+    }
     // Reverse pass: emit FixedSuffix fields in index order.
     for field in &block.fields {
         if field.kind != FieldKind::FixedSuffix {
             continue;
         }
-        encode_field(out, field, block_data_offset)?;
+        encode_field(out, field, block_data_offset, pad_ranges)?;
     }
     Ok(())
 }
 
-fn encode_field(out: &mut Vec<u8>, field: &DecodedField, block_data_offset: u32) -> io::Result<()> {
+fn encode_field(
+    out: &mut Vec<u8>,
+    field: &DecodedField,
+    block_data_offset: u32,
+    pad_ranges: &mut Vec<(usize, usize)>,
+) -> io::Result<()> {
     match field.kind {
         FieldKind::Absent | FieldKind::Unknown => Ok(()),
         FieldKind::FixedPrefix | FieldKind::FixedSuffix => match &field.value {
@@ -295,7 +334,7 @@ fn encode_field(out: &mut Vec<u8>, field: &DecodedField, block_data_offset: u32)
                 ),
             )),
         },
-        FieldKind::ObjectLocator => encode_locator_field(out, field, block_data_offset),
+        FieldKind::ObjectLocator => encode_locator_field(out, field, block_data_offset, pad_ranges),
         FieldKind::ObjectList => match &field.value {
             FieldValue::ObjectList {
                 header_bytes,
@@ -304,7 +343,7 @@ fn encode_field(out: &mut Vec<u8>, field: &DecodedField, block_data_offset: u32)
             } => {
                 out.extend_from_slice(header_bytes);
                 for element in elements {
-                    encode_list_element(out, element, block_data_offset)?;
+                    encode_list_element(out, element, block_data_offset, pad_ranges)?;
                 }
                 Ok(())
             }
@@ -316,7 +355,12 @@ fn encode_field(out: &mut Vec<u8>, field: &DecodedField, block_data_offset: u32)
     }
 }
 
-fn encode_locator_field(out: &mut Vec<u8>, field: &DecodedField, block_data_offset: u32) -> io::Result<()> {
+fn encode_locator_field(
+    out: &mut Vec<u8>,
+    field: &DecodedField,
+    block_data_offset: u32,
+    pad_ranges: &mut Vec<(usize, usize)>,
+) -> io::Result<()> {
     let FieldValue::Locator {
         child_type_index,
         child_reserved,
@@ -336,7 +380,14 @@ fn encode_locator_field(out: &mut Vec<u8>, field: &DecodedField, block_data_offs
         ));
     };
     // Kind 5 locators may have 0..=8 prefix bytes ahead of the wrapper.
+    // These are emitted verbatim (the decoder never interpreted them), so
+    // like `trailing_pad` they may hide a stale self-referential offset —
+    // record the range for the relocation pass.
+    let prefix_start = out.len();
     out.extend_from_slice(wrapper_prefix);
+    if !wrapper_prefix.is_empty() {
+        pad_ranges.push((prefix_start, out.len()));
+    }
     // We need the child mask + mbc to emit the wrapper. The decoder always
     // populates them on the child block (when child is Some). For empty
     // locators (child = None), we have no mask bytes to emit — that would
@@ -389,12 +440,17 @@ fn encode_locator_field(out: &mut Vec<u8>, field: &DecodedField, block_data_offs
     let field_len = field.end.saturating_sub(field.start);
     if field_len > wrapper_size {
         // Inline child payload follows. Emit it.
-        encode_inline_payload(out, child_block, block_data_offset)?;
+        encode_inline_payload(out, child_block, block_data_offset, pad_ranges)?;
     }
     Ok(())
 }
 
-fn encode_list_element(out: &mut Vec<u8>, element: &ObjectBlock, block_data_offset: u32) -> io::Result<()> {
+fn encode_list_element(
+    out: &mut Vec<u8>,
+    element: &ObjectBlock,
+    block_data_offset: u32,
+    pad_ranges: &mut Vec<(usize, usize)>,
+) -> io::Result<()> {
     let wrapper = element.locator_wrapper.as_ref().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -405,7 +461,7 @@ fn encode_list_element(out: &mut Vec<u8>, element: &ObjectBlock, block_data_offs
         )
     })?;
     encode_list_element_wrapper(out, element, wrapper, block_data_offset);
-    encode_inline_payload(out, element, block_data_offset)
+    encode_inline_payload(out, element, block_data_offset, pad_ranges)
 }
 
 fn encode_list_element_wrapper(
@@ -436,22 +492,39 @@ fn encode_list_element_wrapper(
 /// claim under any field — captured on the child block as `trailing_pad`
 /// so the encoder can splat them back here (no field ownership for them,
 /// but they need to round-trip).
-fn encode_inline_payload(out: &mut Vec<u8>, child: &ObjectBlock, block_data_offset: u32) -> io::Result<()> {
+fn encode_inline_payload(
+    out: &mut Vec<u8>,
+    child: &ObjectBlock,
+    block_data_offset: u32,
+    pad_ranges: &mut Vec<(usize, usize)>,
+) -> io::Result<()> {
     let payload_start = out.len();
     write_u32(out, child.reserved_u32);
-    write_inline_payload_fields(out, child, block_data_offset)?;
+    write_inline_payload_fields(out, child, block_data_offset, pad_ranges)?;
+    // The inline-payload pad is the un-capped region that carries the
+    // `_reviveQuestList` hidden object_list's wrapper offset — record it so
+    // the relocation pass can fix that offset (and only it) on a block move.
+    let pad_start = out.len();
     out.extend_from_slice(&child.trailing_pad);
+    if !child.trailing_pad.is_empty() {
+        pad_ranges.push((pad_start, out.len()));
+    }
     let trailing_size = (out.len() - payload_start) as u32;
     write_u32(out, trailing_size);
     Ok(())
 }
 
-fn write_inline_payload_fields(out: &mut Vec<u8>, child: &ObjectBlock, block_data_offset: u32) -> io::Result<()> {
+fn write_inline_payload_fields(
+    out: &mut Vec<u8>,
+    child: &ObjectBlock,
+    block_data_offset: u32,
+    pad_ranges: &mut Vec<(usize, usize)>,
+) -> io::Result<()> {
     // Inline payload field walk is FORWARD-ONLY (no reverse pass) — see
     // decoder::decode_inline_object_payload. So no FixedSuffix handling,
     // no trailing_pad split; just walk fields in order.
     for field in &child.fields {
-        encode_field(out, field, block_data_offset)?;
+        encode_field(out, field, block_data_offset, pad_ranges)?;
     }
     Ok(())
 }

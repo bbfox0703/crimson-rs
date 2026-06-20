@@ -518,12 +518,12 @@ mod tests {
             .filter(|p| p.is_dir())
             .collect();
         user_dirs.sort();
+        // Prefer slot107 — the current Crimson Desert 1.12 save — so the
+        // save tests validate against the live latest-patch format.
         for user_path in &user_dirs {
-            for slot in ["slot0", "slot1", "slot2"] {
-                let path = user_path.join(slot).join("save.save");
-                if let Ok(data) = std::fs::read(&path) {
-                    return Some((path, data));
-                }
+            let path = user_path.join("slot107").join("save.save");
+            if let Ok(data) = std::fs::read(&path) {
+                return Some((path, data));
             }
         }
         for user_path in &user_dirs {

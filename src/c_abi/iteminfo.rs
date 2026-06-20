@@ -2594,8 +2594,8 @@ mod tests {
             }
         }
         assert_eq!(
-            visible, 950,
-            "IS_EQUIP_QUICK_SLOT_VISIBLE count drifted (1.10 baseline 950; was 949 on 1.08/1.09)",
+            visible, 970,
+            "IS_EQUIP_QUICK_SLOT_VISIBLE count drifted (1.12 baseline 970; was 950 on 1.10/1.11, 949 on 1.08/1.09)",
         );
 
         // ── Negative path: unknown key → NOT_FOUND ─────────────────
