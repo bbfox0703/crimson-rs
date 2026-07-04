@@ -79,6 +79,32 @@ pub struct PartPrefabDyeSlot {
     /// the LAST slot in a row: the full `.pac` asset path for the
     /// prefab as a whole.
     pub tail_name: String,
+    /// 1.13: additional material/dye layers for this slot. The 5-byte
+    /// per-slot field that 1.12 blindly padded (`u8 0xFF` + `u32`) is
+    /// actually `marker + extra_layer_count`; 1.12's count is always 0,
+    /// but 1.13's "expanded dyeable" gear (new cloaks / shields / quivers
+    /// / the skullknight set) sets it to 1, adding a second dye layer
+    /// here. Empty on 1.07-1.12 rows. Surfaced through the
+    /// `crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_*` C ABI.
+    pub extra_layers: Vec<DyeExtraLayer>,
+}
+
+/// 1.13: a secondary material/dye layer inside a [`PartPrefabDyeSlot`]
+/// (see `PartPrefabDyeSlot::extra_layers`). Same shape as the slot's
+/// primary layer minus the mesh tail: three default-material names, three
+/// mask bytes, and a trailing flag byte. Surfaced through the
+/// `crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_*` C ABI.
+#[derive(Debug, Clone)]
+pub struct DyeExtraLayer {
+    /// Three default-material names for this extra layer (e.g. the
+    /// `"leather"` layer paired with the primary `"cloth"` layer on the
+    /// new dyeable cloaks).
+    pub default_materials: [String; 3],
+    /// Three mask bytes for the extra layer (same semantics as the
+    /// primary slot `mask`).
+    pub mask: [u8; 3],
+    /// Trailing flag byte (0/1 observed; exact meaning not yet RE'd).
+    pub flag: u8,
 }
 
 /// One parsed `partprefabdyeslotinfo` row.
@@ -149,15 +175,50 @@ fn parse_slot(body: &[u8], cursor: &mut usize, new_schema: bool) -> Option<PartP
     let mask = [body[*cursor], body[*cursor + 1], body[*cursor + 2]];
     *cursor += 3;
 
+    let mut extra_layers: Vec<DyeExtraLayer> = Vec::new();
     if new_schema {
-        // 1.12 inserted a 5-byte per-slot field here (a `u8` + a `u32`,
-        // observed uniformly `(0xFF, 0)` on all 3,893 live slots —
-        // semantics not yet RE'd). Consume it; nothing downstream reads
-        // it, and there's no serializer for this read-only table.
+        // 1.12 introduced a per-slot `u8 marker (0xFF) + u32` here. What
+        // looked like a uniform `(0xFF, 0)` 5-byte pad in 1.12 is actually
+        // `marker + extra_layer_count`: 1.12's count is always 0, but
+        // 1.13's "expanded dyeable" gear sets it to 1, adding a second
+        // material/dye layer inline (RE'd 2026-07-04 via
+        // `scripts/decode_dyeslot_113.py`; enhanced model consumes all
+        // 1,538 live 1.13 rows exactly). 1.07-1.11 rows have no such field
+        // and are handled by the `new_schema == false` fallback.
         if *cursor + 5 > body.len() {
             return None;
         }
+        // body[*cursor] is the 0xFF marker; not stored.
+        let extra_count = u32::from_le_bytes([
+            body[*cursor + 1],
+            body[*cursor + 2],
+            body[*cursor + 3],
+            body[*cursor + 4],
+        ]) as usize;
         *cursor += 5;
+        // Plausibility cap — only 0 (1.07-1.12) and 1 (1.13) observed; a
+        // large value means we're mis-reading a 1.07-1.11 row under the
+        // wrong layout, so reject and let the caller fall back.
+        if extra_count > 8 {
+            return None;
+        }
+        extra_layers.reserve(extra_count);
+        for _ in 0..extra_count {
+            let e_a = read_cstring(body, cursor)?;
+            let e_b = read_cstring(body, cursor)?;
+            let e_c = read_cstring(body, cursor)?;
+            if *cursor + 4 > body.len() {
+                return None;
+            }
+            let e_mask = [body[*cursor], body[*cursor + 1], body[*cursor + 2]];
+            let e_flag = body[*cursor + 3];
+            *cursor += 4;
+            extra_layers.push(DyeExtraLayer {
+                default_materials: [e_a, e_b, e_c],
+                mask: e_mask,
+                flag: e_flag,
+            });
+        }
     }
 
     let tail_name = read_cstring(body, cursor)?;
@@ -167,6 +228,7 @@ fn parse_slot(body: &[u8], cursor: &mut usize, new_schema: bool) -> Option<PartP
         default_materials: [mat_a, mat_b, mat_c],
         mask,
         tail_name,
+        extra_layers,
     })
 }
 
@@ -247,6 +309,12 @@ pub fn parse_part_prefab_dye_slot_info_lossy(
         };
         // 1.12 layout, then the 1.07-1.11 layout. Whichever consumes the
         // body exactly wins; both failing drops the row (the lossy net).
+        // 1.12/1.13 layout first (new_schema — the per-slot marker + extra
+        // layer count; see parse_slot), then the 1.07-1.11 layout. Whichever
+        // consumes the body exactly wins; both failing drops the row (the
+        // lossy net). On the live 1.13 install this parses all 1,538 rows —
+        // the 9 new "expanded dyeable" gear rows that the old blind-5-byte-pad
+        // model dropped now read their second dye layer (RE 2026-07-04).
         if let Some(parsed) = try_parse_row(body, entry.key, true)
             .or_else(|| try_parse_row(body, entry.key, false))
         {
@@ -333,15 +401,17 @@ mod tests {
         let entries = parse_part_prefab_dye_slot_info_lossy(&pabgb, &pabgh);
         println!(
             "parsed {} partprefabdyeslotinfo entries from {} pabgb bytes \
-             (live 1.12 ships 968 rows; 1.07-1.11 shipped ~1105-1111)",
+             (live 1.13 ships 1,538 rows; 1.12 = 968; 1.07-1.11 = ~1105-1111)",
             entries.len(),
             pabgb.len()
         );
-        // 1.12 has 968 rows; 1.07-1.11 had ~1105-1111. Pin >=900 as a
-        // version-agnostic floor that still catches the 0-rows breakage.
+        // Row counts drift per patch: 1.13 = 1,538, 1.12 = 968, 1.07-1.11 =
+        // ~1105-1111. Pin >=900 as a version-agnostic floor that catches the
+        // 0-rows breakage on any install; the live-1.13 exact count (1,538,
+        // all rows parsing after the extra-layer RE) is asserted below.
         assert!(
             entries.len() >= 900,
-            "expected >=900 partprefabdyeslotinfo entries (live 1.12 = 968), got {}",
+            "expected >=900 partprefabdyeslotinfo entries, got {}",
             entries.len()
         );
 
@@ -418,5 +488,23 @@ mod tests {
             any_known_material,
             "expected at least one cloth/leather/metal material in vest row's slots",
         );
+
+        // 1.13: the "expanded dyeable equipment" gear gained a second per-slot
+        // dye layer. Key 0x54534e48 (cd_phm_00_cloak_0054_01_01_01) was dropped
+        // entirely under the pre-1.13 blind-5-byte-pad model; verify it now
+        // parses AND that one of its slots carries an extra layer whose
+        // materials include "leather" (paired with the primary "cloth" layer).
+        // Guarded so non-1.13 installs (where the key is absent) don't fail.
+        if let Some(cloak) = entries.iter().find(|e| e.key == 0x54534e48) {
+            let extra_leather = cloak.slots.iter().any(|s| {
+                s.extra_layers
+                    .iter()
+                    .any(|l| l.default_materials.iter().any(|m| m == "leather"))
+            });
+            assert!(
+                extra_leather,
+                "1.13 cloak 0x54534e48 should carry a second dye layer with a 'leather' material",
+            );
+        }
     }
 }

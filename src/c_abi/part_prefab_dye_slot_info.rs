@@ -13,6 +13,10 @@
 //!   arrays for advanced UI / debugging.
 //! - `lookup_slot_tail_name` — next sub-prefab name (or, for the
 //!   LAST slot in a row, the full `.pac` asset path).
+//! - `lookup_slot_extra_layer_count` / `..._extra_layer_material` /
+//!   `..._extra_layer_mask` / `..._extra_layer_flag` — 1.13's second
+//!   per-slot dye layer ("expanded dyeable equipment"; 0 layers on
+//!   1.07-1.12 rows, 1 on the new dyeable gear).
 //!
 //! The cross-reference between an `_itemKey` and its `PartPrefabKey`
 //! is NOT in this file — it lives in `iteminfo.pabgb` (or a sibling
@@ -370,6 +374,163 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_mask(
     .unwrap_or(error::PANIC)
 }
 
+// ── Per-slot extra-layer getters (1.13) ─────────────────────────────────────
+//
+// 1.13's "expanded dyeable equipment" gave some slots a **second** material/dye
+// layer (see `crate::part_prefab_dye_slot_info::DyeExtraLayer`). These getters
+// expose it alongside the primary-layer getters above. `extra_layer_count` is
+// 0 on every 1.07-1.12 slot and on most 1.13 slots; the new dyeable gear
+// reports 1.
+
+/// Number of extra (secondary) dye layers on `slot_idx`. 0 on 1.07-1.12
+/// rows and on unaffected 1.13 slots; 1 for the new dyeable gear.
+///
+/// # Safety
+/// `handle` and `out_count` must be non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_count(
+    handle: *const CrimsonPartPrefabDyeSlotInfoHandle,
+    prefab_key: u32,
+    slot_idx: u32,
+    out_count: *mut u32,
+) -> i32 {
+    if handle.is_null() || out_count.is_null() {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_count = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let Some(row) = h.by_key.get(&prefab_key) else {
+            return error::NOT_FOUND;
+        };
+        let Some(slot) = row.slots.get(slot_idx as usize) else {
+            return error::OUT_OF_RANGE;
+        };
+        unsafe { *out_count = slot.extra_layers.len() as u32 };
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Default material name for extra layer `layer_idx`'s `mat_idx` channel
+/// (`mat_idx ∈ {0, 1, 2}`) on `slot_idx`. Same value shape as the primary
+/// [`crimson_part_prefab_dye_slot_info_lookup_slot_default_material`] —
+/// common non-empty values are `"cloth"` / `"leather"` / `"metal"`.
+///
+/// # Safety
+/// `handle` and `required` must be non-null; `buf` may be null iff
+/// `buf_len == 0`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_material(
+    handle: *const CrimsonPartPrefabDyeSlotInfoHandle,
+    prefab_key: u32,
+    slot_idx: u32,
+    layer_idx: u32,
+    mat_idx: u32,
+    buf: *mut u8,
+    buf_len: usize,
+    required: *mut usize,
+) -> i32 {
+    if handle.is_null() || required.is_null() {
+        return error::NULL_ARG;
+    }
+    if buf.is_null() && buf_len != 0 {
+        return error::NULL_ARG;
+    }
+    unsafe { *required = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let Some(row) = h.by_key.get(&prefab_key) else {
+            return error::NOT_FOUND;
+        };
+        let Some(slot) = row.slots.get(slot_idx as usize) else {
+            return error::OUT_OF_RANGE;
+        };
+        let Some(layer) = slot.extra_layers.get(layer_idx as usize) else {
+            return error::OUT_OF_RANGE;
+        };
+        if mat_idx >= 3 {
+            return error::OUT_OF_RANGE;
+        }
+        write_str_to_buf(
+            layer.default_materials[mat_idx as usize].as_str(),
+            buf,
+            buf_len,
+            required,
+        )
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Read extra layer `layer_idx`'s 3 mask bytes on `slot_idx` into
+/// `out_mask[0..3]`.
+///
+/// # Safety
+/// `handle` and `out_mask` must be non-null; `out_mask` must point to
+/// 3 writable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_mask(
+    handle: *const CrimsonPartPrefabDyeSlotInfoHandle,
+    prefab_key: u32,
+    slot_idx: u32,
+    layer_idx: u32,
+    out_mask: *mut u8,
+) -> i32 {
+    if handle.is_null() || out_mask.is_null() {
+        return error::NULL_ARG;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let Some(row) = h.by_key.get(&prefab_key) else {
+            return error::NOT_FOUND;
+        };
+        let Some(slot) = row.slots.get(slot_idx as usize) else {
+            return error::OUT_OF_RANGE;
+        };
+        let Some(layer) = slot.extra_layers.get(layer_idx as usize) else {
+            return error::OUT_OF_RANGE;
+        };
+        unsafe {
+            std::ptr::copy_nonoverlapping(layer.mask.as_ptr(), out_mask, 3);
+        }
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Read extra layer `layer_idx`'s trailing flag byte on `slot_idx`.
+///
+/// # Safety
+/// `handle` and `out_flag` must be non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_flag(
+    handle: *const CrimsonPartPrefabDyeSlotInfoHandle,
+    prefab_key: u32,
+    slot_idx: u32,
+    layer_idx: u32,
+    out_flag: *mut u8,
+) -> i32 {
+    if handle.is_null() || out_flag.is_null() {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_flag = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let Some(row) = h.by_key.get(&prefab_key) else {
+            return error::NOT_FOUND;
+        };
+        let Some(slot) = row.slots.get(slot_idx as usize) else {
+            return error::OUT_OF_RANGE;
+        };
+        let Some(layer) = slot.extra_layers.get(layer_idx as usize) else {
+            return error::OUT_OF_RANGE;
+        };
+        unsafe { *out_flag = layer.flag };
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
 // ── Enumeration ────────────────────────────────────────────────────────────
 
 /// Read the prefab key at insertion index `idx` (PABGH on-disk order).
@@ -671,6 +832,105 @@ mod tests {
             },
             error::OUT_OF_RANGE
         );
+
+        // 1.13 extra-layer getters. The 1.12 vest row has 0 extra layers on
+        // slot 0; the new 1.13 cloak 0x54534e48 has a slot with 1 extra layer
+        // whose materials include "leather". Guard the 1.13 key so older
+        // installs (where it's absent) don't fail.
+        let mut xc: u32 = 99;
+        assert_eq!(
+            unsafe {
+                crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_count(
+                    h, vest, 0, &mut xc,
+                )
+            },
+            error::OK
+        );
+        assert_eq!(xc, 0, "1.12 vest slot 0 should have 0 extra layers");
+
+        let cloak = 0x54534e48u32;
+        let mut probe: u32 = 0;
+        let cloak_present = unsafe {
+            crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_count(
+                h, cloak, 0, &mut probe,
+            )
+        } == error::OK;
+        if cloak_present {
+            let mut sc: u32 = 0;
+            unsafe {
+                crimson_part_prefab_dye_slot_info_lookup_slot_count(h, cloak, &mut sc)
+            };
+            let mut layered_slot: Option<u32> = None;
+            let mut found_leather = false;
+            for s in 0..sc {
+                let mut n: u32 = 0;
+                unsafe {
+                    crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_count(
+                        h, cloak, s, &mut n,
+                    )
+                };
+                if n >= 1 {
+                    layered_slot = Some(s);
+                    for m in 0..3 {
+                        let mut req: usize = 0;
+                        let rc_size = unsafe {
+                            crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_material(
+                                h, cloak, s, 0, m, ptr::null_mut(), 0, &mut req,
+                            )
+                        };
+                        if req <= 1 {
+                            continue;
+                        }
+                        let mat = read_string_result(rc_size, req, |b, nn, r| unsafe {
+                            crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_material(
+                                h, cloak, s, 0, m, b, nn, r,
+                            )
+                        });
+                        if mat == "leather" {
+                            found_leather = true;
+                        }
+                    }
+                }
+            }
+            let s = layered_slot.expect("1.13 cloak 0x54534e48 should have a slot with an extra layer");
+            assert!(
+                found_leather,
+                "1.13 cloak 0x54534e48 extra layer should expose a 'leather' material",
+            );
+            // mask + flag getters on the extra layer return OK.
+            let mut xmask = [0u8; 3];
+            assert_eq!(
+                unsafe {
+                    crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_mask(
+                        h,
+                        cloak,
+                        s,
+                        0,
+                        xmask.as_mut_ptr(),
+                    )
+                },
+                error::OK
+            );
+            let mut xflag: u8 = 0;
+            assert_eq!(
+                unsafe {
+                    crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_flag(
+                        h, cloak, s, 0, &mut xflag,
+                    )
+                },
+                error::OK
+            );
+            // layer_idx past the extra-layer count is OUT_OF_RANGE.
+            let mut xf2: u8 = 0;
+            assert_eq!(
+                unsafe {
+                    crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_flag(
+                        h, cloak, s, 99, &mut xf2,
+                    )
+                },
+                error::OUT_OF_RANGE
+            );
+        }
 
         unsafe { crimson_part_prefab_dye_slot_info_free(h) };
     }

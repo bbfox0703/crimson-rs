@@ -45,15 +45,17 @@ pub const PAVER_SIZE: usize = 10;
 /// `crimson_parser_target_gamedata_minor()` C ABI instead of duplicating the
 /// number; before that bridge existed this had to be hand-bumped in lock-step
 /// on the C# side every patch (8 → 9 → 10 → 11 → 12).
-pub const PARSER_TARGET_GAMEDATA_MINOR: u16 = 12;
+pub const PARSER_TARGET_GAMEDATA_MINOR: u16 = 13;
 
 /// Every gamedata `minor` this build's parsers can load without mis-decoding.
 ///
 /// Always includes [`PARSER_TARGET_GAMEDATA_MINOR`]. Currently a single-element
-/// allow-list: 1.12 changed the iteminfo layout vs 1.11 (four schema drifts),
-/// so older minors are not byte-compatible and item-name resolution would fail
-/// against them. Widen it when a patch ships data an existing parser still
-/// reads byte-perfectly (a content-only patch, e.g. 1.06→1.07 or 1.08→1.09).
+/// allow-list: 1.13 restructured the iteminfo layout vs 1.12 (SubItem `type_id
+/// 17`; `prefab_data_list` + `gimmick_visual_prefab_data_list` merged into one
+/// list relocated to the item end), so older minors are not byte-compatible and
+/// item-name resolution would fail against them. Widen it when a patch ships
+/// data an existing parser still reads byte-perfectly (a content-only patch,
+/// e.g. 1.06→1.07 or 1.08→1.09).
 pub const COMPATIBLE_GAMEDATA_MINORS: &[u16] = &[PARSER_TARGET_GAMEDATA_MINOR];
 
 /// Parsed version stamp from `meta/0.paver`.

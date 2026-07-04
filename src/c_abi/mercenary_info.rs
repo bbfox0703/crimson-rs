@@ -357,7 +357,7 @@ mod tests {
             unsafe { crimson_mercenary_info_entry_count(sh, &mut count) },
             error::OK
         );
-        assert_eq!(count, 18, "expected exactly 18 mercenaryinfo rows in 1.07");
+        assert_eq!(count, 19, "expected exactly 19 mercenaryinfo rows in 1.13 (was 18 through 1.12)");
 
         for &(key, expected) in KNOWN {
             let mut req: usize = 0;

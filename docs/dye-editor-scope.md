@@ -176,6 +176,47 @@ layout per row, keeping older-install support while reading the live
 Verified byte-perfect across the full live 1.12 table 2026-06-19. (Peak
 1.12 `slot_count` is 36, for vehicle/robot meshes, vs ~30 in 1.07-1.11.)
 
+#### Cross-version drift (1.13) — RESOLVED
+
+1.13's patch note "擴大了可染色裝備的範圍 / expanded the range of dyeable
+equipment" grew the table **968 → 1,538 keys** and refined the per-slot
+record layout for the new gear. **Root cause:** what looked like a uniform
+`(0xFF, 0)` **5-byte pad** in 1.12 (blindly skipped) is actually
+`u8 marker (0xFF) + u32 extra_layer_count`. 1.12's count is always 0, but
+1.13's new dyeable gear sets it to **1**, adding a **second material/dye
+layer** inline before the slot's tail:
+
+```
+Slot (new_schema, 1.12+) =
+    u8[3] mat_indices
+    CString × 3    default_materials (primary layer)
+    u8[3] mask
+    u8    marker (0xFF)
+    u32   extra_layer_count            // 0 in 1.07-1.12; 1 for new 1.13 gear
+    extra_layer_count × ExtraLayer
+    CString tail_name                  // next sub-prefab name, or the .pac path
+ExtraLayer =
+    CString × 3    default_materials (secondary layer, e.g. "leather")
+    u8[3] mask
+    u8    flag
+```
+
+The 9 rows that the old blind-pad model dropped — the new cloaks / kite-
+& tower-shields / quivers / the `cd_m0001` skullknight set (keys
+`0x54534e48`, `0xe0bffb36`, `0xb2cc6efa`, `0x625369c0`, `0x8cba6493`,
+`0x199ceacd`, `0xac8a6ab6`, `0xbffdd4e0`, `0x5ed0a80e`) — now parse, and
+the second layer is surfaced through the new
+[`PartPrefabDyeSlot::extra_layers`](../src/part_prefab_dye_slot_info/mod.rs)
+(`Vec<DyeExtraLayer>`, empty on 1.07-1.12 rows). The change is a
+refinement of the existing `new_schema` branch (count=0 consumes byte-
+identically to the old 5-byte skip), so the 1,529 previously-parsing rows
+are untouched; 1.07-1.11 installs still use the no-marker fallback. RE'd
+via [`scripts/decode_dyeslot_113.py`](../scripts/decode_dyeslot_113.py) —
+enhanced model consumes **all 1,538 live 1.13 rows exactly**. Everything
+else in the dye path (iteminfo `is_dyeable`, `ItemDyeSaveData` in the save
+body, the dye-color-group + texture-pallete bridges) is byte-perfect /
+unchanged on 1.13. Verified 2026-07-04.
+
 ---
 
 ## C ABI surface (for `CrimsonAtomtic`)

@@ -2488,7 +2488,11 @@ mod tests {
             unsafe { crimson_iteminfo_lookup_flags(handle, 2200, &mut flags) },
             error::OK
         );
-        assert_eq!(item_type, 0, "Pyeonjeon_Arrow item_type drifted");
+        // 1.13 remapped the ammo item_type: Pyeonjeon_Arrow read 0 through 1.12,
+        // now reads 23 (item_type==0 no longer occurs in 1.13). item_tier /
+        // quick_slot_index / flags below are unchanged, confirming the field is
+        // correctly aligned (a genuine game-side enum change, not a parse drift).
+        assert_eq!(item_type, 23, "Pyeonjeon_Arrow item_type drifted (0 in ≤1.12, 23 in 1.13)");
         assert_eq!(item_tier, 0, "Pyeonjeon_Arrow item_tier drifted");
         assert_eq!(qs_idx, 1, "Pyeonjeon_Arrow quick_slot_index drifted");
         // Consumable arrow — should NOT be on the new equip-quick-bar
@@ -2594,8 +2598,8 @@ mod tests {
             }
         }
         assert_eq!(
-            visible, 970,
-            "IS_EQUIP_QUICK_SLOT_VISIBLE count drifted (1.12 baseline 970; was 950 on 1.10/1.11, 949 on 1.08/1.09)",
+            visible, 1005,
+            "IS_EQUIP_QUICK_SLOT_VISIBLE count drifted (1.13 baseline 1005; 970 on 1.12, 950 on 1.10/1.11, 949 on 1.08/1.09)",
         );
 
         // ── Negative path: unknown key → NOT_FOUND ─────────────────

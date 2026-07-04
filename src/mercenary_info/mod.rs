@@ -250,7 +250,7 @@ mod tests {
             entries.len(),
             pabgb.len()
         );
-        assert_eq!(entries.len(), 18, "expected exactly 18 rows in 1.07");
+        assert_eq!(entries.len(), 19, "expected exactly 19 rows in 1.13 (was 18 through 1.12)");
         let by_key: std::collections::HashMap<u32, &str> =
             entries.iter().map(|e| (e.key, e.name.as_str())).collect();
         for &(key, expected) in KNOWN {

@@ -346,12 +346,20 @@ mod tests {
             );
         }
 
-        // key=0 has 2 sub-records.
-        assert_eq!(entries[0].subs.len(), 2, "key=0 should have 2 subs");
-        // key=0's icon_path == texture_path (the "no UI icon" fallback).
-        assert_eq!(
-            entries[0].subs[0].icon_path, entries[0].subs[0].texture_path,
-            "key=0 sub[0] icon_path should fall back to texture_path",
+        // 1.13: key=0 is no longer the 2-sub "no UI icon" fallback — it now
+        // carries the same cloth/leather/metal triple as keys 1..=10, each sub
+        // pointing at the white default dye texture
+        // (`cd_texturelayer_dyetexture_white.dds`). Through 1.12 it had 2 subs
+        // whose sub[0] icon_path fell back to its texture_path.
+        assert_eq!(entries[0].subs.len(), 3, "key=0 should have 3 subs (1.13; was 2 ≤1.12)");
+        let mats0: Vec<&str> = entries[0].subs.iter().map(|s| s.material_name.as_str()).collect();
+        assert_eq!(mats0, ["cloth", "leather", "metal"], "key=0 materials (1.13)");
+        assert!(
+            entries[0]
+                .subs
+                .iter()
+                .all(|s| s.texture_path.ends_with("cd_texturelayer_dyetexture_white.dds")),
+            "key=0 subs should all reference the white default dye texture",
         );
 
         // key=1..=10 have 3 sub-records each (cloth / leather / metal).

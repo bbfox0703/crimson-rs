@@ -114,7 +114,7 @@ impl CrimsonItemPartPrefabHandle {
             let mut seen: std::collections::HashSet<u32> = Default::default();
             let mut keys: Vec<u32> = Vec::new();
             let mut names: Vec<String> = Vec::new();
-            for pd in &item.prefab_data_list.items {
+            for pd in &item.merged_prefab_visual_list.items {
                 for sik in &pd.prefab_names.items {
                     let Some(name) = si_by_hash.get(&sik.0) else {
                         continue;
