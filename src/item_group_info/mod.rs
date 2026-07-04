@@ -113,7 +113,7 @@ mod tests {
             return;
         };
         let entries = parse_item_group_info_lossy(&pabgb, &pabgh);
-        assert_eq!(entries.len(), 1541, "expected 1541 rows in 1.12 (was 1521 in 1.10/1.11)");
+        assert_eq!(entries.len(), 1550, "expected 1550 rows in 1.13 (was 1541 in 1.12, 1521 in 1.10/1.11)");
         let by_key: std::collections::HashMap<u32, &str> =
             entries.iter().map(|e| (e.key, e.name.as_str())).collect();
         for &(k, expected) in KNOWN {

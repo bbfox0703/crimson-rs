@@ -3,6 +3,50 @@ use super::structs::*;
 use crate::binary::*;
 use crate::py_binary_struct;
 
+// ── ItemInfo (1.13) ─────────────────────────────────────────────────────────
+//
+// Crimson Desert 1.13 makes the single largest structural change yet: it
+// **relocates and merges** the prefab/gimmick-visual block. +25 net items
+// (6,483 → 6,508); iteminfo.pabgb 5,754,919 → 5,938,891 B (+183,972). RE'd via
+// the tandem/opcodes byte-walk vs the kept 1.12 binary
+// (`gamedata-bin/1.12/iteminfo.pabgb`) + the "fix head/middle, read the parser's
+// per-item leftover" technique (`scripts/decode_tail_113.py`). Full
+// `serialize_iteminfo` round-trip is byte-identical on the live binary
+// (in == out, all 6,508 items). The changes:
+//
+//   1. `SubItem` gained `type_id == 17` — a new payload-free variant (items
+//      that read tag 16 in 1.12 now read 17). Joins the None arm; affects both
+//      SubItem sites (`drop_default_data.default_sub_item` + item-level
+//      `default_sub_item`).
+//
+//   2. `prefab_data_list` and `gimmick_visual_prefab_data_list` — which sat in
+//      the item **middle** (right after `drop_default_data`) in 1.05–1.12 — were
+//      **merged into a single list and relocated to the item END** (after
+//      `repair_data_list`), modeled by `MergedPrefabVisualData` (structs.rs).
+//      The merged element interleaves both source structs' fields: a `scale`
+//      (`(1,1,1)` for prefab-origin rows), the prefab/animation name lists, the
+//      equip-slot + tribe-gender lists, and a 3-byte flag tail. The merged
+//      count equals the old prefab + gimmick element totals. `enchant_data_list`
+//      and the equip/gem-gated `unk_pre_gimmick_visual` **stay** in the middle
+//      (in their 1.12 order) — only the two prefab/gimmick lists moved.
+//
+//   3. A constant 2-byte item tail (`0xff, 0x00`; `unk_tail: u16`) now closes
+//      every item, after the relocated merged list.
+//
+// Discriminator note: what first looked like an "equipment-gated +14 head
+// block" was a mis-read — the bytes after `drop_default_data` are just
+// `enchant_data_list` (whose count is large for equipment) followed by the
+// gated `unk_pre_gimmick_visual`; both are unchanged from 1.12. The only moved
+// fields are the two prefab/gimmick lists.
+//
+// No save-body drift in 1.13 (slot107 = the live 1.13 save: hmac_ok, body
+// decode undecoded_bytes=0, all 12 live saves full-body round-trip + idempotent;
+// format unchanged v2 / flags 0x0080). Gamedata bridge tables: all 30 PABGH key
+// lists still auto-detect; `partprefabdyeslotinfo` grew +570 rows AND refined
+// its per-slot record schema (the 1.12 `(0xFF,0)` 5-byte pad is really
+// `u8 marker + u32 extra_layer_count`; 1.13's new dyeable gear sets count=1,
+// adding a second dye layer). Fixed in `src/part_prefab_dye_slot_info/`.
+//
 // ── ItemInfo (1.12) ─────────────────────────────────────────────────────────
 //
 // Crimson Desert 1.12 makes FOUR layout changes relative to 1.11 (the largest
@@ -254,21 +298,13 @@ py_binary_struct! {
         // See the "ItemInfo (1.11)" header note above.
         pub unk_post_apply_drop_stat_type: u8,
         pub drop_default_data: DropDefaultData,
-        pub prefab_data_list: CArray<PrefabData>,
-        // 1.12: `EnchantData` elements are now separated by a u32 (always 0);
-        // N elements carry N-1 separators. Modeled by the custom
-        // `EnchantDataList` (see structs.rs) rather than `CArray<EnchantData>`.
+        // 1.13 RE: prefab_data_list and gimmick_visual_prefab_data_list both
+        // relocated to the item END (merged into one list; see the placeholder
+        // removed after repair_data_list — the parser's leftover exposes it).
+        // enchant_data_list and the equip/gem-gated unk_pre_gimmick_visual STAY
+        // here in the middle, in their 1.12 order.
         pub enchant_data_list: EnchantDataList,
-        // 1.12 inserted a new u32 here (between `enchant_data_list` and
-        // `gimmick_visual_prefab_data_list`), but only for equipment items
-        // (`equip_type_info != 0`) and gems (`item_type == 74`,
-        // `category_info == 2501`). The discriminator partitions all 4,496
-        // cleanly-diffable common items perfectly (fp=0 fn=0). Reads 0 on
-        // every sampled item; stored as `Option<u32>` (None when absent) so
-        // the byte roundtrip stays exact. Semantic role unknown — named for
-        // its position pending RE. See the "ItemInfo (1.12)" header note above.
         pub unk_pre_gimmick_visual: u32 => equip_type_info.0 != 0 || item_type == 74,
-        pub gimmick_visual_prefab_data_list: CArray<GimmickVisualPrefabData>,
         pub price_list: CArray<ItemPriceInfo>,
         pub docking_child_data: COptional<DockingChildData<'a>>,
         pub inventory_change_data: COptional<InventoryChangeData>,
@@ -327,6 +363,13 @@ py_binary_struct! {
         pub unk_pre_max_endurance: u32,
         pub max_endurance: u16,
         pub repair_data_list: CArray<RepairData>,
+        // 1.13: the merged prefab + gimmick-visual list, relocated here from the
+        // item middle (see MergedPrefabVisualData). Its count equals the 1.12
+        // `prefab_data_list` + `gimmick_visual_prefab_data_list` element totals.
+        pub merged_prefab_visual_list: CArray<MergedPrefabVisualData>,
+        // 1.13: constant 2-byte item tail — bytes `0xff, 0x00` (u16 LE = 0x00ff)
+        // on every one of the 6,508 items. Semantic role unknown.
+        pub unk_tail: u16,
     }
 }
 

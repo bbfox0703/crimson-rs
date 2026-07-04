@@ -516,7 +516,7 @@ mod tests {
         );
         assert_eq!(count, 11);
 
-        // sub_count: key=0 → 2; key=1..=10 → 3.
+        // sub_count: key=0 → 3 in 1.13 (was 2 ≤1.12); key=1..=10 → 3.
         let mut sub_count: u32 = 0;
         assert_eq!(
             unsafe {
@@ -526,7 +526,7 @@ mod tests {
             },
             error::OK
         );
-        assert_eq!(sub_count, 2);
+        assert_eq!(sub_count, 3);
         for key in 1..=10u32 {
             assert_eq!(
                 unsafe {

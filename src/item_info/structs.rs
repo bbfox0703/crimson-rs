@@ -385,6 +385,34 @@ py_binary_struct! {
 }
 
 py_binary_struct! {
+    /// 1.13: unified prefab + gimmick-visual element. In 1.13 the separate
+    /// `prefab_data_list` and `gimmick_visual_prefab_data_list` (both of which
+    /// sat in the item middle in 1.05–1.12) were **merged into one list**
+    /// relocated to the item END (after `repair_data_list`). The merged element
+    /// interleaves the fields of both source structs: a `scale` (default
+    /// `(1,1,1)` for prefab-origin rows), the prefab/animation name lists, the
+    /// equip-slot + tribe-gender lists, and a 3-byte flag tail (`is_craft`
+    /// (prefab) / `use_gimmick` (gimmick) / a new byte; values seen in 0..=3).
+    /// Verified byte-perfect on all 6,508 1.13 items. See the "ItemInfo (1.13)"
+    /// header in `item.rs`.
+    pub struct MergedPrefabVisualData {
+        pub scale: [f32; 3],
+        pub prefab_names: CArray<StringInfoKey>,
+        pub animation_path_list: CArray<StringInfoKey>,
+        pub equip_slot_list: CArray<u16>,
+        pub tribe_gender_list: CArray<StringInfoKey>,
+        // 3-byte flag tail. Provisional names: 1.12's PrefabData ended with
+        // `is_craft_material` and GimmickVisualPrefabData with
+        // `use_gimmick_prefab`; the merged element carries both plus a new byte
+        // (values 0..=3). Exact mapping pending RE — kept as three u8s so the
+        // round-trip stays byte-exact regardless.
+        pub is_craft_material: u8,
+        pub use_gimmick_prefab: u8,
+        pub unk_post_flag: u8,
+    }
+}
+
+py_binary_struct! {
     pub struct DockingChildData<'a> {
         pub gimmick_info_key: GimmickInfoKey,
         pub character_key: CharacterKey,
@@ -478,7 +506,7 @@ impl<'a> BinaryRead<'a> for SubItem {
             // 1.12: tag 16 — items that read tag 15 (None) in 1.11 now read
             // tag 16; still payload-free (verified byte-aligned vs 1.11), so
             // it joins the None arm. Affects both SubItem sites.
-            14..=16 => SubItemValue::None,
+            14..=17 => SubItemValue::None,
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -506,7 +534,7 @@ impl<'a> BinaryReadTracked<'a> for SubItem {
             0 => SubItemValue::Item(ItemKey::read_tracked(data, offset, path, ranges)?),
             3 => SubItemValue::Character(CharacterKey::read_tracked(data, offset, path, ranges)?),
             9 => SubItemValue::Gimmick(GimmickInfoKey::read_tracked(data, offset, path, ranges)?),
-            14..=16 => SubItemValue::None,
+            14..=17 => SubItemValue::None,
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -557,7 +585,7 @@ impl WritePyValue for SubItem {
                 let v: u32 = get_field(d, "value")?.extract()?;
                 w.extend_from_slice(&v.to_le_bytes());
             }
-            14..=16 => {}
+            14..=17 => {}
             _ => {
                 return Err(PyValueError::new_err(format!(
                     "invalid SubItem type_id: {}",

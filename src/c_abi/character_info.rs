@@ -6417,7 +6417,7 @@ mod tests {
                     crate::item_info::ItemInfo::read_from(&iteminfo_bytes, &mut offset)
                         .expect("parse iteminfo row");
                 total_items += 1;
-                let prefab_list = &item.prefab_data_list.items;
+                let prefab_list = &item.merged_prefab_visual_list.items;
                 if prefab_list.is_empty() {
                     continue;
                 }
@@ -7135,7 +7135,7 @@ mod tests {
             }
             dyeable_items_processed += 1;
             let mut per_hash: Vec<(u32, Option<String>, bool)> = Vec::new();
-            for pd in &item.prefab_data_list.items {
+            for pd in &item.merged_prefab_visual_list.items {
                 for k in &pd.prefab_names.items {
                     prefab_name_resolved_total += 1;
                     let resolved = si.get(&k.0).cloned();
