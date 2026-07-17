@@ -12,7 +12,7 @@
 //! | Offset | Size | Field   | Notes                                                    |
 //! |-------:|-----:|---------|----------------------------------------------------------|
 //! |    0   |   2  | `major` | u16 — always `1` on every version shipped to date.       |
-//! |    2   |   2  | `minor` | u16 — the **schema-compatibility key**. `5..=8` so far.  |
+//! |    2   |   2  | `minor` | u16 — the **schema-compatibility key**. `5..=14` so far. |
 //! |    4   |   2  | `patch` | u16 — sub-version (`1.08` → 0, `1.08.01` → 1).           |
 //! |    6   |   4  | `build` | u32 LE — opaque build id; bumps every PA hotfix.         |
 //!
@@ -44,18 +44,22 @@ pub const PAVER_SIZE: usize = 10;
 /// every downstream consumer key off. Consumers read it through the
 /// `crimson_parser_target_gamedata_minor()` C ABI instead of duplicating the
 /// number; before that bridge existed this had to be hand-bumped in lock-step
-/// on the C# side every patch (8 → 9 → 10 → 11 → 12).
-pub const PARSER_TARGET_GAMEDATA_MINOR: u16 = 13;
+/// on the C# side every patch (8 → 9 → 10 → 11 → 12 → 13 → 14).
+pub const PARSER_TARGET_GAMEDATA_MINOR: u16 = 14;
 
 /// Every gamedata `minor` this build's parsers can load without mis-decoding.
 ///
-/// Always includes [`PARSER_TARGET_GAMEDATA_MINOR`]. Currently a single-element
-/// allow-list: 1.13 restructured the iteminfo layout vs 1.12 (SubItem `type_id
-/// 17`; `prefab_data_list` + `gimmick_visual_prefab_data_list` merged into one
-/// list relocated to the item end), so older minors are not byte-compatible and
-/// item-name resolution would fail against them. Widen it when a patch ships
-/// data an existing parser still reads byte-perfectly (a content-only patch,
-/// e.g. 1.06→1.07 or 1.08→1.09).
+/// Always includes [`PARSER_TARGET_GAMEDATA_MINOR`]. Kept a single-element
+/// allow-list tracking just the target. The last *structural* change was 1.13,
+/// which restructured the iteminfo layout vs 1.12 (SubItem `type_id 17`;
+/// `prefab_data_list` + `gimmick_visual_prefab_data_list` merged into one list
+/// relocated to the item end), so 1.12 and earlier are not byte-compatible.
+/// 1.14 is a **content-only** patch over 1.13 (identical iteminfo layout — the
+/// 1.13 parser reads it byte-perfectly), so 1.13 is layout-compatible with this
+/// build and could be added here if accepting 1.13 installs mattered; the list
+/// stays target-only by convention. Widen it when a patch ships data an existing
+/// parser still reads byte-perfectly (a content-only patch, e.g. 1.06→1.07,
+/// 1.08→1.09, or this 1.13→1.14).
 pub const COMPATIBLE_GAMEDATA_MINORS: &[u16] = &[PARSER_TARGET_GAMEDATA_MINOR];
 
 /// Parsed version stamp from `meta/0.paver`.
