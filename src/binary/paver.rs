@@ -44,8 +44,8 @@ pub const PAVER_SIZE: usize = 10;
 /// every downstream consumer key off. Consumers read it through the
 /// `crimson_parser_target_gamedata_minor()` C ABI instead of duplicating the
 /// number; before that bridge existed this had to be hand-bumped in lock-step
-/// on the C# side every patch (8 → 9 → 10 → 11 → 12 → 13 → 14).
-pub const PARSER_TARGET_GAMEDATA_MINOR: u16 = 14;
+/// on the C# side every patch (8 → 9 → 10 → 11 → 12 → 13 → 14 → 15).
+pub const PARSER_TARGET_GAMEDATA_MINOR: u16 = 15;
 
 /// Every gamedata `minor` this build's parsers can load without mis-decoding.
 ///
@@ -54,12 +54,12 @@ pub const PARSER_TARGET_GAMEDATA_MINOR: u16 = 14;
 /// which restructured the iteminfo layout vs 1.12 (SubItem `type_id 17`;
 /// `prefab_data_list` + `gimmick_visual_prefab_data_list` merged into one list
 /// relocated to the item end), so 1.12 and earlier are not byte-compatible.
-/// 1.14 is a **content-only** patch over 1.13 (identical iteminfo layout — the
-/// 1.13 parser reads it byte-perfectly), so 1.13 is layout-compatible with this
-/// build and could be added here if accepting 1.13 installs mattered; the list
-/// stays target-only by convention. Widen it when a patch ships data an existing
-/// parser still reads byte-perfectly (a content-only patch, e.g. 1.06→1.07,
-/// 1.08→1.09, or this 1.13→1.14).
+/// 1.14 and 1.15 are **content-only** patches over 1.13 (identical iteminfo
+/// layout — the 1.13 parser reads them byte-perfectly), so 1.13/1.14 are
+/// layout-compatible with this build and could be added here if accepting older
+/// installs mattered; the list stays target-only by convention. Widen it when a
+/// patch ships data an existing parser still reads byte-perfectly (a content-only
+/// patch, e.g. 1.06→1.07, 1.08→1.09, or this 1.14→1.15).
 pub const COMPATIBLE_GAMEDATA_MINORS: &[u16] = &[PARSER_TARGET_GAMEDATA_MINOR];
 
 /// Parsed version stamp from `meta/0.paver`.

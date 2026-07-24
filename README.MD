@@ -3,7 +3,7 @@
 [![Platform](https://img.shields.io/badge/Platform-Windows%20x64-0078D4)](https://www.microsoft.com/windows)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Built with Claude Code](https://img.shields.io/badge/Built%20with-Claude%20Code-CC785C?logo=claude)](https://claude.ai/code)
-[![Game Version](https://img.shields.io/badge/Game-Crimson%20Desert%201.05%E2%80%931.14-D63B3B)](https://www.playcrimsondesert.com/)
+[![Game Version](https://img.shields.io/badge/Game-Crimson%20Desert%201.05%E2%80%931.15-D63B3B)](https://www.playcrimsondesert.com/)
 
 > **Personal playground.** This fork is where I poke at Crimson Desert internals at my own pace; the work here isn't intended to flow back upstream. Use it as you like, but don't expect upstream PRs from this branch.
 
@@ -22,7 +22,7 @@ Currently supports:
   - **Catalog / template names** (Save Editor browser surfaces): Store (293), Mercenary (18), House (4), RoyalSupply (4), CraftTool (17) + CraftToolGroup (10), TriggerRegion (12), GamePlayVariable (55), GlobalGameEvent (188) + GlobalGameEventGroup (12), GameAdvice (470) + GameAdviceGroup (8), ReserveSlot (27), Region (1,007), ItemGroup (1,521).
   - Plus an `iteminfo` socket / artifact-challenge / canonical-gem advisory surface, a PAZ-layer `crimson_paz_list_npc_portraits` enumerator, and PABGH-driven `_load_from_*_with_pabgh` loaders for `stageinfo` (51,404 entries) and `questinfo` (1,085) that return the in-game-authoritative key list instead of the anchor-scan path's under-count.
 - **Save-handle helpers**: `list_inventory_items` and `list_character_refs` (flat enumeration of every present CharacterKey field across all blocks); `mutation_version` for snapshot staleness; a **deferred-redecode batch ABI** that suspends the per-call `decode_blocks` for bulk-mutation workflows — one decode at end of batch instead of N; typed `set_float3_field_path` / `set_float4_field_path` / `set_uint4_field_path` composite-scalar setters; `set_inline_bytes_field` + `set_scalar_field_path` / `_present` for finer-grained mutation; JSON `get_block_json` inlines dynamic-array u32/u64 contents directly.
-- **Crimson Desert 1.05–1.13**: PALOC / PAZ / PAMT containers and the save format (v2 / flags 0x0080) are stable across the whole range. The `iteminfo.pabgb` parser **targets the latest patch only** (currently 1.13, 6,508 items, byte-perfect; `serialize_iteminfo` roundtrips every item) — older snapshots have minor schema differences (1.05 added two fields vs 1.04; 1.08 removed one field + added two, one conditional on `docking_child_data.tag = 1`; 1.10 removed `money_icon_path` + added `UnitData.unk_post_icon_path`; 1.11 added a boolean `u8` between `apply_drop_stat_type` and `drop_default_data`; 1.12 added four fields incl. a sibling-gated `unk_pre_gimmick_visual`; 1.13 **relocated + merged** `prefab_data_list` + `gimmick_visual_prefab_data_list` into one `MergedPrefabVisualData` list at the item end + a constant `0xff00` item tail) and load with the previous patch's wheel via the recipe in [`docs/historical-parser-setup.md`](docs/historical-parser-setup.md). 1.10 also drifted one save-body block (`ContentsMiscSaveData` widened its object-list leading-pad 3→4 bytes; handled by the decoder); 1.11 / 1.12 / 1.13 carry **no** save-body drift. See [`docs/archive/1.05-parser-history.md`](docs/archive/1.05-parser-history.md) for the full RE history and [`scripts/CLAUDE.md`](scripts/CLAUDE.md) for the per-patch validation table.
+- **Crimson Desert 1.05–1.15**: PALOC / PAZ / PAMT containers and the save format (v2 / flags 0x0080) are stable across the whole range. The `iteminfo.pabgb` parser **targets the latest patch only** (currently 1.15, 6,508 items, byte-perfect; `serialize_iteminfo` roundtrips every item) — older snapshots have minor schema differences (1.05 added two fields vs 1.04; 1.08 removed one field + added two, one conditional on `docking_child_data.tag = 1`; 1.10 removed `money_icon_path` + added `UnitData.unk_post_icon_path`; 1.11 added a boolean `u8` between `apply_drop_stat_type` and `drop_default_data`; 1.12 added four fields incl. a sibling-gated `unk_pre_gimmick_visual`; 1.13 **relocated + merged** `prefab_data_list` + `gimmick_visual_prefab_data_list` into one `MergedPrefabVisualData` list at the item end + a constant `0xff00` item tail; 1.14 and 1.15 are content-only over 1.13 with no schema drift — same build reads all three) and load with the previous patch's wheel via the recipe in [`docs/historical-parser-setup.md`](docs/historical-parser-setup.md). 1.10 also drifted one save-body block (`ContentsMiscSaveData` widened its object-list leading-pad 3→4 bytes; handled by the decoder); 1.11 through 1.15 carry **no** save-body drift. See [`docs/archive/1.05-parser-history.md`](docs/archive/1.05-parser-history.md) for the full RE history and [`scripts/CLAUDE.md`](scripts/CLAUDE.md) for the per-patch validation table.
 - Generating Cheat Engine dropdown lists (item id → name) covering every in-game item key
 
 ## Build & features
@@ -45,9 +45,9 @@ So **PyO3 is not built by default** — it only links when the `python` feature 
 python scripts\export_for_ce.py
 ```
 
-That single command writes everything `Generate_item_id_list.ps1` needs to `out/`. The script auto-discovers every `localizationstring_<lang>.paloc` the game ships (typically 14 languages — eng, jpn, kor, zho-tw, zho-cn, …) and emits one `paloc_<lang>.json` plus one CE dropdown file per language. Counts below are for **1.13** (6,508 keys; the per-patch progression — 6,236 in 1.05, 6,253 in 1.06 / 1.07, 6,314 in 1.08 / 1.09 (identical key list), 6,325 in 1.10, 6,333 in 1.11, 6,483 in 1.12, 6,508 in 1.13 — is tabulated in [`scripts/CLAUDE.md`](scripts/CLAUDE.md)):
+That single command writes everything `Generate_item_id_list.ps1` needs to `out/`. The script auto-discovers every `localizationstring_<lang>.paloc` the game ships (typically 14 languages — eng, jpn, kor, zho-tw, zho-cn, …) and emits one `paloc_<lang>.json` plus one CE dropdown file per language. Counts below are for **1.15** (6,508 keys; the per-patch progression — 6,236 in 1.05, 6,253 in 1.06 / 1.07, 6,314 in 1.08 / 1.09 (identical key list), 6,325 in 1.10, 6,333 in 1.11, 6,483 in 1.12, 6,508 in 1.13 / 1.14 / 1.15 — is tabulated in [`scripts/CLAUDE.md`](scripts/CLAUDE.md)):
 
-| File | Contents | 1.14 coverage |
+| File | Contents | 1.15 coverage |
 |---|---|---|
 | `iteminfo.pabgb` | Raw decompressed binary from group 0008 | — |
 | `items.jsonl` | One item per line; `key` + `string_key` always populated, parsed fields when the parser succeeds | 6,508 (100%) |
@@ -159,9 +159,9 @@ with open("items.csv", "w", newline="") as f:
         w.writerow([item["key"], item["string_key"], item["item_type"], item["item_tier"]])
 ```
 
-### Per-patch parser (currently 1.14)
+### Per-patch parser (currently 1.15)
 
-`parse_iteminfo_from_bytes` targets the **latest game patch only** — currently 1.14 (6,508 / 6,508 items, byte-perfect; `serialize_iteminfo` roundtrips every item). 1.14 is content-only over 1.13 (same layout), so the same build reads both. Older patches have minor schema differences and **will not parse with this build**:
+`parse_iteminfo_from_bytes` targets the **latest game patch only** — currently 1.15 (6,508 / 6,508 items, byte-perfect; `serialize_iteminfo` roundtrips every item). 1.15 and 1.14 are content-only over 1.13 (same layout), so the same build reads all three. Older patches have minor schema differences and **will not parse with this build**:
 
 | Patch | Items | Schema drift vs previous |
 |---|---|---|
@@ -175,6 +175,7 @@ with open("items.csv", "w", newline="") as f:
 | 1.12 | 6,483 | `+` `SubItem type_id==16` payload-free variant (both sites); `+` unconditional `unk_pre_max_endurance: u32`; `+` `unk_pre_gimmick_visual: u32` gated on `equip_type_info != 0 \|\| item_type == 74`; `+` `enchant_data_list` N−1 inter-element u32 separators (`EnchantDataList`). No save-body drift. |
 | 1.13 | 6,508 | **structural relocation**: `SubItem type_id==17`; `prefab_data_list` + `gimmick_visual_prefab_data_list` **merged into one `MergedPrefabVisualData` list relocated to the item end** (after `repair_data_list`); `+` constant `0xff00` item tail. `enchant_data_list` + gated `unk_pre_gimmick_visual` stay put. No save-body drift. |
 | **1.14** | **6,508** | none — **content-only** patch (iteminfo layout byte-identical to 1.13; item field **values** changed, `knowledgeinfo` −1 key). The 1.13 parser reads it byte-perfectly; only `PARSER_TARGET_GAMEDATA_MINOR` bumped 13→14. No save-body drift. |
+| **1.15** | **6,508** | none — **content-only** patch (iteminfo layout byte-identical; item field **values** changed, iteminfo SHA `c7ae5543…` vs 1.14 `de621624…`; all 30 gamedata key tables byte-identical to 1.14 — zero key changes). Only `PARSER_TARGET_GAMEDATA_MINOR` bumped 14→15. No save-body drift. |
 
 To parse a previous-patch binary, install that patch's wheel as a sibling package via the recipe in [`docs/historical-parser-setup.md`](docs/historical-parser-setup.md) — `pip install --target=.crimson_rs_107 …` and `import` from that path. Two helper modes are also available for diagnostic / recovery work on the current target:
 

@@ -68,7 +68,7 @@ PALOC display name → fuzzy match → NPC head-shot DDS path.
   install's `meta/0.paver` version stamp into `(major, minor, patch, build)`
   (accepts the file path or the install root, auto-appending `meta/0.paver`).
 - `crimson_parser_target_gamedata_minor() -> u16` — the gamedata `minor` this
-  build's parsers target (currently 12). **Single source of truth**: the value
+  build's parsers target (currently 15). **Single source of truth**: the value
   lives in `crate::binary::paver::PARSER_TARGET_GAMEDATA_MINOR`, so a new patch
   is one Rust bump and every consumer follows — no more lock-step
   `ParserTargetMinor` edits on the C# side (promoting this killed the 5th such
