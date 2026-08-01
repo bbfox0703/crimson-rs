@@ -397,7 +397,7 @@ Each item is a dict with 105 fields. All fields are required for serialization.
 
 | Field | Type | Description |
 |---|---|---|
-| `inventory_info` | `int` | InventoryKey (u16) |
+| `inventory_info_list` | `list[int]` | **1.16**: nine InventoryKey (u16) slots at the item end. Replaces the pre-1.16 head-side `inventory_info` (now slot 0) and the 1.13-era constant `unk_tail` (now slot 8). `0xFF` = unused slot. |
 | `equip_type_info` | `int` | EquipTypeKey (u32) |
 | `occupied_equip_slot_data_list` | `list[dict]` | See [OccupiedEquipSlotData](#occupiedequipslotdata) |
 | `equipable_hash` | `int` | (u32) |

@@ -106,7 +106,7 @@ mod tests {
             unsafe { crimson_item_group_info_entry_count(sh, &mut count) },
             error::OK
         );
-        assert_eq!(count, 1550); // 1.13 (was 1541 in 1.12, 1521 in 1.10/1.11)
+        assert_eq!(count, 1597); // 1.16 (was 1550 in 1.13-1.15, 1541 in 1.12, 1521 in 1.10/1.11)
         for &(key, expected) in KNOWN {
             let mut req: usize = 0;
             assert_eq!(

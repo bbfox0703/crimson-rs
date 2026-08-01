@@ -62,6 +62,46 @@ pub struct SkillData {
     pub index_order: Vec<SkillIndexEntry>,
 }
 
+/// Result of [`probe_entry_failures`].
+///
+/// Test-only: `skill_info` is a private module, so a diagnostic that only the
+/// `_probe_skill_entry_failures` test calls would otherwise trip the crate's
+/// `-D dead_code` clippy gate under `--features c_abi,python`.
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub struct EntryFailureReport {
+    pub total: usize,
+    /// `(entry_index, key, error message)` for every entry that failed.
+    pub failures: Vec<(usize, u32, String)>,
+}
+
+/// Walk every entry independently and collect the ones that fail to parse.
+///
+/// [`SkillData::parse`] aborts on the first bad entry, so on a new game
+/// patch it cannot tell "one odd new skill" from "systematic schema
+/// drift". This keeps going, which is the first question to answer before
+/// starting any skill RE. Errors only for problems that make per-entry
+/// probing impossible at all (bad PABGH, no format detected).
+#[cfg(test)]
+pub fn probe_entry_failures(pabgh: &[u8], pabgb: &[u8]) -> io::Result<EntryFailureReport> {
+    let index = parse_pabgh(pabgh)?;
+    let ranges = entry_ranges(&index, pabgb.len());
+    let format = detect_format(pabgb, &index, &ranges)?;
+
+    let mut cache = TailSizeCache::new();
+    let mut failures = Vec::new();
+    for (i, &(start, end)) in ranges.iter().enumerate() {
+        if start > end || end > pabgb.len() {
+            failures.push((i, index[i].key, format!("bad range [{start}, {end})")));
+            continue;
+        }
+        if let Err(e) = parse_skill_entry(&pabgb[start..end], format, &mut cache) {
+            failures.push((i, index[i].key, e.to_string()));
+        }
+    }
+    Ok(EntryFailureReport { total: ranges.len(), failures })
+}
+
 impl SkillData {
     /// Parse both files, returning entries in PABGH on-disk order.
     pub fn parse(pabgh: &[u8], pabgb: &[u8]) -> io::Result<Self> {

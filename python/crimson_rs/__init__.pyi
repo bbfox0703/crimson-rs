@@ -371,8 +371,6 @@ class ItemInfo(TypedDict):
     """LocalStringInfoKey (u32)."""
 
     # Inventory & Equipment
-    inventory_info: int
-    """InventoryKey (u16)."""
     equip_type_info: int
     """EquipTypeKey (u32)."""
     occupied_equip_slot_data_list: list[OccupiedEquipSlotData]
@@ -561,6 +559,42 @@ class ItemInfo(TypedDict):
     """1.05: 9 raw bytes (observed all-zero). Present only when
     `new_icon_path` is non-empty."""
     repair_data_list: list[RepairData]
+
+    # NOTE: the entries above still describe the 1.04/1.05-era layout and are
+    # substantially out of date — `new_icon_path` / `ammo_mid_block` /
+    # `icon_flag` / `icon_unk_zeros` belong to the discredited "variant tail"
+    # model that was removed from the parser long ago, and the 1.08–1.15
+    # additions were never mirrored here. Treat this TypedDict as a partial
+    # view; `src/item_info/item.rs` is the source of truth. The 1.16 fields
+    # below are accurate.
+    unk_pre_respawn_a: int
+    """1.16: u32. 0 on all but 36 items (Wood_Branch_* tiers, which carry an
+    ItemKey-shaped value)."""
+    unk_pre_respawn_flag: int
+    """1.16: u8. 1 on 17 items, 0 elsewhere."""
+    unk_pre_respawn_data_list: list[UnkPreRespawnData]
+    """1.16: 28-byte elements; non-empty on only 14 items."""
+    unk_post_respawn_data_list: int
+    """1.16: u8. Observed 0 / 1 / 2 / 3."""
+    inventory_info_list: list[int]
+    """1.16: nine InventoryKey (u16) slots at the item end, replacing the
+    pre-1.16 head-side `inventory_info` (slot 0) and the 1.13-era constant
+    `unk_tail` (slot 8). 0xFF marks an unused slot."""
+
+
+class UnkPreRespawnData(TypedDict):
+    """1.16: element of `ItemInfo.unk_pre_respawn_data_list` (28 bytes).
+    Semantic role unknown; `unk_b == unk_c` and `unk_d == unk_c + 1` on every
+    element in the table."""
+
+    unk_a: int
+    """u32. Only 11, 12 or 13 observed."""
+    unk_b: int
+    """u64"""
+    unk_c: int
+    """u64"""
+    unk_d: int
+    """u64"""
 
 
 # ── Module Functions ────────────────────────────────────────────────────────
@@ -1092,6 +1126,9 @@ class PostBuff(TypedDict):
     """u8"""
     is_use_child_pattern_description_buff_data: int
     """u8"""
+    unk_pre_damage_type: int
+    """u8. Added in 1.16 between `is_use_child_pattern_description_buff_data`
+    and `damage_type`; reads 0 on every sampled entry."""
     damage_type: int
     """u8"""
     ui_type: int

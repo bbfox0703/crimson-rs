@@ -1144,6 +1144,7 @@ fn post_buff_to_py<'py>(py: Python<'py>, p: &PostBuff) -> PyResult<Bound<'py, Py
         "is_use_child_pattern_description_buff_data",
         p.is_use_child_pattern_description_buff_data,
     )?;
+    d.set_item("unk_pre_damage_type", p.unk_pre_damage_type)?;
     d.set_item("damage_type", p.damage_type)?;
     d.set_item("ui_type", p.ui_type)?;
     d.set_item("reserve_slot_info_list", p.reserve_slot_info_list.clone())?;
@@ -1197,6 +1198,7 @@ fn post_buff_from_py(d: &Bound<'_, PyDict>) -> PyResult<PostBuff> {
             d,
             "is_use_child_pattern_description_buff_data",
         )?,
+        unk_pre_damage_type: get(d, "unk_pre_damage_type")?,
         damage_type: get(d, "damage_type")?,
         ui_type: get(d, "ui_type")?,
         reserve_slot_info_list: get(d, "reserve_slot_info_list")?,

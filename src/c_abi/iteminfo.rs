@@ -356,7 +356,10 @@ impl CrimsonItemInfoHandle {
                     material_key: item.material_key,
                     gimmick_info: item.gimmick_info.0,
                     category_info: item.category_info.0,
-                    inventory_info: item.inventory_info.0,
+                    // 1.16 relocated `inventory_info` to the item end and
+                    // widened it to 8 slots; slot 0 is byte-for-byte the value
+                    // this field carried pre-1.16, so the ABI is unchanged.
+                    inventory_info: item.inventory_info_list[0],
                     minimum_extract_enchant_level: item.minimum_extract_enchant_level,
                     max_endurance: item.max_endurance,
                     item_type: item.item_type,
@@ -2488,11 +2491,15 @@ mod tests {
             unsafe { crimson_iteminfo_lookup_flags(handle, 2200, &mut flags) },
             error::OK
         );
-        // 1.13 remapped the ammo item_type: Pyeonjeon_Arrow read 0 through 1.12,
-        // now reads 23 (item_type==0 no longer occurs in 1.13). item_tier /
-        // quick_slot_index / flags below are unchanged, confirming the field is
-        // correctly aligned (a genuine game-side enum change, not a parse drift).
-        assert_eq!(item_type, 23, "Pyeonjeon_Arrow item_type drifted (0 in ≤1.12, 23 in 1.13)");
+        // The ammo item_type has been remapped twice: Pyeonjeon_Arrow read 0
+        // through 1.12, 23 in 1.13–1.15, and 0 again in 1.16. item_tier /
+        // quick_slot_index / flags below are unchanged across all three, which
+        // is what confirms the field is still correctly aligned (a game-side
+        // enum change, not a parse drift).
+        assert_eq!(
+            item_type, 0,
+            "Pyeonjeon_Arrow item_type drifted (0 in ≤1.12, 23 in 1.13–1.15, 0 in 1.16)"
+        );
         assert_eq!(item_tier, 0, "Pyeonjeon_Arrow item_tier drifted");
         assert_eq!(qs_idx, 1, "Pyeonjeon_Arrow quick_slot_index drifted");
         // Consumable arrow — should NOT be on the new equip-quick-bar

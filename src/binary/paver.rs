@@ -44,8 +44,8 @@ pub const PAVER_SIZE: usize = 10;
 /// every downstream consumer key off. Consumers read it through the
 /// `crimson_parser_target_gamedata_minor()` C ABI instead of duplicating the
 /// number; before that bridge existed this had to be hand-bumped in lock-step
-/// on the C# side every patch (8 → 9 → 10 → 11 → 12 → 13 → 14 → 15).
-pub const PARSER_TARGET_GAMEDATA_MINOR: u16 = 15;
+/// on the C# side every patch (8 → 9 → 10 → 11 → 12 → 13 → 14 → 15 → 16).
+pub const PARSER_TARGET_GAMEDATA_MINOR: u16 = 16;
 
 /// Every gamedata `minor` this build's parsers can load without mis-decoding.
 ///

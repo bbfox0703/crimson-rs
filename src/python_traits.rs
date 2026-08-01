@@ -101,6 +101,24 @@ impl WritePyValue for [u32; 2] {
     }
 }
 
+// 1.16 ItemInfo `inventory_info_list` — nine InventoryKey (u16) slots.
+impl ToPyValue for [u16; 9] {
+    fn to_py_value(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        Ok(self.to_vec().into_pyobject(py)?.into_any().unbind())
+    }
+}
+
+impl WritePyValue for [u16; 9] {
+    fn write_from_py(w: &mut Vec<u8>, obj: &Bound<'_, PyAny>) -> PyResult<()> {
+        let list = obj.cast::<PyList>()?;
+        for item in list.iter() {
+            let v: u16 = item.extract()?;
+            w.extend_from_slice(&v.to_le_bytes());
+        }
+        Ok(())
+    }
+}
+
 impl ToPyValue for [u32; 4] {
     fn to_py_value(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         Ok(self.to_vec().into_pyobject(py)?.into_any().unbind())
