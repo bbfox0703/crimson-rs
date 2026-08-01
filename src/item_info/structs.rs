@@ -438,18 +438,47 @@ py_binary_struct! {
         pub docking_slot_key: CString<'a>,
         pub inherit_summoner: u8,
         pub summon_tag_name_hash: [u32; 4],
-        // Added in Crimson Desert 1.08: trailing u8 inside `DockingChildData`.
-        // Pinned by alignment-shift analysis on items with populated
-        // `docking_child_data` (KuKu_Lightning_TwoHandSpear key=1002175,
-        // Marni_Devotee_PlateArmor_Helm key=14510, …). All 385 items with
-        // `docking_child_data.tag = 1` carry this extra byte; items with
-        // `docking_child_data.tag = 0` are unaffected — exactly the
-        // 385-vs-5,929 split observed across the 1.08 binary. Every
-        // sampled item reads 0x00 (zero non-zero values across the 385),
-        // so the field is likely a placeholder for a future feature or a
-        // reserved field that current gamedata doesn't populate; semantic
-        // role is unknown until a future RE pass identifies it.
-        pub unk_post_summon_tag: u8,
+        // Crimson Desert 1.08 added a trailing `unk_post_summon_tag: u8` here;
+        // **1.16 removed it again**. It read 0x00 on every item that ever
+        // carried it, matching the reserved-placeholder reading in the 1.08
+        // note — the slot was retired rather than ever populated.
+        //
+        // The removal is invisible on items with `docking_child_data.tag = 0`
+        // (the struct isn't read at all), so it presents as a *conditional*
+        // 1-byte drift: in 1.16 exactly the 391 items with
+        // `docking_child_data.__tag__ != 0` lose a byte and every other item
+        // is unaffected. That discriminator partitions the 6,581-item table
+        // perfectly (fp=0, fn=0), which is what pinned the field. See the
+        // "ItemInfo (1.16)" header in `item.rs`.
+    }
+}
+
+py_binary_struct! {
+    /// Element of the 1.16 `unk_pre_respawn_data_list` (28 B).
+    ///
+    /// New in Crimson Desert 1.16, in the block inserted immediately before
+    /// `respawn_time_seconds`. Only 14 of the 6,581 items carry a non-empty
+    /// list — housing/prop gimmick items (`Item_cabinet_02_index01`,
+    /// `Collection_Prop_Plate_0003`, …) and large food items (`Rice_XLarge`,
+    /// `Sinseollo_XLarge`, `Braised_Fish_Large`, …), with one or two elements.
+    ///
+    /// Across the 23 elements in the table: `unk_a` is only ever 11, 12 or 13;
+    /// `unk_b == unk_c` on 23/23 and `unk_d == unk_c + 1` on 23/23, which reads
+    /// like a `(kind, min, cur, max)` tuple. Sample rows: `(13, 50, 50, 51)`
+    /// (`Item_gimmick_alchemy_globe_0002`), `(11, 8, 8, 9)` + `(12, 12, 12, 13)`
+    /// (`Rice_XLarge`), `(11, 279, 279, 280)` + `(12, 465, 465, 466)`
+    /// (`Meat_Fish_Vegetable_Egg_XLarge`).
+    ///
+    /// The three 8-byte fields could equally be six u32s — the high half of
+    /// each reads 0 on all 23 elements — but u64 matches the `count_mb` /
+    /// `max_stack_count` precedent elsewhere in this format. Either split is
+    /// byte-identical, so the round-trip does not disambiguate them. Semantic
+    /// role unknown.
+    pub struct UnkPreRespawnData {
+        pub unk_a: u32,
+        pub unk_b: u64,
+        pub unk_c: u64,
+        pub unk_d: u64,
     }
 }
 

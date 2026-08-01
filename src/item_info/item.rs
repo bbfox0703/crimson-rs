@@ -3,6 +3,77 @@ use super::structs::*;
 use crate::binary::*;
 use crate::py_binary_struct;
 
+// ── ItemInfo (1.16) ─────────────────────────────────────────────────────────
+//
+// Crimson Desert 1.16 makes FOUR layout changes relative to 1.13–1.15 (1.14 and
+// 1.15 were content-only). +73 net items (6,508 → 6,581, none removed);
+// iteminfo.pabgb 5,938,891 → 6,145,386 B (+206,495). RE'd via the lightweight
+// tandem byte-walk vs the kept 1.15 binary (`scripts/diff_115_116.py`, cloned
+// from `diff_112_113.py`) plus per-site decodes over all common items. The net
+// per-item delta is **+24 B** on 6,085 of the 6,508 common items
+// (−2 −1(cond) +10 +16). Full `serialize_iteminfo` round-trip is byte-identical
+// on the live binary (in == out, 6,581 items, 0 skipped).
+//
+// The changes:
+//
+//   1. `inventory_info: InventoryKey` (u16) was **removed from the item head**
+//      (it sat between `broken_item_prefix_string` and `equip_type_info`) and
+//      relocated to the item end — see change 4.
+//
+//   2. `DockingChildData::unk_post_summon_tag: u8` — the trailing byte 1.08
+//      added — was **removed** (structs.rs). Conditional drift: it only shows
+//      on the 391 items with `docking_child_data.__tag__ != 0`, and that
+//      discriminator partitions the table perfectly (fp=0, fn=0).
+//
+//   3. A **10 + 28×N byte block** was inserted immediately before
+//      `unk_pre_max_endurance` / `respawn_time_seconds`, and those two fields
+//      **swapped order** (1.15 read `respawn_time_seconds` then
+//      `unk_pre_max_endurance`; 1.16 reads the u32 first). The block is
+//      `u32 + u8 flag + CArray<UnkPreRespawnData> + u8`, so it costs a flat
+//      10 B on the 6,567 items whose list is empty — which is why it first
+//      looked like a fixed 10-byte insert. Only 14 items carry elements
+//      (5 with one, 9 with two).
+//
+//      The swap is what makes `respawn_time_seconds` decode sanely: with it,
+//      the field reads 0 (5,831 items), −1 (748) or 604,800 (2 — exactly 7
+//      days in seconds) and `unk_pre_max_endurance` stays 0 as it has since
+//      1.12; without it both fields decode to nonsense (−4294967296 and
+//      0xffffffff). Byte-wise the swap is indistinguishable from "1.16 deleted
+//      the old u32 and added a new always-zero u32 here", so the round-trip
+//      alone does not settle it — the value distributions do.
+//
+//   4. The removed `inventory_info` **reappears at the item END, widened to
+//      nine slots** (`inventory_info_list: [u16; 9]`, 18 B), replacing the
+//      1.13-era 2-byte `unk_tail`. Slot 0 equals the old head-side
+//      `inventory_info` on **all 6,054 cleanly-diffable items, zero
+//      exceptions** — that equality is what identifies this as a relocation
+//      rather than an unrelated new block. Slots hold the same small
+//      InventoryKey domain (1, 2, 3, 5, 6, 7, 8, 9, 10, 12, 13, 14) with 0xFF
+//      as the unused-slot sentinel; 14 distinct tuples across the table.
+//
+//      Slot 8 is the u16 that 1.13–1.15 carried as the constant `unk_tail`
+//      (0x00ff on all 6,508 items). It is folded into the array rather than
+//      kept separate because in 1.16 it reads 6 — not 0xFF — on exactly the
+//      59 `Trade_*_PackedInVehicle` items, which are also exactly the items
+//      whose slot 7 reads 7 instead of 0xFF (and the only ones whose
+//      `unk_pre_max_endurance` is non-zero). That perfect three-way
+//      correlation, plus the shared 0xFF sentinel, makes "slot 8 of the same
+//      array, unused on every pre-1.16 item" a much better fit than
+//      "unrelated constant that coincidentally changed on the same 59 items".
+//
+//      Alignment check: across all 6,581 items every one of the 9 × 6,581
+//      slot values falls in {1, 2, 3, 5, 6, 7, 8, 9, 10, 13, 14, 255} — no
+//      out-of-domain u16 anywhere. A mis-sized or mis-positioned array would
+//      produce garbage here, so this is what pins the width at 9 rather than
+//      8 + a separate tail.
+//
+// Downstream note: the `crimson_iteminfo_lookup_inventory_info` C ABI is
+// unchanged and now sources `inventory_info_list[0]`, which is byte-for-byte
+// the value it returned before 1.16.
+//
+// No save-body drift from the iteminfo side. 1.16 does introduce a new save
+// format (slot108) — tracked separately.
+//
 // ── ItemInfo (1.13) ─────────────────────────────────────────────────────────
 //
 // Crimson Desert 1.13 makes the single largest structural change yet: it
@@ -225,7 +296,9 @@ py_binary_struct! {
         pub max_stack_count: u64,
         pub item_name: LocalizableString<'a>,
         pub broken_item_prefix_string: LocalStringInfoKey,
-        pub inventory_info: InventoryKey,
+        // 1.16: `inventory_info: InventoryKey` used to sit here. It moved to
+        // the item end and widened to eight slots — see `inventory_info_list`
+        // and the "ItemInfo (1.16)" header note above.
         pub equip_type_info: EquipTypeKey,
         pub occupied_equip_slot_data_list: CArray<OccupiedEquipSlotData>,
         pub item_tag_list: CArray<u32>,
@@ -354,22 +427,48 @@ py_binary_struct! {
         pub is_preorder_item: u8,
         pub is_has_item_use_data_inventory_buff: u8,
         pub is_preserved_on_extract: u8,
-        pub respawn_time_seconds: i64,
-        // 1.12 inserted a new u32 here (between `respawn_time_seconds` and
-        // `max_endurance`). Reads 0 on every sampled item; width pinned by
-        // the byte-perfect roundtrip on all 6,483 items. Semantic role
-        // unknown — named for its position pending RE. See the
-        // "ItemInfo (1.12)" header note above.
+        // 1.16 inserted a 10 + 28×N byte block here. On 6,567 of 6,581 items
+        // the list is empty, so it costs a flat 10 B. Value distributions:
+        //   unk_pre_respawn_a         0 on 6,545 items; on the other 36 it
+        //                             holds an ItemKey-shaped value (1002011…
+        //                             1002020) — all of them `Wood_Branch_*`
+        //                             gathering-node tiers, which is why it is
+        //                             NOT documented as a constant.
+        //   unk_pre_respawn_flag      1 on 17 items, 0 on the rest. Tracks
+        //                             "list non-empty" on 14 of those 17; the
+        //                             3 exceptions (Sidmon/Silien/Leinstead
+        //                             OneHandSword) set the flag with an empty
+        //                             list, so it is read unconditionally
+        //                             rather than as a COptional tag.
+        //   unk_post_respawn_...      0 / 1 / 2 / 3.
+        // See the "ItemInfo (1.16)" header above.
+        pub unk_pre_respawn_a: u32,
+        pub unk_pre_respawn_flag: u8,
+        pub unk_pre_respawn_data_list: CArray<UnkPreRespawnData>,
+        pub unk_post_respawn_data_list: u8,
+        // 1.12 inserted this u32 (0 on every item through 1.15; in 1.16 it
+        // reads 0x01000000 on the 59 `Trade_*_PackedInVehicle` items and 0
+        // everywhere else). 1.16 also moved it from
+        // *after* `respawn_time_seconds` to *before* it. Byte-wise the move is
+        // indistinguishable from "1.16 deleted the old field and added a new
+        // always-zero u32 here", but the swap reading is what makes
+        // `respawn_time_seconds` decode sanely (0 / -1 / 604800 = 7 days)
+        // instead of the nonsense values the un-swapped order produces.
         pub unk_pre_max_endurance: u32,
+        pub respawn_time_seconds: i64,
         pub max_endurance: u16,
         pub repair_data_list: CArray<RepairData>,
         // 1.13: the merged prefab + gimmick-visual list, relocated here from the
         // item middle (see MergedPrefabVisualData). Its count equals the 1.12
         // `prefab_data_list` + `gimmick_visual_prefab_data_list` element totals.
         pub merged_prefab_visual_list: CArray<MergedPrefabVisualData>,
-        // 1.13: constant 2-byte item tail — bytes `0xff, 0x00` (u16 LE = 0x00ff)
-        // on every one of the 6,508 items. Semantic role unknown.
-        pub unk_tail: u16,
+        // 1.16: the head-side `inventory_info` relocated here, widened to nine
+        // InventoryKey (u16) slots. Slot 0 == the pre-1.16 `inventory_info` on
+        // every item; 0xFF marks an unused slot. Slot 8 is the field 1.13–1.15
+        // carried as the constant `unk_tail` (`0xff, 0x00`) — see the
+        // "ItemInfo (1.16)" header note above for why it is read as part of
+        // this array rather than as a separate tail.
+        pub inventory_info_list: [u16; 9],
     }
 }
 

@@ -321,6 +321,43 @@ mod tests {
         run_skill_roundtrip("1.05 (live game install)", &pabgh, &pabgb);
     }
 
+    /// Per-entry skill diagnostic. `SkillData::parse` aborts on the first
+    /// bad entry, which tells you nothing about how widespread a new
+    /// patch's drift is. This walks every entry independently and reports
+    /// which ones fail, so a new-patch failure can be classified as "one
+    /// odd new skill" vs "systematic schema drift" before any RE starts.
+    ///
+    /// Run with:
+    ///   cargo test --lib _probe_skill_entry_failures -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn _probe_skill_entry_failures() {
+        use crate::skill_info::{SkillData, probe_entry_failures};
+        let Some(pabgh) = extract_skill_from_archive(GAME_DIR, "skill.pabgh") else {
+            eprintln!("skipping: live install not found");
+            return;
+        };
+        let Some(pabgb) = extract_skill_from_archive(GAME_DIR, "skill.pabgb") else {
+            return;
+        };
+        let report = probe_entry_failures(&pabgh, &pabgb)
+            .unwrap_or_else(|e| panic!("index/format probe failed: {e}"));
+        println!(
+            "skill entries: {} total, {} ok, {} failed",
+            report.total,
+            report.total - report.failures.len(),
+            report.failures.len()
+        );
+        for (i, key, msg) in report.failures.iter().take(40) {
+            println!("  entry {i} (key={key}): {msg}");
+        }
+        // Whole-file parse for comparison (may fail; informational only).
+        match SkillData::parse(&pabgh, &pabgb) {
+            Ok(d) => println!("SkillData::parse OK, format={:?}", d.format),
+            Err(e) => println!("SkillData::parse FAILED: {e}"),
+        }
+    }
+
     /// Cross-version skill roundtrip: validates the parser also handles
     /// the 1.03 (NoField58) and 1.04 (WithField58, smaller type_id table)
     /// formats. Reads from a hard-coded path on the maintainer's machine

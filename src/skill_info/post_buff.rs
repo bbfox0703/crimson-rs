@@ -59,6 +59,17 @@ pub struct PostBuff {
     pub is_learn_use_artifact: u8,
     pub allow_skill_with_low_resource: u8,
     pub is_use_child_pattern_description_buff_data: u8,
+    /// Added in Crimson Desert 1.16: a new `u8` between
+    /// `is_use_child_pattern_description_buff_data` and `damage_type`.
+    ///
+    /// Every entry gains exactly one byte (per-entry delta +1 on 1,977 of the
+    /// 1,997 keys common to 1.15 and 1.16), and a tandem byte-walk against the
+    /// 1.15 `skill.pabgb` puts the insert on the `damage_type` boundary in
+    /// 796 of 800 sampled entries. Reads 0x00 on every sampled entry, so the
+    /// semantic role is unknown — named for its position, matching the
+    /// iteminfo `unk_pre_*` convention. Before this field was added, 589 of
+    /// the 2,013 1.16 entries failed to parse.
+    pub unk_pre_damage_type: u8,
     pub damage_type: u8,
     pub ui_type: u8,
     pub reserve_slot_info_list: Vec<u32>,
@@ -193,6 +204,8 @@ pub fn read_post_buff(data: &[u8], offset: &mut usize) -> io::Result<PostBuff> {
     let is_learn_use_artifact = u8::read_from(data, offset)?;
     let allow_skill_with_low_resource = u8::read_from(data, offset)?;
     let is_use_child_pattern_description_buff_data = u8::read_from(data, offset)?;
+    // 1.16 insert — see the field's doc comment.
+    let unk_pre_damage_type = u8::read_from(data, offset)?;
     let damage_type = u8::read_from(data, offset)?;
     let ui_type = u8::read_from(data, offset)?;
 
@@ -231,6 +244,7 @@ pub fn read_post_buff(data: &[u8], offset: &mut usize) -> io::Result<PostBuff> {
         is_learn_use_artifact,
         allow_skill_with_low_resource,
         is_use_child_pattern_description_buff_data,
+        unk_pre_damage_type,
         damage_type,
         ui_type,
         reserve_slot_info_list,
@@ -274,6 +288,7 @@ pub fn write_post_buff<W: io::Write>(w: &mut W, p: &PostBuff) -> io::Result<()> 
     p.is_learn_use_artifact.write_to(w)?;
     p.allow_skill_with_low_resource.write_to(w)?;
     p.is_use_child_pattern_description_buff_data.write_to(w)?;
+    p.unk_pre_damage_type.write_to(w)?;
     p.damage_type.write_to(w)?;
     p.ui_type.write_to(w)?;
     write_list_u32(w, &p.reserve_slot_info_list)?;
@@ -351,7 +366,9 @@ pub fn try_parse_post_buff_end(data: &[u8], mut p: usize) -> Option<usize> {
         return None;
     }
 
-    p = p.checked_add(8 + 6)?; // _useBatteryStat + 6 u8 flags
+    // _useBatteryStat + 7 u8 flags (6 before 1.16, which added
+    // `unk_pre_damage_type`).
+    p = p.checked_add(8 + 7)?;
     if p > body_len {
         return None;
     }
