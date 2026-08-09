@@ -3,6 +3,16 @@ use super::structs::*;
 use crate::binary::*;
 use crate::py_binary_struct;
 
+// ── ItemInfo (1.17) ─────────────────────────────────────────────────────────
+//
+// Content-only over 1.16 — no layout change, no parser edit. 6,581 → 6,572
+// items: nine `Item_Set_*_Tier0_Reminiscence` entries (keys 1004912–1004920)
+// were removed and none added. iteminfo.pabgb 6,145,386 → 6,139,734 B, and the
+// −5,652 B is *exactly* the sum of those nine items' spans, so nothing else
+// moved. Of the 6,572 surviving items 6,435 are byte-identical to their 1.16
+// bytes and 137 changed values only — **zero** changed size, which is the check
+// that rules out a layout drift hiding behind a compensating value change.
+//
 // ── ItemInfo (1.16) ─────────────────────────────────────────────────────────
 //
 // Crimson Desert 1.16 makes FOUR layout changes relative to 1.13–1.15 (1.14 and
