@@ -1,10 +1,14 @@
 name: CI
 
 # Lint + test gate. Runs on PRs to any branch and on pushes to main / dev.
-# build.yml is the *publish* pipeline (rolling-release wheel on push to main);
-# this file is the *correctness* gate. Keep them separate so a broken lint
-# doesn't block wheel rebuilds, and a wheel-build failure doesn't read as a
-# code-quality failure.
+# This is the only workflow in the repo and the required status check on main.
+#
+# There used to be a build.yml alongside it that rebuilt a Windows wheel on
+# every push to main and republished it as a rolling "Development Build"
+# pre-release. It was removed 2026-08-09: repo traffic showed no external
+# consumers, so publishing wheels nobody downloaded was pure upkeep. Build
+# locally with `maturin develop --release` (Python) or
+# `cargo build --release --features c_abi` (native) — see CLAUDE.md.
 
 on:
   push:

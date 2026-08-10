@@ -40,8 +40,8 @@ pub const PAVER_SIZE: usize = 10;
 ///
 /// **Single source of truth** for "which game patch does this build support".
 /// Bump it (and [`COMPATIBLE_GAMEDATA_MINORS`]) when the parsers are validated
-/// against a new patch — that one edit is what the rolling-release flow and
-/// every downstream consumer key off. Consumers read it through the
+/// against a new patch — that one edit is what every downstream consumer keys
+/// off. Consumers read it through the
 /// `crimson_parser_target_gamedata_minor()` C ABI instead of duplicating the
 /// number; before that bridge existed this had to be hand-bumped in lock-step
 /// on the C# side every patch (8 → 9 → 10 → 11 → 12 → 13 → 14 → 15 → 16 → 17).
