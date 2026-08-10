@@ -45,7 +45,7 @@ The fastest "did Pearl Abyss break anything?" loop:
     - `_probe_save_composite_types` — surveys every `(type_name, meta_size, meta_kind, decoded_kind)` triple in a live save, focusing on composite scalars (meta_kind 0/2 with size ∉ {1,2,4,8}). Drove the F32x3 / F32x4 / U32x4 typed-decode work in 2026-05-17; confirms Transform (40 B) is the only remaining size that falls through to `ScalarValue::Bytes`. Output to `out/composite_scalar_survey/summary.txt`.
 
    Invoke with `cargo test --lib --features c_abi <probe_name> -- --ignored --nocapture`.
-6. When the parsers are happy on the new version, **bump the rolling-release tag** in [`../.github/workflows/build.yml`](../.github/workflows/build.yml) (`tag: v1.0.<minor>.x`) so downstream sees the new wheel under the right minor. Optionally `gh release delete v1.0.<old>.x --yes` to retire the previous rolling release.
+6. ~~Bump the rolling-release tag in `build.yml`.~~ **No longer applicable** — `build.yml` and every `v1.0.<minor>.x` "Development Build" release were removed 2026-08-09 (no external consumers; see `../CLAUDE.md` → Development → Workflow). Nothing to publish on a new patch; `ci.yml` is the only workflow left.
 7. **Snapshot the per-table key lists.** Run [`dump_gamedata_keys.py`](dump_gamedata_keys.py) to write the new `data\gamedata-keys-<ver>\<table>.txt` directory. This is the cross-version anchor snapshot for every non-iteminfo gamedata table (skill, mission, quest, stage, gimmick, character, faction, store, mercenary, the dye triple, the niche bridges, etc. — 30 tables, ~93 K keys for 1.08). Keep it committed alongside the new `data\keys-<ver>.txt`; future-patch diffs read it the same way `keys-1.07.txt` already serves iteminfo cross-version comparisons.
 
 ### Validated patches

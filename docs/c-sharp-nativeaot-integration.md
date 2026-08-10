@@ -104,4 +104,4 @@ This still produces a single `.exe`, but at first run it unpacks `crimson_rs.dll
 - `c_abi` feature is independent of `python` — no PyO3 contamination of the static lib.
 - `.cargo/config.toml` already pins static-CRT for the MSVC target, so the static lib has no `VCRUNTIME140.dll` import for the NativeAOT linker to resolve.
 - All `extern "C"` surfaces use `#[unsafe(no_mangle)]` so the C# `[DllImport]` strings match the symbol table directly.
-- The CI build (see `.github/workflows/build.yml`) can be extended to upload `crimson_rs.lib` as a release artifact next to `crimson_rs.dll` whenever downstream needs a fresh static lib.
+- `cargo build --release --features c_abi` emits both `crimson_rs.dll` and `crimson_rs.lib` in one pass, so a fresh static lib is always one local build away. (There is no CI publish pipeline — the wheel/release workflow was removed 2026-08-09; `ci.yml` only lints and tests.)
