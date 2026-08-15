@@ -44,24 +44,18 @@ pub const PAVER_SIZE: usize = 10;
 /// off. Consumers read it through the
 /// `crimson_parser_target_gamedata_minor()` C ABI instead of duplicating the
 /// number; before that bridge existed this had to be hand-bumped in lock-step
-/// on the C# side every patch (8 → 9 → 10 → 11 → 12 → 13 → 14 → 15 → 16 → 17).
-pub const PARSER_TARGET_GAMEDATA_MINOR: u16 = 17;
+/// on the C# side every patch (8 → 9 → … → 15 → 16 → 17 → 18).
+pub const PARSER_TARGET_GAMEDATA_MINOR: u16 = 18;
 
 /// Every gamedata `minor` this build's parsers can load without mis-decoding.
 ///
 /// Always includes [`PARSER_TARGET_GAMEDATA_MINOR`]. Kept a single-element
-/// allow-list tracking just the target. The last *structural* change was 1.16,
-/// which dropped the head-side `inventory_info`, dropped
-/// `DockingChildData::unk_post_summon_tag`, inserted a block before
-/// `respawn_time_seconds` (swapping it with `unk_pre_max_endurance`), and moved
-/// `inventory_info` to the item end widened to `[u16; 9]` — plus the first-ever
-/// skill drift (`PostBuff::unk_pre_damage_type`). So 1.15 and earlier are not
-/// byte-compatible. 1.17 is a **content-only** patch over 1.16 (identical
-/// iteminfo layout, byte-identical `skill.pabgb`), so 1.16 is layout-compatible
-/// with this build and could be added here if accepting older installs
-/// mattered; the list stays target-only by convention. Widen it when a patch
-/// ships data an existing parser still reads byte-perfectly (a content-only
-/// patch, e.g. 1.06→1.07, 1.08→1.09, or this 1.16→1.17).
+/// allow-list tracking just the target. The last *structural* change was 1.18,
+/// which added a `u32` to every `MergedPrefabVisualData` element — so 1.17 and
+/// earlier are no longer byte-compatible (1.16 already broke compatibility with
+/// 1.15 and earlier via four iteminfo drifts plus the first-ever skill drift).
+/// Widen the list when a patch ships data an existing parser still reads
+/// byte-perfectly (a content-only patch, e.g. 1.06→1.07, 1.08→1.09, 1.16→1.17).
 pub const COMPATIBLE_GAMEDATA_MINORS: &[u16] = &[PARSER_TARGET_GAMEDATA_MINOR];
 
 /// Parsed version stamp from `meta/0.paver`.
