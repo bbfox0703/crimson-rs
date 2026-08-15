@@ -117,7 +117,7 @@ mod tests {
             return;
         };
         let entries = parse_house_info_lossy(&pabgb, &pabgh);
-        assert_eq!(entries.len(), 4, "expected 4 rows in 1.07");
+        assert_eq!(entries.len(), 12, "expected 12 rows in 1.18 (was 4 in 1.07-1.17)");
         let by_key: std::collections::HashMap<u32, &str> =
             entries.iter().map(|e| (e.key, e.name.as_str())).collect();
         for &(k, expected) in KNOWN {

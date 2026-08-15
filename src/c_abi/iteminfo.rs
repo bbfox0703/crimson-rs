@@ -2583,6 +2583,7 @@ mod tests {
 
         // ── Cross-check: count of items with IS_EQUIP_QUICK_SLOT_VISIBLE.
         // Was 949 on 1.08/1.09; 1.10 adds one more equip item → 950.
+        // 1.18's single new item (key 1005446, a cloak) is equipment → 1006.
         // A regression here flags either a parser bug or a game-content
         // drift large enough to need re-validation.
         let mut count = 0u32;
@@ -2605,8 +2606,8 @@ mod tests {
             }
         }
         assert_eq!(
-            visible, 1005,
-            "IS_EQUIP_QUICK_SLOT_VISIBLE count drifted (1.13 baseline 1005; 970 on 1.12, 950 on 1.10/1.11, 949 on 1.08/1.09)",
+            visible, 1006,
+            "IS_EQUIP_QUICK_SLOT_VISIBLE count drifted (1.18 baseline 1006; 1005 on 1.13-1.17, 970 on 1.12, 950 on 1.10/1.11, 949 on 1.08/1.09)",
         );
 
         // ── Negative path: unknown key → NOT_FOUND ─────────────────

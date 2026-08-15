@@ -102,7 +102,7 @@ mod tests {
             return;
         };
         let entries = parse_trigger_region_info_lossy(&pabgb, &pabgh);
-        assert_eq!(entries.len(), 12, "expected 12 rows in 1.07");
+        assert_eq!(entries.len(), 13, "expected 13 rows in 1.18 (was 12 in 1.07-1.17)");
         let by_key: std::collections::HashMap<u32, &str> =
             entries.iter().map(|e| (e.key, e.name.as_str())).collect();
         for &(k, expected) in KNOWN {

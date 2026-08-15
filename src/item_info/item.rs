@@ -3,6 +3,41 @@ use super::structs::*;
 use crate::binary::*;
 use crate::py_binary_struct;
 
+// ── ItemInfo (1.18) ─────────────────────────────────────────────────────────
+//
+// Crimson Desert 1.18 makes exactly ONE layout change relative to 1.17: every
+// `MergedPrefabVisualData` element gained a `u32` (`unk_pre_is_craft_material`)
+// between `tribe_gender_list` and the 3-byte flag tail. +1 net item
+// (6,572 → 6,573, key 1005446 `Demian_Greyfur_Fabric_Cloak_II`); iteminfo
+// 6,139,734 → 6,190,316 B (+50,582). RE'd via `scripts/diff_117_118.py`
+// (a clone of `diff_115_116.py`).
+//
+// Why the single-field read is safe:
+//
+//   * The insert lands at the *start* of `is_craft_material` in the 1.17 span
+//     map, i.e. after `tribe_gender_list` and before the flags — had it been
+//     appended after `unk_post_flag` the walk would have reported it against
+//     the following field instead, since the 3 flag bytes (values 0..=3) never
+//     match `73 e1 c5`.
+//   * The per-item insert count equals that item's 1.17 merged-element count
+//     on 5,794 of the 5,797 fully-realigned items (the 3 stragglers are items
+//     whose merged count itself changed), so the field is unconditional — not
+//     gated on a sibling the way 1.12's `unk_pre_gimmick_visual` is.
+//   * All 10,415 inserts observed in the walk carry the *same* value,
+//     `73 e1 c5 ea` (LE u32 `0xeac5e173`) — the "empty string" Jenkins
+//     sentinel already documented under 1.10 change #1 below.
+//   * Per-item size deltas are +4 × (merged element count): +0 (822 items),
+//     +4 (198), +8 (4,679), +12 (750), +16 (36), +20 (44), +24 (20). Nothing
+//     else moved.
+//
+// Two other length-changing signatures in the report are walk artifacts, NOT
+// drifts — each is one half of a compensating pair produced by 1.18 reordering
+// the `item_group_info_list` u16s (a pure value churn that dominates the diff):
+// `look_detail_mission_info rm:1B` (93×) pairs with `item_group_info_list[2]
+// rm:11B ins:12B` (54×) + `rm:9B ins:10B` (39×), and
+// `enable_alert_system_to_ui ins:1B` (5×) pairs with `item_group_info_list[2]
+// rm:6B ins:5B` (5×). Both net to zero bytes per item.
+//
 // ── ItemInfo (1.17) ─────────────────────────────────────────────────────────
 //
 // Content-only over 1.16 — no layout change, no parser edit. 6,581 → 6,572

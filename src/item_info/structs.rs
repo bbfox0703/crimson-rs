@@ -395,12 +395,24 @@ py_binary_struct! {
     /// (prefab) / `use_gimmick` (gimmick) / a new byte; values seen in 0..=3).
     /// Verified byte-perfect on all 6,508 1.13 items. See the "ItemInfo (1.13)"
     /// header in `item.rs`.
+    ///
+    /// 1.18 inserted `unk_pre_is_craft_material` before the flag tail — the
+    /// sole iteminfo layout change of that patch. See the "ItemInfo (1.18)"
+    /// header in `item.rs`.
     pub struct MergedPrefabVisualData {
         pub scale: [f32; 3],
         pub prefab_names: CArray<StringInfoKey>,
         pub animation_path_list: CArray<StringInfoKey>,
         pub equip_slot_list: CArray<u16>,
         pub tribe_gender_list: CArray<StringInfoKey>,
+        // 1.18: new u32 between `tribe_gender_list` and the flag tail. Reads
+        // the constant `0xeac5e173` on all 12,274 elements of all 6,573 items
+        // (zero exceptions) — the same "empty string" Jenkins
+        // sentinel that used to sit in the `money_icon_path` field removed in
+        // 1.10, so this is very likely a string/prefab name hash that ships
+        // unset. Typed as a bare u32 rather than StringInfoKey until a
+        // populated value shows up to confirm the referent.
+        pub unk_pre_is_craft_material: u32,
         // 3-byte flag tail. Provisional names: 1.12's PrefabData ended with
         // `is_craft_material` and GimmickVisualPrefabData with
         // `use_gimmick_prefab`; the merged element carries both plus a new byte

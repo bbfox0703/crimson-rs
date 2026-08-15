@@ -436,11 +436,24 @@ mod tests {
 
         // Sanity: slot_count distribution should be heavily right-skewed
         // (most prefabs have 1 slot; a handful have 10+).
+        let mut hist: std::collections::BTreeMap<u32, usize> = Default::default();
+        for e in &entries {
+            *hist.entry(e.slot_count()).or_default() += 1;
+        }
+        println!("slot_count histogram: {hist:?}");
         let count_1 = entries.iter().filter(|e| e.slot_count() == 1).count();
-        assert!(
-            count_1 > entries.len() / 4,
-            "expected at least 1/4 of prefabs to have slot_count=1; got {} of {}",
-            count_1,
+        // `slot_count == 1` must stay the modal bucket. The share itself
+        // drifts with content — it was comfortably over 1/4 through 1.17 but
+        // 1.18's 65 new rows pushed it to 399/1,619 (24.6%), so a fixed
+        // fraction is the wrong shape of check. Being the mode is what
+        // actually encodes "right-skewed", and a record-schema drift (the
+        // failure mode this guards, see the 1.12 / 1.13 notes above) scatters
+        // slot_count instead of merely shifting its share.
+        let modal = hist.iter().max_by_key(|&(_, n)| *n).map(|(k, n)| (*k, *n));
+        assert_eq!(
+            modal,
+            Some((1, count_1)),
+            "slot_count=1 should be the modal bucket ({count_1} of {}); histogram {hist:?}",
             entries.len(),
         );
 

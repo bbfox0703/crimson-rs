@@ -287,7 +287,7 @@ mod tests {
             unsafe { crimson_house_info_entry_count(sh, &mut count) },
             error::OK
         );
-        assert_eq!(count, 4, "expected 4 rows");
+        assert_eq!(count, 12, "expected 12 rows in 1.18 (was 4 in 1.07-1.17)");
         for &(key, expected) in KNOWN {
             let mut req: usize = 0;
             let rc1 = unsafe {
