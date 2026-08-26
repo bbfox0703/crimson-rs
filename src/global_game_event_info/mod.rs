@@ -176,15 +176,23 @@ mod tests {
     /// matches a `globalgameeventgroup` row; the paloc_key resolves
     /// the localized display name via the PALOC table.
     ///
-    /// `RoyalSupply` (0x424a) + `FactionBlockEvent_*` (group 0x4244)
-    /// have `paloc_key = 0` because their body shape lacks the
-    /// embedded PalocStringRef.
+    /// The `RoyalSupply_*` (group 0x4241) + `FactionBlockEvent_*`
+    /// (group 0x4244) rows have `paloc_key = 0` because their body
+    /// shape lacks the embedded PalocStringRef.
+    ///
+    /// 2.00 split the single `RoyalSupply` row (0x424a) into four
+    /// per-faction rows (0x4308–0x430b), which is the whole of that
+    /// patch's 188 → 191 delta (−1 +4). All four keep group 0x4241 and
+    /// the absent paloc, so they replace 0x424a here one-for-four.
     const KNOWN_BODY: &[(u32, u32, u64)] = &[
         // (key,    group_key, paloc_key)
         (0x4258, 0x4240, 72_945_724_555_969),  // Drought_Varnian
         (0x426b, 0x4240, 73_027_328_934_593),  // Flood_Demenissian
         (0x426c, 0x4240, 73_031_623_901_889),  // Typhoon_Delesyian
-        (0x424a, 0x4241, 0),                   // RoyalSupply (no paloc ref)
+        (0x4308, 0x4241, 0),                   // RoyalSupply_Her (no paloc ref)
+        (0x4309, 0x4241, 0),                   // RoyalSupply_Dem (no paloc ref)
+        (0x430a, 0x4241, 0),                   // RoyalSupply_Del (no paloc ref)
+        (0x430b, 0x4241, 0),                   // RoyalSupply_Var (no paloc ref)
     ];
 
     fn find_table_bytes() -> Option<(Vec<u8>, Vec<u8>)> {
@@ -338,7 +346,7 @@ mod tests {
             return;
         };
         let entries = parse_global_game_event_info_lossy(&pabgb, &pabgh);
-        assert_eq!(entries.len(), 188, "expected 188 rows in 1.08");
+        assert_eq!(entries.len(), 191, "expected 191 rows in 2.00 (was 188 in 1.08-1.18)");
         let by_key: std::collections::HashMap<u32, &str> =
             entries.iter().map(|e| (e.key, e.name.as_str())).collect();
         for &(k, expected) in KNOWN {
@@ -355,7 +363,7 @@ mod tests {
             return;
         };
         let entries = parse_global_game_event_info_lossy(&pabgb, &pabgh);
-        assert_eq!(entries.len(), 188);
+        assert_eq!(entries.len(), 191);
 
         let by_key: std::collections::HashMap<u32, &GlobalGameEventInfoEntry> =
             entries.iter().map(|e| (e.key, e)).collect();
@@ -389,8 +397,9 @@ mod tests {
 
         // PalocStringRef coverage: most rows have a non-zero
         // paloc_key. Per the body-RE doc the absent set is the
-        // RoyalSupply (1) + FactionBlockEvent_* (23) groups — that's
-        // 24/103 missing. ~76% should have a paloc_key.
+        // RoyalSupply + FactionBlockEvent_* (23) groups — 24/103 missing
+        // when RoyalSupply was one row, 27 missing since 2.00 split it
+        // into four. ~76% should have a paloc_key.
         let with_paloc = entries.iter().filter(|e| e.paloc_key != 0).count();
         eprintln!("paloc_key coverage: {}/{}", with_paloc, entries.len());
         assert!(

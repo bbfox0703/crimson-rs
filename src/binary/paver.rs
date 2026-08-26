@@ -11,8 +11,8 @@
 //!
 //! | Offset | Size | Field   | Notes                                                    |
 //! |-------:|-----:|---------|----------------------------------------------------------|
-//! |    0   |   2  | `major` | u16 — always `1` on every version shipped to date.       |
-//! |    2   |   2  | `minor` | u16 — the **schema-compatibility key**. `5..=14` so far. |
+//! |    0   |   2  | `major` | u16 — `1` through 1.18; Crimson Desert 2.00 bumps it to `2`. |
+//! |    2   |   2  | `minor` | u16 — the **schema-compatibility key**, and it *resets* on a major bump (1.18 → 2.00 goes `18` → `0`), so it only identifies a schema together with `major`. |
 //! |    4   |   2  | `patch` | u16 — sub-version (`1.08` → 0, `1.08.01` → 1).           |
 //! |    6   |   4  | `build` | u32 LE — opaque build id; bumps every PA hotfix.         |
 //!
@@ -22,6 +22,8 @@
 //! 1.06.xx: 01 00 06 00 ...
 //! 1.07.xx: 01 00 07 00 ...
 //! 1.08.00: 01 00 08 00 00 00 3e b0 39 dc   (build = 0xdc39b03e)
+//! 1.18.00: 01 00 12 00 00 00 0f 7c 57 28   (build = 0x28577c0f)
+//! 2.00.00: 02 00 00 00 00 00 14 d2 41 b2   (build = 0xb241d214)
 //! ```
 //!
 //! No HMAC / checksum protection on this file — it's plain bytes the
@@ -35,27 +37,42 @@ use crate::binary::{BinaryRead, BinaryWrite};
 /// On-disk size of `meta/0.paver`.
 pub const PAVER_SIZE: usize = 10;
 
+/// The Crimson Desert gamedata `major` version this build's parsers target.
+///
+/// `1` for every patch through 1.18; Crimson Desert 2.00 is the first major
+/// bump. It matters because [`PARSER_TARGET_GAMEDATA_MINOR`] *resets* across
+/// one (1.18 → 2.00 is minor `18` → `0`), so a minor-only compatibility check
+/// can no longer tell 2.00 apart from a hypothetical 1.00. Consumers read it
+/// through the `crimson_parser_target_gamedata_major()` C ABI.
+pub const PARSER_TARGET_GAMEDATA_MAJOR: u16 = 2;
+
 /// The Crimson Desert gamedata `minor` version this build's parsers
 /// (iteminfo / skill / save body + the gamedata bridges) target.
 ///
-/// **Single source of truth** for "which game patch does this build support".
+/// **Single source of truth** for "which game patch does this build support",
+/// together with [`PARSER_TARGET_GAMEDATA_MAJOR`] — read them as the pair
+/// `(major, minor)`, since the minor resets on a major bump.
 /// Bump it (and [`COMPATIBLE_GAMEDATA_MINORS`]) when the parsers are validated
 /// against a new patch — that one edit is what every downstream consumer keys
 /// off. Consumers read it through the
 /// `crimson_parser_target_gamedata_minor()` C ABI instead of duplicating the
 /// number; before that bridge existed this had to be hand-bumped in lock-step
-/// on the C# side every patch (8 → 9 → … → 15 → 16 → 17 → 18).
-pub const PARSER_TARGET_GAMEDATA_MINOR: u16 = 18;
+/// on the C# side every patch (8 → 9 → … → 16 → 17 → 18 → 2.00's 0).
+pub const PARSER_TARGET_GAMEDATA_MINOR: u16 = 0;
 
 /// Every gamedata `minor` this build's parsers can load without mis-decoding.
 ///
 /// Always includes [`PARSER_TARGET_GAMEDATA_MINOR`]. Kept a single-element
-/// allow-list tracking just the target. The last *structural* change was 1.18,
-/// which added a `u32` to every `MergedPrefabVisualData` element — so 1.17 and
-/// earlier are no longer byte-compatible (1.16 already broke compatibility with
-/// 1.15 and earlier via four iteminfo drifts plus the first-ever skill drift).
+/// allow-list tracking just the target. The last *structural* change was 2.00,
+/// which widened `SubItem` to tag 18 and inserted a `u32` between
+/// `respawn_time_seconds` and `max_endurance` — so 1.18 and earlier are no
+/// longer byte-compatible (1.18 had already broken compatibility with 1.17 via
+/// the `MergedPrefabVisualData` u32, and 1.16 with 1.15 via four iteminfo
+/// drifts plus the first-ever skill drift).
 /// Widen the list when a patch ships data an existing parser still reads
 /// byte-perfectly (a content-only patch, e.g. 1.06→1.07, 1.08→1.09, 1.16→1.17).
+/// Entries are `minor`s *within* [`PARSER_TARGET_GAMEDATA_MAJOR`] — a minor
+/// from a different major says nothing about compatibility.
 pub const COMPATIBLE_GAMEDATA_MINORS: &[u16] = &[PARSER_TARGET_GAMEDATA_MINOR];
 
 /// Parsed version stamp from `meta/0.paver`.

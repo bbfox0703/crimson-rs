@@ -407,7 +407,8 @@ py_binary_struct! {
         pub tribe_gender_list: CArray<StringInfoKey>,
         // 1.18: new u32 between `tribe_gender_list` and the flag tail. Reads
         // the constant `0xeac5e173` on all 12,274 elements of all 6,573 items
-        // (zero exceptions) — the same "empty string" Jenkins
+        // in 1.18 and on all 12,550 elements of all 6,810 items in 2.00
+        // (zero exceptions in either) — the same "empty string" Jenkins
         // sentinel that used to sit in the `money_icon_path` field removed in
         // 1.10, so this is very likely a string/prefab name hash that ships
         // unset. Typed as a bare u32 rather than StringInfoKey until a
@@ -547,7 +548,11 @@ impl<'a> BinaryRead<'a> for SubItem {
             // 1.12: tag 16 — items that read tag 15 (None) in 1.11 now read
             // tag 16; still payload-free (verified byte-aligned vs 1.11), so
             // it joins the None arm. Affects both SubItem sites.
-            14..=17 => SubItemValue::None,
+            // 1.13: tag 17, same renumbering. 2.00: tag 18, likewise — every
+            // site that read 17 in 1.18 reads 18 in 2.00 and the bytes stay
+            // aligned (flipping just those tag bytes in a 1.18 item reproduces
+            // the 2.00 item byte-for-byte), so tag 18 is payload-free too.
+            14..=18 => SubItemValue::None,
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -575,7 +580,7 @@ impl<'a> BinaryReadTracked<'a> for SubItem {
             0 => SubItemValue::Item(ItemKey::read_tracked(data, offset, path, ranges)?),
             3 => SubItemValue::Character(CharacterKey::read_tracked(data, offset, path, ranges)?),
             9 => SubItemValue::Gimmick(GimmickInfoKey::read_tracked(data, offset, path, ranges)?),
-            14..=17 => SubItemValue::None,
+            14..=18 => SubItemValue::None,
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -626,7 +631,7 @@ impl WritePyValue for SubItem {
                 let v: u32 = get_field(d, "value")?.extract()?;
                 w.extend_from_slice(&v.to_le_bytes());
             }
-            14..=17 => {}
+            14..=18 => {}
             _ => {
                 return Err(PyValueError::new_err(format!(
                     "invalid SubItem type_id: {}",
