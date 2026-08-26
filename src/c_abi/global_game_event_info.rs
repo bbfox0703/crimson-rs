@@ -334,7 +334,11 @@ mod tests {
         (0x4258, 0x4240, 72_945_724_555_969),
         (0x426b, 0x4240, 73_027_328_934_593),
         (0x426c, 0x4240, 73_031_623_901_889),
-        (0x424a, 0x4241, 0), // RoyalSupply — paloc absent
+        // 2.00 split RoyalSupply (0x424a) into four per-faction rows.
+        (0x4308, 0x4241, 0), // RoyalSupply_Her — paloc absent
+        (0x4309, 0x4241, 0), // RoyalSupply_Dem — paloc absent
+        (0x430a, 0x4241, 0), // RoyalSupply_Del — paloc absent
+        (0x430b, 0x4241, 0), // RoyalSupply_Var — paloc absent
     ];
 
     fn find_pamt() -> Option<PathBuf> {
@@ -416,7 +420,7 @@ mod tests {
             unsafe { crimson_global_game_event_info_entry_count(sh, &mut count) },
             error::OK,
         );
-        assert_eq!(count, 188);
+        assert_eq!(count, 191); // 2.00 (was 188 in 1.08-1.18)
         for &(key, expected) in KNOWN {
             let mut req: usize = 0;
             assert_eq!(

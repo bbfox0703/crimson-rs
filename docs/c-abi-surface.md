@@ -67,19 +67,27 @@ PALOC display name → fuzzy match → NPC head-shot DDS path.
 - `crimson_paver_read_from_file` / `crimson_paver_read_from_bytes` — decode the
   install's `meta/0.paver` version stamp into `(major, minor, patch, build)`
   (accepts the file path or the install root, auto-appending `meta/0.paver`).
+- `crimson_parser_target_gamedata_major() -> u16` — the gamedata `major` this
+  build's parsers target (currently **2**). Added for Crimson Desert 2.00, the
+  first major bump: the `minor` *resets* across one (1.18 → 2.00 is `18` → `0`),
+  so a minor-only check can no longer identify a schema on its own. A sound gate
+  compares the install's `(major, minor)` against this and the minor bridge.
+  Backs onto `crate::binary::paver::PARSER_TARGET_GAMEDATA_MAJOR`.
 - `crimson_parser_target_gamedata_minor() -> u16` — the gamedata `minor` this
-  build's parsers target (currently 15). **Single source of truth**: the value
-  lives in `crate::binary::paver::PARSER_TARGET_GAMEDATA_MINOR`, so a new patch
-  is one Rust bump and every consumer follows — no more lock-step
+  build's parsers target (currently **0**, i.e. 2.00). **Single source of
+  truth**: the value lives in `crate::binary::paver::PARSER_TARGET_GAMEDATA_MINOR`,
+  so a new patch is one Rust bump and every consumer follows — no more lock-step
   `ParserTargetMinor` edits on the C# side (promoting this killed the 5th such
-  manual bump, 8→9→10→11→12). Infallible direct return (the only non-`i32`
-  surface — a pure compile-time constant has no error path).
+  manual bump, 8→9→10→11→12). Infallible direct return (these two are the only
+  non-`i32` surfaces — a pure compile-time constant has no error path).
 - `crimson_parser_compatible_gamedata_minors(out_buf, cap, out_count) -> i32` —
   the allow-list of gamedata minors this build can load (first-call sizing:
   `null`/`cap=0` → `BUFFER_TOO_SMALL` with `out_count`; refill at that size →
   `OK`). Drives the consumer's `CompatibleMinors` / `IsCompatibleWithParser`;
   the target minor is always present in the set. Both back onto
-  `crate::binary::paver::COMPATIBLE_GAMEDATA_MINORS`.
+  `crate::binary::paver::COMPATIBLE_GAMEDATA_MINORS`. Entries are minors
+  *within* the target major — read them alongside
+  `crimson_parser_target_gamedata_major()`.
 
 ### Status & remaining work
 
@@ -134,6 +142,7 @@ src/
     │                       #   (ActiveEquip/ActiveUseReserve/Inventory/MercenaryEquip/MercenaryInventory)
     ├── checksum.rs          # crimson_calculate_checksum (Jenkins hash hop helper)
     ├── paver.rs             # crimson_paver_read_from_file/_bytes (game-install version stamp)
+    │                         # + crimson_parser_target_gamedata_major/_minor, _compatible_gamedata_minors
     ├── iteminfo.rs          # ItemKey → string_key / max_stack / icon_path_hash /
                              #   look_detail_mission_info (item→challenge) +
                              #   artifact_for_mission (challenge→artifact reverse, 1:1) /

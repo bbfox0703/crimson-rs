@@ -3,6 +3,54 @@ use super::structs::*;
 use crate::binary::*;
 use crate::py_binary_struct;
 
+// ── ItemInfo (2.00) ─────────────────────────────────────────────────────────
+//
+// Crimson Desert 2.00 is the first *major* bump (`meta/0.paver` goes
+// 1/18/0/0x28577c0f → 2/0/0/0xb241d214 — note the minor resets to 0). It makes
+// TWO layout changes relative to 1.18. +237 net items (6,573 → 6,810, none
+// removed); iteminfo.pabgb 6,190,316 → 6,446,719 B (+256,403). Full
+// `serialize_iteminfo` round-trip is byte-identical on the live binary
+// (in == out, 6,810 items, 0 skipped), and `export_for_ce.py` reports
+// `ok=6,810 leftover=0 fail=0 no_anchor=0`.
+//
+//   1. `SubItem` (structs.rs) gained `type_id == 18` — payload-free, joining
+//      the 14..=17 None arm. This is the same renumbering 1.12 (tag 16) and
+//      1.13 (tag 17) did: in 2.00 *every* site that read 17 reads 18, at both
+//      SubItem sites (item-level `default_sub_item` on all 6,810 items, and
+//      `drop_default_data.default_sub_item` on 6,806 — the other 4 read tag 0).
+//      No item still reads 14..=17. Payload-free is confirmed byte-wise: on a
+//      carried-over item, flipping only those two tag bytes in the 1.18 bytes
+//      keeps the rest aligned.
+//
+//   2. A new `u32` (`unk_pre_max_endurance_a`, 0 on all 6,810 items) was
+//      inserted ahead of the 1.12-era `unk_pre_max_endurance`, so the block
+//      before `respawn_time_seconds` now carries two u32s. **Unconditional**:
+//      6,513 of the 6,573 items carried over from 1.18 are exactly +4 B (the
+//      other 60 also changed content), and on 1,500 sampled carry-overs
+//      `old[max_endurance..] == new[max_endurance + 4..]` byte-for-byte,
+//      1500/1500.
+//
+// Why the insert lands *there* and not 4 or 12 bytes later — the byte diff
+// alone cannot say, because the whole run is zeros on most items and all three
+// candidate positions round-trip byte-perfectly. What settles it is the same
+// value-sanity argument the 1.16 swap rests on (see change #3 in the 1.16
+// header): only with the new u32 read **first** do both known distributions
+// survive 1.18 → 2.00 unchanged —
+//
+//   * `unk_pre_max_endurance` still reads `0x01000000` on exactly the 59
+//     `Trade_*_PackedInVehicle` items and 0 on the other 6,751, and
+//   * `respawn_time_seconds` still reads 0 (6,053) / -1 (755) / 604800 (2 —
+//     `Item_Egg_KuKu` and `Item_Egg_Wyvern`, i.e. 7 days).
+//
+// Reading the new u32 *after* `unk_pre_max_endurance` drags the `0x01000000`
+// into it and leaves `unk_pre_max_endurance` dead; reading it after
+// `respawn_time_seconds` additionally turns the two eggs' 604800 into
+// `604800 << 32` and -1 into `-4294967296`. Both are the nonsense signature
+// 1.16 taught us to reject.
+//
+// The 1.18 `MergedPrefabVisualData.unk_pre_is_craft_material` sentinel is
+// unchanged: still the constant `0xeac5e173`, now on all 12,550 elements.
+//
 // ── ItemInfo (1.18) ─────────────────────────────────────────────────────────
 //
 // Crimson Desert 1.18 makes exactly ONE layout change relative to 1.17: every
@@ -491,6 +539,24 @@ py_binary_struct! {
         pub unk_pre_respawn_flag: u8,
         pub unk_pre_respawn_data_list: CArray<UnkPreRespawnData>,
         pub unk_post_respawn_data_list: u8,
+        // 2.00 inserted this u32 — 0 on all 6,810 items — directly ahead of
+        // the 1.12-era `unk_pre_max_endurance`, so the block now carries two
+        // u32s before `respawn_time_seconds`. Unconditional: 6,513 of the
+        // 6,573 items carried over from 1.18 grew by exactly 4 B and nothing
+        // else in the item moved.
+        //
+        // Position matters and is *not* settled by the byte diff — an insert
+        // anywhere in this all-zero run reproduces the same bytes. It is
+        // settled by which reading keeps the two known value distributions
+        // intact, the same argument the 1.16 swap below rests on: only with
+        // the new u32 *first* does `unk_pre_max_endurance` still read
+        // 0x01000000 on exactly the 59 `Trade_*_PackedInVehicle` items and
+        // `respawn_time_seconds` still read 0 / -1 / 604800. Placing it after
+        // `unk_pre_max_endurance` (or after `respawn_time_seconds`) round-trips
+        // just as byte-perfectly while dragging 0x01000000 into the wrong field
+        // and turning the two `Item_Egg_*` items' 7-day respawn into
+        // 604800 << 32.
+        pub unk_pre_max_endurance_a: u32,
         // 1.12 inserted this u32 (0 on every item through 1.15; in 1.16 it
         // reads 0x01000000 on the 59 `Trade_*_PackedInVehicle` items and 0
         // everywhere else). 1.16 also moved it from

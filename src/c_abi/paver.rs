@@ -21,7 +21,9 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 
 use super::error;
-use crate::binary::paver::{COMPATIBLE_GAMEDATA_MINORS, PARSER_TARGET_GAMEDATA_MINOR, Paver};
+use crate::binary::paver::{
+    COMPATIBLE_GAMEDATA_MINORS, PARSER_TARGET_GAMEDATA_MAJOR, PARSER_TARGET_GAMEDATA_MINOR, Paver,
+};
 
 /// Parse `meta/0.paver` from disk into the four version components.
 ///
@@ -142,6 +144,22 @@ pub unsafe extern "C" fn crimson_paver_read_from_bytes(
         error::OK
     }))
     .unwrap_or(error::PANIC)
+}
+
+/// The Crimson Desert gamedata `major` version this build's parsers target.
+///
+/// Companion to [`crimson_parser_target_gamedata_minor`]: since Crimson Desert
+/// 2.00 the `minor` resets on a major bump (1.18 → 2.00 is `18` → `0`), so a
+/// minor-only check can no longer identify a schema on its own. A consumer that
+/// wants a sound gate compares the install's `meta/0.paver` `(major, minor)`
+/// against this and the minor bridge.
+///
+/// Infallible — returns the compile-time constant
+/// [`crate::binary::paver::PARSER_TARGET_GAMEDATA_MAJOR`] directly (no error
+/// code, no out-pointer).
+#[unsafe(no_mangle)]
+pub extern "C" fn crimson_parser_target_gamedata_major() -> u16 {
+    PARSER_TARGET_GAMEDATA_MAJOR
 }
 
 /// The Crimson Desert gamedata `minor` version this build's parsers target.
@@ -323,14 +341,26 @@ mod tests {
             )
         };
         assert_eq!(rc, error::OK);
-        // Pin the major (always 1 in the shipped versions) and assert the live
-        // install's minor matches the parser's target — i.e. the dev box is on
-        // the patch this build supports. Driving off the constant means the
-        // single Rust bump keeps this test honest too (no separate edit).
-        assert_eq!(major, 1);
+        // Assert the live install's (major, minor) matches the parser's
+        // target — i.e. the dev box is on the patch this build supports. The
+        // major used to be pinned to the literal 1; 2.00 made it a real
+        // component, so both halves now drive off the constants and the single
+        // Rust bump keeps this test honest (no separate edit).
+        assert_eq!(
+            major, PARSER_TARGET_GAMEDATA_MAJOR,
+            "live game install major should match PARSER_TARGET_GAMEDATA_MAJOR in this test environment",
+        );
         assert_eq!(
             minor, PARSER_TARGET_GAMEDATA_MINOR,
             "live game install minor should match PARSER_TARGET_GAMEDATA_MINOR in this test environment",
+        );
+    }
+
+    #[test]
+    fn parser_target_gamedata_major_returns_constant() {
+        assert_eq!(
+            crimson_parser_target_gamedata_major(),
+            PARSER_TARGET_GAMEDATA_MAJOR
         );
     }
 
