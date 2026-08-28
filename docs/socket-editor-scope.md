@@ -14,6 +14,27 @@ two remaining transitions:
 > `crimson_save_set_scalar_field_present` / batch variant already
 > handle both transitions, end-to-end round-trip proven byte-perfect
 > by `c_abi_socket_insert_then_remove_roundtrip_slot104`.
+>
+> Update (2026-08-28, game 2.00): still no new C ABI required, but
+> **two write rules in this doc were wrong or incomplete and shipped a
+> real bug**. A socket edit that violates either makes the game
+> discard the item's entire socket block — every socket reads back
+> in-game as not-yet-opened, with no error visible from the format
+> side. Both are now measured against **22,019** socket-bearing
+> `ItemSaveData` blocks in four game-written saves (`slot0`,
+> `slot101`, `slot104`, `slot107`) rather than slot104 alone:
+>
+> 1. [`_currentEndurance` is the gem's own
+>    `iteminfo.max_endurance`](#gem-_currentendurance--it-is-the-gems-iteminfomax_endurance)
+>    — not a sentinel the editor classifies gems into.
+> 2. [`_validSocketCount` absent ≠
+>    `0`](#_validsocketcount--absent-is-not-zero) — opening the first
+>    socket is a presence promotion, and a gem must never sit outside
+>    the opened window.
+>
+> Plus one primitive-level trap for callers that batch:
+> [promote-then-write-in-place is invalid inside a deferred
+> batch](#mutations--existing-c-abi-is-sufficient).
 
 ---
 
@@ -30,9 +51,11 @@ each configured to exercise one socket-state permutation:
 | 4 | 5 | 5 | 1,3,5 (1002979); 2,4 empty | sparse-filled pattern (odd) |
 | 5 | 5 | 5 | 2,4 (1002979); 1,3,5 empty | inverse sparse pattern (even) |
 
-Item **1002979** (爆走的力量審判) is a high-durability gem
-(`_endurance` ~100 per instance — verified 99/100 in the dumps).
-Vanilla gems are durability-less.
+Item **1002979** (暴走的力量審判) is a durability-bearing gem
+(`max_endurance` 100 — verified 99/100 in the dumps). It is one of
+only 14 such gems in the 190-entry canonical gem set; the other 176
+carry `max_endurance = 65535` and the client draws no durability row
+for them. See the `_currentEndurance` section.
 
 The probe that dumps this layout is
 [`_probe_item_socket_data`](../src/c_abi/character_info.rs) — re-run
@@ -52,7 +75,8 @@ exhaustive within the saves observed.
 ItemSaveData (one item slot in the inventory)
 ├── [ 7] _endurance: u16                  // weapon's own durability
 ├── [11] _maxSocketCount: u8              // ALWAYS 5 — save-side padding constant
-├── [12] _validSocketCount: u8            // currently OPENED slots (0..=5)
+├── [12] _validSocketCount: u8            // currently OPENED slots (1..=5;
+│                                        //   ABSENT means none — never 0)
 └── [13] _socketSaveDataList: ObjectList<ItemSocketSaveData>
         count == _maxSocketCount (always 5)
         Each element's mask byte tells you whether THAT physical slot is filled.
@@ -125,23 +149,99 @@ Both shapes are validated by round-trip tests:
   — EquipmentSaveData case (remove→reinsert on a filled socket; works
   even when the user's CE-modified items have no empty slots)
 
-### Gem `_currentEndurance` encoding — 0xFFFF sentinel
+### Gem `_currentEndurance` — it is the gem's `iteminfo.max_endurance`
 
-The per-socket `_currentEndurance: u16` distinguishes durability-bearing
-gems from no-durability gems via a sentinel:
+> Revised 2026-08-28. The earlier text framed `0xFFFF` as a
+> *no-durability sentinel* the editor had to classify gems into. The
+> observation was right — `0xFFFF` really does mark a gem the game
+> treats as having no durability — but the framing hid the simpler
+> rule underneath it, and an editor written to the old text got the
+> value wrong on every durability-bearing gem. See the consequence
+> below; it is not cosmetic.
 
-| Gem class | Encoding | Examples seen on slot104 |
-|---|---|---|
-| Has durability | `0..=100` (or whatever the gem's own `_endurance` max is) | 1002972/1002973/1002974/1002979 — typically `99..100` |
-| **No durability** | `0xFFFF` (= 65535, max u16) | 1002815, 1002848 (also seen in the equipped armor) |
+**The rule.** A freshly-socketed gem's `_currentEndurance` is that
+gem's own `iteminfo.max_endurance`, read straight off the item:
 
-When inserting a gem the editor MUST pick the right sentinel:
-- Look up the gem's iteminfo to determine if it has durability
-- If yes: write `_currentEndurance = <gem's max durability>` (typically 100)
-- If no: write `_currentEndurance = 0xFFFF`
+```rust
+// crimson_iteminfo_lookup_max_endurance(handle, gem_key, &mut out)
+_currentEndurance = iteminfo[gem_key].max_endurance
+```
 
-Writing the wrong sentinel probably won't crash but may show oddly
-in the gem-removal NPC UI.
+There is no classification step and no sentinel to pick. `0xFFFF` is
+not a magic value the save format assigns to durability-less gems —
+it is simply what `max_endurance` *holds* for them, and the save
+copies it like any other cap. A worn gem sits **below** its cap
+(`99` / `95` observed); nothing ever sits above it.
+
+#### Why we believe this — three independent lines of evidence
+
+**1. Gamedata partitions the canonical gem set cleanly.** Over the
+190-entry canonical gem set (`item_type == 74 && category_info ==
+2501`) on the live 2.00 install, `max_endurance` takes exactly two
+values:
+
+| `max_endurance` | Gems | Which |
+|---:|---:|---|
+| `100` | **14** | the `AbyssGear_*_Special` family — item keys 1002862 and 1002969..1002982 (1002971 is absent) |
+| `65535` | **176** | every other gem |
+
+No third bucket, no gradient. The 14 are exactly the set a player
+recognises as the durability-bearing "暴走 / Greater" gems.
+
+**2. The in-game tooltip agrees with `max_endurance`, item by item.**
+Two gems, both `item_type 74` / `category_info 2501`, differing only
+in this field:
+
+| Item key | `string_key` | `max_endurance` | In-game tooltip |
+|---:|---|---:|---|
+| `1002815` | `Item_Stat_AbyssGear_MoveSpeedRate_LV3` | `65535` | 移動速度 Lv.3 — **no durability row at all** |
+| `1002974` | `Item_Stat_AbyssGear_ElectricityResistance_Special` | `100` | 雷電抗性 Lv5 — **耐久度 100/100** |
+
+So `max_endurance == 0xFFFF` is what the client itself reads as "this
+gem has no durability, don't draw the row". That is the affirmative
+evidence for the original claim, and it is also why the claim and the
+rule above are the same statement rather than competing ones.
+
+**3. The save corpus never deviates.** Four game-written saves
+(`slot0` / `slot101` / `slot104` / `slot107`) hold **22,019** blocks
+carrying `_socketSaveDataList`, of which **734 sockets are filled**
+across **54 distinct gems**. Every one of those 734 carries either its
+gem's `max_endurance` or a lower worn value — never a higher one. Per
+gem the values are deterministic, and crucially **no gem ever mixes
+`65535` with a real durability value**:
+
+| Gem | `max_endurance` | Values seen in saves | n |
+|---:|---:|---|---:|
+| `1002979` | `100` | `100` ×69, `99` ×2 | 71 |
+| `1002974` | `100` | `100` ×42, `95` ×8 | 50 |
+| `1002815` | `65535` | `65535` ×20 | 20 |
+
+If `65535` were a per-socket sentinel rather than the gem's cap, a
+durability gem would have to show it at least once. None does.
+
+#### Consequence of getting it wrong
+
+CrimsonAtomtic's socket editor implemented the old "pick the right
+sentinel" text as a constant `0xFFFF`, so every durability-bearing gem
+it inserted landed at `current > max`. The reported symptom was that
+**every socket on the edited item reads back in-game as not-yet-opened
+(未開封)** — gems included — while the save still loads and still
+passes HMAC. The rejection is at the engine's own validation layer, so
+there is nothing to observe from the format side.
+
+**Be precise about what that does and doesn't prove.** The same editor
+was violating the [`_validSocketCount`
+rule](#_validsocketcount--absent-is-not-zero) at the same time, and
+*that* violation is mechanically proven to produce the state (the ABI
+returns `NOT_SCALAR`, the count stays absent, and the gem provably sits
+outside the opened window). The two were not isolated from each other,
+so the independent in-game effect of an over-cap `_currentEndurance`
+is **not** established here.
+
+What *is* established is that `current > max` is a value the game
+itself never writes — 22,019 items, zero exceptions — so an editor has
+no reason to produce it and no basis for predicting how the engine
+treats it. Write `max_endurance`. Both rules have to hold anyway.
 
 ### Slot encoding (verified)
 
@@ -160,6 +260,61 @@ in the gem-removal NPC UI.
 > 1-byte mask difference between filled `[0x03]` and empty `[0x00]`
 > accounts for the 6-byte size difference, which is exactly
 > `sizeof(u16) + sizeof(u32)`).
+
+### `_validSocketCount` — absent is not zero
+
+> Added 2026-08-28, alongside the `_currentEndurance` revision above.
+> The schema block near the top of this doc describes the field as
+> `u8 // currently OPENED slots (0..=5)`, which reads as though `0` is
+> how a never-socketed item is stored. It is not, and an editor that
+> assumed so could not open a socket at all.
+
+The game encodes "no socket has ever been opened on this item" by
+leaving `_validSocketCount` **absent from the presence mask**. It
+never writes an explicit `0`.
+
+Of the 22,019 blocks carrying `_socketSaveDataList` in the four
+reference saves, **16,463 hold a 0-element list** — ordinary
+non-socket items (consumables, materials, …), where
+`_maxSocketCount` and `_validSocketCount` are both absent. The
+socket-capable population is the other **5,556**, every one with a
+5-element list:
+
+| `_validSocketCount` | Items | Meaning |
+|---|---:|---|
+| **absent** | 5,278 | socket-capable, never opened |
+| `1` | 27 | |
+| `2` | 88 | |
+| `3` | 73 | |
+| `5` | 90 | |
+| `0` | **0** | **never observed — this encoding does not exist** |
+
+(No `4` either, but that is a content accident, not a rule.)
+
+Two consequences for a mutating editor:
+
+1. **Opening the first socket is a presence promotion, not a scalar
+   write.** `crimson_save_set_scalar_field_path` resolves the leaf's
+   byte range and rejects an absent field with `NOT_SCALAR (-12)`,
+   because an absent field has no range. Use
+   `crimson_save_set_scalar_field_present(make_present = 1,
+   init_bytes = [n])` instead. Raising an already-present count is an
+   ordinary scalar write.
+2. **A filled socket must never sit at an index the count doesn't
+   cover.** All **734** filled sockets in the corpus sit inside their
+   item's opened window; **zero** sit outside it. An editor that
+   writes a gem without first opening the slot produces the state
+   behind CrimsonAtomtic's bug report: the item comes back in-game
+   with every socket sealed, gem invisible. So open the slot *before*
+   writing the gem — that ordering also means a failure to open leaves
+   the save consistent instead of stranding a gem outside the
+   window.
+
+Note this is a **save-internal** invariant and is unrelated to
+gamedata's `socket_valid_count`, which is advisory only — see caveat
+2 below. Forcing `_validSocketCount` above the vanilla cap (e.g. 5 on
+an item gamedata caps at 3, or at 0) is accepted by the engine and
+confirmed working in-game by the maintainer.
 
 ### Cross-check on item-level `_endurance`
 
@@ -186,17 +341,47 @@ existing length-changing primitives. No new ABI needed.
 
 | Editor action | C ABI calls |
 |---|---|
-| **Replace gem in slot N** | `crimson_save_set_scalar_field_path` on `_itemKey` (+ optionally `_currentEndurance` if gem has durability) — what the editor already does. |
+| **Replace gem in slot N** | `crimson_save_set_scalar_field_path` on `_itemKey` **and** `_currentEndurance` — the latter is not optional, see the `_currentEndurance` section. |
 | **Insert gem into empty opened slot N** | Two `crimson_save_set_scalar_field_present(make_present=1, init_bytes=…)` ops, or one `crimson_save_set_scalar_fields_present_batch` with two ops. One per field (`_currentEndurance` + `_itemKey`). The path descends `_inventorylist → _itemList → _socketSaveDataList`, with `socket_elem_idx = N`. |
 | **Remove gem from slot N** | Mirror of insert: two `crimson_save_set_scalar_field_present(make_present=0)` ops (no init bytes needed). |
-| **Open a new socket (`_validSocketCount += 1`)** | Single `crimson_save_set_scalar_field_path` on field index 12 (`_validSocketCount`, u8). No list mutation needed — the list entry was already there from save creation. |
-| **Close a socket (`_validSocketCount -= 1`)** | Same as above. **Caller must ensure** the higher-index slot is empty first (mask=[0x00]); leaving a gem in a >valid_count slot probably hides it from the in-game UI but doesn't crash the save. |
+| **Open a new socket (raise `_validSocketCount` to N+1)** | **Two cases, and they take different primitives.** Field *present* → `crimson_save_set_scalar_field_path` on field index 12. Field *absent* (the common case — 21,742 of 22,019 items) → `crimson_save_set_scalar_field_present(make_present=1, init_bytes=[n])`; the scalar setter returns `NOT_SCALAR (-12)` here. No list mutation either way — the list entries were already there from save creation. Do this **before** writing the gem. |
+| **Close a socket (lower `_validSocketCount`)** | Scalar write, same field. **Caller must ensure** every slot at or above the new count is empty first (mask=`[0x00]`) — a gem left outside the window is a state the game never writes and the engine rejects the item's whole socket block for it. |
+
+> **Deferred batches change which of these are valid.** Inside a
+> `crimson_save_begin_deferred_redecode` batch,
+> `set_scalar_field_present` leaves the promoted field's decoded byte
+> range at `start == end == 0` until the commit re-decodes — see the
+> comment in `toggle_one_scalar_presence_in_place`
+> ([`src/c_abi/mod.rs`](../src/c_abi/mod.rs)): *"start/end are stale
+> but the encoder ignores them for scalar emission; they'll be
+> refreshed by the re-decode."* A follow-up
+> `set_scalar_field_path` on that same field therefore computes
+> `expected = 0` and fails `LENGTH_MISMATCH`. In immediate mode the
+> per-call re-decode hides this completely.
+>
+> So **do not promote a field and then write it in place within one
+> batch.** Either compute the final value before promoting, or raise it
+> through the presence surface — which writes from `init_bytes` and
+> never reads `start`/`end`. Note `present(1)` on an already-present
+> field is a documented no-op, so the latter takes a `present(0)` then
+> `present(1, value)` pair.
+>
+> This is the shape that bit CrimsonAtomtic's "apply a gem set"
+> action: it wraps its per-slot loop in a deferred batch, so on a
+> never-socketed item the first slot promoted `_validSocketCount` to 1
+> and every subsequent slot's raise failed — silently dropping every
+> gem after the first.
 
 ### Insert example (pseudocode for the C# editor)
 
 ```csharp
-// Insert gem (itemkey 1002979, endurance 100) into socket index N of
-// item at (inv_elem M, item_elem K) in InventorySaveData block B.
+// Insert gem (itemkey 1002979) into socket index N of item at
+// (inv_elem M, item_elem K) in InventorySaveData block B.
+//
+// The endurance is NOT a constant: it is the gem's own
+// iteminfo.max_endurance (100 for this key; 65535 for a
+// durability-less gem). Assume the slot has already been opened —
+// see the _validSocketCount section.
 
 var path = new CrimsonPathStep[] {
     new() { field_idx = INV_LIST_FIELD,    element_idx = (uint)M },
@@ -204,7 +389,8 @@ var path = new CrimsonPathStep[] {
     new() { field_idx = SOCKET_LIST_FIELD, element_idx = (uint)N },
 };
 
-byte[] endurance = BitConverter.GetBytes((ushort)100);
+ushort max = 0;   // crimson_iteminfo_lookup_max_endurance(iteminfo, 1002979, &max)
+byte[] endurance = BitConverter.GetBytes(max);
 byte[] itemKey   = BitConverter.GetBytes((uint)1002979);
 
 var ops = new CrimsonScalarPresentBatchOp[] {
@@ -284,19 +470,29 @@ mutation directions (fill→clear vs clear→fill).
    `socket_valid_count` is around 1–2 vanilla. Engine accepts it,
    gem-removal NPC interface gets confused.
 
-   **Editor recommendation**: validate user inputs against
-   `iteminfo.socket_valid_count` (the gamedata cap), warn when the
-   target slot index exceeds it. The save-side `_validSocketCount`
-   is whatever the player has historically opened — trust it for the
-   list-element addressing, but compare against gamedata before
-   showing "Open new socket" UI.
+   **Editor recommendation**: never gate on
+   `iteminfo.socket_valid_count`. Confirmed in-game by the maintainer
+   (2026-08-28): forcing an item to 5 opened sockets works fine even
+   where gamedata caps it lower — and gamedata's cap can be
+   misleadingly low anyway. Weapon `201004` (格萊斯刺劍) reports
+   `use_socket = 1, socket_valid_count = 0`, yet the *game itself*
+   wrote `_validSocketCount` 2 and 3 on the player's own copies of it.
+   Treat the gamedata cap as advisory at most. The save-side
+   `_validSocketCount` is the load-bearing value — trust it for
+   list-element addressing, and keep the save-internal invariant
+   (`filled index < _validSocketCount`), which is the one the engine
+   actually enforces.
 
-3. **Gem `_endurance` interpretation**. Gems like 1002979 carry their
-   own `_endurance` (u16, ~100 max). Whether the gem's durability ticks
-   down with use is engine behaviour, not save-format behaviour. The
-   editor can set any u16 value; the engine's clamp is unknown but the
-   verified `99/100` values across slot104's filled sockets show the
-   game rounds down with use (some sockets have been "used" once).
+3. **Gem `_endurance` interpretation** — *resolved 2026-08-28, see
+   the [`_currentEndurance`
+   section](#gem-_currentendurance--it-is-the-gems-iteminfomax_endurance).*
+   The open question here used to be "the engine's clamp is unknown".
+   It is now known well enough to act on: the cap is the gem's
+   `iteminfo.max_endurance`, a fresh gem is written *at* it, and worn
+   gems sit below it. The editor is still free to write any u16, but
+   writing **above** the cap is not a cosmetic choice — the engine
+   discards the host item's whole socket block. Whether durability
+   ticks down per use remains engine behaviour we don't model.
 
 4. **`_transferredItemKey`**. All 5 tridents have
    `_transferredItemKey = 0xbb0f0101` (= `(itemkey << 8) | 0x0101`).
