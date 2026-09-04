@@ -537,6 +537,7 @@ mod tests {
     //! install isn't present (same pattern as `test_paloc_parse` in
     //! lib.rs).
 
+    use crate::binary::gamedata_layout;
     use super::*;
     use std::ffi::CString;
     use std::path::PathBuf;
@@ -599,37 +600,50 @@ mod tests {
             return;
         };
         let pamt = CString::new(pamt_path.to_str().unwrap()).unwrap();
-        let dir = CString::new("gamedata/stringtable/binary__").unwrap();
-        let name = CString::new("localizationstring_eng.paloc").unwrap();
-
-        let bytes = extract_via_abi(&pamt, &dir, &name)
-            .expect("English PALOC must extract cleanly from 0020/0.pamt");
-
-        // Sanity: the extracted bytes should parse as a real PALOC.
-        // Use the C ABI loader to prove the extract → load round-trip
-        // works without going through any Rust-only API.
-        let mut handle: *mut super::super::paloc::CrimsonPalocHandle = ptr::null_mut();
-        let rc = unsafe {
-            super::super::paloc::crimson_paloc_load_from_bytes(
-                bytes.as_ptr(),
-                bytes.len(),
-                &mut handle,
-            )
+        // One blob per language through 2.00; 2.01 split it into 39
+        // per-namespace files. Extract whatever the install ships and sum —
+        // the whole-language total is what the >10k assertion is about.
+        let Some((dir_path, names)) = gamedata_layout::paloc_files("0020", "eng") else {
+            panic!("no English paloc in 0020/0.pamt");
         };
-        assert_eq!(rc, error::OK, "extracted PALOC must parse");
-        assert!(!handle.is_null());
+        let dir = CString::new(dir_path).unwrap();
 
-        let mut count: u32 = 0;
-        assert_eq!(
-            unsafe { super::super::paloc::crimson_paloc_entry_count(handle, &mut count) },
-            error::OK
-        );
+        let mut total: u32 = 0;
+        for file_name in &names {
+            let name = CString::new(file_name.as_str()).unwrap();
+            let bytes = extract_via_abi(&pamt, &dir, &name).unwrap_or_else(|rc| {
+                panic!("{file_name} must extract cleanly from 0020/0.pamt (rc={rc})")
+            });
+
+            // Sanity: the extracted bytes should parse as a real PALOC.
+            // Use the C ABI loader to prove the extract → load round-trip
+            // works without going through any Rust-only API.
+            let mut handle: *mut super::super::paloc::CrimsonPalocHandle = ptr::null_mut();
+            let rc = unsafe {
+                super::super::paloc::crimson_paloc_load_from_bytes(
+                    bytes.as_ptr(),
+                    bytes.len(),
+                    &mut handle,
+                )
+            };
+            assert_eq!(rc, error::OK, "extracted PALOC {file_name} must parse");
+            assert!(!handle.is_null());
+
+            let mut count: u32 = 0;
+            assert_eq!(
+                unsafe { super::super::paloc::crimson_paloc_entry_count(handle, &mut count) },
+                error::OK
+            );
+            total += count;
+
+            unsafe { super::super::paloc::crimson_paloc_free(handle) };
+        }
+
         assert!(
-            count > 10_000,
-            "1.06 English PALOC should have >10k entries, got {count}"
+            total > 10_000,
+            "English PALOC should have >10k entries across {} file(s), got {total}",
+            names.len()
         );
-
-        unsafe { super::super::paloc::crimson_paloc_free(handle) };
     }
 
     #[test]

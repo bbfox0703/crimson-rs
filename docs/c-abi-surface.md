@@ -74,7 +74,7 @@ PALOC display name → fuzzy match → NPC head-shot DDS path.
   compares the install's `(major, minor)` against this and the minor bridge.
   Backs onto `crate::binary::paver::PARSER_TARGET_GAMEDATA_MAJOR`.
 - `crimson_parser_target_gamedata_minor() -> u16` — the gamedata `minor` this
-  build's parsers target (currently **0**, i.e. 2.00). **Single source of
+  build's parsers target (currently **1**, i.e. 2.01). **Single source of
   truth**: the value lives in `crate::binary::paver::PARSER_TARGET_GAMEDATA_MINOR`,
   so a new patch is one Rust bump and every consumer follows — no more lock-step
   `ParserTargetMinor` edits on the C# side (promoting this killed the 5th such
@@ -91,7 +91,7 @@ PALOC display name → fuzzy match → NPC head-shot DDS path.
 
 ### Status & remaining work
 
-322 tests pass with `c_abi` (+43 ignored diagnostic probes); the bare-default
+334 tests pass with `c_abi` (+45 ignored diagnostic probes); the bare-default
 build (`cargo check --lib`) is also clean; clippy clean both modes. The Jenkins
 hash-hop transform that drives Mission/Quest/Stage/Knowledge title resolution is
 cracked and pinned. CharacterKey ships at the 22% display-name coverage §6
@@ -113,7 +113,11 @@ Remaining work is **optional follow-ons only**:
 (e) extending the portrait matcher with mesh / customisation tokens;
 (f) PALOC chain probe for StoreKey / MercenaryKey if a downstream editor wants
     localized display names;
-(g) RE'ing storeinfo's per-row body (price/item lists).
+(g) RE'ing storeinfo's per-row body (price/item lists);
+(h) RE'ing **which** of 2.01's four 3-byte mask groups a dye slot uses — the
+    bytes are exposed (`..._lookup_slot_mask_full`) but the group selector's
+    meaning is not yet known (see [`dye-editor-scope.md`](dye-editor-scope.md)
+    "Cross-version drift (2.01)").
 
 ## Rust module structure
 
@@ -126,6 +130,9 @@ src/
 │   ├── pamt.rs, papgt.rs    # PAMT / PAPGT parse + write
 │   ├── paz.rs               # PackGroupBuilder, compression, PAZ creation
 │   ├── paloc.rs             # PALOC parse/write (numeric + symbolic keys)
+│   ├── gamedata_layout.rs   # #[cfg(test)] — which archive layout the live install
+│   │                        #   ships (2.01 renamed the gamedata dir + every
+│   │                        #   extension); newest-first with fallback
 │   ├── paver.rs             # meta/0.paver version-stamp reader
 │   └── trie.rs              # Trie buffer read + build (radix-compressed)
 ├── crypto/
@@ -181,7 +188,11 @@ src/
     ├── part_prefab_dye_slot_info.rs           # PartPrefabKey (u32) → slot_count + per-slot default materials
     │                                           #   (replaces dye_slot_counts.json); 1.13 adds
     │                                           #   lookup_slot_extra_layer_{count,material,mask,flag} for the
-    │                                           #   new second per-slot dye layer ("expanded dyeable equipment")
+    │                                           #   new second per-slot dye layer ("expanded dyeable equipment");
+    │                                           #   2.01 widened the mask 3 → 12 bytes, so lookup_slot_mask and
+    │                                           #   ..._extra_layer_mask are partial reads there and
+    │                                           #   ..._mask_full / ..._extra_layer_mask_full return the whole
+    │                                           #   field via the sized-buffer pattern
     ├── faction_node_info.rs                   # FactionNodeKey (u32) → "Node_Her_Temporary_Camp" etc. (name only, no PALOC chain)
     ├── faction_spawn_data_info.rs             # FactionSpawnDataKey (u32) → "FactionSpawn_GlenbrightManor_Grace_ReedDevil" etc.
     ├── faction_relation_group_info.rs         # FactionRelationGroupKey (u16-widened-u32) → "Graymane"/"FriendlyCombat"/"HostileCombat"/"NPC_Common"/"Monster_Common"

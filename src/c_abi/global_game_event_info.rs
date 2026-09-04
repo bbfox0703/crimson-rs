@@ -314,6 +314,7 @@ pub unsafe extern "C" fn crimson_global_game_event_info_get_entry(
 
 #[cfg(test)]
 mod tests {
+    use crate::binary::gamedata_layout;
     use super::*;
     use crate::c_abi::error;
     use crate::c_abi::paz::crimson_paz_extract_file;
@@ -387,13 +388,13 @@ mod tests {
         let pamt = CString::new(pamt_path.to_str().unwrap()).unwrap();
         let pabgb = extract_file(
             pamt.as_c_str(),
-            "gamedata/binary__/client/bin",
-            "globalgameevent.pabgb",
+            gamedata_layout::bin_dir(),
+            &gamedata_layout::body("globalgameevent"),
         );
         let pabgh = extract_file(
             pamt.as_c_str(),
-            "gamedata/binary__/client/bin",
-            "globalgameevent.pabgh",
+            gamedata_layout::bin_dir(),
+            &gamedata_layout::header("globalgameevent"),
         );
         let mut sh: *mut CrimsonGlobalGameEventInfoHandle = ptr::null_mut();
         let rc = unsafe {

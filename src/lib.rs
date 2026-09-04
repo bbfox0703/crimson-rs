@@ -93,6 +93,7 @@ pub fn crimson_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 #[cfg(test)]
 mod tests {
+    use crate::binary::gamedata_layout;
     use crate::binary::BinaryRead;
     use crate::binary::BinaryWrite;
     use crate::binary::paloc::LocalizationFile;
@@ -221,46 +222,17 @@ mod tests {
     }
 
     fn extract_paloc_data() -> Option<Vec<u8>> {
-        extract_paloc_from_archive("0020", "localizationstring_eng.paloc")
+        extract_paloc_from_archive("0020", "eng")
     }
 
     /// Returns `None` (with a skip notice on stderr) if the game install
     /// isn't present so tests can fall through gracefully.
-    fn extract_paloc_from_archive(group: &str, file_name: &str) -> Option<Vec<u8>> {
-        use crate::binary::paz;
-        use std::path::Path;
-
-        let group_dir = Path::new(GAME_DIR).join(group);
-        let pamt_path = group_dir.join("0.pamt");
-        let pamt_data = match std::fs::read(&pamt_path) {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("skipping: {}: {}", pamt_path.display(), e);
-                return None;
-            }
-        };
-        let pamt = PackMeta::parse(&pamt_data, None).unwrap();
-
-        let dir = pamt
-            .directories
-            .iter()
-            .find(|d| d.path == "gamedata/stringtable/binary__")
-            .expect("directory not found in pamt");
-        let file = dir
-            .files
-            .iter()
-            .find(|f| f.name == file_name)
-            .unwrap_or_else(|| panic!("{} not found", file_name));
-
-        Some(
-            paz::extract_file(
-                &group_dir,
-                file,
-                "gamedata/stringtable/binary__",
-                &pamt.header.encrypt_info.encrypt_info,
-            )
-            .unwrap(),
-        )
+    fn extract_paloc_from_archive(group: &str, lang: &str) -> Option<Vec<u8>> {
+        let data = gamedata_layout::paloc_bytes(group, lang);
+        if data.is_none() {
+            eprintln!("skipping: no {lang} paloc in group {group} of {GAME_DIR}");
+        }
+        data
     }
 
     #[test]
@@ -283,18 +255,32 @@ mod tests {
 
     #[test]
     fn test_paloc_roundtrip() {
-        let Some(data) = extract_paloc_data() else {
+        roundtrip_paloc_files("0020", "eng");
+    }
+
+    /// Roundtrip every paloc file of one language **as it sits on disk**.
+    /// Pre-2.01 that is one blob; 2.01+ it is 39 per-namespace files, and
+    /// each has to come back byte-identical on its own — the merged blob
+    /// `gamedata_layout::paloc_bytes` builds is a re-serialisation, so
+    /// checking that instead would only prove self-consistency.
+    fn roundtrip_paloc_files(group: &str, lang: &str) {
+        let Some(blobs) = gamedata_layout::paloc_blobs(group, lang) else {
+            eprintln!("skipping: no {lang} paloc in group {group} of {GAME_DIR}");
             return;
         };
-        let paloc = LocalizationFile::parse(&data).unwrap();
-        let written = paloc.to_bytes().unwrap();
-        assert_eq!(written.len(), data.len(), "paloc roundtrip size mismatch");
-        assert_eq!(written, data, "paloc roundtrip bytes mismatch");
+        assert!(!blobs.is_empty());
+        for (name, data) in blobs {
+            let paloc = LocalizationFile::parse(&data)
+                .unwrap_or_else(|e| panic!("{name}: parse failed: {e}"));
+            let written = paloc.to_bytes().unwrap();
+            assert_eq!(written.len(), data.len(), "{name}: roundtrip size mismatch");
+            assert_eq!(written, data, "{name}: roundtrip bytes mismatch");
+        }
     }
 
     #[test]
     fn test_paloc_kor_parse() {
-        let Some(data) = extract_paloc_from_archive("0019", "localizationstring_kor.paloc")
+        let Some(data) = extract_paloc_from_archive("0019", "kor")
         else {
             return;
         };
@@ -312,10 +298,10 @@ mod tests {
 
     #[test]
     fn test_skill_roundtrip_1_05() {
-        let Some(pabgh) = extract_skill_from_archive(GAME_DIR, "skill.pabgh") else {
+        let Some(pabgh) = extract_skill_from_archive(GAME_DIR, &gamedata_layout::header("skill")) else {
             return;
         };
-        let Some(pabgb) = extract_skill_from_archive(GAME_DIR, "skill.pabgb") else {
+        let Some(pabgb) = extract_skill_from_archive(GAME_DIR, &gamedata_layout::body("skill")) else {
             return;
         };
         run_skill_roundtrip("1.05 (live game install)", &pabgh, &pabgb);
@@ -333,11 +319,11 @@ mod tests {
     #[ignore]
     fn _probe_skill_entry_failures() {
         use crate::skill_info::{SkillData, probe_entry_failures};
-        let Some(pabgh) = extract_skill_from_archive(GAME_DIR, "skill.pabgh") else {
+        let Some(pabgh) = extract_skill_from_archive(GAME_DIR, &gamedata_layout::header("skill")) else {
             eprintln!("skipping: live install not found");
             return;
         };
-        let Some(pabgb) = extract_skill_from_archive(GAME_DIR, "skill.pabgb") else {
+        let Some(pabgb) = extract_skill_from_archive(GAME_DIR, &gamedata_layout::body("skill")) else {
             return;
         };
         let report = probe_entry_failures(&pabgh, &pabgb)
@@ -367,11 +353,11 @@ mod tests {
         const VERSIONED_ROOT: &str = r"G:\我的雲端硬碟\temp\Crimson Desert";
         for version in ["1.03.01", "1.04.01", "1.05.01"] {
             let game_dir = format!(r"{}\{}", VERSIONED_ROOT, version);
-            let Some(pabgh) = extract_skill_from_archive(&game_dir, "skill.pabgh") else {
+            let Some(pabgh) = extract_skill_from_archive(&game_dir, &gamedata_layout::header("skill")) else {
                 eprintln!("skipping {}: install not found", version);
                 continue;
             };
-            let Some(pabgb) = extract_skill_from_archive(&game_dir, "skill.pabgb") else {
+            let Some(pabgb) = extract_skill_from_archive(&game_dir, &gamedata_layout::body("skill")) else {
                 continue;
             };
             run_skill_roundtrip(version, &pabgh, &pabgb);
@@ -420,7 +406,7 @@ mod tests {
         let dir = pamt
             .directories
             .iter()
-            .find(|d| d.path == "gamedata/binary__/client/bin")
+            .find(|d| d.path == gamedata_layout::bin_dir())
             .expect("dir not found");
         let file = dir
             .files
@@ -431,7 +417,7 @@ mod tests {
             paz::extract_file(
                 &group_dir,
                 file,
-                "gamedata/binary__/client/bin",
+                gamedata_layout::bin_dir(),
                 &pamt.header.encrypt_info.encrypt_info,
             )
             .unwrap(),
@@ -440,18 +426,7 @@ mod tests {
 
     #[test]
     fn test_paloc_kor_roundtrip() {
-        let Some(data) = extract_paloc_from_archive("0019", "localizationstring_kor.paloc")
-        else {
-            return;
-        };
-        let paloc = LocalizationFile::parse(&data).unwrap();
-        let written = paloc.to_bytes().unwrap();
-        assert_eq!(
-            written.len(),
-            data.len(),
-            "paloc kor roundtrip size mismatch"
-        );
-        assert_eq!(written, data, "paloc kor roundtrip bytes mismatch");
+        roundtrip_paloc_files("0019", "kor");
     }
 
     #[test]

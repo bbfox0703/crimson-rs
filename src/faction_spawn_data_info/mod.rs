@@ -80,6 +80,7 @@ mod tests {
     //! Live-install integration test against the real
     //! `factionspawndatainfo.pabgb` + `.pabgh`.
 
+    use crate::binary::gamedata_layout;
     use super::*;
     use std::path::PathBuf;
 
@@ -103,27 +104,27 @@ mod tests {
         let dir = pamt
             .directories
             .iter()
-            .find(|d| d.path == "gamedata/binary__/client/bin")?;
+            .find(|d| d.path == gamedata_layout::bin_dir())?;
         let pabgb_file = dir
             .files
             .iter()
-            .find(|f| f.name == "factionspawndatainfo.pabgb")?;
+            .find(|f| f.name == gamedata_layout::body("factionspawndatainfo"))?;
         let pabgh_file = dir
             .files
             .iter()
-            .find(|f| f.name == "factionspawndatainfo.pabgh")?;
+            .find(|f| f.name == gamedata_layout::header("factionspawndatainfo"))?;
         let group_dir = game_root.join("0008");
         let pabgb = crate::binary::paz::extract_file(
             &group_dir,
             pabgb_file,
-            "gamedata/binary__/client/bin",
+            gamedata_layout::bin_dir(),
             &pamt.header.encrypt_info.encrypt_info,
         )
         .ok()?;
         let pabgh = crate::binary::paz::extract_file(
             &group_dir,
             pabgh_file,
-            "gamedata/binary__/client/bin",
+            gamedata_layout::bin_dir(),
             &pamt.header.encrypt_info.encrypt_info,
         )
         .ok()?;

@@ -92,6 +92,7 @@ mod tests {
     //! or PABGH header shape is caught immediately. Skips cleanly when
     //! the game install isn't present.
 
+    use crate::binary::gamedata_layout;
     use super::*;
     use std::path::PathBuf;
 
@@ -118,21 +119,21 @@ mod tests {
         let dir = pamt
             .directories
             .iter()
-            .find(|d| d.path == "gamedata/binary__/client/bin")?;
+            .find(|d| d.path == gamedata_layout::bin_dir())?;
         let pabgb_file = dir.files.iter().find(|f| f.name == format!("{stem}.pabgb"))?;
         let pabgh_file = dir.files.iter().find(|f| f.name == format!("{stem}.pabgh"))?;
         let group_dir = game_root.join("0008");
         let pabgb = crate::binary::paz::extract_file(
             &group_dir,
             pabgb_file,
-            "gamedata/binary__/client/bin",
+            gamedata_layout::bin_dir(),
             &pamt.header.encrypt_info.encrypt_info,
         )
         .ok()?;
         let pabgh = crate::binary::paz::extract_file(
             &group_dir,
             pabgh_file,
-            "gamedata/binary__/client/bin",
+            gamedata_layout::bin_dir(),
             &pamt.header.encrypt_info.encrypt_info,
         )
         .ok()?;

@@ -314,6 +314,7 @@ mod tests {
     //! garbage, OUT_OF_RANGE, NOT_FOUND) uses synthetic inputs that
     //! exercise the wrappers without needing valid skill bytes.
 
+    use crate::binary::gamedata_layout;
     use super::*;
     use crate::c_abi::paz::crimson_paz_extract_file;
     use std::ffi::{CStr, CString};
@@ -332,7 +333,7 @@ mod tests {
 
     /// Pull one of the skill files via the standard PAZ path.
     fn extract_skill_bytes(pamt: &CStr, file_name: &str) -> Vec<u8> {
-        let dir = CString::new("gamedata/binary__/client/bin").unwrap();
+        let dir = CString::new(gamedata_layout::bin_dir()).unwrap();
         let name = CString::new(file_name).unwrap();
         let mut needed: usize = 0;
         let rc = unsafe {
@@ -371,8 +372,8 @@ mod tests {
             return;
         };
         let pamt = CString::new(pamt_path.to_str().unwrap()).unwrap();
-        let pabgh = extract_skill_bytes(pamt.as_c_str(), "skill.pabgh");
-        let pabgb = extract_skill_bytes(pamt.as_c_str(), "skill.pabgb");
+        let pabgh = extract_skill_bytes(pamt.as_c_str(), &gamedata_layout::header("skill"));
+        let pabgb = extract_skill_bytes(pamt.as_c_str(), &gamedata_layout::body("skill"));
 
         let mut handle: *mut CrimsonSkillInfoHandle = ptr::null_mut();
         assert_eq!(

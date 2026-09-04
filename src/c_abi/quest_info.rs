@@ -412,6 +412,7 @@ mod tests {
     //! `(QuestKey, internal_name, lo32, display_title)` tuples from
     //! `docs/save-editor-keys-plan.md`.
 
+    use crate::binary::gamedata_layout;
     use super::*;
     use crate::c_abi::paloc::{crimson_paloc_free, crimson_paloc_load_from_bytes};
     use crate::c_abi::paz::crimson_paz_extract_file;
@@ -497,8 +498,8 @@ mod tests {
         let pamt = CString::new(pamt_path.to_str().unwrap()).unwrap();
         let quest_bytes = extract_file(
             pamt.as_c_str(),
-            "gamedata/binary__/client/bin",
-            "questinfo.pabgb",
+            gamedata_layout::bin_dir(),
+            &gamedata_layout::body("questinfo"),
         );
 
         let mut qh: *mut CrimsonQuestInfoHandle = ptr::null_mut();
@@ -528,17 +529,13 @@ mod tests {
             p.push("0.pamt");
             p
         };
-        let Some(paloc_pamt) = paloc_pamt.is_file().then_some(paloc_pamt) else {
+        if !paloc_pamt.is_file() {
             eprintln!("skipping paloc chain: no 0020/0.pamt");
             unsafe { crimson_questinfo_free(qh) };
             return;
-        };
-        let paloc_pamt_c = CString::new(paloc_pamt.to_str().unwrap()).unwrap();
-        let paloc_bytes = extract_file(
-            paloc_pamt_c.as_c_str(),
-            "gamedata/stringtable/binary__",
-            "localizationstring_eng.paloc",
-        );
+        }
+        let paloc_bytes = gamedata_layout::paloc_bytes("0020", "eng")
+            .expect("eng paloc must load from 0020");
         let mut ph: *mut CrimsonPalocHandle = ptr::null_mut();
         let rc = unsafe {
             crimson_paloc_load_from_bytes(paloc_bytes.as_ptr(), paloc_bytes.len(), &mut ph)
@@ -619,13 +616,13 @@ mod tests {
         let pamt = CString::new(pamt_path.to_str().unwrap()).unwrap();
         let q_pabgb = extract_file(
             pamt.as_c_str(),
-            "gamedata/binary__/client/bin",
-            "questinfo.pabgb",
+            gamedata_layout::bin_dir(),
+            &gamedata_layout::body("questinfo"),
         );
         let q_pabgh = extract_file(
             pamt.as_c_str(),
-            "gamedata/binary__/client/bin",
-            "questinfo.pabgh",
+            gamedata_layout::bin_dir(),
+            &gamedata_layout::header("questinfo"),
         );
 
         let mut anchor_h: *mut CrimsonQuestInfoHandle = ptr::null_mut();

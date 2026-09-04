@@ -9,8 +9,10 @@
 //! - `lookup_slot_default_material(prefab_key, slot_idx, mat_idx)` —
 //!   the per-slot default material that the editor can pre-populate
 //!   in its dye dropdowns (richer than the JSON ever was).
-//! - `lookup_slot_mat_indices` / `lookup_slot_mask` — raw 3-byte
-//!   arrays for advanced UI / debugging.
+//! - `lookup_slot_mat_indices` / `lookup_slot_mask` — raw 3-byte arrays
+//!   for advanced UI / debugging. The mask is **12 bytes on 2.01+**, so
+//!   `lookup_slot_mask` is a partial read there; `lookup_slot_mask_full`
+//!   returns the whole field via the sized-buffer pattern.
 //! - `lookup_slot_tail_name` — next sub-prefab name (or, for the
 //!   LAST slot in a row, the full `.pac` asset path).
 //! - `lookup_slot_extra_layer_count` / `..._extra_layer_material` /
@@ -343,7 +345,16 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_mat_indic
     .unwrap_or(error::PANIC)
 }
 
-/// Read the 3 mask bytes into `out_mask[0..3]`.
+/// Read the first 3 mask bytes into `out_mask[0..3]`.
+///
+/// **Partial since 2.01.** The on-disk mask is 12 bytes there, re-encoded
+/// as four groups of three, and a slot's active group is often not the
+/// first — this returns all zeros for those. The pre-2.01 three-byte
+/// values do not survive anywhere in the new field, so there is no way to
+/// keep the old meaning; kept at 3 bytes because widening it would
+/// overrun every existing caller's buffer. **Use
+/// [`crimson_part_prefab_dye_slot_info_lookup_slot_mask_full`] instead**
+/// unless you specifically need the legacy 3-byte shape.
 ///
 /// # Safety
 /// `handle` and `out_mask` must be non-null; `out_mask` must point to
@@ -370,6 +381,51 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_mask(
             std::ptr::copy_nonoverlapping(slot.mask.as_ptr(), out_mask, 3);
         }
         error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Read a slot's **complete** mask into `buf` (12 bytes on 2.01+, 3 on
+/// 1.07-2.00), sized-buffer style.
+///
+/// Prefer this over [`crimson_part_prefab_dye_slot_info_lookup_slot_mask`],
+/// which only ever copies the first 3 bytes and so reads all-zero on the
+/// 2.01+ slots whose active group is not the first.
+///
+/// Two-call: pass `buf_len = 0` to learn the width via `*required`, then
+/// call again with a buffer that big. `BUFFER_TOO_SMALL` (with `*required`
+/// set) means the field is wider than the buffer — including after a
+/// future patch widens it again, which is why this takes a length instead
+/// of a fixed-size out-param.
+///
+/// The 12 bytes read as four groups of three; a slot uses one, two, three
+/// or no group, never all four. See
+/// [`crate::part_prefab_dye_slot_info::PartPrefabDyeSlot::mask`].
+///
+/// # Safety
+/// `handle` and `required` must be non-null. `buf` may be null only when
+/// `buf_len` is 0; otherwise it must point to `buf_len` writable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_mask_full(
+    handle: *const CrimsonPartPrefabDyeSlotInfoHandle,
+    prefab_key: u32,
+    slot_idx: u32,
+    buf: *mut u8,
+    buf_len: usize,
+    required: *mut usize,
+) -> i32 {
+    if handle.is_null() || required.is_null() || (buf.is_null() && buf_len != 0) {
+        return error::NULL_ARG;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let Some(row) = h.by_key.get(&prefab_key) else {
+            return error::NOT_FOUND;
+        };
+        let Some(slot) = row.slots.get(slot_idx as usize) else {
+            return error::OUT_OF_RANGE;
+        };
+        write_bytes_to_buf(&slot.mask, buf, buf_len, required)
     }))
     .unwrap_or(error::PANIC)
 }
@@ -462,8 +518,10 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_extra_lay
     .unwrap_or(error::PANIC)
 }
 
-/// Read extra layer `layer_idx`'s 3 mask bytes on `slot_idx` into
-/// `out_mask[0..3]`.
+/// Read the first 3 of extra layer `layer_idx`'s mask bytes on `slot_idx`
+/// into `out_mask[0..3]`. Same 2.01 partial-read caveat as
+/// [`crimson_part_prefab_dye_slot_info_lookup_slot_mask`] — prefer
+/// [`crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_mask_full`].
 ///
 /// # Safety
 /// `handle` and `out_mask` must be non-null; `out_mask` must point to
@@ -494,6 +552,44 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_extra_lay
             std::ptr::copy_nonoverlapping(layer.mask.as_ptr(), out_mask, 3);
         }
         error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Read an extra layer's **complete** mask into `buf` (12 bytes on 2.01+,
+/// 3 on 1.13-2.00), sized-buffer style. Full-width companion to
+/// [`crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_mask`];
+/// same two-call contract as
+/// [`crimson_part_prefab_dye_slot_info_lookup_slot_mask_full`].
+///
+/// # Safety
+/// `handle` and `required` must be non-null. `buf` may be null only when
+/// `buf_len` is 0; otherwise it must point to `buf_len` writable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_mask_full(
+    handle: *const CrimsonPartPrefabDyeSlotInfoHandle,
+    prefab_key: u32,
+    slot_idx: u32,
+    layer_idx: u32,
+    buf: *mut u8,
+    buf_len: usize,
+    required: *mut usize,
+) -> i32 {
+    if handle.is_null() || required.is_null() || (buf.is_null() && buf_len != 0) {
+        return error::NULL_ARG;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let Some(row) = h.by_key.get(&prefab_key) else {
+            return error::NOT_FOUND;
+        };
+        let Some(slot) = row.slots.get(slot_idx as usize) else {
+            return error::OUT_OF_RANGE;
+        };
+        let Some(layer) = slot.extra_layers.get(layer_idx as usize) else {
+            return error::OUT_OF_RANGE;
+        };
+        write_bytes_to_buf(&layer.mask, buf, buf_len, required)
     }))
     .unwrap_or(error::PANIC)
 }
@@ -558,6 +654,26 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_get_entry_key(
     .unwrap_or(error::PANIC)
 }
 
+/// Sized-buffer writer for a raw byte field (no NUL terminator — unlike
+/// [`write_str_to_buf`], the caller gets an exact-length blob).
+///
+/// Always sets `*required` to the field's true width, so the standard
+/// two-call flow works: call once with `buf_len = 0` to size, then again
+/// with a buffer that big. A field that widens in a future patch reports
+/// the new width and returns `BUFFER_TOO_SMALL` rather than silently
+/// truncating — which is exactly how the 3-byte `..._mask` getters
+/// degraded when 2.01 widened the mask to 12.
+fn write_bytes_to_buf(src: &[u8], buf: *mut u8, buf_len: usize, required: *mut usize) -> i32 {
+    unsafe { *required = src.len() };
+    if buf_len < src.len() {
+        return error::BUFFER_TOO_SMALL;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(src.as_ptr(), buf, src.len());
+    }
+    error::OK
+}
+
 fn write_str_to_buf(
     src: &str,
     buf: *mut u8,
@@ -582,6 +698,7 @@ mod tests {
     //! of (key, prefab_name, slot_count) tuples; exercises per-slot
     //! getters on the multi-slot known row.
 
+    use crate::binary::gamedata_layout;
     use super::*;
     use std::path::PathBuf;
     use std::ptr;
@@ -614,27 +731,27 @@ mod tests {
         let dir = pamt
             .directories
             .iter()
-            .find(|d| d.path == "gamedata/binary__/client/bin")?;
+            .find(|d| d.path == gamedata_layout::bin_dir())?;
         let pabgb_file = dir
             .files
             .iter()
-            .find(|f| f.name == "partprefabdyeslotinfo.pabgb")?;
+            .find(|f| f.name == gamedata_layout::body("partprefabdyeslotinfo"))?;
         let pabgh_file = dir
             .files
             .iter()
-            .find(|f| f.name == "partprefabdyeslotinfo.pabgh")?;
+            .find(|f| f.name == gamedata_layout::header("partprefabdyeslotinfo"))?;
         let group_dir = game_root.join("0008");
         let pabgb = crate::binary::paz::extract_file(
             &group_dir,
             pabgb_file,
-            "gamedata/binary__/client/bin",
+            gamedata_layout::bin_dir(),
             &pamt.header.encrypt_info.encrypt_info,
         )
         .ok()?;
         let pabgh = crate::binary::paz::extract_file(
             &group_dir,
             pabgh_file,
-            "gamedata/binary__/client/bin",
+            gamedata_layout::bin_dir(),
             &pamt.header.encrypt_info.encrypt_info,
         )
         .ok()?;
@@ -795,6 +912,94 @@ mod tests {
             error::OK
         );
 
+        // Full-width mask: two-call sizing, then the bytes. The width is
+        // 12 on 2.01+ and 3 on 1.07-2.00, so assert against whatever the
+        // install reports rather than pinning a number.
+        let mut need: usize = 0;
+        assert_eq!(
+            unsafe {
+                crimson_part_prefab_dye_slot_info_lookup_slot_mask_full(
+                    h,
+                    vest,
+                    0,
+                    ptr::null_mut(),
+                    0,
+                    &mut need,
+                )
+            },
+            error::BUFFER_TOO_SMALL,
+            "sizing call must report BUFFER_TOO_SMALL"
+        );
+        assert!(need == 12 || need == 3, "unexpected mask width {need}");
+        let mut full = vec![0u8; need];
+        let mut need2: usize = 0;
+        assert_eq!(
+            unsafe {
+                crimson_part_prefab_dye_slot_info_lookup_slot_mask_full(
+                    h,
+                    vest,
+                    0,
+                    full.as_mut_ptr(),
+                    full.len(),
+                    &mut need2,
+                )
+            },
+            error::OK
+        );
+        assert_eq!(need2, need);
+        // The legacy 3-byte getter is exactly the head of the full field.
+        assert_eq!(&full[..3], &mask[..], "3-byte getter must match mask[0..3]");
+        assert!(
+            full.iter().all(|&b| b <= 1),
+            "mask bytes are 0/1 flags, got {full:?}"
+        );
+        // An undersized buffer reports the true width and writes nothing.
+        let mut small = vec![0xAAu8; need - 1];
+        let mut need3: usize = 0;
+        assert_eq!(
+            unsafe {
+                crimson_part_prefab_dye_slot_info_lookup_slot_mask_full(
+                    h,
+                    vest,
+                    0,
+                    small.as_mut_ptr(),
+                    small.len(),
+                    &mut need3,
+                )
+            },
+            error::BUFFER_TOO_SMALL
+        );
+        assert_eq!(need3, need);
+        assert!(small.iter().all(|&b| b == 0xAA), "must not partially write");
+        // Unknown key / out-of-range slot behave like the other getters.
+        let mut need4: usize = 0;
+        assert_eq!(
+            unsafe {
+                crimson_part_prefab_dye_slot_info_lookup_slot_mask_full(
+                    h,
+                    u32::MAX,
+                    0,
+                    ptr::null_mut(),
+                    0,
+                    &mut need4,
+                )
+            },
+            error::NOT_FOUND
+        );
+        assert_eq!(
+            unsafe {
+                crimson_part_prefab_dye_slot_info_lookup_slot_mask_full(
+                    h,
+                    vest,
+                    9_999,
+                    ptr::null_mut(),
+                    0,
+                    &mut need4,
+                )
+            },
+            error::OUT_OF_RANGE
+        );
+
         // Negatives.
         let mut c: u32 = 0;
         assert_eq!(
@@ -911,6 +1116,41 @@ mod tests {
                 },
                 error::OK
             );
+            // Full-width extra-layer mask, same two-call contract.
+            let mut xneed: usize = 0;
+            assert_eq!(
+                unsafe {
+                    crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_mask_full(
+                        h,
+                        cloak,
+                        s,
+                        0,
+                        ptr::null_mut(),
+                        0,
+                        &mut xneed,
+                    )
+                },
+                error::BUFFER_TOO_SMALL
+            );
+            assert!(xneed == 12 || xneed == 3, "unexpected mask width {xneed}");
+            let mut xfull = vec![0u8; xneed];
+            let mut xneed2: usize = 0;
+            assert_eq!(
+                unsafe {
+                    crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_mask_full(
+                        h,
+                        cloak,
+                        s,
+                        0,
+                        xfull.as_mut_ptr(),
+                        xfull.len(),
+                        &mut xneed2,
+                    )
+                },
+                error::OK
+            );
+            assert_eq!(xneed2, xneed);
+            assert_eq!(&xfull[..3], &xmask[..], "3-byte getter must match head");
             let mut xflag: u8 = 0;
             assert_eq!(
                 unsafe {
@@ -957,6 +1197,37 @@ mod tests {
                     ptr::null(),
                     0,
                     &mut c,
+                )
+            },
+            error::NULL_ARG,
+        );
+        // Sized-buffer getters: null handle, null `required`, and a null
+        // `buf` paired with a non-zero `buf_len` all have to be rejected
+        // before anything dereferences them.
+        let mut need: usize = 0;
+        assert_eq!(
+            unsafe {
+                crimson_part_prefab_dye_slot_info_lookup_slot_mask_full(
+                    ptr::null(),
+                    0,
+                    0,
+                    ptr::null_mut(),
+                    0,
+                    &mut need,
+                )
+            },
+            error::NULL_ARG,
+        );
+        assert_eq!(
+            unsafe {
+                crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_mask_full(
+                    ptr::null(),
+                    0,
+                    0,
+                    0,
+                    ptr::null_mut(),
+                    0,
+                    &mut need,
                 )
             },
             error::NULL_ARG,

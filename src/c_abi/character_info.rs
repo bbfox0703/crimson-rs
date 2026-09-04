@@ -587,6 +587,7 @@ mod tests {
     //! end-to-end, and assert the highest-scoring portrait is what we
     //! expect (`0x0a000001` should match the Kliff portrait).
 
+    use crate::binary::gamedata_layout;
     use super::*;
     use crate::c_abi::paloc::{crimson_paloc_free, crimson_paloc_load_from_bytes};
     use crate::c_abi::paz::{crimson_paz_extract_file, crimson_paz_list_npc_portraits};
@@ -749,20 +750,16 @@ mod tests {
             }
             CString::new(p.to_str().unwrap()).unwrap()
         };
-        let pamt_0020 = {
-            let p = game_root.join("0020").join("0.pamt");
-            if !p.is_file() {
-                eprintln!("skipping: no 0020/0.pamt for English PALOC");
-                return;
-            }
-            CString::new(p.to_str().unwrap()).unwrap()
-        };
+        if !game_root.join("0020").join("0.pamt").is_file() {
+            eprintln!("skipping: no 0020/0.pamt for English PALOC");
+            return;
+        }
 
         // ── characterinfo handle ─────────────────────────────────────
         let cinfo_bytes = extract_file(
             pamt_0008.as_c_str(),
-            "gamedata/binary__/client/bin",
-            "characterinfo.pabgb",
+            gamedata_layout::bin_dir(),
+            &gamedata_layout::body("characterinfo"),
         );
         let mut cinfo_h: *mut CrimsonCharacterInfoHandle = ptr::null_mut();
         let rc = unsafe {
@@ -778,11 +775,8 @@ mod tests {
         assert!(count > 5_000, "expected >5000 character entries, got {count}");
 
         // ── PALOC handle ────────────────────────────────────────────
-        let paloc_bytes = extract_file(
-            pamt_0020.as_c_str(),
-            "gamedata/stringtable/binary__",
-            "localizationstring_eng.paloc",
-        );
+        let paloc_bytes = gamedata_layout::paloc_bytes("0020", "eng")
+            .expect("eng paloc must load from 0020");
         let mut paloc_h: *mut CrimsonPalocHandle = ptr::null_mut();
         let rc = unsafe {
             crimson_paloc_load_from_bytes(paloc_bytes.as_ptr(), paloc_bytes.len(), &mut paloc_h)
@@ -1114,17 +1108,17 @@ mod tests {
         let dir = pamt
             .directories
             .iter()
-            .find(|d| d.path == "gamedata/binary__/client/bin")
+            .find(|d| d.path == gamedata_layout::bin_dir())
             .expect("dir");
         let pabgh_file = dir
             .files
             .iter()
-            .find(|f| f.name == "characterappearanceindexinfo.pabgh")
+            .find(|f| f.name == gamedata_layout::header("characterappearanceindexinfo"))
             .expect("pabgh entry missing — has PA renamed the file?");
         let pabgh_bytes = paz::extract_file(
             &game_root.join("0008"),
             pabgh_file,
-            "gamedata/binary__/client/bin",
+            gamedata_layout::bin_dir(),
             &pamt.header.encrypt_info.encrypt_info,
         )
         .expect("extract pabgh");
@@ -2803,9 +2797,9 @@ mod tests {
             if let Ok(pamt_bytes) = std::fs::read(&pamt_path)
                 && let Ok(pamt) = PackMeta::parse(&pamt_bytes, None)
             {
-                let dir_path = "gamedata/binary__/client/bin";
+                let dir_path = gamedata_layout::bin_dir();
                 if let Some(dir) = pamt.directories.iter().find(|d| d.path == dir_path)
-                    && let Some(pabgb) = dir.files.iter().find(|f| f.name == "characterinfo.pabgb")
+                    && let Some(pabgb) = dir.files.iter().find(|f| f.name == gamedata_layout::body("characterinfo"))
                 {
                     let group_dir = game_root.join("0008");
                     let enc = &pamt.header.encrypt_info.encrypt_info;
@@ -3377,9 +3371,9 @@ mod tests {
             if let Ok(pamt_bytes) = std::fs::read(&pamt_path)
                 && let Ok(pamt) = PackMeta::parse(&pamt_bytes, None)
             {
-                let dir_path = "gamedata/binary__/client/bin";
+                let dir_path = gamedata_layout::bin_dir();
                 if let Some(dir) = pamt.directories.iter().find(|d| d.path == dir_path)
-                    && let Some(pabgb) = dir.files.iter().find(|f| f.name == "characterinfo.pabgb")
+                    && let Some(pabgb) = dir.files.iter().find(|f| f.name == gamedata_layout::body("characterinfo"))
                 {
                     let group_dir = game_root.join("0008");
                     let enc = &pamt.header.encrypt_info.encrypt_info;
@@ -3788,17 +3782,17 @@ mod tests {
         let dir = pamt
             .directories
             .iter()
-            .find(|d| d.path == "gamedata/binary__/client/bin")
+            .find(|d| d.path == gamedata_layout::bin_dir())
             .expect("dir");
         let gimmick_file = dir
             .files
             .iter()
-            .find(|f| f.name == "gimmickinfo.pabgb")
+            .find(|f| f.name == gamedata_layout::body("gimmickinfo"))
             .expect("gimmickinfo.pabgb missing");
         let gimmick_bytes = paz::extract_file(
             &game_root.join("0008"),
             gimmick_file,
-            "gamedata/binary__/client/bin",
+            gamedata_layout::bin_dir(),
             &pamt.header.encrypt_info.encrypt_info,
         )
         .expect("extract gimmickinfo");
@@ -4023,37 +4017,18 @@ mod tests {
     #[test]
     #[ignore = "investigation only — paloc template density survey"]
     fn _probe_paloc_template_density() {
-        use crate::binary::pamt::PackMeta;
-        use crate::binary::paz;
-
         let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
                 PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
             });
         let pamt_path = game_root.join("0020").join("0.pamt");
-        let Ok(pamt_bytes) = std::fs::read(&pamt_path) else {
+        if !pamt_path.is_file() {
             eprintln!("skipping: no {}", pamt_path.display());
             return;
-        };
-        let pamt = PackMeta::parse(&pamt_bytes, None).expect("parse PAMT");
-        let dir = pamt
-            .directories
-            .iter()
-            .find(|d| d.path == "gamedata/stringtable/binary__")
-            .expect("paloc dir");
-        let file = dir
-            .files
-            .iter()
-            .find(|f| f.name == "localizationstring_eng.paloc")
-            .expect("paloc file");
-        let paloc_bytes = paz::extract_file(
-            &game_root.join("0020"),
-            file,
-            "gamedata/stringtable/binary__",
-            &pamt.header.encrypt_info.encrypt_info,
-        )
-        .expect("extract paloc");
+        }
+        let paloc_bytes = gamedata_layout::paloc_bytes("0020", "eng")
+            .expect("eng paloc must load from 0020");
         let paloc = crate::binary::paloc::LocalizationFile::parse(&paloc_bytes)
             .expect("parse paloc");
         eprintln!("loaded English PALOC: {} entries", paloc.entries.len());
@@ -4207,7 +4182,7 @@ mod tests {
         let dir = pamt
             .directories
             .iter()
-            .find(|d| d.path == "gamedata/binary__/client/bin")
+            .find(|d| d.path == gamedata_layout::bin_dir())
             .expect("missing gamedata/binary__/client/bin dir in 0008 PAMT");
 
         let out_dir = PathBuf::from("out").join("dye_probe");
@@ -4242,7 +4217,7 @@ mod tests {
             let pabgb_bytes = match paz::extract_file(
                 &game_root.join("0008"),
                 pabgb_file,
-                "gamedata/binary__/client/bin",
+                gamedata_layout::bin_dir(),
                 &pamt.header.encrypt_info.encrypt_info,
             ) {
                 Ok(b) => b,
@@ -4264,7 +4239,7 @@ mod tests {
                 paz::extract_file(
                     &game_root.join("0008"),
                     pabgh_file,
-                    "gamedata/binary__/client/bin",
+                    gamedata_layout::bin_dir(),
                     &pamt.header.encrypt_info.encrypt_info,
                 )
                 .ok()
@@ -4409,7 +4384,7 @@ mod tests {
         let dir = pamt
             .directories
             .iter()
-            .find(|d| d.path == "gamedata/binary__/client/bin")
+            .find(|d| d.path == gamedata_layout::bin_dir())
             .expect("missing dir");
 
         let extract = |name: &str| {
@@ -4417,15 +4392,15 @@ mod tests {
             paz::extract_file(
                 &game_root.join("0008"),
                 f,
-                "gamedata/binary__/client/bin",
+                gamedata_layout::bin_dir(),
                 &pamt.header.encrypt_info.encrypt_info,
             )
             .expect("extract")
         };
 
         // ── partprefabdyetexturepalleteinfo: custom PABGH (u16 key, u32 off) ─
-        let pal_pabgb = extract("partprefabdyetexturepalleteinfo.pabgb");
-        let pal_pabgh = extract("partprefabdyetexturepalleteinfo.pabgh");
+        let pal_pabgb = extract(&gamedata_layout::body("partprefabdyetexturepalleteinfo"));
+        let pal_pabgh = extract(&gamedata_layout::header("partprefabdyetexturepalleteinfo"));
         eprintln!("\n=== partprefabdyetexturepalleteinfo ===");
         eprintln!("pabgh len={}", pal_pabgh.len());
         // Parse custom layout
@@ -4495,8 +4470,8 @@ mod tests {
         }
 
         // ── dyecolorgroupinfo: dump full body of first 2 rows ──────────
-        let dcg_pabgb = extract("dyecolorgroupinfo.pabgb");
-        let dcg_pabgh = extract("dyecolorgroupinfo.pabgh");
+        let dcg_pabgb = extract(&gamedata_layout::body("dyecolorgroupinfo"));
+        let dcg_pabgh = extract(&gamedata_layout::header("dyecolorgroupinfo"));
         eprintln!("\n=== dyecolorgroupinfo (first 2 rows full hex) ===");
         let dcg_entries = crate::skill_info::parse_pabgh(&dcg_pabgh).expect("parse pabgh");
         let dcg_ranges = crate::skill_info::entry_ranges(&dcg_entries, dcg_pabgb.len());
@@ -4524,8 +4499,8 @@ mod tests {
         }
 
         // ── partprefabdyeslotinfo: dump full body of a few rows ────────
-        let pps_pabgb = extract("partprefabdyeslotinfo.pabgb");
-        let pps_pabgh = extract("partprefabdyeslotinfo.pabgh");
+        let pps_pabgb = extract(&gamedata_layout::body("partprefabdyeslotinfo"));
+        let pps_pabgh = extract(&gamedata_layout::header("partprefabdyeslotinfo"));
         eprintln!("\n=== partprefabdyeslotinfo (full hex of a low-slot, mid-slot, high-slot row) ===");
         let pps_entries = crate::skill_info::parse_pabgh(&pps_pabgh).expect("parse pabgh");
         let pps_ranges = crate::skill_info::entry_ranges(&pps_entries, pps_pabgb.len());
@@ -5579,7 +5554,7 @@ mod tests {
         let dir = pamt
             .directories
             .iter()
-            .find(|d| d.path == "gamedata/binary__/client/bin")
+            .find(|d| d.path == gamedata_layout::bin_dir())
             .expect("missing gamedata/binary__/client/bin dir in 0008 PAMT");
 
         let out_dir = std::path::PathBuf::from("out/faction_probe");
@@ -5615,7 +5590,7 @@ mod tests {
             let pabgh_bytes = match paz::extract_file(
                 &game_root.join("0008"),
                 pabgh_file,
-                "gamedata/binary__/client/bin",
+                gamedata_layout::bin_dir(),
                 &pamt.header.encrypt_info.encrypt_info,
             ) {
                 Ok(b) => b,
@@ -5627,7 +5602,7 @@ mod tests {
             let pabgb_bytes = match paz::extract_file(
                 &game_root.join("0008"),
                 pabgb_file,
-                "gamedata/binary__/client/bin",
+                gamedata_layout::bin_dir(),
                 &pamt.header.encrypt_info.encrypt_info,
             ) {
                 Ok(b) => b,
@@ -5786,26 +5761,8 @@ mod tests {
 
         // Extract English PALOC. The 0020 group ships the English
         // localization table under gamedata/stringtable/binary__.
-        let pamt_bytes = std::fs::read(game_root.join("0020").join("0.pamt"))
-            .expect("read 0020 pamt");
-        let pamt = crate::binary::pamt::PackMeta::parse(&pamt_bytes, None).expect("parse 0020");
-        let dir = pamt
-            .directories
-            .iter()
-            .find(|d| d.path == "gamedata/stringtable/binary__")
-            .expect("missing stringtable dir");
-        let paloc_file = dir
-            .files
-            .iter()
-            .find(|f| f.name == "localizationstring_eng.paloc")
-            .expect("missing eng paloc");
-        let paloc_bytes = crate::binary::paz::extract_file(
-            &game_root.join("0020"),
-            paloc_file,
-            "gamedata/stringtable/binary__",
-            &pamt.header.encrypt_info.encrypt_info,
-        )
-        .expect("extract paloc");
+        let paloc_bytes = gamedata_layout::paloc_bytes("0020", "eng")
+            .expect("eng paloc must load from 0020");
         let parsed = LocalizationFile::parse(&paloc_bytes).expect("parse paloc");
 
         // PALOC keys are stored as ASCII decimal strings; the lookup
@@ -5915,22 +5872,22 @@ mod tests {
         }
 
         let factionnode = {
-            let pabgh = std::fs::read(probe_dir.join("factionnode.pabgh")).unwrap();
-            let pabgb = std::fs::read(probe_dir.join("factionnode.pabgb")).unwrap();
+            let pabgh = std::fs::read(probe_dir.join(gamedata_layout::header("factionnode"))).unwrap();
+            let pabgb = std::fs::read(probe_dir.join(gamedata_layout::body("factionnode"))).unwrap();
             parse_standard(&pabgh, &pabgb)
         };
         let factionspawn = {
             let pabgh =
-                std::fs::read(probe_dir.join("factionspawndatainfo.pabgh")).unwrap();
+                std::fs::read(probe_dir.join(gamedata_layout::header("factionspawndatainfo"))).unwrap();
             let pabgb =
-                std::fs::read(probe_dir.join("factionspawndatainfo.pabgb")).unwrap();
+                std::fs::read(probe_dir.join(gamedata_layout::body("factionspawndatainfo"))).unwrap();
             parse_standard(&pabgh, &pabgb)
         };
         let factionrel = {
             let pabgh =
-                std::fs::read(probe_dir.join("factionrelationgroup.pabgh")).unwrap();
+                std::fs::read(probe_dir.join(gamedata_layout::header("factionrelationgroup"))).unwrap();
             let pabgb =
-                std::fs::read(probe_dir.join("factionrelationgroup.pabgb")).unwrap();
+                std::fs::read(probe_dir.join(gamedata_layout::body("factionrelationgroup"))).unwrap();
             parse_small_u16(&pabgh, &pabgb)
         };
 
@@ -6174,7 +6131,7 @@ mod tests {
         let dir = pamt
             .directories
             .iter()
-            .find(|d| d.path == "gamedata/binary__/client/bin")
+            .find(|d| d.path == gamedata_layout::bin_dir())
             .expect("missing gamedata/binary__/client/bin dir in 0008 PAMT");
 
         let out_dir = std::path::PathBuf::from("out/store_mercenary_partprefab_probe");
@@ -6234,7 +6191,7 @@ mod tests {
             let pabgb_bytes = match paz::extract_file(
                 &game_root.join("0008"),
                 pabgb_file,
-                "gamedata/binary__/client/bin",
+                gamedata_layout::bin_dir(),
                 &pamt.header.encrypt_info.encrypt_info,
             ) {
                 Ok(b) => b,
@@ -6248,7 +6205,7 @@ mod tests {
                 paz::extract_file(
                     &game_root.join("0008"),
                     f,
-                    "gamedata/binary__/client/bin",
+                    gamedata_layout::bin_dir(),
                     &pamt.header.encrypt_info.encrypt_info,
                 )
                 .ok()
@@ -6395,11 +6352,11 @@ mod tests {
             "\npartprefabdyeslotinfo row keys collected: {}",
             partprefab_dye_slot_keys.len()
         );
-        if let Some(iteminfo_file) = dir.files.iter().find(|f| f.name == "iteminfo.pabgb") {
+        if let Some(iteminfo_file) = dir.files.iter().find(|f| f.name == gamedata_layout::body("iteminfo")) {
             let iteminfo_bytes = paz::extract_file(
                 &game_root.join("0008"),
                 iteminfo_file,
-                "gamedata/binary__/client/bin",
+                gamedata_layout::bin_dir(),
                 &pamt.header.encrypt_info.encrypt_info,
             )
             .expect("extract iteminfo.pabgb");
@@ -6552,7 +6509,7 @@ mod tests {
         let dir = pamt
             .directories
             .iter()
-            .find(|d| d.path == "gamedata/binary__/client/bin")
+            .find(|d| d.path == gamedata_layout::bin_dir())
             .expect("missing gamedata/binary__/client/bin dir in 0008 PAMT");
         let group_dir = game_root.join("0008");
         let enc = &pamt.header.encrypt_info.encrypt_info;
@@ -6566,9 +6523,9 @@ mod tests {
             &group_dir,
             dir.files
                 .iter()
-                .find(|f| f.name == "partprefabdyeslotinfo.pabgb")
-                .expect("partprefabdyeslotinfo.pabgb"),
-            "gamedata/binary__/client/bin",
+                .find(|f| f.name == gamedata_layout::body("partprefabdyeslotinfo"))
+                .expect("partprefabdyeslotinfo body not in 0008 PAMT"),
+            gamedata_layout::bin_dir(),
             enc,
         )
         .expect("extract partprefabdyeslotinfo.pabgb");
@@ -6576,9 +6533,9 @@ mod tests {
             &group_dir,
             dir.files
                 .iter()
-                .find(|f| f.name == "partprefabdyeslotinfo.pabgh")
-                .expect("partprefabdyeslotinfo.pabgh"),
-            "gamedata/binary__/client/bin",
+                .find(|f| f.name == gamedata_layout::header("partprefabdyeslotinfo"))
+                .expect("partprefabdyeslotinfo index not in 0008 PAMT"),
+            gamedata_layout::bin_dir(),
             enc,
         )
         .expect("extract partprefabdyeslotinfo.pabgh");
@@ -6605,9 +6562,9 @@ mod tests {
             &group_dir,
             dir.files
                 .iter()
-                .find(|f| f.name == "stringinfo.pabgb")
-                .expect("stringinfo.pabgb"),
-            "gamedata/binary__/client/bin",
+                .find(|f| f.name == gamedata_layout::body("stringinfo"))
+                .expect("stringinfo body not in 0008 PAMT"),
+            gamedata_layout::bin_dir(),
             enc,
         )
         .expect("extract stringinfo.pabgb");
@@ -6655,9 +6612,9 @@ mod tests {
             &group_dir,
             dir.files
                 .iter()
-                .find(|f| f.name == "iteminfo.pabgb")
-                .expect("iteminfo.pabgb"),
-            "gamedata/binary__/client/bin",
+                .find(|f| f.name == gamedata_layout::body("iteminfo"))
+                .expect("iteminfo body not in 0008 PAMT"),
+            gamedata_layout::bin_dir(),
             enc,
         )
         .expect("extract iteminfo.pabgb");
@@ -6826,16 +6783,16 @@ mod tests {
         let p8_bin = p8
             .directories
             .iter()
-            .find(|d| d.path == "gamedata/binary__/client/bin")
+            .find(|d| d.path == gamedata_layout::bin_dir())
             .expect("0008 bin dir");
         let pp_pabgb = paz::extract_file(
             &game_root.join("0008"),
             p8_bin
                 .files
                 .iter()
-                .find(|f| f.name == "partprefabdyeslotinfo.pabgb")
-                .expect("partprefabdyeslotinfo.pabgb"),
-            "gamedata/binary__/client/bin",
+                .find(|f| f.name == gamedata_layout::body("partprefabdyeslotinfo"))
+                .expect("partprefabdyeslotinfo body not in 0008 PAMT"),
+            gamedata_layout::bin_dir(),
             &p8.header.encrypt_info.encrypt_info,
         )
         .expect("extract partprefabdyeslotinfo.pabgb");
@@ -6844,9 +6801,9 @@ mod tests {
             p8_bin
                 .files
                 .iter()
-                .find(|f| f.name == "partprefabdyeslotinfo.pabgh")
-                .expect("partprefabdyeslotinfo.pabgh"),
-            "gamedata/binary__/client/bin",
+                .find(|f| f.name == gamedata_layout::header("partprefabdyeslotinfo"))
+                .expect("partprefabdyeslotinfo index not in 0008 PAMT"),
+            gamedata_layout::bin_dir(),
             &p8.header.encrypt_info.encrypt_info,
         )
         .expect("extract partprefabdyeslotinfo.pabgh");
@@ -7015,7 +6972,7 @@ mod tests {
         let dir = pamt
             .directories
             .iter()
-            .find(|d| d.path == "gamedata/binary__/client/bin")
+            .find(|d| d.path == gamedata_layout::bin_dir())
             .expect("0008 bin dir");
         let enc = &pamt.header.encrypt_info.encrypt_info;
         let group_dir = game_root.join("0008");
@@ -7025,9 +6982,9 @@ mod tests {
             &group_dir,
             dir.files
                 .iter()
-                .find(|f| f.name == "partprefabdyeslotinfo.pabgb")
+                .find(|f| f.name == gamedata_layout::body("partprefabdyeslotinfo"))
                 .unwrap(),
-            "gamedata/binary__/client/bin",
+            gamedata_layout::bin_dir(),
             enc,
         )
         .unwrap();
@@ -7035,9 +6992,9 @@ mod tests {
             &group_dir,
             dir.files
                 .iter()
-                .find(|f| f.name == "partprefabdyeslotinfo.pabgh")
+                .find(|f| f.name == gamedata_layout::header("partprefabdyeslotinfo"))
                 .unwrap(),
-            "gamedata/binary__/client/bin",
+            gamedata_layout::bin_dir(),
             enc,
         )
         .unwrap();
@@ -7056,9 +7013,9 @@ mod tests {
             &group_dir,
             dir.files
                 .iter()
-                .find(|f| f.name == "stringinfo.pabgb")
+                .find(|f| f.name == gamedata_layout::body("stringinfo"))
                 .unwrap(),
-            "gamedata/binary__/client/bin",
+            gamedata_layout::bin_dir(),
             enc,
         )
         .unwrap();
@@ -7073,9 +7030,9 @@ mod tests {
             &group_dir,
             dir.files
                 .iter()
-                .find(|f| f.name == "iteminfo.pabgb")
+                .find(|f| f.name == gamedata_layout::body("iteminfo"))
                 .unwrap(),
-            "gamedata/binary__/client/bin",
+            gamedata_layout::bin_dir(),
             enc,
         )
         .unwrap();
@@ -7307,7 +7264,7 @@ mod tests {
         let dir = pamt
             .directories
             .iter()
-            .find(|d| d.path == "gamedata/binary__/client/bin")
+            .find(|d| d.path == gamedata_layout::bin_dir())
             .expect("0008 bin dir");
         let enc = &pamt.header.encrypt_info.encrypt_info;
         let group_dir = game_root.join("0008");
@@ -7369,7 +7326,7 @@ mod tests {
             let pabgb = match paz::extract_file(
                 &group_dir,
                 pabgb_file,
-                "gamedata/binary__/client/bin",
+                gamedata_layout::bin_dir(),
                 enc,
             ) {
                 Ok(b) => b,
@@ -7383,7 +7340,7 @@ mod tests {
                 paz::extract_file(
                     &group_dir,
                     f,
-                    "gamedata/binary__/client/bin",
+                    gamedata_layout::bin_dir(),
                     enc,
                 )
                 .ok()

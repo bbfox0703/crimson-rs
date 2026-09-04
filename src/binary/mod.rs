@@ -1,4 +1,6 @@
 mod arrays;
+#[cfg(test)]
+pub(crate) mod gamedata_layout;
 pub(crate) mod paloc;
 pub(crate) mod pamt;
 pub(crate) mod papgt;

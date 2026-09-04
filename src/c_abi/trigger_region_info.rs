@@ -19,6 +19,7 @@ crate::impl_name_only_bridge! {
 
 #[cfg(test)]
 mod tests {
+    use crate::binary::gamedata_layout;
     use super::*;
     use crate::c_abi::error;
     use crate::c_abi::paz::crimson_paz_extract_file;
@@ -82,13 +83,13 @@ mod tests {
         let pamt = CString::new(pamt_path.to_str().unwrap()).unwrap();
         let pabgb = extract_file(
             pamt.as_c_str(),
-            "gamedata/binary__/client/bin",
-            "triggerregioninfo.pabgb",
+            gamedata_layout::bin_dir(),
+            &gamedata_layout::body("triggerregioninfo"),
         );
         let pabgh = extract_file(
             pamt.as_c_str(),
-            "gamedata/binary__/client/bin",
-            "triggerregioninfo.pabgh",
+            gamedata_layout::bin_dir(),
+            &gamedata_layout::header("triggerregioninfo"),
         );
         let mut sh: *mut CrimsonTriggerRegionInfoHandle = ptr::null_mut();
         let rc = unsafe {

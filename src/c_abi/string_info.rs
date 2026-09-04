@@ -268,6 +268,7 @@ mod tests {
     //! Skips cleanly when no Steam install is present, same pattern as
     //! `c_abi::iteminfo`.
 
+    use crate::binary::gamedata_layout;
     use super::*;
     use crate::c_abi::paz::crimson_paz_extract_file;
     use std::ffi::{CStr, CString};
@@ -286,8 +287,8 @@ mod tests {
 
     /// Pull stringinfo.pabgb via the standard PAZ path, returns its bytes.
     fn extract_stringinfo_bytes(pamt: &CStr) -> Vec<u8> {
-        let dir = CString::new("gamedata/binary__/client/bin").unwrap();
-        let name = CString::new("stringinfo.pabgb").unwrap();
+        let dir = CString::new(gamedata_layout::bin_dir()).unwrap();
+        let name = CString::new(gamedata_layout::body("stringinfo")).unwrap();
         let mut needed: usize = 0;
         let rc = unsafe {
             crimson_paz_extract_file(

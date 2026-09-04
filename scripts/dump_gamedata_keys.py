@@ -29,6 +29,8 @@ from pathlib import Path
 
 import crimson_rs
 
+from gamedata_layout import resolve_bin_layout
+
 
 GAME_DIR_CANDIDATES = [
     r"D:\SteamLibrary\steamapps\common\Crimson Desert",
@@ -86,7 +88,11 @@ PABGH_TABLES_U32_COUNT = [
 ]
 
 PABGB_GROUP = "0008"
-PABGB_DIR = "gamedata/binary__/client/bin"
+
+# The tables above name files the pre-2.01 way; 2.01 renamed the directory
+# and the extensions without touching a byte inside. `resolve_bin_layout`
+# says which naming the install on disk uses, and `_resolved` maps a
+# table entry onto it.
 
 
 def find_game_dir(explicit: str | None) -> str:
@@ -147,6 +153,12 @@ def extract_safe(game: str, group: str, d: str, name: str) -> bytes | None:
         return None
 
 
+def _resolved(layout, name: str) -> str:
+    """`"skill.pabgh"` -> the header filename this install actually ships."""
+    stem, _, ext = name.rpartition(".")
+    return layout.header(stem) if ext == "pabgh" else layout.body(stem)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--game-dir", help="Crimson Desert install path")
@@ -164,10 +176,11 @@ def main() -> None:
     print(f"Out dir  : {out_dir}")
     print("-" * 80)
 
+    layout = resolve_bin_layout(game)
     summary: list[tuple[str, int | None, str]] = []
 
     for label, pabgh_name, pabgb_name, _ in PABGH_TABLES:
-        pabgh = extract_safe(game, PABGB_GROUP, PABGB_DIR, pabgh_name)
+        pabgh = extract_safe(game, PABGB_GROUP, layout.dir, _resolved(layout, pabgh_name))
         if pabgh is None:
             print(f"  {label:<35} <pabgh missing>")
             summary.append((label, None, "missing"))
@@ -189,7 +202,7 @@ def main() -> None:
         summary.append((label, len(keys), "pabgh"))
 
     for label, pabgh_name, pabgb_name in PABGH_TABLES_U32_COUNT:
-        pabgh = extract_safe(game, PABGB_GROUP, PABGB_DIR, pabgh_name)
+        pabgh = extract_safe(game, PABGB_GROUP, layout.dir, _resolved(layout, pabgh_name))
         if pabgh is None:
             print(f"  {label:<35} <pabgh missing>")
             summary.append((label, None, "missing"))

@@ -253,6 +253,7 @@ fn write_str_to_buf(
 
 #[cfg(test)]
 mod tests {
+    use crate::binary::gamedata_layout;
     use super::*;
     use crate::c_abi::paz::crimson_paz_extract_file;
     use std::ffi::{CStr, CString};
@@ -330,13 +331,13 @@ mod tests {
         let pamt = CString::new(pamt_path.to_str().unwrap()).unwrap();
         let pabgb = extract_file(
             pamt.as_c_str(),
-            "gamedata/binary__/client/bin",
-            "mercenaryinfo.pabgb",
+            gamedata_layout::bin_dir(),
+            &gamedata_layout::body("mercenaryinfo"),
         );
         let pabgh = extract_file(
             pamt.as_c_str(),
-            "gamedata/binary__/client/bin",
-            "mercenaryinfo.pabgh",
+            gamedata_layout::bin_dir(),
+            &gamedata_layout::header("mercenaryinfo"),
         );
 
         let mut sh: *mut CrimsonMercenaryInfoHandle = ptr::null_mut();

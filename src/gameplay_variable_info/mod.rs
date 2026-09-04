@@ -52,6 +52,7 @@ pub fn parse_gameplay_variable_info_lossy(
 
 #[cfg(test)]
 mod tests {
+    use crate::binary::gamedata_layout;
     use super::*;
     use std::path::PathBuf;
 
@@ -76,19 +77,19 @@ mod tests {
         let dir = pamt
             .directories
             .iter()
-            .find(|d| d.path == "gamedata/binary__/client/bin")?;
+            .find(|d| d.path == gamedata_layout::bin_dir())?;
         let group_dir = game_root.join("0008");
         let pabgb = crate::binary::paz::extract_file(
             &group_dir,
-            dir.files.iter().find(|f| f.name == "gameplayvariableinfo.pabgb")?,
-            "gamedata/binary__/client/bin",
+            dir.files.iter().find(|f| f.name == gamedata_layout::body("gameplayvariableinfo"))?,
+            gamedata_layout::bin_dir(),
             &pamt.header.encrypt_info.encrypt_info,
         )
         .ok()?;
         let pabgh = crate::binary::paz::extract_file(
             &group_dir,
-            dir.files.iter().find(|f| f.name == "gameplayvariableinfo.pabgh")?,
-            "gamedata/binary__/client/bin",
+            dir.files.iter().find(|f| f.name == gamedata_layout::header("gameplayvariableinfo"))?,
+            gamedata_layout::bin_dir(),
             &pamt.header.encrypt_info.encrypt_info,
         )
         .ok()?;
@@ -104,8 +105,8 @@ mod tests {
         let entries = parse_gameplay_variable_info_lossy(&pabgb, &pabgh);
         assert_eq!(
             entries.len(),
-            59,
-            "expected 59 rows in 2.00 (was 56 in 1.16-1.18, 57 in 1.13-1.15, 56 in 1.12, 55 in 1.11, 47 through 1.10)"
+            62,
+            "expected 62 rows in 2.01 (59 in 2.00, 56 in 1.16-1.18, 57 in 1.13-1.15, 56 in 1.12, 55 in 1.11, 47 through 1.10)"
         );
         let by_key: std::collections::HashMap<u32, &str> =
             entries.iter().map(|e| (e.key, e.name.as_str())).collect();

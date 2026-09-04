@@ -50,7 +50,8 @@ type Row = (&'static str, Option<&'static str>, &'static str);
 const ROWS: &[Row] = &[
     // ── Prologue: Dead of Night ──────────────────────────────────────
     ("Prologue: Dead of Night", None, "Ambush"),
-    ("Prologue: Dead of Night", None, "Unfamiliar Lands"),
+    // 2.01 retitled this one (was "Unfamiliar Lands").
+    ("Prologue: Dead of Night", None, "Unfamiliar Land"),
     ("Prologue: Dead of Night", None, "In Ashes"),
     ("Prologue: Dead of Night", None, "Unknown Space"),
     ("Prologue: Dead of Night", None, "Realm of Uncertainty"),
@@ -65,7 +66,8 @@ const ROWS: &[Row] = &[
     (
         "Chapter 1: The First Encounter",
         Some("Trials of Kindness"),
-        "Mysterious Man",
+        // 2.01 retitle (was "Mysterious Man").
+        "A Mysterious Beggar",
     ),
     (
         "Chapter 1: The First Encounter",
@@ -1056,7 +1058,7 @@ pub unsafe extern "C" fn crimson_main_quest_chapter_for_arc(
 }
 
 /// Resolve a mission display title (e.g. "Where Rumors Gather",
-/// "Unfamiliar Lands") to its chapter heading.
+/// "Unfamiliar Land") to its chapter heading.
 ///
 /// Three titles repeat across chapters ("In Ashes", "Reclamation",
 /// "The Counterattack"); first match by table order wins. Callers that
@@ -1275,7 +1277,7 @@ mod tests {
     fn chapter_for_mission_known_cases() {
         // Prologue mission (no arc)
         assert_eq!(
-            call_chapter_for_mission("Unfamiliar Lands").unwrap(),
+            call_chapter_for_mission("Unfamiliar Land").unwrap(),
             "Prologue: Dead of Night"
         );
         // Mid-game arc mission

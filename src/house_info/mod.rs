@@ -67,6 +67,7 @@ pub fn parse_house_info_lossy(pabgb: &[u8], pabgh: &[u8]) -> Vec<HouseInfoEntry>
 
 #[cfg(test)]
 mod tests {
+    use crate::binary::gamedata_layout;
     use super::*;
     use std::path::PathBuf;
 
@@ -91,19 +92,19 @@ mod tests {
         let dir = pamt
             .directories
             .iter()
-            .find(|d| d.path == "gamedata/binary__/client/bin")?;
+            .find(|d| d.path == gamedata_layout::bin_dir())?;
         let group_dir = game_root.join("0008");
         let pabgb = crate::binary::paz::extract_file(
             &group_dir,
-            dir.files.iter().find(|f| f.name == "houseinfo.pabgb")?,
-            "gamedata/binary__/client/bin",
+            dir.files.iter().find(|f| f.name == gamedata_layout::body("houseinfo"))?,
+            gamedata_layout::bin_dir(),
             &pamt.header.encrypt_info.encrypt_info,
         )
         .ok()?;
         let pabgh = crate::binary::paz::extract_file(
             &group_dir,
-            dir.files.iter().find(|f| f.name == "houseinfo.pabgh")?,
-            "gamedata/binary__/client/bin",
+            dir.files.iter().find(|f| f.name == gamedata_layout::header("houseinfo"))?,
+            gamedata_layout::bin_dir(),
             &pamt.header.encrypt_info.encrypt_info,
         )
         .ok()?;
@@ -117,7 +118,7 @@ mod tests {
             return;
         };
         let entries = parse_house_info_lossy(&pabgb, &pabgh);
-        assert_eq!(entries.len(), 12, "expected 12 rows in 1.18 (was 4 in 1.07-1.17)");
+        assert_eq!(entries.len(), 22, "expected 22 rows in 2.01 (12 in 1.18-2.00, 4 in 1.07-1.17)");
         let by_key: std::collections::HashMap<u32, &str> =
             entries.iter().map(|e| (e.key, e.name.as_str())).collect();
         for &(k, expected) in KNOWN {

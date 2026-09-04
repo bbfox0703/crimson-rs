@@ -81,14 +81,17 @@ bit lives in byte 1 bit 0).
 
 ---
 
-## Gamedata baselines — `0008/gamedata/binary__/client/bin/`
+## Gamedata baselines — `0008/gamedata/binarystaticinfo__/bin/`
+
+(`0008/gamedata/binary__/client/bin/` with `.pabgb` / `.pabgh` extensions on 1.05–2.00 —
+2.01 renamed the directory and the extensions without changing any file's contents.)
 
 Three `.pabgb` + `.pabgh` tables, all RE'd against the live 1.07 install.
 
 | File | Size (cmp/unc) | Rows in 1.07 | Maps | Parser / Bridge |
 |---|---:|---:|---|---|
 | `dyecolorgroupinfo.pabgb` + `.pabgh` | 6 KB / 9 KB, index 82 B | **10** | `DyeColorGroupInfoKey (u32)` → color group name (`"Her_Color_Group_I"`, …) + 109-record RGBA gradient palette. Save's `_dyeColorGroupInfoKey` references this. | [`dye_color_group_info`](../src/dye_color_group_info/mod.rs) / [`c_abi/dye_color_group_info.rs`](../src/c_abi/dye_color_group_info.rs) |
-| `partprefabdyeslotinfo.pabgb` + `.pabgh` | 86 KB / 370 KB, index 9 KB | **1,105** | `PartPrefabKey (u32)` → prefab internal name + per-slot detail (3 material indices, 3 default-material names, 3 mask bytes, next-prefab / `.pac` tail per slot). Replaces `dye_slot_counts.json`. | [`part_prefab_dye_slot_info`](../src/part_prefab_dye_slot_info/mod.rs) / [`c_abi/part_prefab_dye_slot_info.rs`](../src/c_abi/part_prefab_dye_slot_info.rs) |
+| `partprefabdyeslotinfo.pabgb` + `.pabgh` | 86 KB / 370 KB, index 9 KB | **1,626** on 2.01 (1,105 when this table was first written on 1.07) | `PartPrefabKey (u32)` → prefab internal name + per-slot detail (3 material indices, 3 default-material names, 12 mask bytes — 3 before 2.01 — next-prefab / `.pac` tail per slot). Replaces `dye_slot_counts.json`. | [`part_prefab_dye_slot_info`](../src/part_prefab_dye_slot_info/mod.rs) / [`c_abi/part_prefab_dye_slot_info.rs`](../src/c_abi/part_prefab_dye_slot_info.rs) |
 | `partprefabdyetexturepalleteinfo.pabgb` + `.pabgh` | 0.8 KB / 4 KB, index 68 B | **11** (keys 0..=10) | `PartPrefabDyeTexturePalleteKey (u16)` → palette tier with 2–3 sub-records (material name + icon DDS + texture DDS + optional variant name & strength). Save's `_texturePalleteKey` references this. | [`part_prefab_dye_texture_pallete_info`](../src/part_prefab_dye_texture_pallete_info/mod.rs) / [`c_abi/part_prefab_dye_texture_pallete_info.rs`](../src/c_abi/part_prefab_dye_texture_pallete_info.rs) |
 
 The `binarygimmickchart__` `*dye*` / `dyewater` `.binarygimmick` files
@@ -149,7 +152,7 @@ Row {
 Slot {
     u8 mat_indices[3],        // material indices for this slot
     CString material_a / b / c, // 3 default material names (often empty)
-    u8 mask[3],               // active/visible flags
+    u8 mask[12],              // active/visible flags; 3 bytes before 2.01
     // 1.12 ONLY: u8 + u32 inserted here, observed uniformly (0xFF, 0)
     //   across all 3,893 live slots (semantics not yet RE'd). Absent
     //   in 1.07-1.11. See "Cross-version drift (1.12)" below.
@@ -190,14 +193,14 @@ layer** inline before the slot's tail:
 Slot (new_schema, 1.12+) =
     u8[3] mat_indices
     CString × 3    default_materials (primary layer)
-    u8[3] mask
+    u8[N] mask                         // N = 3 through 2.00, 12 from 2.01
     u8    marker (0xFF)
     u32   extra_layer_count            // 0 in 1.07-1.12; 1 for new 1.13 gear
     extra_layer_count × ExtraLayer
     CString tail_name                  // next sub-prefab name, or the .pac path
 ExtraLayer =
     CString × 3    default_materials (secondary layer, e.g. "leather")
-    u8[3] mask
+    u8[N] mask                         // same widening as the slot mask
     u8    flag
 ```
 
@@ -216,6 +219,64 @@ enhanced model consumes **all 1,538 live 1.13 rows exactly**. Everything
 else in the dye path (iteminfo `is_dyeable`, `ItemDyeSaveData` in the save
 body, the dye-color-group + texture-pallete bridges) is byte-perfect /
 unchanged on 1.13. Verified 2026-07-04.
+
+
+#### Cross-version drift (2.01)
+
+2.01 widened `mask` from 3 bytes to **12**, in the slot *and* in the
+`ExtraLayer`. Nothing else about the record moved — `mat_indices`, the
+three material names, the `0xFF` marker, `extra_layer_count` and the tail
+are all where they were — but the old model consumes 9 bytes too few per
+slot, so before the fix the parser dropped **all 1,626 rows**.
+
+**Pinned by tandem walk against the kept 2.00 binary**
+(`gamedata-bin/2.00/partprefabdyeslotinfo.pabgb`). Reading 2.00 at
+`mask_len = 3` and 2.01 at `mask_len = 12`, **1,613 of the 1,620
+carried-over rows have every non-mask field byte-identical** across the
+two versions; the 7 that differ do so only by ordinary content (3 changed
+`slot_count`, 4 changed a material name or `mat_indices`). That fixes the
+width deterministically — no distribution argument needed.
+
+**The contents were re-encoded, not extended.** In 5,572 of 6,555
+comparable slot pairs the 2.00 three-byte mask does not appear as a
+contiguous window anywhere inside the 2.01 twelve. There is no "original
+three" — do not treat any sub-slice as the pre-2.01 field.
+
+The 12 read as **four groups of three**. Per slot exactly one group is
+non-zero on 4,276 of 6,585 live slots, two on 1,254, three on 72, none on
+983 — never four. Summed across all 12 bytes the mask equals the slot's
+non-empty-material-name count on **62.2%** of slots, versus 39.4% for
+`mask[0..3]` alone, so the channel-active information lives across the
+whole field. Which group a slot uses is not yet RE'd.
+
+[`SLOT_LAYOUTS`](../src/part_prefab_dye_slot_info/mod.rs) now lists three
+per-slot layouts (`(new_schema, mask_len)` = `(true, 12)`, `(true, 3)`,
+`(false, 3)`), tried newest-first; on live 2.01 the first parses all
+1,626 rows. `scripts/decode_dyeslot_113.py` still models 1.13 and so
+reports 0/1,626 against a 2.01 install — that is the historical script
+working as written.
+
+**What the C# editor should call now.** The original
+`..._lookup_slot_mask` / `..._lookup_slot_extra_layer_mask` bridges copy 3
+bytes, which on 2.01+ is a *partial* read: for every slot whose active
+group is not the first they hand back all zeros. Widening them in place
+would overrun existing callers' buffers, so the full field is exposed
+through two new sized-buffer entry points instead:
+
+- `crimson_part_prefab_dye_slot_info_lookup_slot_mask_full`
+- `crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_mask_full`
+
+Both take `(buf, buf_len, required)` rather than a fixed-size out-param,
+so they report the field's true width and return `BUFFER_TOO_SMALL`
+instead of truncating — including if Pearl Abyss widens the mask again.
+Call once with `buf_len = 0` to size, then again with the buffer. The
+3-byte getters stay as the legacy shape and are exactly the head of the
+full field.
+
+How much this matters, measured through the release dll over all 1,626
+prefabs / 6,585 slots on live 2.01: **2,196 slots (33.3%) read all-zero
+through the 3-byte getter while the full field is non-zero.** That is the
+share of the dye UI the editor renders blank today.
 
 ---
 
@@ -263,7 +324,9 @@ use the two-call buffer pattern.
 | `crimson_part_prefab_dye_slot_info_lookup_slot_default_material(handle, prefab_key, slot_idx, mat_idx, buf, ...)` | Per-slot default material (`mat_idx ∈ {0,1,2}`). |
 | `crimson_part_prefab_dye_slot_info_lookup_slot_tail_name(handle, prefab_key, slot_idx, buf, ...)` | Next-prefab / `.pac` path. |
 | `crimson_part_prefab_dye_slot_info_lookup_slot_mat_indices(handle, prefab_key, slot_idx, out_indices[3])` | Raw 3-byte indices. |
-| `crimson_part_prefab_dye_slot_info_lookup_slot_mask(handle, prefab_key, slot_idx, out_mask[3])` | Raw 3-byte mask. |
+| `crimson_part_prefab_dye_slot_info_lookup_slot_mask(handle, prefab_key, slot_idx, out_mask[3])` | First 3 mask bytes — the legacy shape. **Partial on 2.01+**, where the on-disk mask is 12 re-encoded bytes and a slot's active group is often not the first, so this returns all zeros for those. Kept at 3 bytes because widening it in place would overrun every existing caller's buffer. |
+| `crimson_part_prefab_dye_slot_info_lookup_slot_mask_full(handle, prefab_key, slot_idx, buf, buf_len, *required)` | **The whole mask** (12 bytes on 2.01+, 3 on 1.07-2.00), sized-buffer style: call with `buf_len = 0` to learn the width, then again with the buffer. Returns `BUFFER_TOO_SMALL` rather than truncating if the field is wider than the buffer, so a future widening surfaces instead of silently degrading. Prefer this over the 3-byte getter. |
+| `crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_mask_full(handle, prefab_key, slot_idx, layer_idx, buf, buf_len, *required)` | Same, for a 1.13 extra dye layer's mask. |
 | `crimson_part_prefab_dye_slot_info_get_entry_key(handle, idx, *out_key)` | Enumerate keys. |
 
 All bridges return `NULL_ARG` / `NOT_FOUND` / `OUT_OF_RANGE` /

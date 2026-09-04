@@ -11,9 +11,10 @@ from pathlib import Path
 
 import crimson_rs
 
+from gamedata_layout import paloc_entries
+
 
 PALOC_GROUPS = [f"{n:04d}" for n in range(20, 36)]
-PALOC_DIR = "gamedata/stringtable/binary__"
 
 
 def main() -> None:
@@ -27,19 +28,7 @@ def main() -> None:
     unknown = json.loads(Path(args.unknown).read_text(encoding="utf-8"))
     target_keys = {r["key"] for r in unknown}
 
-    fname = f"localizationstring_{args.lang}.paloc"
-    raw = None
-    for g in PALOC_GROUPS:
-        try:
-            raw = bytes(crimson_rs.extract_file(args.game_dir, g, PALOC_DIR, fname))
-            print(f"hit {g}/{fname} ({len(raw):,}B)")
-            break
-        except Exception:
-            continue
-    if raw is None:
-        raise SystemExit(f"{fname} not found in any group")
-
-    entries = crimson_rs.parse_paloc_bytes(raw)
+    entries = paloc_entries(args.game_dir, PALOC_GROUPS, args.lang)
     print(f"parsed {len(entries):,} paloc entries")
 
     # For each entry, parse the string_key as int and check if upper 32 bits

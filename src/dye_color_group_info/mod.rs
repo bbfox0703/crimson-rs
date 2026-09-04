@@ -170,21 +170,21 @@ pub(crate) fn extract_pair_for_tests() -> Option<(Vec<u8>, Vec<u8>)> {
     let dir = pamt
         .directories
         .iter()
-        .find(|d| d.path == "gamedata/binary__/client/bin")?;
-    let pabgb_file = dir.files.iter().find(|f| f.name == "dyecolorgroupinfo.pabgb")?;
-    let pabgh_file = dir.files.iter().find(|f| f.name == "dyecolorgroupinfo.pabgh")?;
+        .find(|d| d.path == crate::binary::gamedata_layout::bin_dir())?;
+    let pabgb_file = dir.files.iter().find(|f| f.name == crate::binary::gamedata_layout::body("dyecolorgroupinfo"))?;
+    let pabgh_file = dir.files.iter().find(|f| f.name == crate::binary::gamedata_layout::header("dyecolorgroupinfo"))?;
     let group_dir = game_root.join("0008");
     let pabgb = crate::binary::paz::extract_file(
         &group_dir,
         pabgb_file,
-        "gamedata/binary__/client/bin",
+        crate::binary::gamedata_layout::bin_dir(),
         &pamt.header.encrypt_info.encrypt_info,
     )
     .ok()?;
     let pabgh = crate::binary::paz::extract_file(
         &group_dir,
         pabgh_file,
-        "gamedata/binary__/client/bin",
+        crate::binary::gamedata_layout::bin_dir(),
         &pamt.header.encrypt_info.encrypt_info,
     )
     .ok()?;

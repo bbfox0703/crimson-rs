@@ -184,6 +184,7 @@ fn is_ident_byte(b: u8) -> bool {
 mod tests {
     //! Live-install integration test against the real `stageinfo.pabgb`.
 
+    use crate::binary::gamedata_layout;
     use super::*;
     use std::path::PathBuf;
 
@@ -221,13 +222,13 @@ mod tests {
         let dir = pamt
             .directories
             .iter()
-            .find(|d| d.path == "gamedata/binary__/client/bin")?;
-        let file = dir.files.iter().find(|f| f.name == "stageinfo.pabgb")?;
+            .find(|d| d.path == gamedata_layout::bin_dir())?;
+        let file = dir.files.iter().find(|f| f.name == gamedata_layout::body("stageinfo"))?;
         let group_dir = game_root.join("0008");
         crate::binary::paz::extract_file(
             &group_dir,
             file,
-            "gamedata/binary__/client/bin",
+            gamedata_layout::bin_dir(),
             &pamt.header.encrypt_info.encrypt_info,
         )
         .ok()

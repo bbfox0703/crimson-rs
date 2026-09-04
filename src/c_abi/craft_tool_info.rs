@@ -22,6 +22,7 @@ crate::impl_name_only_bridge! {
 
 #[cfg(test)]
 mod tests {
+    use crate::binary::gamedata_layout;
     use super::*;
     use crate::c_abi::error;
     use crate::c_abi::paz::crimson_paz_extract_file;
@@ -85,13 +86,13 @@ mod tests {
         let pamt = CString::new(pamt_path.to_str().unwrap()).unwrap();
         let pabgb = extract_file(
             pamt.as_c_str(),
-            "gamedata/binary__/client/bin",
-            "crafttoolinfo.pabgb",
+            gamedata_layout::bin_dir(),
+            &gamedata_layout::body("crafttoolinfo"),
         );
         let pabgh = extract_file(
             pamt.as_c_str(),
-            "gamedata/binary__/client/bin",
-            "crafttoolinfo.pabgh",
+            gamedata_layout::bin_dir(),
+            &gamedata_layout::header("crafttoolinfo"),
         );
         let mut sh: *mut CrimsonCraftToolInfoHandle = ptr::null_mut();
         let rc = unsafe {
