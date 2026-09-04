@@ -256,12 +256,27 @@ per-slot layouts (`(new_schema, mask_len)` = `(true, 12)`, `(true, 3)`,
 reports 0/1,626 against a 2.01 install — that is the historical script
 working as written.
 
-**Open item for the C# editor.** The
-`..._lookup_slot_mask` / `..._lookup_slot_extra_layer_mask` bridges still
-copy 3 bytes, which is now a *partial* read: for every slot whose active
+**What the C# editor should call now.** The original
+`..._lookup_slot_mask` / `..._lookup_slot_extra_layer_mask` bridges copy 3
+bytes, which on 2.01+ is a *partial* read: for every slot whose active
 group is not the first they hand back all zeros. Widening them in place
-would overrun existing callers' buffers, so a separate 12-byte accessor
-is the safe fix — not added yet.
+would overrun existing callers' buffers, so the full field is exposed
+through two new sized-buffer entry points instead:
+
+- `crimson_part_prefab_dye_slot_info_lookup_slot_mask_full`
+- `crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_mask_full`
+
+Both take `(buf, buf_len, required)` rather than a fixed-size out-param,
+so they report the field's true width and return `BUFFER_TOO_SMALL`
+instead of truncating — including if Pearl Abyss widens the mask again.
+Call once with `buf_len = 0` to size, then again with the buffer. The
+3-byte getters stay as the legacy shape and are exactly the head of the
+full field.
+
+How much this matters, measured through the release dll over all 1,626
+prefabs / 6,585 slots on live 2.01: **2,196 slots (33.3%) read all-zero
+through the 3-byte getter while the full field is non-zero.** That is the
+share of the dye UI the editor renders blank today.
 
 ---
 
@@ -309,7 +324,9 @@ use the two-call buffer pattern.
 | `crimson_part_prefab_dye_slot_info_lookup_slot_default_material(handle, prefab_key, slot_idx, mat_idx, buf, ...)` | Per-slot default material (`mat_idx ∈ {0,1,2}`). |
 | `crimson_part_prefab_dye_slot_info_lookup_slot_tail_name(handle, prefab_key, slot_idx, buf, ...)` | Next-prefab / `.pac` path. |
 | `crimson_part_prefab_dye_slot_info_lookup_slot_mat_indices(handle, prefab_key, slot_idx, out_indices[3])` | Raw 3-byte indices. |
-| `crimson_part_prefab_dye_slot_info_lookup_slot_mask(handle, prefab_key, slot_idx, out_mask[3])` | First 3 mask bytes. **Partial on 2.01+**, where the on-disk mask is 12 re-encoded bytes and a slot's active group is often not the first — this then returns all zeros. The pre-2.01 values do not survive anywhere in the new field, so the old meaning cannot be preserved; kept at 3 bytes because widening it in place would overrun every existing caller's buffer. A 12-byte accessor is the open item. |
+| `crimson_part_prefab_dye_slot_info_lookup_slot_mask(handle, prefab_key, slot_idx, out_mask[3])` | First 3 mask bytes — the legacy shape. **Partial on 2.01+**, where the on-disk mask is 12 re-encoded bytes and a slot's active group is often not the first, so this returns all zeros for those. Kept at 3 bytes because widening it in place would overrun every existing caller's buffer. |
+| `crimson_part_prefab_dye_slot_info_lookup_slot_mask_full(handle, prefab_key, slot_idx, buf, buf_len, *required)` | **The whole mask** (12 bytes on 2.01+, 3 on 1.07-2.00), sized-buffer style: call with `buf_len = 0` to learn the width, then again with the buffer. Returns `BUFFER_TOO_SMALL` rather than truncating if the field is wider than the buffer, so a future widening surfaces instead of silently degrading. Prefer this over the 3-byte getter. |
+| `crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_mask_full(handle, prefab_key, slot_idx, layer_idx, buf, buf_len, *required)` | Same, for a 1.13 extra dye layer's mask. |
 | `crimson_part_prefab_dye_slot_info_get_entry_key(handle, idx, *out_key)` | Enumerate keys. |
 
 All bridges return `NULL_ARG` / `NOT_FOUND` / `OUT_OF_RANGE` /
