@@ -224,29 +224,44 @@ unchanged on 1.13. Verified 2026-07-04.
 #### Cross-version drift (2.01)
 
 2.01 widened `mask` from 3 bytes to **12**, in the slot *and* in the
-`ExtraLayer`. Nothing else about the record changed — `mat_indices`, the
+`ExtraLayer`. Nothing else about the record moved — `mat_indices`, the
 three material names, the `0xFF` marker, `extra_layer_count` and the tail
 are all where they were — but the old model consumes 9 bytes too few per
 slot, so before the fix the parser dropped **all 1,626 rows**.
 
-Exact-consume alone cannot say *where* 9 inserted bytes went when every
-one of them is 0 or 1. What pins them **after** the original three:
+**Pinned by tandem walk against the kept 2.00 binary**
+(`gamedata-bin/2.00/partprefabdyeslotinfo.pabgb`). Reading 2.00 at
+`mask_len = 3` and 2.01 at `mask_len = 12`, **1,613 of the 1,620
+carried-over rows have every non-mask field byte-identical** across the
+two versions; the 7 that differ do so only by ordinary content (3 changed
+`slot_count`, 4 changed a material name or `mat_indices`). That fixes the
+width deterministically — no distribution argument needed.
 
-- all 12 positions hold only `0` or `1` across 6,585 live slots;
-- occupancy falls monotonically, `mask[0]` set on 1,861 slots down to
-  `mask[11]` on 140 — channels fill low-index first;
-- the historical "one mask bit per non-empty material name" correlation
-  holds on `mask[0..3]` for 39.4% of slots but on `mask[9..12]` for only
-  17.7%, and the head's joint distribution shows the expected diagonal
-  while the tail's is dominated by all-zero.
+**The contents were re-encoded, not extended.** In 5,572 of 6,555
+comparable slot pairs the 2.00 three-byte mask does not appear as a
+contiguous window anywhere inside the 2.01 twelve. There is no "original
+three" — do not treat any sub-slice as the pre-2.01 field.
 
-Same style of argument as the 1.16 field swap and the 2.00 `u32` insert.
+The 12 read as **four groups of three**. Per slot exactly one group is
+non-zero on 4,276 of 6,585 live slots, two on 1,254, three on 72, none on
+983 — never four. Summed across all 12 bytes the mask equals the slot's
+non-empty-material-name count on **62.2%** of slots, versus 39.4% for
+`mask[0..3]` alone, so the channel-active information lives across the
+whole field. Which group a slot uses is not yet RE'd.
+
 [`SLOT_LAYOUTS`](../src/part_prefab_dye_slot_info/mod.rs) now lists three
 per-slot layouts (`(new_schema, mask_len)` = `(true, 12)`, `(true, 3)`,
 `(false, 3)`), tried newest-first; on live 2.01 the first parses all
 1,626 rows. `scripts/decode_dyeslot_113.py` still models 1.13 and so
 reports 0/1,626 against a 2.01 install — that is the historical script
 working as written.
+
+**Open item for the C# editor.** The
+`..._lookup_slot_mask` / `..._lookup_slot_extra_layer_mask` bridges still
+copy 3 bytes, which is now a *partial* read: for every slot whose active
+group is not the first they hand back all zeros. Widening them in place
+would overrun existing callers' buffers, so a separate 12-byte accessor
+is the safe fix — not added yet.
 
 ---
 
@@ -294,7 +309,7 @@ use the two-call buffer pattern.
 | `crimson_part_prefab_dye_slot_info_lookup_slot_default_material(handle, prefab_key, slot_idx, mat_idx, buf, ...)` | Per-slot default material (`mat_idx ∈ {0,1,2}`). |
 | `crimson_part_prefab_dye_slot_info_lookup_slot_tail_name(handle, prefab_key, slot_idx, buf, ...)` | Next-prefab / `.pac` path. |
 | `crimson_part_prefab_dye_slot_info_lookup_slot_mat_indices(handle, prefab_key, slot_idx, out_indices[3])` | Raw 3-byte indices. |
-| `crimson_part_prefab_dye_slot_info_lookup_slot_mask(handle, prefab_key, slot_idx, out_mask[3])` | First 3 mask bytes. 2.01 widened the on-disk mask to 12 (see below); this bridge still returns the historical three, so existing callers' 3-byte buffers stay correct. Surfacing the other 9 would need a new entry point. |
+| `crimson_part_prefab_dye_slot_info_lookup_slot_mask(handle, prefab_key, slot_idx, out_mask[3])` | First 3 mask bytes. **Partial on 2.01+**, where the on-disk mask is 12 re-encoded bytes and a slot's active group is often not the first — this then returns all zeros. The pre-2.01 values do not survive anywhere in the new field, so the old meaning cannot be preserved; kept at 3 bytes because widening it in place would overrun every existing caller's buffer. A 12-byte accessor is the open item. |
 | `crimson_part_prefab_dye_slot_info_get_entry_key(handle, idx, *out_key)` | Enumerate keys. |
 
 All bridges return `NULL_ARG` / `NOT_FOUND` / `OUT_OF_RANGE` /

@@ -51,14 +51,24 @@
 //! future patch that drifts the per-slot layout again will fail every
 //! attempt and the row drops out — the lossy safety net.
 //!
-//! The 3 → 12 boundary is pinned by value distribution, not just by
-//! byte consumption (which alone cannot say where 9 all-0/1 bytes were
-//! inserted): all 12 positions hold only 0 or 1, occupancy decreases
-//! monotonically from `[0]` (1,861 of 6,585 live slots) to `[11]` (140),
-//! and the historical "one mask bit per non-empty material name"
-//! correlation holds on `mask[0..3]` (39.4% exact) more than twice as
-//! often as on `mask[9..12]` (17.7%) — so the original three stayed put
-//! and the nine were appended.
+//! The 12-byte width is pinned by a tandem walk against the kept 2.00
+//! binary (`gamedata-bin/2.00/partprefabdyeslotinfo.pabgb`): reading 2.00
+//! at `mask_len = 3` and 2.01 at `mask_len = 12`, **1,613 of the 1,620
+//! carried-over rows have every non-mask field byte-identical** across
+//! the two versions, and the 7 that don't differ only by ordinary content
+//! (3 changed `slot_count`, 4 changed a material name or `mat_indices`).
+//! Nothing else in the record moved.
+//!
+//! **The contents were re-encoded, not extended.** In 5,572 of 6,555
+//! comparable slot pairs the 2.00 three-byte mask does not appear as a
+//! contiguous window anywhere inside the 2.01 twelve, so there is no
+//! "original three" to point at — do not treat any sub-slice as the
+//! pre-2.01 field. The 12 read as **four groups of three**: a slot has
+//! one group non-zero (4,276 of 6,585), two (1,254), three (72), or none
+//! (983), never four. Summed over all 12 bytes the mask matches the
+//! slot's non-empty-material-name count on 62.2% of slots, versus 39.4%
+//! for `mask[0..3]` alone — the channel-active information lives across
+//! the whole field, not in its first three bytes.
 //!
 //! For the v1 dye editor we only consume `(key, prefab_name, slot_count)`.
 //! The per-slot material list (a v2 task) lets us also render the
@@ -82,12 +92,13 @@ pub struct PartPrefabDyeSlot {
     /// Maps 1:1 with `mat_indices`.
     pub default_materials: [String; 3],
     /// Material-channel active/visible flags, one byte each, every value
-    /// 0 or 1. **2.01 widened this from 3 bytes to 12** (see "Cross-version
-    /// layout drift"); the first three are the historical ones and keep
-    /// their meaning, so the `..._lookup_slot_mask` C ABI still hands out
-    /// exactly those three. Occupancy falls monotonically across the 12
-    /// (1,861 slots set `[0]`, 140 set `[11]` on live 2.01), i.e. channels
-    /// fill low-index first.
+    /// 0 or 1. **2.01 widened this from 3 bytes to 12 and re-encoded it**
+    /// (see "Cross-version layout drift"): the 12 read as four groups of
+    /// three, of which a slot uses one (4,276 of 6,585 live slots), two
+    /// (1,254), three (72) or none (983) — never all four. The pre-2.01
+    /// three bytes do **not** survive as a sub-slice, so `mask[0..3]` is
+    /// not "the old mask" and reads all-zero on every slot whose active
+    /// group is not the first.
     pub mask: [u8; 12],
     /// For non-final slots: the next sub-prefab internal name. For
     /// the LAST slot in a row: the full `.pac` asset path for the
@@ -114,8 +125,8 @@ pub struct DyeExtraLayer {
     /// `"leather"` layer paired with the primary `"cloth"` layer on the
     /// new dyeable cloaks).
     pub default_materials: [String; 3],
-    /// Mask bytes for the extra layer (same semantics and same 2.01
-    /// 3 → 12 widening as the primary slot `mask`).
+    /// Mask bytes for the extra layer (same semantics and the same 2.01
+    /// 3 → 12 widening + re-encode as the primary slot `mask`).
     pub mask: [u8; 12],
     /// Trailing flag byte (0/1 observed; exact meaning not yet RE'd).
     pub flag: u8,

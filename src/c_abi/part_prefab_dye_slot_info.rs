@@ -10,6 +10,7 @@
 //!   the per-slot default material that the editor can pre-populate
 //!   in its dye dropdowns (richer than the JSON ever was).
 //! - `lookup_slot_mat_indices` / `lookup_slot_mask` — raw 3-byte
+//!   (the mask is 12 bytes on 2.01+; this reads only the first 3)
 //!   arrays for advanced UI / debugging.
 //! - `lookup_slot_tail_name` — next sub-prefab name (or, for the
 //!   LAST slot in a row, the full `.pac` asset path).
@@ -343,7 +344,16 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_mat_indic
     .unwrap_or(error::PANIC)
 }
 
-/// Read the 3 mask bytes into `out_mask[0..3]`.
+/// Read the first 3 mask bytes into `out_mask[0..3]`.
+///
+/// **Partial since 2.01.** The on-disk mask is 12 bytes there, re-encoded
+/// as four groups of three, and a slot's active group is often not the
+/// first — this returns all zeros for those. The pre-2.01 three-byte
+/// values do not survive anywhere in the new field, so there is no way to
+/// keep the old meaning; kept at 3 bytes because widening it would
+/// overrun every existing caller's buffer. Callers that need the whole
+/// field want a 12-byte accessor (not yet added — see
+/// `docs/dye-editor-scope.md`).
 ///
 /// # Safety
 /// `handle` and `out_mask` must be non-null; `out_mask` must point to
@@ -462,8 +472,9 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_extra_lay
     .unwrap_or(error::PANIC)
 }
 
-/// Read extra layer `layer_idx`'s 3 mask bytes on `slot_idx` into
-/// `out_mask[0..3]`.
+/// Read the first 3 of extra layer `layer_idx`'s mask bytes on `slot_idx`
+/// into `out_mask[0..3]`. Same 2.01 partial-read caveat as
+/// [`crimson_part_prefab_dye_slot_info_lookup_slot_mask`].
 ///
 /// # Safety
 /// `handle` and `out_mask` must be non-null; `out_mask` must point to
