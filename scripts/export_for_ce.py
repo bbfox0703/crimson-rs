@@ -41,6 +41,8 @@ from pathlib import Path
 
 import crimson_rs
 
+from gamedata_layout import discover_paloc_targets, resolve_bin_layout
+
 
 GAME_DIR_CANDIDATES = [
     r"D:\SteamLibrary\steamapps\common\Crimson Desert",
@@ -55,7 +57,6 @@ GAME_DIR_CANDIDATES = [
 # 0019 (hence the lower bound), and the upper bound is intentionally loose
 # to survive future shuffles.
 PALOC_GROUPS = [f"{n:04d}" for n in range(19, 50)]
-PALOC_DIR = "gamedata/stringtable/binary__"
 
 # Output filename suffix for the CE dropdown lists. Keep the historical
 # names for the three languages the CE table already references; everything
@@ -166,10 +167,11 @@ def export_iteminfo_anchored(
     a fallback record with key + string_key is emitted, so items.jsonl
     has 100% coverage even when the parser is incomplete."""
     print("-" * 60)
-    print("Step 1: iteminfo.pabgb (anchor mode)")
+    print("Step 1: iteminfo (anchor mode)")
+    layout = resolve_bin_layout(game_dir)
     raw = bytes(
         crimson_rs.extract_file(
-            game_dir, "0008", "gamedata/binary__/client/bin", "iteminfo.pabgb"
+            game_dir, "0008", layout.dir, layout.body("iteminfo")
         )
     )
     raw_path = out_dir / "iteminfo.pabgb"
@@ -250,10 +252,11 @@ def export_iteminfo_lossy(game_dir: str, out_dir: Path) -> list[dict]:
     """Lossy fallback when no keys.txt is supplied. Only items the parser
     fully understands end up in items.jsonl."""
     print("-" * 60)
-    print("Step 1: iteminfo.pabgb (lossy mode — no --keys supplied)")
+    print("Step 1: iteminfo (lossy mode — no --keys supplied)")
+    layout = resolve_bin_layout(game_dir)
     raw = bytes(
         crimson_rs.extract_file(
-            game_dir, "0008", "gamedata/binary__/client/bin", "iteminfo.pabgb"
+            game_dir, "0008", layout.dir, layout.body("iteminfo")
         )
     )
     raw_path = out_dir / "iteminfo.pabgb"
@@ -294,38 +297,6 @@ def export_iteminfo_lossy(game_dir: str, out_dir: Path) -> list[dict]:
     return items
 
 
-def discover_paloc_targets(game_dir: str) -> list[tuple[str, str, str]]:
-    """Scan PAMT directories across PALOC_GROUPS for every
-    localizationstring_<lang>.paloc file. Returns a list of
-    (lang, group, filename) tuples, deduped by lang (first hit wins).
-    """
-    found: list[tuple[str, str, str]] = []
-    seen: set[str] = set()
-    prefix = "localizationstring_"
-    suffix = ".paloc"
-    for g in PALOC_GROUPS:
-        pamt_path = Path(game_dir) / g / "0.pamt"
-        if not pamt_path.is_file():
-            continue
-        try:
-            pamt = crimson_rs.parse_pamt_bytes(pamt_path.read_bytes())
-        except Exception:
-            continue
-        for d in pamt["directories"]:
-            dpath = d.get("path") or d.get("name") or ""
-            if "stringtable" not in dpath:
-                continue
-            for f in d.get("files", []):
-                fname = f["name"]
-                if not (fname.startswith(prefix) and fname.endswith(suffix)):
-                    continue
-                lang = fname[len(prefix):-len(suffix)]
-                if lang in seen:
-                    continue
-                seen.add(lang)
-                found.append((lang, g, fname))
-    return found
-
 
 def export_paloc(game_dir: str, out_dir: Path) -> dict[str, dict[int, str]]:
     """Discover + extract + parse every paloc language file the game ships.
@@ -333,34 +304,45 @@ def export_paloc(game_dir: str, out_dir: Path) -> dict[str, dict[int, str]]:
     """
     print("-" * 60)
     print("Step 2: paloc files (auto-discover all languages)")
-    targets = discover_paloc_targets(game_dir)
+    targets = discover_paloc_targets(game_dir, PALOC_GROUPS)
     if not targets:
-        print(f"  no localizationstring_*.paloc found in groups "
+        print(f"  no paloc files found in groups "
               f"{PALOC_GROUPS[0]}-{PALOC_GROUPS[-1]}")
         return {}
     print(f"  discovered {len(targets)} language(s): "
-          + ", ".join(lang for lang, _, _ in targets))
+          + ", ".join(t.lang for t in targets))
 
     out: dict[str, dict[int, str]] = {}
-    for lang, group, fname in targets:
-        try:
-            raw = bytes(
-                crimson_rs.extract_file(game_dir, group, PALOC_DIR, fname)
-            )
-        except Exception as exc:
-            print(f"  [{lang:<6}] extract failed from group {group}: {exc}")
-            continue
-        entries = crimson_rs.parse_paloc_bytes(raw)
+    for lang, group, pdir, fnames in targets:
+        # Pre-2.01 ships one blob per language; 2.01+ splits it into one
+        # file per namespace. Item names (group byte 0x70) come out of the
+        # merged set either way.
         item_names: dict[int, str] = {}
-        for e in entries:
+        n_entries = 0
+        failed = 0
+        for fname in fnames:
             try:
-                sid = int(e["string_key"])
-            except (ValueError, TypeError):
+                raw = bytes(
+                    crimson_rs.extract_file(game_dir, group, pdir, fname)
+                )
+            except Exception as exc:
+                if not failed:
+                    print(f"  [{lang:<6}] extract failed from group {group} "
+                          f"({fname}): {exc}")
+                failed += 1
                 continue
-            if sid & 0xFF != 0x70:
-                continue
-            item_key = sid >> 32
-            item_names[item_key] = e["string_value"]
+            entries = crimson_rs.parse_paloc_bytes(raw)
+            n_entries += len(entries)
+            for e in entries:
+                try:
+                    sid = int(e["string_key"])
+                except (ValueError, TypeError):
+                    continue
+                if sid & 0xFF != 0x70:
+                    continue
+                item_names[sid >> 32] = e["string_value"]
+        if failed == len(fnames):
+            continue
         out[lang] = item_names
         out_name = f"paloc_{lang}.json"
         out_path = out_dir / out_name
@@ -373,7 +355,8 @@ def export_paloc(game_dir: str, out_dir: Path) -> dict[str, dict[int, str]]:
                 sort_keys=True,
             )
         print(
-            f"  [{lang:<6}] group {group}, {len(entries):,} entries, "
+            f"  [{lang:<6}] group {group}, {len(fnames)} file(s), "
+            f"{n_entries:,} entries, "
             f"{len(item_names):,} item names -> {out_name}"
         )
     return out

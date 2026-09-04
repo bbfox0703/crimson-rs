@@ -74,7 +74,7 @@ PALOC display name → fuzzy match → NPC head-shot DDS path.
   compares the install's `(major, minor)` against this and the minor bridge.
   Backs onto `crate::binary::paver::PARSER_TARGET_GAMEDATA_MAJOR`.
 - `crimson_parser_target_gamedata_minor() -> u16` — the gamedata `minor` this
-  build's parsers target (currently **0**, i.e. 2.00). **Single source of
+  build's parsers target (currently **1**, i.e. 2.01). **Single source of
   truth**: the value lives in `crate::binary::paver::PARSER_TARGET_GAMEDATA_MINOR`,
   so a new patch is one Rust bump and every consumer follows — no more lock-step
   `ParserTargetMinor` edits on the C# side (promoting this killed the 5th such
@@ -126,6 +126,9 @@ src/
 │   ├── pamt.rs, papgt.rs    # PAMT / PAPGT parse + write
 │   ├── paz.rs               # PackGroupBuilder, compression, PAZ creation
 │   ├── paloc.rs             # PALOC parse/write (numeric + symbolic keys)
+│   ├── gamedata_layout.rs   # #[cfg(test)] — which archive layout the live install
+│   │                        #   ships (2.01 renamed the gamedata dir + every
+│   │                        #   extension); newest-first with fallback
 │   ├── paver.rs             # meta/0.paver version-stamp reader
 │   └── trie.rs              # Trie buffer read + build (radix-compressed)
 ├── crypto/

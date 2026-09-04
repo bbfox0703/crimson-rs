@@ -244,6 +244,7 @@ mod tests {
     //! in `key=1` are `cloth/leather/metal` in that order; the variant
     //! `"wool"` on `key=1` cloth sub has a positive variant_value.
 
+    use crate::binary::gamedata_layout;
     use super::*;
     use std::path::PathBuf;
 
@@ -262,27 +263,27 @@ mod tests {
         let dir = pamt
             .directories
             .iter()
-            .find(|d| d.path == "gamedata/binary__/client/bin")?;
+            .find(|d| d.path == gamedata_layout::bin_dir())?;
         let pabgb_file = dir
             .files
             .iter()
-            .find(|f| f.name == "partprefabdyetexturepalleteinfo.pabgb")?;
+            .find(|f| f.name == gamedata_layout::body("partprefabdyetexturepalleteinfo"))?;
         let pabgh_file = dir
             .files
             .iter()
-            .find(|f| f.name == "partprefabdyetexturepalleteinfo.pabgh")?;
+            .find(|f| f.name == gamedata_layout::header("partprefabdyetexturepalleteinfo"))?;
         let group_dir = game_root.join("0008");
         let pabgb = crate::binary::paz::extract_file(
             &group_dir,
             pabgb_file,
-            "gamedata/binary__/client/bin",
+            gamedata_layout::bin_dir(),
             &pamt.header.encrypt_info.encrypt_info,
         )
         .ok()?;
         let pabgh = crate::binary::paz::extract_file(
             &group_dir,
             pabgh_file,
-            "gamedata/binary__/client/bin",
+            gamedata_layout::bin_dir(),
             &pamt.header.encrypt_info.encrypt_info,
         )
         .ok()?;

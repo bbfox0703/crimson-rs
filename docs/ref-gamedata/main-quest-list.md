@@ -1,7 +1,7 @@
 ### **Prologue: Dead of Night**
 
 * Ambush
-* Unfamiliar Lands
+* Unfamiliar Land
 * In Ashes
 * Unknown Space
 * Realm of Uncertainty
@@ -11,7 +11,7 @@
 
 * **Trials of Kindness**
 * Where Rumors Gather
-* Mysterious Man
+* A Mysterious Beggar
 * True Wisdom in Kindness
 * Actions Speak Louder than Words
 * Heart Beyond Borders

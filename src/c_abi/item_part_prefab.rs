@@ -528,6 +528,7 @@ pub unsafe extern "C" fn crimson_item_part_prefab_resolve_dye_slot_count(
 
 #[cfg(test)]
 mod tests {
+    use crate::binary::gamedata_layout;
     use super::*;
     use crate::c_abi::paz::crimson_paz_extract_file;
     use std::ffi::{CStr, CString};
@@ -584,23 +585,23 @@ mod tests {
         let pamt = CString::new(pamt_path.to_str().unwrap()).unwrap();
         let item_b = extract_file(
             pamt.as_c_str(),
-            "gamedata/binary__/client/bin",
-            "iteminfo.pabgb",
+            gamedata_layout::bin_dir(),
+            &gamedata_layout::body("iteminfo"),
         );
         let si_b = extract_file(
             pamt.as_c_str(),
-            "gamedata/binary__/client/bin",
-            "stringinfo.pabgb",
+            gamedata_layout::bin_dir(),
+            &gamedata_layout::body("stringinfo"),
         );
         let pp_b = extract_file(
             pamt.as_c_str(),
-            "gamedata/binary__/client/bin",
-            "partprefabdyeslotinfo.pabgb",
+            gamedata_layout::bin_dir(),
+            &gamedata_layout::body("partprefabdyeslotinfo"),
         );
         let pp_h = extract_file(
             pamt.as_c_str(),
-            "gamedata/binary__/client/bin",
-            "partprefabdyeslotinfo.pabgh",
+            gamedata_layout::bin_dir(),
+            &gamedata_layout::header("partprefabdyeslotinfo"),
         );
 
         let mut h: *mut CrimsonItemPartPrefabHandle = ptr::null_mut();
@@ -777,18 +778,18 @@ mod tests {
         };
         let pamt = CString::new(pamt_path.to_str().unwrap()).unwrap();
         let item_b =
-            extract_file(pamt.as_c_str(), "gamedata/binary__/client/bin", "iteminfo.pabgb");
+            extract_file(pamt.as_c_str(), gamedata_layout::bin_dir(), &gamedata_layout::body("iteminfo"));
         let si_b =
-            extract_file(pamt.as_c_str(), "gamedata/binary__/client/bin", "stringinfo.pabgb");
+            extract_file(pamt.as_c_str(), gamedata_layout::bin_dir(), &gamedata_layout::body("stringinfo"));
         let pp_b = extract_file(
             pamt.as_c_str(),
-            "gamedata/binary__/client/bin",
-            "partprefabdyeslotinfo.pabgb",
+            gamedata_layout::bin_dir(),
+            &gamedata_layout::body("partprefabdyeslotinfo"),
         );
         let pp_h = extract_file(
             pamt.as_c_str(),
-            "gamedata/binary__/client/bin",
-            "partprefabdyeslotinfo.pabgh",
+            gamedata_layout::bin_dir(),
+            &gamedata_layout::header("partprefabdyeslotinfo"),
         );
 
         // Build both handles.

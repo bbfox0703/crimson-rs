@@ -1,5 +1,14 @@
 # crimson_rs Python API Reference
 
+> **Archive paths moved in 2.01.** The gamedata tables live at
+> `0008/gamedata/binarystaticinfo__/bin/<table>.staticinfobody` (and
+> `.staticinfoheader` for the index) on 2.01+, and at
+> `0008/gamedata/binary__/client/bin/<table>.pabgb` / `.pabgh` on 1.05–2.00.
+> Localization likewise: `gamedata/stringtable/binary__/<lang>/<namespace>.paloc`
+> on 2.01+, `gamedata/stringtable/binary__/localizationstring_<lang>.paloc` before.
+> The file *contents* are identical either way. Examples below use the 2.01 names;
+> `scripts/gamedata_layout.py` resolves whichever layout an install ships.
+
 See also: [Archive Format](archive-format.md) for binary format details and mod loading explanation.
 
 ## Enums
@@ -143,7 +152,9 @@ builder = crimson_rs.PackGroupBuilder(
     encrypt_info=b"\x00\x00\x00",
     max_chunk_size=500_000_000,
 )
-builder.add_file("gamedata/binary__/client/bin", "iteminfo.pabgb", raw_bytes)
+builder.add_file(
+    "gamedata/binarystaticinfo__/bin", "iteminfo.staticinfobody", raw_bytes
+)
 builder.add_file_from_path("textures", "icon.dds", "/path/to/icon.dds")
 pamt_bytes = builder.finish()  # writes .paz chunks + 0.pamt, returns PAMT bytes
 ```
@@ -180,8 +191,8 @@ Extract a single file from a pack group archive. Reads the PAMT index, locates t
 data = crimson_rs.extract_file(
     "/path/to/Crimson Desert",
     "0008",
-    "gamedata/binary__/client/bin",
-    "iteminfo.pabgb",
+    "gamedata/binarystaticinfo__/bin",
+    "iteminfo.staticinfobody",
 )
 ```
 
@@ -194,7 +205,7 @@ Extract a single file by pointing at any `.paz` in the group directory. Locates 
 ```python
 data = crimson_rs.extract_file_from_paz(
     "/path/to/snapshot/0.paz",
-    "gamedata/binary__/client/bin/iteminfo.pabgb",
+    "gamedata/binarystaticinfo__/bin/iteminfo.staticinfobody",
 )
 ```
 
@@ -218,10 +229,10 @@ Parse `skill.pabgb` + `skill.pabgh` into structured entries. Returns:
 
 ```python
 pabgh = crimson_rs.extract_file_from_paz(
-    "/path/to/0008/0.paz", "gamedata/binary__/client/bin/skill.pabgh"
+    "/path/to/0008/0.paz", "gamedata/binarystaticinfo__/bin/skill.staticinfoheader"
 )
 pabgb = crimson_rs.extract_file_from_paz(
-    "/path/to/0008/0.paz", "gamedata/binary__/client/bin/skill.pabgb"
+    "/path/to/0008/0.paz", "gamedata/binarystaticinfo__/bin/skill.staticinfobody"
 )
 skills = crimson_rs.parse_skillinfo_from_bytes(pabgb, pabgh)
 print(f"{len(skills['entries'])} skills, format={skills['format']}")

@@ -14,17 +14,31 @@ Enhanced slot model tested here:
 The script parses EVERY row of the live 1.13 table under this model and
 reports exact-consume coverage (target 1,538/1,538), so the Rust change
 can be made with confidence.
+
+HISTORICAL: the model above is 1.13's. **2.01 widened `mask` from 3 bytes
+to 12** in both the slot and the extra layer, so against a 2.01 install
+this reports 0/1,626 — that is the script working as written, not a
+regression. `crate::part_prefab_dye_slot_info` carries the current model
+(and still reads the 1.13 one); update `mask[3]` here to `mask[12]` if you
+need this validator against a live 2.01+ table.
 """
 from __future__ import annotations
 import struct, sys
 from pathlib import Path
 REPO = Path('.').resolve(); sys.path.insert(0, str(REPO)); import crimson_rs
 
-GAME = r"D:\SteamLibrary\steamapps\common\Crimson Desert"
-GROUP, BINDIR = "0008", "gamedata/binary__/client/bin"
+sys.path.insert(0, str(REPO / "scripts"))
+from gamedata_layout import resolve_bin_layout
 
-def extract(name):
-    return bytes(crimson_rs.extract_file(GAME, GROUP, BINDIR, name))
+GAME = r"D:\SteamLibrary\steamapps\common\Crimson Desert"
+GROUP = "0008"
+# 2.01 renamed the directory and the .pabgb/.pabgh extensions; `stem` here
+# is the bare table name and the layout supplies the rest.
+LAYOUT = resolve_bin_layout(GAME, GROUP)
+
+def extract(stem, header=False):
+    name = LAYOUT.header(stem) if header else LAYOUT.body(stem)
+    return bytes(crimson_rs.extract_file(GAME, GROUP, LAYOUT.dir, name))
 
 def parse_pabgh(pabgh):
     """u16 count + (u32 key, u32 offset)* -> list[(key, offset)]."""
@@ -77,8 +91,8 @@ def try_row(body, expected_key):
     return r.o == len(body)
 
 def main():
-    pabgb = extract("partprefabdyeslotinfo.pabgb")
-    pabgh = extract("partprefabdyeslotinfo.pabgh")
+    pabgb = extract("partprefabdyeslotinfo")
+    pabgh = extract("partprefabdyeslotinfo", header=True)
     index = parse_pabgh(pabgh)
     offsets = [off for _, off in index] + [len(pabgb)]
     ok = 0; fail = []

@@ -582,6 +582,7 @@ mod tests {
     //! of (key, prefab_name, slot_count) tuples; exercises per-slot
     //! getters on the multi-slot known row.
 
+    use crate::binary::gamedata_layout;
     use super::*;
     use std::path::PathBuf;
     use std::ptr;
@@ -614,27 +615,27 @@ mod tests {
         let dir = pamt
             .directories
             .iter()
-            .find(|d| d.path == "gamedata/binary__/client/bin")?;
+            .find(|d| d.path == gamedata_layout::bin_dir())?;
         let pabgb_file = dir
             .files
             .iter()
-            .find(|f| f.name == "partprefabdyeslotinfo.pabgb")?;
+            .find(|f| f.name == gamedata_layout::body("partprefabdyeslotinfo"))?;
         let pabgh_file = dir
             .files
             .iter()
-            .find(|f| f.name == "partprefabdyeslotinfo.pabgh")?;
+            .find(|f| f.name == gamedata_layout::header("partprefabdyeslotinfo"))?;
         let group_dir = game_root.join("0008");
         let pabgb = crate::binary::paz::extract_file(
             &group_dir,
             pabgb_file,
-            "gamedata/binary__/client/bin",
+            gamedata_layout::bin_dir(),
             &pamt.header.encrypt_info.encrypt_info,
         )
         .ok()?;
         let pabgh = crate::binary::paz::extract_file(
             &group_dir,
             pabgh_file,
-            "gamedata/binary__/client/bin",
+            gamedata_layout::bin_dir(),
             &pamt.header.encrypt_info.encrypt_info,
         )
         .ok()?;

@@ -2,6 +2,14 @@
 
 > **🎯 New session pickup — start here.**
 >
+> **Archive paths below are pre-2.01.** Session notes written before
+> 2026-09-04 name the gamedata tables as
+> `0008/gamedata/binary__/client/bin/<table>.pabgb` / `.pabgh`. 2.01
+> renamed that to `0008/gamedata/binarystaticinfo__/bin/<table>.staticinfobody`
+> / `.staticinfoheader` without changing a byte of their contents, so the
+> RE below still reads true — only the lookup path moved. Use
+> `scripts/gamedata_layout.py` rather than hardcoding either.
+>
 > **Where we are (updated 2026-05-18, end of session 9)**: every save-
 > side key the C# Save Editor currently surfaces resolves through a
 > shipped C ABI bridge. **34 bridges (one promoted to "body-aware":
@@ -523,7 +531,8 @@
 >
 > Extracted `.pabgb` baselines for this work live in
 > `out/baselines/1.06/` (gitignored). Re-extract with
-> `crimson_rs.extract_file(GAME_DIR, "0008", "gamedata/binary__/client/bin", "<file>.pabgb")`
+> `crimson_rs.extract_file(GAME_DIR, "0008", "gamedata/binarystaticinfo__/bin", "<table>.staticinfobody")` — on 1.05–2.00 that directory was
+> `gamedata/binary__/client/bin` and the file `<table>.pabgb`; `scripts/gamedata_layout.py` resolves either.
 > if missing.
 
 ---

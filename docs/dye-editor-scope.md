@@ -81,14 +81,17 @@ bit lives in byte 1 bit 0).
 
 ---
 
-## Gamedata baselines — `0008/gamedata/binary__/client/bin/`
+## Gamedata baselines — `0008/gamedata/binarystaticinfo__/bin/`
+
+(`0008/gamedata/binary__/client/bin/` with `.pabgb` / `.pabgh` extensions on 1.05–2.00 —
+2.01 renamed the directory and the extensions without changing any file's contents.)
 
 Three `.pabgb` + `.pabgh` tables, all RE'd against the live 1.07 install.
 
 | File | Size (cmp/unc) | Rows in 1.07 | Maps | Parser / Bridge |
 |---|---:|---:|---|---|
 | `dyecolorgroupinfo.pabgb` + `.pabgh` | 6 KB / 9 KB, index 82 B | **10** | `DyeColorGroupInfoKey (u32)` → color group name (`"Her_Color_Group_I"`, …) + 109-record RGBA gradient palette. Save's `_dyeColorGroupInfoKey` references this. | [`dye_color_group_info`](../src/dye_color_group_info/mod.rs) / [`c_abi/dye_color_group_info.rs`](../src/c_abi/dye_color_group_info.rs) |
-| `partprefabdyeslotinfo.pabgb` + `.pabgh` | 86 KB / 370 KB, index 9 KB | **1,105** | `PartPrefabKey (u32)` → prefab internal name + per-slot detail (3 material indices, 3 default-material names, 3 mask bytes, next-prefab / `.pac` tail per slot). Replaces `dye_slot_counts.json`. | [`part_prefab_dye_slot_info`](../src/part_prefab_dye_slot_info/mod.rs) / [`c_abi/part_prefab_dye_slot_info.rs`](../src/c_abi/part_prefab_dye_slot_info.rs) |
+| `partprefabdyeslotinfo.pabgb` + `.pabgh` | 86 KB / 370 KB, index 9 KB | **1,626** on 2.01 (1,105 when this table was first written on 1.07) | `PartPrefabKey (u32)` → prefab internal name + per-slot detail (3 material indices, 3 default-material names, 12 mask bytes — 3 before 2.01 — next-prefab / `.pac` tail per slot). Replaces `dye_slot_counts.json`. | [`part_prefab_dye_slot_info`](../src/part_prefab_dye_slot_info/mod.rs) / [`c_abi/part_prefab_dye_slot_info.rs`](../src/c_abi/part_prefab_dye_slot_info.rs) |
 | `partprefabdyetexturepalleteinfo.pabgb` + `.pabgh` | 0.8 KB / 4 KB, index 68 B | **11** (keys 0..=10) | `PartPrefabDyeTexturePalleteKey (u16)` → palette tier with 2–3 sub-records (material name + icon DDS + texture DDS + optional variant name & strength). Save's `_texturePalleteKey` references this. | [`part_prefab_dye_texture_pallete_info`](../src/part_prefab_dye_texture_pallete_info/mod.rs) / [`c_abi/part_prefab_dye_texture_pallete_info.rs`](../src/c_abi/part_prefab_dye_texture_pallete_info.rs) |
 
 The `binarygimmickchart__` `*dye*` / `dyewater` `.binarygimmick` files
@@ -149,7 +152,7 @@ Row {
 Slot {
     u8 mat_indices[3],        // material indices for this slot
     CString material_a / b / c, // 3 default material names (often empty)
-    u8 mask[3],               // active/visible flags
+    u8 mask[12],              // active/visible flags; 3 bytes before 2.01
     // 1.12 ONLY: u8 + u32 inserted here, observed uniformly (0xFF, 0)
     //   across all 3,893 live slots (semantics not yet RE'd). Absent
     //   in 1.07-1.11. See "Cross-version drift (1.12)" below.
@@ -190,14 +193,14 @@ layer** inline before the slot's tail:
 Slot (new_schema, 1.12+) =
     u8[3] mat_indices
     CString × 3    default_materials (primary layer)
-    u8[3] mask
+    u8[N] mask                         // N = 3 through 2.00, 12 from 2.01
     u8    marker (0xFF)
     u32   extra_layer_count            // 0 in 1.07-1.12; 1 for new 1.13 gear
     extra_layer_count × ExtraLayer
     CString tail_name                  // next sub-prefab name, or the .pac path
 ExtraLayer =
     CString × 3    default_materials (secondary layer, e.g. "leather")
-    u8[3] mask
+    u8[N] mask                         // same widening as the slot mask
     u8    flag
 ```
 
@@ -216,6 +219,34 @@ enhanced model consumes **all 1,538 live 1.13 rows exactly**. Everything
 else in the dye path (iteminfo `is_dyeable`, `ItemDyeSaveData` in the save
 body, the dye-color-group + texture-pallete bridges) is byte-perfect /
 unchanged on 1.13. Verified 2026-07-04.
+
+
+#### Cross-version drift (2.01)
+
+2.01 widened `mask` from 3 bytes to **12**, in the slot *and* in the
+`ExtraLayer`. Nothing else about the record changed — `mat_indices`, the
+three material names, the `0xFF` marker, `extra_layer_count` and the tail
+are all where they were — but the old model consumes 9 bytes too few per
+slot, so before the fix the parser dropped **all 1,626 rows**.
+
+Exact-consume alone cannot say *where* 9 inserted bytes went when every
+one of them is 0 or 1. What pins them **after** the original three:
+
+- all 12 positions hold only `0` or `1` across 6,585 live slots;
+- occupancy falls monotonically, `mask[0]` set on 1,861 slots down to
+  `mask[11]` on 140 — channels fill low-index first;
+- the historical "one mask bit per non-empty material name" correlation
+  holds on `mask[0..3]` for 39.4% of slots but on `mask[9..12]` for only
+  17.7%, and the head's joint distribution shows the expected diagonal
+  while the tail's is dominated by all-zero.
+
+Same style of argument as the 1.16 field swap and the 2.00 `u32` insert.
+[`SLOT_LAYOUTS`](../src/part_prefab_dye_slot_info/mod.rs) now lists three
+per-slot layouts (`(new_schema, mask_len)` = `(true, 12)`, `(true, 3)`,
+`(false, 3)`), tried newest-first; on live 2.01 the first parses all
+1,626 rows. `scripts/decode_dyeslot_113.py` still models 1.13 and so
+reports 0/1,626 against a 2.01 install — that is the historical script
+working as written.
 
 ---
 
@@ -263,7 +294,7 @@ use the two-call buffer pattern.
 | `crimson_part_prefab_dye_slot_info_lookup_slot_default_material(handle, prefab_key, slot_idx, mat_idx, buf, ...)` | Per-slot default material (`mat_idx ∈ {0,1,2}`). |
 | `crimson_part_prefab_dye_slot_info_lookup_slot_tail_name(handle, prefab_key, slot_idx, buf, ...)` | Next-prefab / `.pac` path. |
 | `crimson_part_prefab_dye_slot_info_lookup_slot_mat_indices(handle, prefab_key, slot_idx, out_indices[3])` | Raw 3-byte indices. |
-| `crimson_part_prefab_dye_slot_info_lookup_slot_mask(handle, prefab_key, slot_idx, out_mask[3])` | Raw 3-byte mask. |
+| `crimson_part_prefab_dye_slot_info_lookup_slot_mask(handle, prefab_key, slot_idx, out_mask[3])` | First 3 mask bytes. 2.01 widened the on-disk mask to 12 (see below); this bridge still returns the historical three, so existing callers' 3-byte buffers stay correct. Surfacing the other 9 would need a new entry point. |
 | `crimson_part_prefab_dye_slot_info_get_entry_key(handle, idx, *out_key)` | Enumerate keys. |
 
 All bridges return `NULL_ARG` / `NOT_FOUND` / `OUT_OF_RANGE` /

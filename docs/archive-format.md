@@ -115,9 +115,21 @@ To reconstruct a full string, walk parent pointers to root and concatenate.
 
 ---
 
-## PABGB / PABGH (Game Data Tables — `0008/gamedata/binary__/client/bin/*.pabg{b,h}`)
+## PABGB / PABGH (Game Data Tables — `0008/gamedata/binarystaticinfo__/bin/`)
 
-PAPGT / PAMT / PAZ are the **archive layer**. The files actually packed inside the archives — `iteminfo.pabgb`, `missioninfo.pabgb`, `skill.pabgb` + `skill.pabgh`, `characterappearanceindexinfo.pabgb` + `.pabgh`, etc. — are the **game-data layer** and share a couple of well-trodden patterns documented here.
+PAPGT / PAMT / PAZ are the **archive layer**. The files actually packed inside the archives — `iteminfo`, `missioninfo`, `skill` (body + index), `characterappearanceindexinfo` (body + index), etc. — are the **game-data layer** and share a couple of well-trodden patterns documented here.
+
+**Naming across patches.** These files kept the same bytes but changed name in 2.01:
+
+| | 1.05 – 2.00 | 2.01+ |
+|---|---|---|
+| directory | `gamedata/binary__/client/bin` | `gamedata/binarystaticinfo__/bin` |
+| table body | `<table>.pabgb` | `<table>.staticinfobody` |
+| table index | `<table>.pabgh` | `<table>.staticinfoheader` |
+| misc blob | `<table>.pabgm` (same dir) | `<table>.staticinfomisc` (in `bin/misc`) |
+| gimmick charts | `gamedata/binarygimmickchart__/bin/*.pabgb` | `gamedata/binarygimmickchart__/bin/*.binarygimmick` |
+
+This doc keeps calling them PABGB / PABGH — that is what the *formats* are, whatever the extension says. `scripts/gamedata_layout.py` (and `src/binary/gamedata_layout.rs` for the tests) resolves whichever naming an install ships.
 
 ### Two layouts
 

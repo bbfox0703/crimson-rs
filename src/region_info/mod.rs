@@ -60,6 +60,7 @@ pub fn parse_region_info_lossy(
 
 #[cfg(test)]
 mod tests {
+    use crate::binary::gamedata_layout;
     use super::*;
     use std::path::PathBuf;
 
@@ -84,19 +85,19 @@ mod tests {
         let dir = pamt
             .directories
             .iter()
-            .find(|d| d.path == "gamedata/binary__/client/bin")?;
+            .find(|d| d.path == gamedata_layout::bin_dir())?;
         let group_dir = game_root.join("0008");
         let pabgb = crate::binary::paz::extract_file(
             &group_dir,
-            dir.files.iter().find(|f| f.name == "regioninfo.pabgb")?,
-            "gamedata/binary__/client/bin",
+            dir.files.iter().find(|f| f.name == gamedata_layout::body("regioninfo"))?,
+            gamedata_layout::bin_dir(),
             &pamt.header.encrypt_info.encrypt_info,
         )
         .ok()?;
         let pabgh = crate::binary::paz::extract_file(
             &group_dir,
-            dir.files.iter().find(|f| f.name == "regioninfo.pabgh")?,
-            "gamedata/binary__/client/bin",
+            dir.files.iter().find(|f| f.name == gamedata_layout::header("regioninfo"))?,
+            gamedata_layout::bin_dir(),
             &pamt.header.encrypt_info.encrypt_info,
         )
         .ok()?;

@@ -27,7 +27,7 @@
 //!         CString material_a,        // 3 material names (often empty)
 //!         CString material_b,
 //!         CString material_c,
-//!         u8 mask[3],                // active/visible flags
+//!         u8 mask[12],               // active/visible flags; 3 before 2.01
 //!         // 1.12 ONLY: a 5-byte field inserted here (u8 + u32),
 //!         //   observed uniformly (0xFF, 0) on all 3,893 live slots.
 //!         //   Absent in 1.07-1.11; consumed-but-not-stored (no
@@ -38,17 +38,27 @@
 //! }
 //! ```
 //!
-//! ## Cross-version layout drift (1.12)
+//! ## Cross-version layout drift (1.12, 2.01)
 //!
-//! 1.12 inserted the `u8 + u32` field per slot. The 1.07-1.11 and 1.12
-//! per-slot layouts are **empirically disjoint** — across the full
-//! 1.11 (1,111 rows) and 1.12 (968 rows) tables, every row walks
-//! cleanly under exactly one layout and zero rows are ambiguous (parse
-//! cleanly under both). The parser therefore tries the 1.12 layout
-//! first and falls back to the 1.07-1.11 layout per row, keeping
-//! support for older installs while reading the live 1.12 table. A
-//! future patch that drifts the per-slot layout again will fail both
-//! attempts and the row drops out — the lossy safety net.
+//! 1.12 inserted the `u8 + u32` field per slot. 2.01 widened `mask` from
+//! 3 bytes to 12, in **both** the slot and the extra layer — the only
+//! schema change 2.01 made to anything crimson-rs parses. The three
+//! layouts are **empirically disjoint** — across the full 1.11 (1,111
+//! rows), 1.12 (968 rows) and 2.01 (1,626 rows) tables, every row walks
+//! cleanly under exactly one and zero rows are ambiguous. The parser
+//! therefore tries them newest-first per row (see [`SLOT_LAYOUTS`]),
+//! keeping support for older installs while reading the live table. A
+//! future patch that drifts the per-slot layout again will fail every
+//! attempt and the row drops out — the lossy safety net.
+//!
+//! The 3 → 12 boundary is pinned by value distribution, not just by
+//! byte consumption (which alone cannot say where 9 all-0/1 bytes were
+//! inserted): all 12 positions hold only 0 or 1, occupancy decreases
+//! monotonically from `[0]` (1,861 of 6,585 live slots) to `[11]` (140),
+//! and the historical "one mask bit per non-empty material name"
+//! correlation holds on `mask[0..3]` (39.4% exact) more than twice as
+//! often as on `mask[9..12]` (17.7%) — so the original three stayed put
+//! and the nine were appended.
 //!
 //! For the v1 dye editor we only consume `(key, prefab_name, slot_count)`.
 //! The per-slot material list (a v2 task) lets us also render the
@@ -71,10 +81,14 @@ pub struct PartPrefabDyeSlot {
     /// often `"cloth"/"leather"/"metal"` depending on the prefab).
     /// Maps 1:1 with `mat_indices`.
     pub default_materials: [String; 3],
-    /// Three mask bytes (active/visible flags — exact meaning not yet
-    /// RE'd; usually `[1, 1, 1]` for fully-active slots, `[1, 1, 0]`
-    /// for slots with only 2 active material channels).
-    pub mask: [u8; 3],
+    /// Material-channel active/visible flags, one byte each, every value
+    /// 0 or 1. **2.01 widened this from 3 bytes to 12** (see "Cross-version
+    /// layout drift"); the first three are the historical ones and keep
+    /// their meaning, so the `..._lookup_slot_mask` C ABI still hands out
+    /// exactly those three. Occupancy falls monotonically across the 12
+    /// (1,861 slots set `[0]`, 140 set `[11]` on live 2.01), i.e. channels
+    /// fill low-index first.
+    pub mask: [u8; 12],
     /// For non-final slots: the next sub-prefab internal name. For
     /// the LAST slot in a row: the full `.pac` asset path for the
     /// prefab as a whole.
@@ -91,7 +105,7 @@ pub struct PartPrefabDyeSlot {
 
 /// 1.13: a secondary material/dye layer inside a [`PartPrefabDyeSlot`]
 /// (see `PartPrefabDyeSlot::extra_layers`). Same shape as the slot's
-/// primary layer minus the mesh tail: three default-material names, three
+/// primary layer minus the mesh tail: three default-material names, the
 /// mask bytes, and a trailing flag byte. Surfaced through the
 /// `crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_*` C ABI.
 #[derive(Debug, Clone)]
@@ -100,9 +114,9 @@ pub struct DyeExtraLayer {
     /// `"leather"` layer paired with the primary `"cloth"` layer on the
     /// new dyeable cloaks).
     pub default_materials: [String; 3],
-    /// Three mask bytes for the extra layer (same semantics as the
-    /// primary slot `mask`).
-    pub mask: [u8; 3],
+    /// Mask bytes for the extra layer (same semantics and same 2.01
+    /// 3 → 12 widening as the primary slot `mask`).
+    pub mask: [u8; 12],
     /// Trailing flag byte (0/1 observed; exact meaning not yet RE'd).
     pub flag: u8,
 }
@@ -128,6 +142,17 @@ impl PartPrefabDyeSlotInfoEntry {
     pub fn slot_count(&self) -> u32 {
         self.slots.len() as u32
     }
+}
+
+/// Read `mask_len` mask bytes into the fixed 12-wide field, zero-filling
+/// the rest. Pre-2.01 rows carry only 3 (see "Cross-version layout drift"),
+/// so the tail stays zero — which is also what those channels mean.
+fn read_mask(body: &[u8], cursor: &mut usize, mask_len: usize) -> Option<[u8; 12]> {
+    let bytes = body.get(*cursor..*cursor + mask_len)?;
+    let mut mask = [0u8; 12];
+    mask[..mask_len].copy_from_slice(bytes);
+    *cursor += mask_len;
+    Some(mask)
 }
 
 /// Read a `[u32 len][len bytes]` CString from `data` starting at
@@ -158,7 +183,12 @@ fn read_cstring(data: &[u8], cursor: &mut usize) -> Option<String> {
 /// the new cursor position, or `None` if the body is truncated /
 /// invalid. When `new_schema` is set, consume the 1.12 per-slot
 /// `u8 + u32` field inserted between `mask` and `tail_name`.
-fn parse_slot(body: &[u8], cursor: &mut usize, new_schema: bool) -> Option<PartPrefabDyeSlot> {
+fn parse_slot(
+    body: &[u8],
+    cursor: &mut usize,
+    new_schema: bool,
+    mask_len: usize,
+) -> Option<PartPrefabDyeSlot> {
     if *cursor + 3 > body.len() {
         return None;
     }
@@ -169,11 +199,7 @@ fn parse_slot(body: &[u8], cursor: &mut usize, new_schema: bool) -> Option<PartP
     let mat_b = read_cstring(body, cursor)?;
     let mat_c = read_cstring(body, cursor)?;
 
-    if *cursor + 3 > body.len() {
-        return None;
-    }
-    let mask = [body[*cursor], body[*cursor + 1], body[*cursor + 2]];
-    *cursor += 3;
+    let mask = read_mask(body, cursor, mask_len)?;
 
     let mut extra_layers: Vec<DyeExtraLayer> = Vec::new();
     if new_schema {
@@ -207,12 +233,12 @@ fn parse_slot(body: &[u8], cursor: &mut usize, new_schema: bool) -> Option<PartP
             let e_a = read_cstring(body, cursor)?;
             let e_b = read_cstring(body, cursor)?;
             let e_c = read_cstring(body, cursor)?;
-            if *cursor + 4 > body.len() {
+            let e_mask = read_mask(body, cursor, mask_len)?;
+            if *cursor >= body.len() {
                 return None;
             }
-            let e_mask = [body[*cursor], body[*cursor + 1], body[*cursor + 2]];
-            let e_flag = body[*cursor + 3];
-            *cursor += 4;
+            let e_flag = body[*cursor];
+            *cursor += 1;
             extra_layers.push(DyeExtraLayer {
                 default_materials: [e_a, e_b, e_c],
                 mask: e_mask,
@@ -232,17 +258,24 @@ fn parse_slot(body: &[u8], cursor: &mut usize, new_schema: bool) -> Option<PartP
     })
 }
 
+/// Per-slot layouts, newest first — `(new_schema, mask_len)`. See
+/// "Cross-version layout drift": 1.12 added the `u8 + u32` after the mask
+/// (`new_schema`), and 2.01 widened the mask itself from 3 bytes to 12.
+const SLOT_LAYOUTS: [(bool, usize); 3] = [(true, 12), (true, 3), (false, 3)];
+
 /// Try to parse one full row body under a single layout. Returns
 /// `Some(entry)` only when the row's header validates against
 /// `expected_key` and the slot walk consumes the body **exactly**
-/// (`cursor == body.len()`); otherwise `None`. `new_schema` selects
-/// the 1.12 per-slot layout (the extra `u8 + u32`) vs the 1.07-1.11
-/// layout. The exact-consume requirement is what makes the dual-layout
-/// fallback in [`parse_part_prefab_dye_slot_info_lossy`] unambiguous.
+/// (`cursor == body.len()`); otherwise `None`. `new_schema` selects the
+/// 1.12 per-slot marker + extra-layer count, and `mask_len` the 2.01
+/// mask width — see [`SLOT_LAYOUTS`]. The exact-consume requirement is
+/// what makes the multi-layout fallback in
+/// [`parse_part_prefab_dye_slot_info_lossy`] unambiguous.
 fn try_parse_row(
     body: &[u8],
     expected_key: u32,
     new_schema: bool,
+    mask_len: usize,
 ) -> Option<PartPrefabDyeSlotInfoEntry> {
     // Header: u32 key + 5 pad + u32 slot_count + CString prefab_name
     if body.len() < 17 {
@@ -267,7 +300,7 @@ fn try_parse_row(
     let mut cursor = 17 + name_len;
     let mut slots: Vec<PartPrefabDyeSlot> = Vec::with_capacity(slot_count as usize);
     for _ in 0..slot_count {
-        slots.push(parse_slot(body, &mut cursor, new_schema)?);
+        slots.push(parse_slot(body, &mut cursor, new_schema, mask_len)?);
     }
     // Mismatched body length signals schema drift / wrong layout; reject
     // the row so the caller can try the other layout (or drop it).
@@ -284,16 +317,15 @@ fn try_parse_row(
 
 /// Parse `partprefabdyeslotinfo.pabgb` using its `.pabgh` index.
 ///
-/// Returns entries in PABGH on-disk order. Rows whose body doesn't
-/// match either supported per-slot layout (truncated, slot_count out of
-/// plausible range, key mismatch with PABGH, or a leftover-bytes
-/// mismatch under both layouts) are silently dropped.
+/// Returns entries in PABGH on-disk order. Rows whose body doesn't match
+/// any supported per-slot layout (truncated, slot_count out of plausible
+/// range, key mismatch with PABGH, or leftover bytes under every layout)
+/// are silently dropped.
 ///
-/// Each row is tried under the **1.12 layout first** (the extra per-slot
-/// `u8 + u32`) and then the **1.07-1.11 layout**, keeping whichever
-/// consumes the body exactly. The two layouts are empirically disjoint
-/// (no row parses cleanly under both — verified across the full 1.11
-/// and 1.12 tables), so the fallback never mis-reads a row.
+/// Each row is tried against [`SLOT_LAYOUTS`] newest-first, keeping
+/// whichever consumes the body exactly. The layouts are empirically
+/// disjoint (no row parses cleanly under two — verified across the full
+/// 1.11, 1.12 and 2.01 tables), so the fallback never mis-reads a row.
 pub fn parse_part_prefab_dye_slot_info_lossy(
     pabgb: &[u8],
     pabgh: &[u8],
@@ -307,16 +339,14 @@ pub fn parse_part_prefab_dye_slot_info_lossy(
         let Some(body) = pabgb.get(*start..*end) else {
             continue;
         };
-        // 1.12 layout, then the 1.07-1.11 layout. Whichever consumes the
-        // body exactly wins; both failing drops the row (the lossy net).
-        // 1.12/1.13 layout first (new_schema — the per-slot marker + extra
-        // layer count; see parse_slot), then the 1.07-1.11 layout. Whichever
-        // consumes the body exactly wins; both failing drops the row (the
-        // lossy net). On the live 1.13 install this parses all 1,538 rows —
-        // the 9 new "expanded dyeable" gear rows that the old blind-5-byte-pad
-        // model dropped now read their second dye layer (RE 2026-07-04).
-        if let Some(parsed) = try_parse_row(body, entry.key, true)
-            .or_else(|| try_parse_row(body, entry.key, false))
+        // Newest layout first; whichever consumes the body exactly wins,
+        // all of them failing drops the row (the lossy net). On the live
+        // 2.01 install the first layout parses all 1,626 rows.
+        if let Some(parsed) = SLOT_LAYOUTS
+            .iter()
+            .find_map(|&(new_schema, mask_len)| {
+                try_parse_row(body, entry.key, new_schema, mask_len)
+            })
         {
             out.push(parsed);
         }
@@ -331,6 +361,7 @@ mod tests {
     //! dump so a future patch breaking the row layout is caught
     //! immediately. Skips cleanly when no game install is present.
 
+    use crate::binary::gamedata_layout;
     use super::*;
     use std::path::PathBuf;
 
@@ -363,27 +394,27 @@ mod tests {
         let dir = pamt
             .directories
             .iter()
-            .find(|d| d.path == "gamedata/binary__/client/bin")?;
+            .find(|d| d.path == gamedata_layout::bin_dir())?;
         let pabgb_file = dir
             .files
             .iter()
-            .find(|f| f.name == "partprefabdyeslotinfo.pabgb")?;
+            .find(|f| f.name == gamedata_layout::body("partprefabdyeslotinfo"))?;
         let pabgh_file = dir
             .files
             .iter()
-            .find(|f| f.name == "partprefabdyeslotinfo.pabgh")?;
+            .find(|f| f.name == gamedata_layout::header("partprefabdyeslotinfo"))?;
         let group_dir = game_root.join("0008");
         let pabgb = crate::binary::paz::extract_file(
             &group_dir,
             pabgb_file,
-            "gamedata/binary__/client/bin",
+            gamedata_layout::bin_dir(),
             &pamt.header.encrypt_info.encrypt_info,
         )
         .ok()?;
         let pabgh = crate::binary::paz::extract_file(
             &group_dir,
             pabgh_file,
-            "gamedata/binary__/client/bin",
+            gamedata_layout::bin_dir(),
             &pamt.header.encrypt_info.encrypt_info,
         )
         .ok()?;

@@ -1235,6 +1235,7 @@ mod tests {
     //! garbage, OUT_OF_RANGE, NOT_FOUND) uses synthetic inputs that
     //! exercise the wrappers without needing valid item bytes.
 
+    use crate::binary::gamedata_layout;
     use super::*;
     use crate::c_abi::paz::crimson_paz_extract_file;
     use std::ffi::CString;
@@ -1253,8 +1254,8 @@ mod tests {
 
     /// Pull iteminfo.pabgb via the standard PAZ path, returns its bytes.
     fn extract_iteminfo_bytes(pamt: &CStr) -> Vec<u8> {
-        let dir = CString::new("gamedata/binary__/client/bin").unwrap();
-        let name = CString::new("iteminfo.pabgb").unwrap();
+        let dir = CString::new(gamedata_layout::bin_dir()).unwrap();
+        let name = CString::new(gamedata_layout::body("iteminfo")).unwrap();
         let mut needed: usize = 0;
         let rc = unsafe {
             crimson_paz_extract_file(
@@ -1810,14 +1811,14 @@ mod tests {
         let pamt_parsed = crate::binary::pamt::PackMeta::parse(&pamt_data, None)
             .expect("parse pamt");
         let dir = pamt_parsed.directories.iter()
-            .find(|d| d.path == "gamedata/binary__/client/bin")
+            .find(|d| d.path == gamedata_layout::bin_dir())
             .expect("dir");
-        let mi_file = dir.files.iter().find(|f| f.name == "missioninfo.pabgb")
+        let mi_file = dir.files.iter().find(|f| f.name == gamedata_layout::body("missioninfo"))
             .expect("missioninfo");
         let missioninfo_bytes = crate::binary::paz::extract_file(
             &game_root.join("0008"),
             mi_file,
-            "gamedata/binary__/client/bin",
+            gamedata_layout::bin_dir(),
             &pamt_parsed.header.encrypt_info.encrypt_info,
         ).expect("extract missioninfo");
         let mission_entries = parse_mission_info_lossy(&missioninfo_bytes);
@@ -1837,24 +1838,8 @@ mod tests {
         // Pull eng PALOC for item display names.
         let paloc_pamt = game_root.join("0020").join("0.pamt");
         let paloc_handle = if paloc_pamt.is_file() {
-            let pamt_c = CString::new(paloc_pamt.to_str().unwrap()).unwrap();
-            let dir_c = CString::new("gamedata/stringtable/binary__").unwrap();
-            let name_c = CString::new("localizationstring_eng.paloc").unwrap();
-            let mut needed: usize = 0;
-            let _ = unsafe {
-                crimson_paz_extract_file(
-                    pamt_c.as_ptr(), dir_c.as_ptr(), name_c.as_ptr(),
-                    ptr::null_mut(), 0, &mut needed,
-                )
-            };
-            let mut buf = vec![0u8; needed];
-            unsafe {
-                crimson_paz_extract_file(
-                    pamt_c.as_ptr(), dir_c.as_ptr(), name_c.as_ptr(),
-                    buf.as_mut_ptr(), buf.len(), &mut needed,
-                );
-            }
-            buf.truncate(needed);
+            let buf = gamedata_layout::paloc_bytes("0020", "eng")
+                .expect("eng paloc must load from 0020");
             let mut ph: *mut crate::c_abi::paloc::CrimsonPalocHandle = ptr::null_mut();
             unsafe {
                 crate::c_abi::paloc::crimson_paloc_load_from_bytes(
@@ -2317,40 +2302,13 @@ mod tests {
                 PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
             });
         let paloc_pamt = game_root.join("0020").join("0.pamt");
-        let Some(paloc_pamt) = paloc_pamt.is_file().then_some(paloc_pamt) else {
+        if !paloc_pamt.is_file() {
             eprintln!("skipping: no 0020/0.pamt for PALOC");
             unsafe { crimson_iteminfo_free(iteminfo_handle) };
             return;
-        };
-        let paloc_pamt_c = CString::new(paloc_pamt.to_str().unwrap()).unwrap();
-        let paloc_dir = CString::new("gamedata/stringtable/binary__").unwrap();
-        let paloc_name = CString::new("localizationstring_eng.paloc").unwrap();
-        let mut needed: usize = 0;
-        let _ = unsafe {
-            crimson_paz_extract_file(
-                paloc_pamt_c.as_ptr(),
-                paloc_dir.as_ptr(),
-                paloc_name.as_ptr(),
-                ptr::null_mut(),
-                0,
-                &mut needed,
-            )
-        };
-        let mut paloc_buf = vec![0u8; needed];
-        assert_eq!(
-            unsafe {
-                crimson_paz_extract_file(
-                    paloc_pamt_c.as_ptr(),
-                    paloc_dir.as_ptr(),
-                    paloc_name.as_ptr(),
-                    paloc_buf.as_mut_ptr(),
-                    paloc_buf.len(),
-                    &mut needed,
-                )
-            },
-            error::OK
-        );
-        paloc_buf.truncate(needed);
+        }
+        let paloc_buf = gamedata_layout::paloc_bytes("0020", "eng")
+            .expect("eng paloc must load from 0020");
 
         use crate::c_abi::paloc::{CrimsonPalocHandle, crimson_paloc_free, crimson_paloc_load_from_bytes};
         let mut paloc_handle: *mut CrimsonPalocHandle = ptr::null_mut();

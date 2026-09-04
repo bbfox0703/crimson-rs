@@ -258,6 +258,7 @@ mod tests {
     //! through the C ABI surface to catch any FFI-level breakage
     //! (handle lifecycle, two-call pattern, NULL handling).
 
+    use crate::binary::gamedata_layout;
     use super::*;
     use crate::c_abi::paz::crimson_paz_extract_file;
     use std::ffi::{CStr, CString};
@@ -341,8 +342,8 @@ mod tests {
         let pamt = CString::new(pamt_path.to_str().unwrap()).unwrap();
         let bytes = extract_file(
             pamt.as_c_str(),
-            "gamedata/binary__/client/bin",
-            "sublevelinfo.pabgb",
+            gamedata_layout::bin_dir(),
+            &gamedata_layout::body("sublevelinfo"),
         );
 
         let mut sh: *mut CrimsonSubLevelInfoHandle = ptr::null_mut();

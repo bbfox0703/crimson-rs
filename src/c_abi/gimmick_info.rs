@@ -332,6 +332,7 @@ mod tests {
     //! `localizationstring_eng.paloc`. Asserts both surfaces work
     //! end-to-end, plus negative paths and NULL handling.
 
+    use crate::binary::gamedata_layout;
     use super::*;
     use crate::c_abi::paloc::{crimson_paloc_free, crimson_paloc_load_from_bytes};
     use crate::c_abi::paz::crimson_paz_extract_file;
@@ -427,8 +428,8 @@ mod tests {
         let pamt = CString::new(pamt_path.to_str().unwrap()).unwrap();
         let gimmick_bytes = extract_file(
             pamt.as_c_str(),
-            "gamedata/binary__/client/bin",
-            "gimmickinfo.pabgb",
+            gamedata_layout::bin_dir(),
+            &gamedata_layout::body("gimmickinfo"),
         );
 
         let mut gh: *mut CrimsonGimmickInfoHandle = ptr::null_mut();
@@ -471,8 +472,6 @@ mod tests {
         }
 
         // Pull eng PALOC.
-        let paloc_dir = CString::new("gamedata/stringtable/binary__").unwrap();
-        let paloc_name = CString::new("localizationstring_eng.paloc").unwrap();
         let paloc_pamt = {
             let mut p = pamt_path.clone();
             p.pop();
@@ -481,37 +480,13 @@ mod tests {
             p.push("0.pamt");
             p
         };
-        let Some(paloc_pamt) = paloc_pamt.is_file().then_some(paloc_pamt) else {
+        if !paloc_pamt.is_file() {
             eprintln!("skipping paloc chain: no 0020/0.pamt");
             unsafe { crimson_gimmickinfo_free(gh) };
             return;
-        };
-        let paloc_pamt_c = CString::new(paloc_pamt.to_str().unwrap()).unwrap();
-        let mut needed: usize = 0;
-        let rc = unsafe {
-            crimson_paz_extract_file(
-                paloc_pamt_c.as_ptr(),
-                paloc_dir.as_ptr(),
-                paloc_name.as_ptr(),
-                ptr::null_mut(),
-                0,
-                &mut needed,
-            )
-        };
-        assert_eq!(rc, error::BUFFER_TOO_SMALL);
-        let mut paloc_buf = vec![0u8; needed];
-        let rc = unsafe {
-            crimson_paz_extract_file(
-                paloc_pamt_c.as_ptr(),
-                paloc_dir.as_ptr(),
-                paloc_name.as_ptr(),
-                paloc_buf.as_mut_ptr(),
-                paloc_buf.len(),
-                &mut needed,
-            )
-        };
-        assert_eq!(rc, error::OK);
-        paloc_buf.truncate(needed);
+        }
+        let paloc_buf = gamedata_layout::paloc_bytes("0020", "eng")
+            .expect("eng paloc must load from 0020");
 
         let mut ph: *mut CrimsonPalocHandle = ptr::null_mut();
         let rc = unsafe {

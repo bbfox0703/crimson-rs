@@ -25,7 +25,7 @@
 //!          └─► hashlittle2_c = 1891183967
 //!                └─► (1891183967 << 32) | 0x101 = 8122573288984543489
 //!                      └─► PALOC.lookup_str("8122573288984543489")
-//!                            └─► "Unfamiliar Lands"
+//!                            └─► "Unfamiliar Land"
 //! ```
 //!
 //! The bridge keeps only `(key, name)` from the parse; the rest of the
@@ -399,6 +399,7 @@ mod tests {
     //! — keeping the assertions identical at every layer means a
     //! regression at any level surfaces here without ambiguity.
 
+    use crate::binary::gamedata_layout;
     use super::*;
     use crate::c_abi::paloc::{
         crimson_paloc_free, crimson_paloc_load_from_bytes,
@@ -411,12 +412,15 @@ mod tests {
     /// (MissionKey, internal_name, display_title) — verified
     /// end-to-end. Same seven rows as `mission_info::tests::KNOWN`.
     const KNOWN: &[(u32, &str, &str)] = &[
-        (1_000_157, "Mission_Intro_Tutorial_I", "Unfamiliar Lands"),
+        // 2.01 retitled this mission "Unfamiliar Lands" -> "Unfamiliar Land";
+        // the *stage* `Intro_Tutorial_I` still reads "Unfamiliar Lands".
+        (1_000_157, "Mission_Intro_Tutorial_I", "Unfamiliar Land"),
         (1_000_160, "Mission_Intro_MainBattle", "In Ashes"),
         (1_000_620, "Mission_Intro_Abyss_Tutorial", "Realm of Uncertainty"),
         (1_000_164, "Mission_Intro_After_Horse", "New Journey"),
         (1_000_052, "Mission_MeetAlustain_Alustain_Strength", "Where Rumors Gather"),
-        (1_000_053, "Mission_MeetAlustain_Alustain_Wisdom", "Mysterious Man"),
+        // 2.01 retitle (was "Mysterious Man").
+        (1_000_053, "Mission_MeetAlustain_Alustain_Wisdom", "A Mysterious Beggar"),
         (
             1_000_083,
             "Mission_IronStronghold_Block_ReturnToSister",
@@ -485,7 +489,7 @@ mod tests {
             return;
         };
         let pamt = CString::new(pamt_path.to_str().unwrap()).unwrap();
-        let mission_bytes = extract_file(pamt.as_c_str(), "gamedata/binary__/client/bin", "missioninfo.pabgb");
+        let mission_bytes = extract_file(pamt.as_c_str(), gamedata_layout::bin_dir(), &gamedata_layout::body("missioninfo"));
 
         // Load the missioninfo bridge.
         let mut mh: *mut CrimsonMissionInfoHandle = ptr::null_mut();
@@ -510,8 +514,6 @@ mod tests {
         // Pull eng paloc through the same PAZ pipeline.
         // 0020 is the typical English group; the existing test for
         // paloc bridge uses the same path.
-        let paloc_dir = CString::new("gamedata/stringtable/binary__").unwrap();
-        let paloc_name = CString::new("localizationstring_eng.paloc").unwrap();
         let paloc_pamt = {
             let mut p = pamt_path.clone();
             p.pop(); // drop "0.pamt"
@@ -520,37 +522,13 @@ mod tests {
             p.push("0.pamt");
             p
         };
-        let Some(paloc_pamt) = paloc_pamt.is_file().then_some(paloc_pamt) else {
+        if !paloc_pamt.is_file() {
             eprintln!("skipping paloc chain: no 0020/0.pamt");
             unsafe { crimson_missioninfo_free(mh) };
             return;
-        };
-        let paloc_pamt_c = CString::new(paloc_pamt.to_str().unwrap()).unwrap();
-        let mut needed: usize = 0;
-        let rc = unsafe {
-            crimson_paz_extract_file(
-                paloc_pamt_c.as_ptr(),
-                paloc_dir.as_ptr(),
-                paloc_name.as_ptr(),
-                ptr::null_mut(),
-                0,
-                &mut needed,
-            )
-        };
-        assert_eq!(rc, error::BUFFER_TOO_SMALL);
-        let mut paloc_buf = vec![0u8; needed];
-        let rc = unsafe {
-            crimson_paz_extract_file(
-                paloc_pamt_c.as_ptr(),
-                paloc_dir.as_ptr(),
-                paloc_name.as_ptr(),
-                paloc_buf.as_mut_ptr(),
-                paloc_buf.len(),
-                &mut needed,
-            )
-        };
-        assert_eq!(rc, error::OK);
-        paloc_buf.truncate(needed);
+        }
+        let paloc_buf = gamedata_layout::paloc_bytes("0020", "eng")
+            .expect("eng paloc must load from 0020");
 
         let mut ph: *mut CrimsonPalocHandle = ptr::null_mut();
         let rc = unsafe {
@@ -669,8 +647,8 @@ mod tests {
         let pamt = CString::new(pamt_path.to_str().unwrap()).unwrap();
         let mission_bytes = extract_file(
             pamt.as_c_str(),
-            "gamedata/binary__/client/bin",
-            "missioninfo.pabgb",
+            gamedata_layout::bin_dir(),
+            &gamedata_layout::body("missioninfo"),
         );
         let mut mh: *mut CrimsonMissionInfoHandle = ptr::null_mut();
         let rc = unsafe {

@@ -57,8 +57,8 @@ pub const PARSER_TARGET_GAMEDATA_MAJOR: u16 = 2;
 /// off. Consumers read it through the
 /// `crimson_parser_target_gamedata_minor()` C ABI instead of duplicating the
 /// number; before that bridge existed this had to be hand-bumped in lock-step
-/// on the C# side every patch (8 → 9 → … → 16 → 17 → 18 → 2.00's 0).
-pub const PARSER_TARGET_GAMEDATA_MINOR: u16 = 0;
+/// on the C# side every patch (8 → 9 → … → 16 → 17 → 18 → 2.00's 0 → 2.01's 1).
+pub const PARSER_TARGET_GAMEDATA_MINOR: u16 = 1;
 
 /// Every gamedata `minor` this build's parsers can load without mis-decoding.
 ///
@@ -68,9 +68,15 @@ pub const PARSER_TARGET_GAMEDATA_MINOR: u16 = 0;
 /// `respawn_time_seconds` and `max_endurance` — so 1.18 and earlier are no
 /// longer byte-compatible (1.18 had already broken compatibility with 1.17 via
 /// the `MergedPrefabVisualData` u32, and 1.16 with 1.15 via four iteminfo
-/// drifts plus the first-ever skill drift).
+/// drifts plus the first-ever skill drift). 2.01 is **content-only** over 2.00
+/// as far as the parsers are concerned — it moved every gamedata table to a
+/// new archive path with new file extensions, but not one byte inside them —
+/// so minor `0` is layout-compatible with this build and could be added here
+/// if accepting older installs mattered; the list stays target-only by
+/// convention.
 /// Widen the list when a patch ships data an existing parser still reads
-/// byte-perfectly (a content-only patch, e.g. 1.06→1.07, 1.08→1.09, 1.16→1.17).
+/// byte-perfectly (a content-only patch, e.g. 1.06→1.07, 1.08→1.09, 1.16→1.17,
+/// or this 2.00→2.01).
 /// Entries are `minor`s *within* [`PARSER_TARGET_GAMEDATA_MAJOR`] — a minor
 /// from a different major says nothing about compatibility.
 pub const COMPATIBLE_GAMEDATA_MINORS: &[u16] = &[PARSER_TARGET_GAMEDATA_MINOR];

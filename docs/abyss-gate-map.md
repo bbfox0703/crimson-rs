@@ -51,7 +51,8 @@ field.
 
 ### Pipeline
 
-1. Extract `0008/gamedata/binary__/client/bin/gimmickinfo.pabgb` via
+1. Extract `0008/gamedata/binarystaticinfo__/bin/gimmickinfo.staticinfobody` via
+   (`.../binary__/client/bin/gimmickinfo.pabgb` on 1.05–2.00)
    the shipped `crimson_paz_extract_file`.
 2. Parse with `crate::gimmick_info::parse_gimmick_info_lossy`. Filter
    for rows whose internal name contains `"abyss"` or `"hyperspace"`

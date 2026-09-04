@@ -85,7 +85,8 @@ mod tests {
     /// ("Verified hash transform"). The hashes here are the `hi32`
     /// values from that table.
     const KNOWN: &[(&[u8], u32)] = &[
-        // Mission_Intro_Tutorial_I -> "Unfamiliar Lands"
+        // Mission_Intro_Tutorial_I -> "Unfamiliar Land" (2.01; was
+        // "Unfamiliar Lands" through 2.00)
         (b"Mission_Intro_Tutorial_I", 1_891_183_967),
         // Mission_IronStronghold_Block_ReturnToSister -> "Where the Wind Guides You"
         (b"Mission_IronStronghold_Block_ReturnToSister", 3_594_586_120),

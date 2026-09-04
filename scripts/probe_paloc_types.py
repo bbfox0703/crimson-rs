@@ -9,9 +9,10 @@ from pathlib import Path
 
 import crimson_rs
 
+from gamedata_layout import paloc_entries
+
 
 PALOC_GROUPS = [f"{n:04d}" for n in range(20, 36)]
-PALOC_DIR = "gamedata/stringtable/binary__"
 
 
 def main() -> None:
@@ -20,18 +21,7 @@ def main() -> None:
     ap.add_argument("--lang", default="eng")
     args = ap.parse_args()
 
-    fname = f"localizationstring_{args.lang}.paloc"
-    raw = None
-    for g in PALOC_GROUPS:
-        try:
-            raw = bytes(crimson_rs.extract_file(args.game_dir, g, PALOC_DIR, fname))
-            break
-        except Exception:
-            continue
-    if raw is None:
-        raise SystemExit(fname)
-
-    entries = crimson_rs.parse_paloc_bytes(raw)
+    entries = paloc_entries(args.game_dir, PALOC_GROUPS, args.lang)
     print(f"{len(entries):,} paloc entries")
 
     # Group entries by item_key (upper 32 bits) and tally lower-byte types.

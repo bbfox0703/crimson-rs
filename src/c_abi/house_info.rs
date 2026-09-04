@@ -201,6 +201,7 @@ pub unsafe extern "C" fn crimson_house_info_get_entry(
 
 #[cfg(test)]
 mod tests {
+    use crate::binary::gamedata_layout;
     use super::*;
     use crate::c_abi::paz::crimson_paz_extract_file;
     use std::ffi::{CStr, CString};
@@ -263,13 +264,13 @@ mod tests {
         let pamt = CString::new(pamt_path.to_str().unwrap()).unwrap();
         let pabgb = extract_file(
             pamt.as_c_str(),
-            "gamedata/binary__/client/bin",
-            "houseinfo.pabgb",
+            gamedata_layout::bin_dir(),
+            &gamedata_layout::body("houseinfo"),
         );
         let pabgh = extract_file(
             pamt.as_c_str(),
-            "gamedata/binary__/client/bin",
-            "houseinfo.pabgh",
+            gamedata_layout::bin_dir(),
+            &gamedata_layout::header("houseinfo"),
         );
         let mut sh: *mut CrimsonHouseInfoHandle = ptr::null_mut();
         let rc = unsafe {
@@ -287,7 +288,7 @@ mod tests {
             unsafe { crimson_house_info_entry_count(sh, &mut count) },
             error::OK
         );
-        assert_eq!(count, 12, "expected 12 rows in 1.18 (was 4 in 1.07-1.17)");
+        assert_eq!(count, 22, "expected 22 rows in 2.01 (12 in 1.18-2.00, 4 in 1.07-1.17)");
         for &(key, expected) in KNOWN {
             let mut req: usize = 0;
             let rc1 = unsafe {

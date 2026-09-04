@@ -60,7 +60,13 @@ sys.path.append(GAMEMODS_DIR)
 # a sub-directory under BASELINES_ROOT containing 0008/0.paz + 0.pamt.
 VERSIONS = ["1.03.01", "1.04.01", "1.05.01"]
 
-INTERNAL = "gamedata/binary__/client/bin"
+# Each baseline archive uses its own version's layout: 2.01 renamed the
+# directory and the .pabgb/.pabgh extensions. Newest first — the first pair
+# that extracts wins.
+INTERNAL_LAYOUTS = [
+    ("gamedata/binarystaticinfo__/bin", "staticinfobody", "staticinfoheader"),
+    ("gamedata/binary__/client/bin", "pabgb", "pabgh"),
+]
 
 
 def probe_one(version: str):
@@ -69,8 +75,18 @@ def probe_one(version: str):
     if not os.path.isfile(paz_path):
         print(f"  skip: no archive at {paz_path}")
         return None
-    pabgh = bytes(crimson_rs.extract_file_from_paz(paz_path, f"{INTERNAL}/skill.pabgh"))
-    pabgb = bytes(crimson_rs.extract_file_from_paz(paz_path, f"{INTERNAL}/skill.pabgb"))
+    for d, body_ext, header_ext in INTERNAL_LAYOUTS:
+        try:
+            pabgh = bytes(crimson_rs.extract_file_from_paz(
+                paz_path, f"{d}/skill.{header_ext}"))
+            pabgb = bytes(crimson_rs.extract_file_from_paz(
+                paz_path, f"{d}/skill.{body_ext}"))
+            break
+        except Exception:
+            continue
+    else:
+        print(f"  skip: no skill table in {paz_path} under any known layout")
+        return None
     print(f"pabgh={len(pabgh):,}B  pabgb={len(pabgb):,}B")
 
     # Reload skillinfo_parser to get a fresh cache + format flag each run.

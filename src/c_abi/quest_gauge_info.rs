@@ -252,6 +252,7 @@ fn write_str_to_buf(
 mod tests {
     //! Live-install integration test against `questgaugeinfo.pabgb`.
 
+    use crate::binary::gamedata_layout;
     use super::*;
     use crate::c_abi::paz::crimson_paz_extract_file;
     use std::ffi::{CStr, CString};
@@ -327,8 +328,8 @@ mod tests {
         let pamt = CString::new(pamt_path.to_str().unwrap()).unwrap();
         let bytes = extract_file(
             pamt.as_c_str(),
-            "gamedata/binary__/client/bin",
-            "questgaugeinfo.pabgb",
+            gamedata_layout::bin_dir(),
+            &gamedata_layout::body("questgaugeinfo"),
         );
 
         let mut gh: *mut CrimsonQuestGaugeInfoHandle = ptr::null_mut();

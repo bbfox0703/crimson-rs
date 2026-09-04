@@ -11,26 +11,19 @@ from pathlib import Path
 
 import crimson_rs
 
+from gamedata_layout import paloc_entries
+
 
 PALOC_GROUPS = [f"{n:04d}" for n in range(19, 36)]
-PALOC_DIR = "gamedata/stringtable/binary__"
 
 
 def load_paloc_70(game_dir: str, lang: str) -> tuple[dict[int, str], int]:
-    fname = f"localizationstring_{lang}.paloc"
-    raw = None
-    hit_group = None
-    for g in PALOC_GROUPS:
-        try:
-            raw = bytes(crimson_rs.extract_file(game_dir, g, PALOC_DIR, fname))
-            hit_group = g
-            break
-        except Exception:
-            continue
-    if raw is None:
+    try:
+        entries = paloc_entries(game_dir, PALOC_GROUPS, lang)
+    except SystemExit:
         return {}, -1
     out: dict[int, str] = {}
-    for e in crimson_rs.parse_paloc_bytes(raw):
+    for e in entries:
         try:
             sid = int(e["string_key"])
         except (ValueError, TypeError):

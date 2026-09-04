@@ -18,6 +18,7 @@ crate::impl_name_only_bridge! {
 
 #[cfg(test)]
 mod tests {
+    use crate::binary::gamedata_layout;
     use super::*;
     use crate::c_abi::error;
     use crate::c_abi::paz::crimson_paz_extract_file;
@@ -81,13 +82,13 @@ mod tests {
         let pamt = CString::new(pamt_path.to_str().unwrap()).unwrap();
         let pabgb = extract_file(
             pamt.as_c_str(),
-            "gamedata/binary__/client/bin",
-            "gameplayvariableinfo.pabgb",
+            gamedata_layout::bin_dir(),
+            &gamedata_layout::body("gameplayvariableinfo"),
         );
         let pabgh = extract_file(
             pamt.as_c_str(),
-            "gamedata/binary__/client/bin",
-            "gameplayvariableinfo.pabgh",
+            gamedata_layout::bin_dir(),
+            &gamedata_layout::header("gameplayvariableinfo"),
         );
         let mut sh: *mut CrimsonGamePlayVariableInfoHandle = ptr::null_mut();
         let rc = unsafe {
@@ -105,7 +106,7 @@ mod tests {
             unsafe { crimson_gameplay_variable_info_entry_count(sh, &mut count) },
             error::OK
         );
-        assert_eq!(count, 59); // 2.00 (was 56 in 1.16-1.18, 57 in 1.13-1.15, 56 in 1.12, 55 in 1.11, 47 through 1.10)
+        assert_eq!(count, 62); // 2.01 (59 in 2.00, 56 in 1.16-1.18, 57 in 1.13-1.15, 56 in 1.12, 55 in 1.11, 47 through 1.10)
         for &(key, expected) in KNOWN {
             let mut req: usize = 0;
             assert_eq!(
