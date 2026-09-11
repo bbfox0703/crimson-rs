@@ -5,11 +5,18 @@
 //! quests in Crimson Desert are organized by **faction** rather than
 //! the Chapter / Arc structure used for the main story (see the
 //! [sibling `main_quest_chapter` bridge](super::main_quest_chapter)
-//! for that one). Each quest title here is a `QuestKey` display title
-//! resolved by [`super::quest_info::crimson_questinfo_lookup_display_name`]
-//! at `lo32 = 0x100` (e.g. `Quest_Node_Her_GreymaneCamp_Contents → key
-//! 1_000_881 → "Record of the Greymanes"`); the faction column is
-//! curated and ships as static data.
+//! for that one). The list follows the in-game journal, so most entries
+//! are **missions** — `MissionKey` display titles at PALOC `lo32 = 0x101`
+//! (e.g. `Mission_GreymaneCamp_Carl → 1_001_073 → "Carl's Request"`) —
+//! and 20 are quests, `QuestKey` titles at `lo32 = 0x100` (e.g.
+//! `Quest_Node_Her_GreymaneCamp_Contents → 1_000_881 → "Record of the
+//! Greymanes"`). Every row records that key, so
+//! [`crimson_side_quest_faction_for_mission_key`] /
+//! [`crimson_side_quest_faction_for_quest_key`] answer from what a save
+//! stores and survive a retitle; the faction column is curated and ships
+//! as static data. Titles were last reconciled against 2.02 (9 had
+//! drifted — see the source MD), and `curated_titles_match_live_install`
+//! fails the next time a key's live title stops matching.
 //!
 //! The source MD also has Traditional-Chinese annotations in the
 //! section headings — those are informational only and don't appear
@@ -25,8 +32,12 @@
 //!   `lookup_related_count` / `_at` pattern from
 //!   [`super::faction_relation_group_info`]. Useful for the C# editor's
 //!   "show all side quests for faction X" UI.
+//! - [`crimson_side_quest_faction_for_mission_key`] /
+//!   [`crimson_side_quest_faction_for_quest_key`] — game key → faction
+//!   name. The two key spaces overlap numerically, hence two functions.
 //! - [`crimson_side_quest_table_entry_count`] +
-//!   [`crimson_side_quest_table_get_entry`] — full enumeration.
+//!   [`crimson_side_quest_table_get_entry`] (strings) /
+//!   [`crimson_side_quest_table_get_entry_key`] (key) — full enumeration.
 //!
 //! Stateless: backing data is a `const` table; lookup indices are
 //! lazily built on first call via `OnceLock`. No load / free pair.
@@ -37,140 +48,131 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::OnceLock;
 
 use super::error;
+use super::main_quest_chapter::Entry::{self, Mission, Quest};
 
-/// `(quest_title, faction_name)`.
-type Row = (&'static str, &'static str);
+/// `(quest_title, faction_name, entry)`. `entry` is the game row the title
+/// comes from: a [`Quest`] (PALOC `lo32 = 0x100`) or — for most of the
+/// table, which the in-game journal lists by mission — a [`Mission`]
+/// (`lo32 = 0x101`). Where a title is both, the row carries the quest.
+type Row = (&'static str, &'static str, Entry);
 
+/// Titles are the live English display strings (last reconciled against
+/// Crimson Desert 2.02 — see the source MD); `curated_titles_match_live_install`
+/// fails as soon as a key's live title stops matching its row.
 const ROWS: &[Row] = &[
     // ── Scattered Embers ──────────────────────────────────────────────
-    ("Record of the Greymanes", "Scattered Embers"),
-    ("Strongbox with Wheels", "Scattered Embers"),
-    ("Brightening the Spirits", "Scattered Embers"),
-    ("Chance to Make a Fortune", "Scattered Embers"),
-    ("To the Rescue", "Scattered Embers"),
-    ("The Greymanes' New Fangs", "Scattered Embers"),
-    ("The Nag and the Stubborn One", "Scattered Embers"),
-    ("A Chunk of Meat", "Scattered Embers"),
-    ("Fang Without a Master", "Scattered Embers"),
-    ("Letter at the Shrine", "Scattered Embers"),
-    ("Running Loot", "Scattered Embers"),
-    ("Empty Wagon", "Scattered Embers"),
-    ("Gloomy Gray", "Scattered Embers"),
-    ("Vibrant Dye", "Scattered Embers"),
-    ("A Fresh Color", "Scattered Embers"),
-    ("Shattered Charmed Life", "Scattered Embers"),
-    ("A Move on the Table", "Scattered Embers"),
-    ("Liquor and Memories", "Scattered Embers"),
-    ("Trembling Hands", "Scattered Embers"),
-    ("White Wood Bow", "Scattered Embers"),
-    ("The New Archers", "Scattered Embers"),
-    ("Face on the Bounty Notice", "Scattered Embers"),
-    ("Plenty of Bounty", "Scattered Embers"),
-    ("The Cost of the Tab", "Scattered Embers"),
-    ("Logging Without an Axe", "Scattered Embers"),
-    ("Quarrel on Horseback", "Scattered Embers"),
-    ("Showdown in the Saddles", "Scattered Embers"),
-    ("Scent of Gold", "Scattered Embers"),
+    ("Record of the Greymanes", "Scattered Embers", Quest(1_000_881)),
+    ("Strongbox with Wheels", "Scattered Embers", Quest(1_000_157)),
+    ("Brightening the Spirits", "Scattered Embers", Quest(1_000_350)),
+    ("Chance to Make a Fortune", "Scattered Embers", Quest(1_000_404)),
+    // was "To the Rescue"
+    ("Rescuing the Pailunese Refugees", "Scattered Embers", Mission(1_001_412)),
+    ("The Greymanes' New Fangs", "Scattered Embers", Quest(1_000_330)),
+    ("The Nag and the Stubborn One", "Scattered Embers", Mission(1_001_205)),
+    ("A Chunk of Meat", "Scattered Embers", Mission(1_001_210)),
+    ("Fang Without a Master", "Scattered Embers", Mission(1_001_217)),
+    ("Letter at the Shrine", "Scattered Embers", Mission(1_001_409)),
+    ("Running Loot", "Scattered Embers", Mission(1_000_422)),
+    ("Empty Wagon", "Scattered Embers", Mission(1_000_516)),
+    ("Gloomy Gray", "Scattered Embers", Mission(1_000_987)),
+    ("Vibrant Dye", "Scattered Embers", Mission(1_000_997)),
+    ("A Fresh Color", "Scattered Embers", Mission(1_000_998)),
+    ("Shattered Charmed Life", "Scattered Embers", Mission(1_000_999)),
+    ("A Move on the Table", "Scattered Embers", Mission(1_001_000)),
+    ("Liquor and Memories", "Scattered Embers", Mission(1_001_001)),
+    ("Trembling Hands", "Scattered Embers", Mission(1_001_002)),
+    ("White Wood Bow", "Scattered Embers", Mission(1_001_003)),
+    ("The New Archers", "Scattered Embers", Mission(1_001_004)),
+    ("Face on the Bounty Notice", "Scattered Embers", Mission(1_001_211)),
+    ("Plenty of Bounty", "Scattered Embers", Mission(1_001_218)),
+    ("The Cost of the Tab", "Scattered Embers", Mission(1_001_216)),
+    ("Logging Without an Axe", "Scattered Embers", Mission(1_001_220)),
+    ("Quarrel on Horseback", "Scattered Embers", Mission(1_000_146)),
+    ("Showdown in the Saddles", "Scattered Embers", Mission(1_001_403)),
+    ("Scent of Gold", "Scattered Embers", Mission(1_001_005)),
     // ── Grounds of the Sunrise ────────────────────────────────────────
-    ("Embers of Return", "Grounds of the Sunrise"),
-    ("Reuniting with Comrades", "Grounds of the Sunrise"),
-    ("For a Better Tomorrow", "Grounds of the Sunrise"),
+    ("Embers of Return", "Grounds of the Sunrise", Quest(1_000_304)),
+    ("Reuniting with Comrades", "Grounds of the Sunrise", Quest(1_000_195)),
+    ("For a Better Tomorrow", "Grounds of the Sunrise", Quest(1_000_937)),
     // ── Greymane Commissions ──────────────────────────────────────────
-    ("Carl's Request", "Greymane Commissions"),
-    ("Ronnie's Request", "Greymane Commissions"),
-    ("Ross's Request", "Greymane Commissions"),
-    ("Tranan's Request", "Greymane Commissions"),
-    ("Brice's Request", "Greymane Commissions"),
-    ("Ronald's Request", "Greymane Commissions"),
-    ("Pierce's Request", "Greymane Commissions"),
+    ("Carl's Request", "Greymane Commissions", Mission(1_001_073)),
+    ("Ronnie's Request", "Greymane Commissions", Mission(1_001_076)),
+    ("Ross's Request", "Greymane Commissions", Mission(1_001_080)),
+    ("Tranan's Request", "Greymane Commissions", Mission(1_001_081)),
+    ("Brice's Request", "Greymane Commissions", Mission(1_001_082)),
+    ("Ronald's Request", "Greymane Commissions", Mission(1_001_112)),
+    ("Pierce's Request", "Greymane Commissions", Mission(1_001_123)),
     // ── House Celeste ─────────────────────────────────────────────────
-    ("Bounty Target: Jeffrey", "House Celeste"),
-    ("Bounty Target: Bianca", "House Celeste"),
-    ("Bounty Target: Simon de Montfort", "House Celeste"),
-    ("Bounty Target: Alessio", "House Celeste"),
+    // was "Bounty Target: Jeffrey"
+    ("Bounty Notice - Jeffrey", "House Celeste", Mission(1_000_833)),
+    // was "Bounty Target: Bianca"
+    ("Bounty Notice - Bianca", "House Celeste", Mission(1_000_349)),
+    // was "Bounty Target: Simon de Montfort"
+    ("Bounty Notice - Simon de Montfort", "House Celeste", Mission(1_000_344)),
+    // was "Bounty Target: Alessio"
+    ("Bounty Notice - Alessio", "House Celeste", Mission(1_000_347)),
     // ── House Roberts ─────────────────────────────────────────────────
-    ("Estate in Dismay", "House Roberts"),
-    ("Continuing Concern", "House Roberts"),
-    ("Boulder from the Sky", "House Roberts"),
+    ("Estate in Dismay", "House Roberts", Quest(1_000_016)),
+    ("Continuing Concern", "House Roberts", Quest(1_000_397)),
+    ("Boulder from the Sky", "House Roberts", Quest(1_000_630)),
     // ── Hernand Commissions ───────────────────────────────────────────
-    ("Serge's Request", "Hernand Commissions"),
-    ("Breaking in the Grindstone", "Hernand Commissions"),
-    ("Lunchbox of Love", "Hernand Commissions"),
-    ("The Weight of Knowledge", "Hernand Commissions"),
-    ("Rhett's Request", "Hernand Commissions"),
-    ("Renee's Request", "Hernand Commissions"),
-    ("Turnali's Request", "Hernand Commissions"),
-    ("Prox's Request", "Hernand Commissions"),
-    ("Tina's Request", "Hernand Commissions"),
-    ("Bruna's Request", "Hernand Commissions"),
-    ("Ugmon's Request", "Hernand Commissions"),
+    ("Serge's Request", "Hernand Commissions", Mission(1_000_688)),
+    ("Breaking in the Grindstone", "Hernand Commissions", Mission(1_000_015)),
+    ("Lunchbox of Love", "Hernand Commissions", Mission(1_000_231)),
+    ("The Weight of Knowledge", "Hernand Commissions", Quest(1_000_290)),
+    ("Rhett's Request", "Hernand Commissions", Mission(1_000_578)),
+    ("Renee's Request", "Hernand Commissions", Mission(1_000_149)),
+    ("Turnali's Request", "Hernand Commissions", Mission(1_000_663)),
+    ("Prox's Request", "Hernand Commissions", Mission(1_000_745)),
+    ("Tina's Request", "Hernand Commissions", Mission(1_000_585)),
+    ("Bruna's Request", "Hernand Commissions", Mission(1_000_669)),
+    ("Ugmon's Request", "Hernand Commissions", Mission(1_000_241)),
     // ── Hernand Requests ──────────────────────────────────────────────
-    ("Goddess of Abundance", "Hernand Requests"),
-    ("Path that Connects to House of Healing", "Hernand Requests"),
-    ("Wolf Protecting Hernand", "Hernand Requests"),
-    ("A Favor for Hernand", "Hernand Requests"),
-    ("Bells Ringing Again", "Hernand Requests"),
+    ("Goddess of Abundance", "Hernand Requests", Mission(1_000_569)),
+    ("Path that Connects to House of Healing", "Hernand Requests", Mission(1_000_570)),
+    ("Wolf Protecting Hernand", "Hernand Requests", Mission(1_000_571)),
+    ("A Favor for Hernand", "Hernand Requests", Quest(1_000_163)),
+    ("Bells Ringing Again", "Hernand Requests", Mission(1_000_568)),
     // ── Other factions (one or two quests each) ───────────────────────
-    ("The Trembling Woods", "Pororin Forest Guardians"),
-    ("House of Spears", "House Alfonso"),
-    ("Lord Amidst the Ruins", "House Serkis"),
-    ("Deathchime", "House Wells"),
-    ("Mushrooms Growing Among Poisons", "Demeniss Commissions"),
-    ("Crossroads of Succession", "Pailune Militia"),
-    ("Antumbra's Sword", "Antumbra Order"),
-    ("The Witch of Wisdom", "Antumbra Order"),
-    ("Veil of the Yard", "Giant's Yard"),
+    // was "The Trembling Woods"
+    ("Trembling Woods", "Pororin Forest Guardians", Quest(1_000_159)),
+    ("House of Spears", "House Alfonso", Quest(1_000_874)),
+    ("Lord Amidst the Ruins", "House Serkis", Quest(1_000_894)),
+    ("Deathchime", "House Wells", Quest(1_000_278)),
+    // was "Mushrooms Growing Among Poisons"
+    ("Mushrooms Growing Among Poison", "Demeniss Commissions", Quest(1_000_615)),
+    ("Crossroads of Succession", "Pailune Militia", Quest(1_000_282)),
+    ("Antumbra's Sword", "Antumbra Order", Mission(1_000_757)),
+    ("The Witch of Wisdom", "Antumbra Order", Quest(1_000_335)),
+    ("Veil of the Yard", "Giant's Yard", Mission(1_002_129)),
     // Source MD spells it "Encirlement" — preserve as-is so this matches
     // whatever the QuestKey display title actually resolves to. If the
     // PALOC strings use the standard "Encirclement" spelling, the bridge
     // will need a one-row fix-up; flag during the live-cross-check pass.
-    ("Encirlement on the Cliff", "Giant's Yard"),
-    ("Dangerous Saltroad", "Goldenscales on the Saltroad"),
+    // was "Encirlement on the Cliff"
+    ("Encirclement on the Cliff", "Giant's Yard", Mission(1_002_130)),
+    ("Dangerous Saltroad", "Goldenscales on the Saltroad", Mission(1_000_118)),
     (
         "Siege of the Abandoned Castle Ruins",
         "Hunters of the Abandoned Castle Ruins",
+        Mission(1_002_131),
     ),
     (
         "Veil of the Abandoned Castle Ruins",
         "Hunters of the Abandoned Castle Ruins",
+        Mission(1_001_423),
     ),
-    (
-        "The Fangs that Devoured the Village",
-        "The Fangs Beneath the Rock",
-    ),
-    (
-        "The Gorge Under Siege",
-        "Those Who Constrict the Research Expedition",
-    ),
-    (
-        "Rainforest Gorge",
-        "Those Who Constrict the Research Expedition",
-    ),
-    ("The Missing Desert Melons", "Harvest of Greed"),
-    (
-        "A Village of Growing Suspicion",
-        "Tales of the Crimson Desert Merchants",
-    ),
-    (
-        "Thomas's Request",
-        "Tales of the Crimson Desert Merchants",
-    ),
-    (
-        "Between Drinks and Cheers",
-        "Tales of the Crimson Desert Residents",
-    ),
-    (
-        "Friend's Whereabouts",
-        "Tales of the Crimson Desert Residents",
-    ),
-    (
-        "Dirty Marauders",
-        "Tales from the Corners of Crimson Desert",
-    ),
-    (
-        "Futile Goodwill",
-        "Tales from the Corners of Crimson Desert",
-    ),
+    // was "The Fangs that Devoured the Village"
+    ("The Fangs That Devoured the Village", "The Fangs Beneath the Rock", Mission(1_000_130)),
+    ("The Gorge Under Siege", "Those Who Constrict the Research Expedition", Mission(1_002_133)),
+    ("Rainforest Gorge", "Those Who Constrict the Research Expedition", Mission(1_002_132)),
+    ("The Missing Desert Melons", "Harvest of Greed", Mission(1_000_617)),
+    ("A Village of Growing Suspicion", "Tales of the Crimson Desert Merchants", Mission(1_001_465)),
+    ("Thomas's Request", "Tales of the Crimson Desert Merchants", Mission(1_001_079)),
+    ("Between Drinks and Cheers", "Tales of the Crimson Desert Residents", Mission(1_001_100)),
+    ("Friend's Whereabouts", "Tales of the Crimson Desert Residents", Mission(1_001_113)),
+    ("Dirty Marauders", "Tales from the Corners of Crimson Desert", Mission(1_001_646)),
+    ("Futile Goodwill", "Tales from the Corners of Crimson Desert", Mission(1_001_679)),
 ];
 
 /// Lookup index: quest title → row index in [`ROWS`]. The curated
@@ -202,6 +204,35 @@ fn faction_quests_index() -> &'static HashMap<&'static str, Vec<usize>> {
             m.entry(row.1).or_default().push(i);
         }
         m
+    })
+}
+
+/// Lookup index: `MissionKey` → row index. Keys are unique per kind
+/// (asserted by `entry_keys_are_unique`).
+fn mission_key_index() -> &'static HashMap<u32, usize> {
+    static IDX: OnceLock<HashMap<u32, usize>> = OnceLock::new();
+    IDX.get_or_init(|| {
+        ROWS.iter()
+            .enumerate()
+            .filter_map(|(i, row)| match row.2 {
+                Mission(k) => Some((k, i)),
+                _ => None,
+            })
+            .collect()
+    })
+}
+
+/// Lookup index: `QuestKey` → row index.
+fn quest_key_index() -> &'static HashMap<u32, usize> {
+    static IDX: OnceLock<HashMap<u32, usize>> = OnceLock::new();
+    IDX.get_or_init(|| {
+        ROWS.iter()
+            .enumerate()
+            .filter_map(|(i, row)| match row.2 {
+                Quest(k) => Some((k, i)),
+                _ => None,
+            })
+            .collect()
     })
 }
 
@@ -379,7 +410,96 @@ pub unsafe extern "C" fn crimson_side_quest_quest_at_for_faction(
     .unwrap_or(error::PANIC)
 }
 
+/// Resolve a `MissionKey` — the save-side key — to its faction name,
+/// independent of the display title, so it survives a retitle. Returns
+/// [`error::NOT_FOUND`] when no curated row is that mission.
+///
+/// # Safety
+/// `required` must be non-null. `buf` may be null iff `buf_len == 0`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_side_quest_faction_for_mission_key(
+    mission_key: u32,
+    buf: *mut u8,
+    buf_len: usize,
+    required: *mut usize,
+) -> c_int {
+    faction_for_key(buf, buf_len, required, || {
+        mission_key_index().get(&mission_key).copied()
+    })
+}
+
+/// Resolve a `QuestKey` to its faction name. Same contract as
+/// [`crimson_side_quest_faction_for_mission_key`].
+///
+/// # Safety
+/// `required` must be non-null. `buf` may be null iff `buf_len == 0`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_side_quest_faction_for_quest_key(
+    quest_key: u32,
+    buf: *mut u8,
+    buf_len: usize,
+    required: *mut usize,
+) -> c_int {
+    faction_for_key(buf, buf_len, required, || {
+        quest_key_index().get(&quest_key).copied()
+    })
+}
+
+/// Read the game key of the row at `idx` — the companion of
+/// [`crimson_side_quest_table_get_entry`], which returns its strings.
+/// `*out_kind` is `1` for a `MissionKey` and `2` for a `QuestKey` (`0`
+/// would mean unresolved; every side-quest row resolves).
+///
+/// Returns [`error::OUT_OF_RANGE`] if `idx >=
+/// crimson_side_quest_table_entry_count`.
+///
+/// # Safety
+/// `out_kind` and `out_key` must be non-null and writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_side_quest_table_get_entry_key(
+    idx: u32,
+    out_kind: *mut u32,
+    out_key: *mut u32,
+) -> c_int {
+    if out_kind.is_null() || out_key.is_null() {
+        return error::NULL_ARG;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let Some(row) = ROWS.get(idx as usize) else {
+            return error::OUT_OF_RANGE;
+        };
+        unsafe {
+            *out_kind = row.2.kind_code();
+            *out_key = row.2.key();
+        }
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+fn faction_for_key(
+    buf: *mut u8,
+    buf_len: usize,
+    required: *mut usize,
+    row: impl FnOnce() -> Option<usize>,
+) -> c_int {
+    if required.is_null() {
+        return error::NULL_ARG;
+    }
+    if buf.is_null() && buf_len != 0 {
+        return error::NULL_ARG;
+    }
+    unsafe { *required = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let Some(i) = row() else {
+            return error::NOT_FOUND;
+        };
+        write_str_to_buf(ROWS[i].1, buf, buf_len, required)
+    }))
+    .unwrap_or(error::PANIC)
+}
 
 fn write_str_to_buf(src: &str, buf: *mut u8, buf_len: usize, required: *mut usize) -> c_int {
     let needed = src.len() + 1;
@@ -405,8 +525,9 @@ mod tests {
     //!    sizes + sample first / last entries.
     //! 4. ABI hygiene — NULL args, OUT_OF_RANGE, NOT_FOUND, buffer
     //!    sizing.
-    //!
-    //! Pure-Rust tests; no live-install dependency.
+    //! 5. Keys — unique per kind, the key lookups, and
+    //!    `curated_titles_match_live_install`, which checks every row's key
+    //!    against the live install's title (skips cleanly without one).
     use super::*;
     use std::collections::HashSet;
     use std::ffi::CString;
@@ -496,14 +617,14 @@ mod tests {
             call_faction_for_quest("Carl's Request").unwrap(),
             "Greymane Commissions"
         );
-        // Multi-word faction
+        // Multi-word faction (2.02 title; the wiki had "Bounty Target: …")
         assert_eq!(
-            call_faction_for_quest("Bounty Target: Simon de Montfort").unwrap(),
+            call_faction_for_quest("Bounty Notice - Simon de Montfort").unwrap(),
             "House Celeste"
         );
         // Singleton faction (one quest in the curated set)
         assert_eq!(
-            call_faction_for_quest("The Trembling Woods").unwrap(),
+            call_faction_for_quest("Trembling Woods").unwrap(),
             "Pororin Forest Guardians"
         );
         // Two-quest faction with apostrophe in faction name
@@ -550,7 +671,7 @@ mod tests {
 
         // Singleton faction
         let pororin = faction_quest_titles("Pororin Forest Guardians");
-        assert_eq!(pororin, vec!["The Trembling Woods".to_string()]);
+        assert_eq!(pororin, vec!["Trembling Woods".to_string()]);
     }
 
     #[test]
@@ -733,5 +854,96 @@ mod tests {
         };
         assert_eq!(rc, error::BUFFER_TOO_SMALL);
         assert_eq!(req, "Scattered Embers".len() + 1);
+    }
+
+    fn call_by_key(
+        f: unsafe extern "C" fn(u32, *mut u8, usize, *mut usize) -> c_int,
+        key: u32,
+    ) -> Result<String, i32> {
+        let mut req: usize = 0;
+        let rc = unsafe { f(key, ptr::null_mut(), 0, &mut req) };
+        if rc == error::NOT_FOUND {
+            return Err(rc);
+        }
+        Ok(fill(rc, req, |b, n, r| unsafe { f(key, b, n, r) }))
+    }
+
+    #[test]
+    fn entry_keys_are_unique() {
+        let mut seen: HashSet<(u32, u32)> = HashSet::with_capacity(ROWS.len());
+        for (i, row) in ROWS.iter().enumerate() {
+            assert_ne!(row.2.kind_code(), 0, "row {i}: every side-quest row resolves");
+            assert!(seen.insert((row.2.kind_code(), row.2.key())), "row {i}: {:?} repeats", row.2);
+        }
+    }
+
+    #[test]
+    fn key_lookups_known_cases() {
+        let m = crimson_side_quest_faction_for_mission_key;
+        let q = crimson_side_quest_faction_for_quest_key;
+        // "Record of the Greymanes" (quest) / "Carl's Request" (mission)
+        assert_eq!(call_by_key(q, 1_000_881).unwrap(), "Scattered Embers");
+        assert_eq!(call_by_key(m, 1_001_073).unwrap(), "Greymane Commissions");
+        // Re-paired in the 2.02 reconciliation.
+        assert_eq!(call_by_key(m, 1_000_344).unwrap(), "House Celeste");
+        assert_eq!(call_by_key(q, 1_000_159).unwrap(), "Pororin Forest Guardians");
+        // The key spaces overlap: 1_000_157 is the quest "Strongbox with
+        // Wheels" here, and also a mission (Mission_Intro_Tutorial_I) that
+        // this table does not list.
+        assert_eq!(call_by_key(q, 1_000_157).unwrap(), "Scattered Embers");
+        assert_eq!(call_by_key(m, 1_000_157), Err(error::NOT_FOUND));
+        assert_eq!(call_by_key(m, 0), Err(error::NOT_FOUND));
+    }
+
+    #[test]
+    fn entry_key_round_trip() {
+        let mut count: u32 = 0;
+        assert_eq!(
+            unsafe { crimson_side_quest_table_entry_count(&mut count) },
+            error::OK
+        );
+        let (mut kind, mut key) = (9u32, 9u32);
+        for (idx, row) in ROWS.iter().enumerate() {
+            let rc = unsafe { crimson_side_quest_table_get_entry_key(idx as u32, &mut kind, &mut key) };
+            assert_eq!(rc, error::OK);
+            assert_eq!((kind, key), (row.2.kind_code(), row.2.key()), "row {idx}");
+        }
+        let rc = unsafe { crimson_side_quest_table_get_entry_key(count, &mut kind, &mut key) };
+        assert_eq!(rc, error::OUT_OF_RANGE);
+        let rc = unsafe { crimson_side_quest_table_get_entry_key(0, ptr::null_mut(), &mut key) };
+        assert_eq!(rc, error::NULL_ARG);
+        let mut req: usize = 0;
+        let rc = unsafe {
+            crimson_side_quest_faction_for_mission_key(1_001_073, ptr::null_mut(), 4, &mut req)
+        };
+        assert_eq!(rc, error::NULL_ARG);
+        let rc = unsafe {
+            crimson_side_quest_faction_for_quest_key(1_000_881, ptr::null_mut(), 0, ptr::null_mut())
+        };
+        assert_eq!(rc, error::NULL_ARG);
+    }
+
+    #[test]
+    fn curated_titles_match_live_install() {
+        let Some(live) = crate::c_abi::live_titles::LiveTitles::load() else {
+            eprintln!("skipping curated_titles_match_live_install: no game install");
+            return;
+        };
+        let drift: Vec<String> = ROWS
+            .iter()
+            .filter_map(|&(title, _, entry)| {
+                let got = match entry {
+                    Mission(k) => live.mission(k),
+                    Quest(k) => live.quest(k),
+                    Entry::Unresolved => None,
+                };
+                (got != Some(title)).then(|| format!("{entry:?}: live {got:?}, table {title:?}"))
+            })
+            .collect();
+        assert!(
+            drift.is_empty(),
+            "curated side-quest titles drifted from the live install:\n{}",
+            drift.join("\n")
+        );
     }
 }

@@ -22,6 +22,37 @@
 > `c_abi`, **76** without, **43** `#[ignore]`'d diagnostic probes.
 > Clippy clean both modes.
 >
+> ### What landed this session (2026-09-11, 2.02 check)
+>
+> - **Curated quest tables reconciled against the live game and keyed.**
+>   `main_quest_chapter` and `side_quest_faction` were checked against the
+>   live 2.02 English PALOC for the first time: 55 main-quest rows, 9 arc
+>   headings and 9 side-quest rows did not resolve to the live title of
+>   their mission / quest — wiki transcription drift, a couple of
+>   copy-pass retitles, and a few *stage* titles standing in for
+>   missions. Each was re-paired with its game row by quest family (per-row
+>   evidence in the "Reconciliation against 2.02" sections of
+>   [`main-quest-list.md`](./ref-gamedata/main-quest-list.md) /
+>   [`side-quest-list.md`](./ref-gamedata/side-quest-list.md)); five
+>   wiki-only titles with no live counterpart stay `Unresolved`. The
+>   "Encirlement on the Cliff" caveat further down is resolved
+>   ("Encirclement"), and the third-pass claim that every side-quest title
+>   is a `QuestKey` title was wrong: 64 of the 84 rows are missions
+>   (`lo32 = 0x101`).
+> - **Every row now carries its game key**, with additive C ABI that looks
+>   up by what a save stores instead of the display string — so the next
+>   retitle cannot break it, and the repeated titles ("In Ashes" twice, …)
+>   resolve exactly: `crimson_main_quest_chapter_for_mission_key` /
+>   `_arc_for_mission_key` / `_chapter_for_quest_key` /
+>   `_table_get_entry_keys`, and `crimson_side_quest_faction_for_mission_key`
+>   / `_faction_for_quest_key` / `_table_get_entry_key`. Kind codes: `0`
+>   unresolved, `1` `MissionKey`, `2` `QuestKey` (the two key spaces overlap
+>   numerically, hence separate functions). The title lookups are
+>   unchanged. **C# editor: prefer the key lookups.**
+> - **Drift is now a test**: `curated_titles_match_live_install` (one per
+>   bridge) resolves every row's key through the live install and fails as
+>   soon as a title stops matching; it skips when no install is present.
+>
 > ### What landed this session (2026-05-18, session 9)
 >
 > - **`crimson_item_part_prefab_resolve_dye_slot_count`**

@@ -776,6 +776,74 @@ mod tests {
         let _ = path;
     }
 
+    /// Per-class `trailing_pad` census over every live save, oldest first,
+    /// printed as a `pad/blocks` matrix. `test_save_body_decode_all_blocks`
+    /// prints only the total, and that total moves with save *content*
+    /// (`FieldNPCSaveData` alone swings 228 ↔ 233 between saves), so when it
+    /// shifts on a new patch, compare a pre-patch save with a post-patch
+    /// re-save of the same playthrough here before suspecting a new trailing
+    /// field: real drift shows up as a class that pads in the new save and
+    /// never did before. On 2.02 the 2.01 slot0 and its 2.02 re-save slot102
+    /// matched class-for-class (242/1,168 each).
+    #[test]
+    #[ignore]
+    fn _probe_save_trailing_pad_census() {
+        use crate::save::{Body, Save};
+        use std::collections::{BTreeMap, BTreeSet};
+        type PerClass = BTreeMap<String, (usize, usize)>;
+        let mut saves: Vec<(std::time::SystemTime, String, PerClass)> = Vec::new();
+        for (path, data) in collect_all_saves() {
+            let Ok(save) = Save::parse(&data) else {
+                continue;
+            };
+            let Ok(body) = Body::parse(&save.body) else {
+                continue;
+            };
+            let mut per = PerClass::new();
+            for b in body.decode_blocks(&save.body) {
+                let e = per.entry(b.class_name.clone()).or_default();
+                e.0 += 1;
+                if !b.trailing_pad.is_empty() {
+                    e.1 += 1;
+                }
+            }
+            let mtime = std::fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            let slot = path
+                .parent()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            saves.push((mtime, slot, per));
+        }
+        saves.sort_by_key(|s| s.0);
+        let padded: BTreeSet<&String> = saves
+            .iter()
+            .flat_map(|(_, _, per)| per.iter().filter(|(_, v)| v.1 > 0).map(|(k, _)| k))
+            .collect();
+        print!("{:<44}", "class \\ slot (pad/blocks)");
+        for (_, slot, _) in &saves {
+            print!(" {slot:>9}");
+        }
+        println!();
+        print!("{:<44}", "TOTAL");
+        for (_, _, per) in &saves {
+            let p: usize = per.values().map(|v| v.1).sum();
+            let n: usize = per.values().map(|v| v.0).sum();
+            print!(" {:>9}", format!("{p}/{n}"));
+        }
+        println!();
+        for c in padded {
+            print!("{c:<44}");
+            for (_, _, per) in &saves {
+                let (n, p) = per.get(c).copied().unwrap_or((0, 0));
+                print!(" {:>9}", format!("{p}/{n}"));
+            }
+            println!();
+        }
+    }
+
     /// Walk every save.save under %LOCALAPPDATA%\Pearl Abyss\CD\save\<UserID>\
     /// (slot0..slot199). Returns `(path, file_bytes)` for each one found.
     /// Empty if no install / saves present.

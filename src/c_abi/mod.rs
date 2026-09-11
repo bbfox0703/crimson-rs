@@ -48,6 +48,8 @@ pub mod item_group_info;
 pub mod item_part_prefab;
 pub mod iteminfo;
 pub mod knowledge_info;
+#[cfg(test)]
+mod live_titles;
 pub mod main_quest_chapter;
 pub mod mercenary_info;
 pub mod mission_info;

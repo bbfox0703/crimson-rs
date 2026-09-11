@@ -85,6 +85,19 @@ pub(crate) fn header(stem: &str) -> String {
     format!("{}.{}", stem, resolved().header_ext)
 }
 
+/// Extract one static-info table file — a [`body`] or [`header`] name — from
+/// group `0008` of the live install. `None` when the install or the file is
+/// absent.
+pub(crate) fn extract_bin(name: &str) -> Option<Vec<u8>> {
+    let group_dir = game_root().join("0008");
+    let pamt_bytes = std::fs::read(group_dir.join("0.pamt")).ok()?;
+    let pamt = crate::binary::pamt::PackMeta::parse(&pamt_bytes, None).ok()?;
+    let dir = pamt.directories.iter().find(|d| d.path == bin_dir())?;
+    let f = dir.files.iter().find(|f| f.name == name)?;
+    let enc = &pamt.header.encrypt_info.encrypt_info;
+    crate::binary::paz::extract_file(&group_dir, f, &dir.path, enc).ok()
+}
+
 // ── Localization ───────────────────────────────────────────────────────────
 //
 // 2.01 also split each language's single paloc blob into one file per
