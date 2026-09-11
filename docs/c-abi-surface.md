@@ -223,12 +223,16 @@ src/
     ├── region_info.rs                         # RegionKey (u16) → "Region_Pywel"/"Region_Kweiden"/... (1,004 rows, name-only)
     ├── item_group_info.rs                     # ItemGroupKey (u16) → "ItemGroup_Category_Equipment"/... (1,500 rows, name-only)
     ├── main_quest_chapter.rs                  # Curated (chapter, arc, mission) rollup from docs/ref-gamedata/main-quest-list.md
-    │                                          #   (~170 rows, static table — no file load, no handle). Lookups:
-    │                                          #   chapter_for_arc / chapter_for_mission / arc_for_mission.
+    │                                          #   (170 rows, static table — no file load, no handle). Every row carries
+    │                                          #   the game row its title comes from (MissionKey / QuestKey). Lookups:
+    │                                          #   chapter_for_arc / chapter_for_mission / arc_for_mission, and by key
+    │                                          #   chapter_for_mission_key / arc_for_mission_key / chapter_for_quest_key
+    │                                          #   + table_get_entry_keys. Titles reconciled against 2.02.
     └── side_quest_faction.rs                  # Curated (quest, faction) rollup from docs/ref-gamedata/side-quest-list.md
-                                               #   (~84 rows / 22 factions, static table — sibling of main_quest_chapter).
+                                               #   (84 rows / 23 factions, static table — sibling of main_quest_chapter).
                                                #   Lookups: faction_for_quest (1:1) + quest_count_for_faction /
-                                               #   quest_at_for_faction (reverse enumeration).
+                                               #   quest_at_for_faction (reverse enumeration), and by key
+                                               #   faction_for_quest_key / faction_for_mission_key + table_get_entry_key.
 ```
 
 The `impl_name_only_bridge!` macro in `src/c_abi/mod.rs` generates the standard

@@ -10,7 +10,7 @@
 * quest: Strongbox with Wheels, faction: Scattered Embers
 * quest: Brightening the Spirits, faction: Scattered Embers
 * quest: Chance to Make a Fortune, faction: Scattered Embers
-* quest: To the Rescue, faction: Scattered Embers
+* quest: Rescuing the Pailunese Refugees, faction: Scattered Embers
 * quest: The Greymanes' New Fangs, faction: Scattered Embers
 * quest: The Nag and the Stubborn One, faction: Scattered Embers
 * quest: A Chunk of Meat, faction: Scattered Embers
@@ -53,10 +53,10 @@
 
 ### **House Celeste (塞萊斯特家族 - 懸賞任務)**
 
-* quest: Bounty Target: Jeffrey, faction: House Celeste
-* quest: Bounty Target: Bianca, faction: House Celeste
-* quest: Bounty Target: Simon de Montfort, faction: House Celeste
-* quest: Bounty Target: Alessio, faction: House Celeste
+* quest: Bounty Notice - Jeffrey, faction: House Celeste
+* quest: Bounty Notice - Bianca, faction: House Celeste
+* quest: Bounty Notice - Simon de Montfort, faction: House Celeste
+* quest: Bounty Notice - Alessio, faction: House Celeste
 
 ### **House Roberts (羅伯茨家族派系)**
 
@@ -88,20 +88,20 @@
 
 ### **其他各大勢力與派系任務（Other Factions）**
 
-* quest: The Trembling Woods, faction: Pororin Forest Guardians
+* quest: Trembling Woods, faction: Pororin Forest Guardians
 * quest: House of Spears, faction: House Alfonso
 * quest: Lord Amidst the Ruins, faction: House Serkis
 * quest: Deathchime, faction: House Wells
-* quest: Mushrooms Growing Among Poisons, faction: Demeniss Commissions
+* quest: Mushrooms Growing Among Poison, faction: Demeniss Commissions
 * quest: Crossroads of Succession, faction: Pailune Militia
 * quest: Antumbra's Sword, faction: Antumbra Order
 * quest: The Witch of Wisdom, faction: Antumbra Order
 * quest: Veil of the Yard, faction: Giant's Yard
-* quest: Encirlement on the Cliff, faction: Giant's Yard
+* quest: Encirclement on the Cliff, faction: Giant's Yard
 * quest: Dangerous Saltroad, faction: Goldenscales on the Saltroad
 * quest: Siege of the Abandoned Castle Ruins, faction: Hunters of the Abandoned Castle Ruins
 * quest: Veil of the Abandoned Castle Ruins, faction: Hunters of the Abandoned Castle Ruins
-* quest: The Fangs that Devoured the Village, faction: The Fangs Beneath the Rock
+* quest: The Fangs That Devoured the Village, faction: The Fangs Beneath the Rock
 * quest: The Gorge Under Siege, faction: Those Who Constrict the Research Expedition
 * quest: Rainforest Gorge, faction: Those Who Constrict the Research Expedition
 * quest: The Missing Desert Melons, faction: Harvest of Greed
@@ -111,3 +111,22 @@
 * quest: Friend's Whereabouts, faction: Tales of the Crimson Desert Residents
 * quest: Dirty Marauders, faction: Tales from the Corners of Crimson Desert
 * quest: Futile Goodwill, faction: Tales from the Corners of Crimson Desert
+
+## Reconciliation against 2.02
+
+Titles are the live English display strings as of Crimson Desert 2.02; each row is tied to its game row in
+[`src/c_abi/side_quest_faction.rs`](../../src/c_abi/side_quest_faction.rs). The list follows the in-game
+journal, so most entries are **missions** (`MissionKey`, PALOC `0x101`) and 20 are quests (`QuestKey`,
+`0x100`). On 2.02 these 9 titles matched nothing live and were corrected:
+
+| Was | Now | Game row |
+|---|---|---|
+| To the Rescue | Rescuing the Pailunese Refugees | mission `1001412` `Mission_GreymaneCamp_Contents_RescueRefugees` — inferred (same `Mission_GreymaneCamp_Contents_*` family) |
+| Bounty Target: Jeffrey | Bounty Notice - Jeffrey | mission `1000833` `Mission_Hernand_Wanted_Guide` |
+| Bounty Target: Bianca | Bounty Notice - Bianca | mission `1000349` `Mission_Her_Wanted_Criminal_Bianca` |
+| Bounty Target: Simon de Montfort | Bounty Notice - Simon de Montfort | mission `1000344` `Mission_Her_Wanted_Criminal_Simon_de_Montfort` |
+| Bounty Target: Alessio | Bounty Notice - Alessio | mission `1000347` `Mission_Her_Wanted_Criminal_Alessio` |
+| The Trembling Woods | Trembling Woods | quest `1000159` `Quest_Node_Her_PororinVillage_Trembling_Woods_Ent_Normal` |
+| Mushrooms Growing Among Poisons | Mushrooms Growing Among Poison | quest `1000615` `Quest_Node_Dem_JijeongTemple_HiddenCave_Normal` |
+| Encirlement on the Cliff | Encirclement on the Cliff | mission `1002130` `Mission_Node_Crim_GiantsYardForwardCamp_Block_SubNode` |
+| The Fangs that Devoured the Village | The Fangs That Devoured the Village | mission `1000130` `Mission_RockVillage_Block_Start` |
