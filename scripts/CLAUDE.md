@@ -19,7 +19,7 @@ The fastest "did Pearl Abyss break anything?" loop:
 
     ```powershell
     $env:CRIMSON_GAMEDATA_BIN = "X:\Crimson Desert\gamedata-bin"   # wherever the archive lives
-    python scripts\extract_gamedata_bin.py --version <new>
+    python scripts\extract_gamedata_bin.py --version <new> --paloc eng
     ```
 
     Then append a `<new>` entry to that folder's `README.txt`. This is the
@@ -34,10 +34,13 @@ The fastest "did Pearl Abyss break anything?" loop:
     archive before arguing from statistics; distributions describe a file,
     a diff explains it.
 
-    Note the archive holds `0008`'s tables only. PALOC is deliberately
-    excluded (content, ~242 MB/version), so localization-text questions —
-    "did this quest title change?" — are **not** answerable retroactively.
-    If a patch's text matters, extract the paloc you care about too.
+    The archive holds `0008`'s tables and, from 2.02 on, the English PALOC:
+    `--paloc eng` writes the paloc files to `<ver>/paloc/eng/` exactly as
+    they sit in the game archive (~17 MB), with a `MANIFEST.txt` of sizes,
+    entry counts and SHA256s. That is what makes a patch's text changes —
+    "did this quest title change?" — diffable instead of guessed at.
+    Versions before 2.02 have no PALOC, and the other 14 languages are not
+    kept (all 15 would be ~242 MB per version).
 
 1. Update the live game install. Refresh `data\keys.txt` via the CE Lua dumper (see [`../data/README.md`](../data/README.md)). **Before the next step, copy the previous patch's export aside** (`out\iteminfo.pabgb`, `items.jsonl`, `paloc_*.json`, `output*.txt` → `out\export-<old>\`): the exporter overwrites them, and those per-language `paloc_*.json` tables are the only previous-version item-name *text* that survives a patch, because the `gamedata-bin` archive excludes PALOC. On 2.02 that copy is what showed item names unchanged in all 15 languages. Run `python scripts\export_for_ce.py`. If parser status comes back `ok=<N>  leftover=0  fail=0  no_anchor=0`, no schema drift — you're done; that `N` is the new item count.
 
