@@ -3,6 +3,35 @@ use super::structs::*;
 use crate::binary::*;
 use crate::py_binary_struct;
 
+// ── ItemInfo (2.03) ─────────────────────────────────────────────────────────
+//
+// Crimson Desert 2.03 (`meta/0.paver` 2/3/0/0x03045138) makes ONE layout
+// change relative to 2.02: `inventory_info_list` gained a tenth InventoryKey
+// slot, so every item ends 2 bytes later. +3 items (6,813 → 6,816, keys
+// 1006028–1006030, the `Dev_QA_dlc_Ocean_*` trio; none removed);
+// iteminfo 6,450,232 → 6,465,724 B (+15,492).
+//
+// Evidence (tandem walk of every common item against the kept 2.02 binary,
+// placed on the 2.02 parser's field spans):
+//
+//   * All 6,813 carried-over items are exactly +2 B, and the 2 bytes are the
+//     only insertion in every one of them. Slots 0–8 are unchanged on all
+//     6,813; 4 items also changed an `item_icon_list[0].icon_path` value.
+//   * The new u16 reads 0xFF — the array's unused-slot sentinel — on 6,757
+//     items and 21 on exactly the 59 `Trade_*_PackedInVehicle` items: the
+//     same 59 that set slots 7 and 8 (PetAndVehicle, Wagon) and the only
+//     items with a non-zero `unk_pre_max_endurance`. InventoryKey 21 is
+//     `Ship` in the (unchanged) inventory table, so their tuple reads
+//     WareHouse / CampWareHouse ×4 / PetAndVehicle / Wagon / Ship.
+//   * On the 6,754 other items slots 7 and 8 are 0xFF too, so the byte walk
+//     cannot tell which trailing 0xFF is the new one — but on the 59 trade
+//     items only "after slot 8" reproduces the 2.03 bytes. The same sentinel
+//     and the same 59 items is the argument that folded slot 8 into this
+//     array in 1.16, so the insert is read as a tenth slot rather than a
+//     separate trailing field.
+//
+// Slot values across 2.03 are {1, 2, 3, 5, 6, 7, 8, 9, 10, 13, 14, 21, 255}.
+//
 // ── ItemInfo (2.00) ─────────────────────────────────────────────────────────
 //
 // Crimson Desert 2.00 is the first *major* bump (`meta/0.paver` goes
@@ -578,8 +607,10 @@ py_binary_struct! {
         // every item; 0xFF marks an unused slot. Slot 8 is the field 1.13–1.15
         // carried as the constant `unk_tail` (`0xff, 0x00`) — see the
         // "ItemInfo (1.16)" header note above for why it is read as part of
-        // this array rather than as a separate tail.
-        pub inventory_info_list: [u16; 9],
+        // this array rather than as a separate tail. 2.03 appended slot 9
+        // (InventoryKey 21 `Ship` on the 59 `Trade_*_PackedInVehicle` items,
+        // 0xFF elsewhere) — see "ItemInfo (2.03)".
+        pub inventory_info_list: [u16; 10],
     }
 }
 

@@ -105,8 +105,8 @@ mod tests {
         let entries = parse_gameplay_variable_info_lossy(&pabgb, &pabgh);
         assert_eq!(
             entries.len(),
-            62,
-            "expected 62 rows in 2.01 (59 in 2.00, 56 in 1.16-1.18, 57 in 1.13-1.15, 56 in 1.12, 55 in 1.11, 47 through 1.10)"
+            59,
+            "expected 59 rows in 2.03 (62 in 2.01-2.02, 59 in 2.00, 56 in 1.16-1.18, 57 in 1.13-1.15, 56 in 1.12, 55 in 1.11, 47 through 1.10)"
         );
         let by_key: std::collections::HashMap<u32, &str> =
             entries.iter().map(|e| (e.key, e.name.as_str())).collect();

@@ -67,7 +67,7 @@
 ### **Hernand Commissions (赫爾南德委託派系)**
 
 * quest: Serge's Request, faction: Hernand Commissions
-* quest: Breaking in the Grindstone, faction: Hernand Commissions
+* quest: Break in the grindstone, faction: Hernand Commissions
 * quest: Lunchbox of Love, faction: Hernand Commissions
 * quest: The Weight of Knowledge, faction: Hernand Commissions
 * quest: Rhett's Request, faction: Hernand Commissions
@@ -130,3 +130,11 @@ journal, so most entries are **missions** (`MissionKey`, PALOC `0x101`) and 20 a
 | Mushrooms Growing Among Poisons | Mushrooms Growing Among Poison | quest `1000615` `Quest_Node_Dem_JijeongTemple_HiddenCave_Normal` |
 | Encirlement on the Cliff | Encirclement on the Cliff | mission `1002130` `Mission_Node_Crim_GiantsYardForwardCamp_Block_SubNode` |
 | The Fangs that Devoured the Village | The Fangs That Devoured the Village | mission `1000130` `Mission_RockVillage_Block_Start` |
+
+## Retitles in 2.03
+
+2.03's English copy pass changed one title in this list; its key did not change.
+
+| 2.02 | 2.03 | Game row |
+|---|---|---|
+| Breaking in the Grindstone | Break in the grindstone | mission `1000015` `Mission_HernandCastle_SpinStone` (the lower-case "grindstone" is the game's) |

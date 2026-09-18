@@ -1,4 +1,4 @@
-use pyo3::exceptions::PyKeyError;
+use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
@@ -101,16 +101,25 @@ impl WritePyValue for [u32; 2] {
     }
 }
 
-// 1.16 ItemInfo `inventory_info_list` — nine InventoryKey (u16) slots.
-impl ToPyValue for [u16; 9] {
+// ItemInfo `inventory_info_list` — ten InventoryKey (u16) slots (nine in
+// 1.16–2.02).
+impl ToPyValue for [u16; 10] {
     fn to_py_value(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         Ok(self.to_vec().into_pyobject(py)?.into_any().unbind())
     }
 }
 
-impl WritePyValue for [u16; 9] {
+impl WritePyValue for [u16; 10] {
     fn write_from_py(w: &mut Vec<u8>, obj: &Bound<'_, PyAny>) -> PyResult<()> {
         let list = obj.cast::<PyList>()?;
+        // The width changed in 2.03; a nine-slot list from an older export
+        // would otherwise write an item two bytes short.
+        if list.len() != 10 {
+            return Err(PyValueError::new_err(format!(
+                "inventory_info_list needs 10 InventoryKey slots, got {}",
+                list.len()
+            )));
+        }
         for item in list.iter() {
             let v: u16 = item.extract()?;
             w.extend_from_slice(&v.to_le_bytes());

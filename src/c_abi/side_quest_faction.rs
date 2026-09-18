@@ -14,9 +14,10 @@
 //! [`crimson_side_quest_faction_for_mission_key`] /
 //! [`crimson_side_quest_faction_for_quest_key`] answer from what a save
 //! stores and survive a retitle; the faction column is curated and ships
-//! as static data. Titles were last reconciled against 2.02 (9 had
-//! drifted — see the source MD), and `curated_titles_match_live_install`
-//! fails the next time a key's live title stops matching.
+//! as static data. Titles were reconciled against 2.02 (9 had drifted —
+//! see the source MD) and follow the live strings since (2.03 retitled
+//! one); `curated_titles_match_live_install` fails the next time a key's
+//! live title stops matching.
 //!
 //! The source MD also has Traditional-Chinese annotations in the
 //! section headings — those are informational only and don't appear
@@ -56,9 +57,10 @@ use super::main_quest_chapter::Entry::{self, Mission, Quest};
 /// (`lo32 = 0x101`). Where a title is both, the row carries the quest.
 type Row = (&'static str, &'static str, Entry);
 
-/// Titles are the live English display strings (last reconciled against
-/// Crimson Desert 2.02 — see the source MD); `curated_titles_match_live_install`
-/// fails as soon as a key's live title stops matching its row.
+/// Titles are the live English display strings (reconciled against Crimson
+/// Desert 2.02, updated for 2.03's one retitle — see the source MD);
+/// `curated_titles_match_live_install` fails as soon as a key's live title
+/// stops matching its row.
 const ROWS: &[Row] = &[
     // ── Scattered Embers ──────────────────────────────────────────────
     ("Record of the Greymanes", "Scattered Embers", Quest(1_000_881)),
@@ -117,7 +119,8 @@ const ROWS: &[Row] = &[
     ("Boulder from the Sky", "House Roberts", Quest(1_000_630)),
     // ── Hernand Commissions ───────────────────────────────────────────
     ("Serge's Request", "Hernand Commissions", Mission(1_000_688)),
-    ("Breaking in the Grindstone", "Hernand Commissions", Mission(1_000_015)),
+    // 2.03 retitle (was "Breaking in the Grindstone")
+    ("Break in the grindstone", "Hernand Commissions", Mission(1_000_015)),
     ("Lunchbox of Love", "Hernand Commissions", Mission(1_000_231)),
     ("The Weight of Knowledge", "Hernand Commissions", Quest(1_000_290)),
     ("Rhett's Request", "Hernand Commissions", Mission(1_000_578)),

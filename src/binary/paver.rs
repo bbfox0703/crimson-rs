@@ -58,26 +58,24 @@ pub const PARSER_TARGET_GAMEDATA_MAJOR: u16 = 2;
 /// `crimson_parser_target_gamedata_minor()` C ABI instead of duplicating the
 /// number; before that bridge existed this had to be hand-bumped in lock-step
 /// on the C# side every patch (8 → 9 → … → 16 → 17 → 18 → 2.00's 0 → 2.01's 1
-/// → 2.02's 2).
-pub const PARSER_TARGET_GAMEDATA_MINOR: u16 = 2;
+/// → 2.02's 2 → 2.03's 3).
+pub const PARSER_TARGET_GAMEDATA_MINOR: u16 = 3;
 
 /// Every gamedata `minor` this build's parsers can load without mis-decoding.
 ///
 /// Always includes [`PARSER_TARGET_GAMEDATA_MINOR`]. Kept a single-element
-/// allow-list tracking just the target. The last *structural* change was 2.00,
-/// which widened `SubItem` to tag 18 and inserted a `u32` between
-/// `respawn_time_seconds` and `max_endurance` — so 1.18 and earlier are no
-/// longer byte-compatible (1.18 had already broken compatibility with 1.17 via
-/// the `MergedPrefabVisualData` u32, and 1.16 with 1.15 via four iteminfo
-/// drifts plus the first-ever skill drift). 2.01 is **content-only** over 2.00
-/// as far as the parsers are concerned — it moved every gamedata table to a
-/// new archive path with new file extensions, but not one byte inside them —
-/// so minor `0` is layout-compatible with this build and could be added here
-/// if accepting older installs mattered; the list stays target-only by
-/// convention. 2.02 is content-only over 2.01 in the strictest sense —
-/// `iteminfo` and `skill` are byte-identical, and every table crimson-rs
-/// parses kept its layout — so minor `1` is compatible too, under the same
-/// convention.
+/// allow-list tracking just the target. The last *structural* change was 2.03,
+/// which appended a tenth slot to iteminfo's `inventory_info_list` — so 2.02
+/// and earlier are no longer byte-compatible (2.00 had already broken
+/// compatibility with 1.18 by widening `SubItem` to tag 18 and inserting a
+/// `u32` between `respawn_time_seconds` and `max_endurance`; 1.18 with 1.17
+/// via the `MergedPrefabVisualData` u32; and 1.16 with 1.15 via four iteminfo
+/// drifts plus the first-ever skill drift). 2.03 also wrapped every `.paloc`
+/// file in an LZ4 container, but the PALOC readers accept both layouts, so
+/// that one costs no compatibility. 2.01 and 2.02 were **content-only** over
+/// 2.00 as far as the parsers are concerned (2.01 moved every gamedata table
+/// to a new archive path with new file extensions, but not one byte inside
+/// them), which is why minors `0`–`2` were mutually compatible.
 /// Widen the list when a patch ships data an existing parser still reads
 /// byte-perfectly (a content-only patch, e.g. 1.06→1.07, 1.08→1.09, 1.16→1.17,
 /// 2.00→2.01, or 2.01→2.02).

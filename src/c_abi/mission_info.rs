@@ -25,7 +25,7 @@
 //!          └─► hashlittle2_c = 1891183967
 //!                └─► (1891183967 << 32) | 0x101 = 8122573288984543489
 //!                      └─► PALOC.lookup_str("8122573288984543489")
-//!                            └─► "Unfamiliar Land"
+//!                            └─► "Unfamiliar Lands"
 //! ```
 //!
 //! The bridge keeps only `(key, name)` from the parse; the rest of the
@@ -413,8 +413,8 @@ mod tests {
     /// end-to-end. Same seven rows as `mission_info::tests::KNOWN`.
     const KNOWN: &[(u32, &str, &str)] = &[
         // 2.01 retitled this mission "Unfamiliar Lands" -> "Unfamiliar Land";
-        // the *stage* `Intro_Tutorial_I` still reads "Unfamiliar Lands".
-        (1_000_157, "Mission_Intro_Tutorial_I", "Unfamiliar Land"),
+        // 2.03 changed it back.
+        (1_000_157, "Mission_Intro_Tutorial_I", "Unfamiliar Lands"),
         (1_000_160, "Mission_Intro_MainBattle", "In Ashes"),
         (1_000_620, "Mission_Intro_Abyss_Tutorial", "Realm of Uncertainty"),
         (1_000_164, "Mission_Intro_After_Horse", "New Journey"),

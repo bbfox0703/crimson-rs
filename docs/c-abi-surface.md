@@ -74,7 +74,7 @@ PALOC display name → fuzzy match → NPC head-shot DDS path.
   compares the install's `(major, minor)` against this and the minor bridge.
   Backs onto `crate::binary::paver::PARSER_TARGET_GAMEDATA_MAJOR`.
 - `crimson_parser_target_gamedata_minor() -> u16` — the gamedata `minor` this
-  build's parsers target (currently **2**, i.e. 2.02). **Single source of
+  build's parsers target (currently **3**, i.e. 2.03). **Single source of
   truth**: the value lives in `crate::binary::paver::PARSER_TARGET_GAMEDATA_MINOR`,
   so a new patch is one Rust bump and every consumer follows — no more lock-step
   `ParserTargetMinor` edits on the C# side (promoting this killed the 5th such
@@ -129,7 +129,8 @@ src/
 ├── binary/                  # Container formats
 │   ├── pamt.rs, papgt.rs    # PAMT / PAPGT parse + write
 │   ├── paz.rs               # PackGroupBuilder, compression, PAZ creation
-│   ├── paloc.rs             # PALOC parse/write (numeric + symbolic keys)
+│   ├── paloc.rs             # PALOC parse/write (numeric + symbolic keys) + the
+│   │                        #   2.03 LZ4 container (unwrap_container / wrap_container)
 │   ├── gamedata_layout.rs   # #[cfg(test)] — which archive layout the live install
 │   │                        #   ships (2.01 renamed the gamedata dir + every
 │   │                        #   extension); newest-first with fallback
@@ -162,7 +163,8 @@ src/
                              #   All cross-checks are advisory — never block, just
                              #   inform; CE-modified saves still load.
     ├── skill_info.rs        # SkillKey → entry name
-    ├── paloc.rs             # PALOC handle + length-prefixed lookup
+    ├── paloc.rs             # PALOC handle + length-prefixed lookup (both loaders
+    │                        #   accept the bare list and the 2.03 LZ4 container)
     ├── string_info.rs       # u32 hash → string
     ├── paz.rs               # crimson_paz_extract_file + list_npc_portraits +
     │                        #   crimson_paz_list_dir (272-byte CrimsonPazFileEntry,
@@ -227,7 +229,8 @@ src/
     │                                          #   the game row its title comes from (MissionKey / QuestKey). Lookups:
     │                                          #   chapter_for_arc / chapter_for_mission / arc_for_mission, and by key
     │                                          #   chapter_for_mission_key / arc_for_mission_key / chapter_for_quest_key
-    │                                          #   + table_get_entry_keys. Titles reconciled against 2.02.
+    │                                          #   + table_get_entry_keys. Titles reconciled against 2.02,
+    │                                          #   updated for the 2.03 retitles.
     └── side_quest_faction.rs                  # Curated (quest, faction) rollup from docs/ref-gamedata/side-quest-list.md
                                                #   (84 rows / 23 factions, static table — sibling of main_quest_chapter).
                                                #   Lookups: faction_for_quest (1:1) + quest_count_for_faction /

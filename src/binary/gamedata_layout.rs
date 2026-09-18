@@ -110,6 +110,8 @@ pub(crate) fn extract_bin(name: &str) -> Option<Vec<u8>> {
 // (`(key << 32) | group`), and the container is a flat entry list with a
 // trailing count and no header — so the split is presentational only, and
 // re-serialising the concatenated entry lists reproduces the pre-2.01 blob.
+// 2.03 then wrapped each file in an LZ4 container (`binary::paloc`); the
+// entry list inside is unchanged.
 
 /// Directory holding the localization files (or, since 2.01, the
 /// per-language subdirectories holding them).
@@ -142,8 +144,9 @@ pub(crate) fn paloc_files(group: &str, lang: &str) -> Option<(String, Vec<String
 }
 
 /// The extracted bytes of each paloc file for one language, as they sit on
-/// disk — one blob pre-2.01, 39 from 2.01 on. Paired with the filename so a
-/// failure can name it.
+/// disk — one blob pre-2.01, 39 from 2.01 on, each inside the LZ4
+/// container from 2.03 on. Paired with the filename so a failure can name
+/// it.
 ///
 /// Use this over [`paloc_bytes`] when the test is about the on-disk bytes
 /// (roundtrip), not about whole-language lookups.
@@ -165,20 +168,27 @@ pub(crate) fn paloc_blobs(group: &str, lang: &str) -> Option<Vec<(String, Vec<u8
         .collect()
 }
 
-/// Every paloc byte for one language in `group`, as a single blob.
+/// Every paloc byte for one language in `group`, as a single bare entry
+/// list.
 ///
-/// Reads whichever layout the install ships and, on 2.01+, merges the
-/// per-namespace files so callers keep seeing one whole-language PALOC.
-/// The merged blob is a re-serialisation, so it is **not** the on-disk
-/// bytes — see [`paloc_blobs`] for those.
+/// Reads whichever layout the install ships, strips the 2.03 container,
+/// and on 2.01+ merges the per-namespace files so callers keep seeing one
+/// whole-language PALOC. The merged blob is a re-serialisation, so it is
+/// **not** the on-disk bytes — see [`paloc_blobs`] for those.
 pub(crate) fn paloc_bytes(group: &str, lang: &str) -> Option<Vec<u8>> {
+    use crate::binary::paloc::{LocalizationFile, unwrap_container};
+
     let blobs = paloc_blobs(group, lang)?;
-    if let [(_, only)] = blobs.as_slice() {
-        return Some(only.clone());
+    let bodies: Vec<_> = blobs
+        .iter()
+        .map(|(_, blob)| unwrap_container(blob).ok())
+        .collect::<Option<_>>()?;
+    if let [only] = bodies.as_slice() {
+        return Some(only.to_vec());
     }
     let mut entries = Vec::new();
-    for (_, blob) in &blobs {
-        entries.extend(crate::binary::paloc::LocalizationFile::parse(blob).ok()?.entries);
+    for body in &bodies {
+        entries.extend(LocalizationFile::parse(body).ok()?.entries);
     }
-    crate::binary::paloc::LocalizationFile { entries }.to_bytes().ok()
+    LocalizationFile { entries }.to_bytes().ok()
 }

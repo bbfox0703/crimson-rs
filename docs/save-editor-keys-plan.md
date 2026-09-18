@@ -22,6 +22,27 @@
 > `c_abi`, **76** without, **43** `#[ignore]`'d diagnostic probes.
 > Clippy clean both modes.
 >
+> ### What landed this session (2026-09-18, 2.03 check)
+>
+> - **PALOC loading would have broken on 2.03 — fixed in the loaders, no
+>   C# change needed.** 2.03 wraps every `.paloc` file in an LZ4 container
+>   (0x200-byte `"paloc"` header + one LZ4 block around the unchanged entry
+>   list), and `crimson_paz_extract_file` returns it as stored. Before the
+>   fix `crimson_paloc_load_from_bytes` / `_from_file` returned
+>   `BODY_PARSE` on every file, which would have blanked every display
+>   name the editor resolves. Both loaders now unwrap it and still accept
+>   the bare ≤ 2.02 layout. Format in
+>   [`archive-format.md`](./archive-format.md).
+> - **Nine curated titles followed the game's copy pass**:
+>   `main_quest_chapter` six missions + two arcs, `side_quest_faction` one
+>   mission (tables in the "Retitles in 2.03" sections of
+>   [`main-quest-list.md`](./ref-gamedata/main-quest-list.md) /
+>   [`side-quest-list.md`](./ref-gamedata/side-quest-list.md)). Keys are
+>   unchanged, so the key lookups never noticed; the title lookups needed
+>   the new strings — the case the 2.02 keying was for.
+> - `inventory_info_list` grew to ten slots (`crimson_iteminfo_lookup_inventory_info`
+>   still returns slot 0, unchanged). `PARSER_TARGET_GAMEDATA_MINOR` is `3`.
+>
 > ### What landed this session (2026-09-11, 2.02 check)
 >
 > - **Curated quest tables reconciled against the live game and keyed.**

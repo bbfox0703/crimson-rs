@@ -8,6 +8,9 @@
 > on 2.01+, `gamedata/stringtable/binary__/localizationstring_<lang>.paloc` before.
 > The file *contents* are identical either way. Examples below use the 2.01 names;
 > `scripts/gamedata_layout.py` resolves whichever layout an install ships.
+>
+> **2.03 wrapped every `.paloc` file in an LZ4 container** (see
+> [Localization (PALOC)](#localization-paloc)). `parse_paloc_bytes` reads both layouts.
 
 See also: [Archive Format](archive-format.md) for binary format details and mod loading explanation.
 
@@ -217,6 +220,50 @@ data = crimson_rs.extract_file_from_paz(
 
 ---
 
+## Localization (PALOC)
+
+A `.paloc` file is a flat entry list — `u64 unk_id`, `CString string_key`, `CString string_value`,
+repeated, then a `u32` entry count. From **2.03** every file (all 39 namespace files of all 15 languages)
+is stored inside a container: a 0x200-byte header — `"paloc"`, `u32` 0, `u32` LZ4-block length, `u32`
+decompressed length, zero padding — followed by one LZ4 block that decompresses to that entry list.
+`extract_file` returns the file as stored, so on 2.03+ that is the container.
+
+### `parse_paloc_bytes(data: bytes) -> list[dict]`
+
+Parse an extracted `.paloc` file into `{"unk_id", "string_key", "string_value"}` dicts. Accepts both the
+bare entry list (≤ 2.02) and the 2.03 container.
+
+```python
+raw = crimson_rs.extract_file(game_dir, "0020", "gamedata/stringtable/binary__/eng", "quest.paloc")
+entries = crimson_rs.parse_paloc_bytes(raw)
+```
+
+**Raises:** `ValueError` when the container header or LZ4 block does not check out, or the entry list is malformed.
+
+### `serialize_paloc(items: list[dict]) -> bytes`
+
+Serialize entries back to a bare entry list (the ≤ 2.02 layout). Byte-identical to the entry list they were
+parsed from.
+
+### `unwrap_paloc_bytes(data: bytes) -> bytes`
+
+The bare entry list of a `.paloc` file: decompressed out of the 2.03 container, or `data` unchanged when it
+has none.
+
+### `wrap_paloc_bytes(data: bytes) -> bytes`
+
+Wrap a bare entry list in the 2.03 container — what a mod for a 2.03+ install should ship:
+
+```python
+crimson_rs.wrap_paloc_bytes(crimson_rs.serialize_paloc(entries))
+```
+
+The result unwraps back to `data` exactly, but its compressed bytes are lz4_flex's rather than the game's
+own compressor's, so re-wrapping an untouched file does not reproduce the shipped bytes.
+**Raises:** `ValueError` if `data` is already a container.
+
+---
+
 ## ItemInfo (pabgb)
 
 ### `parse_skillinfo_from_bytes(skill_pabgb: bytes, skill_pabgh: bytes) -> dict`
@@ -408,7 +455,7 @@ Each item is a dict with 105 fields. All fields are required for serialization.
 
 | Field | Type | Description |
 |---|---|---|
-| `inventory_info_list` | `list[int]` | **1.16**: nine InventoryKey (u16) slots at the item end. Replaces the pre-1.16 head-side `inventory_info` (now slot 0) and the 1.13-era constant `unk_tail` (now slot 8). `0xFF` = unused slot. |
+| `inventory_info_list` | `list[int]` | InventoryKey (u16) slots at the item end — **ten** from 2.03 (nine in 1.16–2.02). Replaces the pre-1.16 head-side `inventory_info` (now slot 0) and the 1.13-era constant `unk_tail` (now slot 8); 2.03 added slot 9 (21 `Ship` on the `Trade_*_PackedInVehicle` items). `0xFF` = unused slot. `serialize_iteminfo` rejects a list of any other length. |
 | `equip_type_info` | `int` | EquipTypeKey (u32) |
 | `occupied_equip_slot_data_list` | `list[dict]` | See [OccupiedEquipSlotData](#occupiedequipslotdata) |
 | `equipable_hash` | `int` | (u32) |

@@ -116,8 +116,8 @@ mod tests {
         let entries = parse_item_group_info_lossy(&pabgb, &pabgh);
         assert_eq!(
             entries.len(),
-            1600,
-            "expected 1600 rows in 2.01 (1597 in 1.18-2.00, 1596 in 1.17, 1597 in 1.16, 1550 in 1.13-1.15, 1541 in 1.12, 1521 in 1.10/1.11)"
+            1602,
+            "expected 1602 rows in 2.03 (1600 in 2.01-2.02, 1597 in 1.18-2.00, 1596 in 1.17, 1597 in 1.16, 1550 in 1.13-1.15, 1541 in 1.12, 1521 in 1.10/1.11)"
         );
         let by_key: std::collections::HashMap<u32, &str> =
             entries.iter().map(|e| (e.key, e.name.as_str())).collect();

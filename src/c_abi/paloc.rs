@@ -22,7 +22,7 @@ use std::os::raw::c_char;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use super::error;
-use crate::binary::paloc::LocalizationFile;
+use crate::binary::paloc::{LocalizationFile, unwrap_container};
 
 /// Opaque handle handed across the FFI. Owns a `HashMap<String, String>`
 /// of key → value plus the entries in insertion order so the caller can
@@ -36,8 +36,10 @@ pub struct CrimsonPalocHandle {
 }
 
 impl CrimsonPalocHandle {
+    /// Accepts the bare entry list (≤ 2.02) and the 2.03 LZ4 container.
     fn from_bytes(data: &[u8]) -> Result<Self, std::io::Error> {
-        let file = LocalizationFile::parse(data)?;
+        let body = unwrap_container(data)?;
+        let file = LocalizationFile::parse(&body)?;
         let entries: Vec<(String, String)> = file
             .entries
             .iter()
@@ -68,7 +70,9 @@ impl CrimsonPalocHandle {
 /// via game tools). The raw `gamedata/*.paloc` files in a Crimson Desert
 /// Steam install are wrapped (encrypted + compressed) and cannot be
 /// passed straight in — feed them through PAZ extraction first, then
-/// this loader, or use [`crimson_paloc_load_from_bytes`].
+/// this loader, or use [`crimson_paloc_load_from_bytes`]. What extraction
+/// returns on 2.03+ — the in-file LZ4 container — is fine: both loaders
+/// unwrap it.
 ///
 /// `path` must be a NUL-terminated UTF-8 string. On success `*out_handle`
 /// receives an owned [`CrimsonPalocHandle`] that the caller must release
@@ -541,6 +545,40 @@ mod tests {
         unsafe { crimson_paloc_free(handle) };
         // Double-free guard: free(null) is a no-op.
         unsafe { crimson_paloc_free(ptr::null_mut()) };
+    }
+
+    #[test]
+    fn c_abi_paloc_loads_203_container() {
+        // 2.03 wraps every paloc file in a 0x200-byte header + one LZ4
+        // block; the loader has to see through it to the same entries.
+        let wrapped = crate::binary::paloc::wrap_container(&synthesise_paloc()).unwrap();
+        let mut handle: *mut CrimsonPalocHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_paloc_load_from_bytes(wrapped.as_ptr(), wrapped.len(), &mut handle) },
+            error::OK
+        );
+        let mut count: u32 = 0;
+        assert_eq!(
+            unsafe { crimson_paloc_entry_count(handle, &mut count) },
+            error::OK
+        );
+        assert_eq!(count, 3);
+        assert_eq!(
+            read_lookup(handle, "ITEM_POTION"),
+            Some("Health Potion".to_string())
+        );
+        unsafe { crimson_paloc_free(handle) };
+
+        // A container cut short is BODY_PARSE, not a panic.
+        let truncated = &wrapped[..wrapped.len() - 1];
+        let mut handle: *mut CrimsonPalocHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                crimson_paloc_load_from_bytes(truncated.as_ptr(), truncated.len(), &mut handle)
+            },
+            error::BODY_PARSE
+        );
+        assert!(handle.is_null());
     }
 
     #[test]
