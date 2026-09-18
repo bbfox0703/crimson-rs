@@ -34,6 +34,7 @@ pub mod checksum;
 pub mod craft_tool_group_info;
 pub mod craft_tool_info;
 pub mod dye_color_group_info;
+pub mod element_template;
 pub mod faction_node_info;
 pub mod faction_relation_group_info;
 pub mod faction_spawn_data_info;
@@ -150,6 +151,13 @@ pub mod error {
     /// no index for it). The transplant is rejected; the target is
     /// untouched.
     pub const TRANSPLANT_TYPE_MISSING: i32 = -24;
+    /// `crimson_save_list_insert_element_template` found a template field
+    /// whose kind or size no longer matches the same-named field in the
+    /// TARGET save's schema (e.g. a scalar that changed width), or an
+    /// always-present inline object whose class the target save gives no
+    /// instance to learn from. Nothing is reinterpreted; the save is
+    /// untouched.
+    pub const TEMPLATE_MISMATCH: i32 = -25;
     pub const PANIC: i32 = -99;
 }
 
@@ -3166,6 +3174,11 @@ fn toggle_one_object_list_presence_in_place(
         .get_mut(target_idx)
         .expect("field bounds checked above");
     field_mut.present = make_present;
+    // An absent list is written as a single 0x01 absence marker (see
+    // `DecodedField::absent_marker`): the list payload replaces it on the
+    // way in, and it comes back on the way out — so present(1) followed by
+    // present(0) restores the original bytes exactly.
+    field_mut.absent_marker = !make_present;
     if make_present {
         let element = default_element.ok_or(error::NULL_ARG)?;
         let header_bytes = build_zero1_count_u24_header(1)?;
@@ -3505,10 +3518,17 @@ fn build_empty_element_bytes(class_index: u32, body: &Body) -> Result<Vec<u8>, i
     //   | u8 reserved (1) | u32 sent1 (4) | u32 sent2 (4)
     //   | u32 payload_offset (4)
     //   = 2 + mbc + 2 + 1 + 4 + 4 + 4 = mbc + 17 bytes.
-    // Inline payload: u32 reserved (4) | (no fields) | u32 trailing_size (4)
-    //   = 8 bytes.
+    // Inline payload: u32 reserved (4) | one 0x01 absence marker per
+    //   dynamic-array / object-list field (every field is absent here, and
+    //   the engine writes that byte for each of those kinds) | u32
+    //   trailing_size (4).
+    let markers = type_def
+        .fields
+        .iter()
+        .filter(|f| crate::save::absent_kind_has_marker(f.meta_kind))
+        .count();
     let wrapper_size = mbc + 17;
-    let payload_size = 4 + 4;
+    let payload_size = 4 + markers + 4;
     let total = wrapper_size + payload_size;
     let mut out = Vec::with_capacity(total);
 
@@ -3521,10 +3541,11 @@ fn build_empty_element_bytes(class_index: u32, body: &Body) -> Result<Vec<u8>, i
     out.extend_from_slice(&0u32.to_le_bytes()); // sentinel2
     out.extend_from_slice(&0u32.to_le_bytes()); // payload_offset (advisory)
 
-    // Inline payload bytes. `trailing_size = 4` because the size u32
-    // sits 4 bytes after `payload_start` (just the `reserved` u32).
+    // Inline payload bytes. `trailing_size` is the size u32's own offset
+    // from `payload_start`: the `reserved` u32 plus the markers.
     out.extend_from_slice(&0u32.to_le_bytes()); // payload reserved
-    out.extend_from_slice(&4u32.to_le_bytes()); // payload trailing_size
+    out.extend(std::iter::repeat_n(crate::save::ABSENT_MARKER, markers));
+    out.extend_from_slice(&((4 + markers) as u32).to_le_bytes()); // payload trailing_size
 
     debug_assert_eq!(
         out.len(),
@@ -4871,13 +4892,18 @@ mod tests {
             error::OK
         );
 
-        // Confirm block 0 field 0 is the fixed_suffix u32 (_characterKey)
-        // we're about to overwrite. If the schema ever drifts this assert
-        // will tell us we picked the wrong target.
+        // Confirm block 0 field 0 is the u32 `_characterKey` scalar we're
+        // about to overwrite. If the schema ever drifts this assert will
+        // tell us we picked the wrong target. (Which pass placed it is not
+        // the point: the legacy walk peeled it off the tail as
+        // `fixed_suffix`, the marker-aware walk reads it forward as
+        // `fixed_prefix`.)
         let json = read_block_json(handle, 0);
         assert!(
-            json.contains("\"field_index\":0") && json.contains("\"kind\":\"fixed_suffix\""),
-            "expected block 0 field 0 to be fixed_suffix; got: {json:.200}…"
+            json.contains("\"field_index\":0,\"name\":\"_characterKey\"")
+                && (json.contains("\"kind\":\"fixed_prefix\"")
+                    || json.contains("\"kind\":\"fixed_suffix\"")),
+            "expected block 0 field 0 to be the _characterKey scalar; got: {json:.200}…"
         );
 
         // 0x01EFCDAB = 32_492_971. Specific enough to be distinguishable

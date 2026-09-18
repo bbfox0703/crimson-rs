@@ -60,7 +60,40 @@ PALOC display name → fuzzy match → NPC head-shot DDS path.
   on / off; make-present auto-materializes count=1 with one default-empty
   element so the round-trip stays byte-unambiguous (closes the "add dye to
   undyed item" path for CrimsonAtomtic's dye editor, see
-  [`dye-editor-scope.md`](dye-editor-scope.md) §v2).
+  [`dye-editor-scope.md`](dye-editor-scope.md) §v2). Make-absent writes the
+  list's one-byte `0x01` absence marker (below), so present(1) → present(0)
+  restores the original bytes.
+- **Element templates** (`crimson_save_export_element_template` /
+  `crimson_save_list_insert_element_template`, `src/c_abi/element_template.rs`)
+  — carry an `object_list` element across schema versions. Export records an
+  element by NAME (class, wrapper bytes, and per present field its name plus
+  payload, recursively; two-call buffer). Insert rebuilds it under the target
+  save's own schema: removed fields are dropped (count reported through
+  `out_dropped_fields`), new fields stay absent — arrays / lists with their
+  absence marker, inline object locators (`meta_kind` 4, which the game never
+  writes absent) with an empty child of the class the target save uses for
+  them — and a changed kind or size fails with `TEMPLATE_MISMATCH` (−25)
+  instead of being reinterpreted. Written for CrimsonAtomtic's dragon unlock,
+  whose captured 1.09-era element no longer fit `MercenarySaveData` after
+  2.00 (`_occupationState` removed, `_shipStationSaveList` added in 2.01).
+
+**Absence markers.** The engine writes one `0x01` byte for every *absent*
+dynamic array (`meta_kind` 3) and object list (6 / 7), and nothing for other
+absent fields; present arrays and lists open with a `0x00` tag and a u32
+count. The decoder walks every object that way first
+(`walk_fields_with_markers`) and keeps the legacy walk only as a fallback for
+bytes the rule leaves unexplained — none on any save measured (12 live saves
+from 1.10 to 2.03 plus the 1.09 / 1.10 fixtures, 118k–135k objects and
+170k–181k markers each). `DecodedField::absent_marker` records the byte and
+the encoder re-emits it; `crimson_save_make_empty_element_bytes` now writes a
+marker for each of the new element's arrays and lists. Before this, the walk
+skipped absent fields without consuming anything, so each marker was read as
+part of the NEXT field — e.g. a mercenary's `_currentHp` behind absent lists
+read as 1,134,700,311,674,881 instead of 1,032 — and the leftovers were
+absorbed by list-header variants (`marker_run_plus_zeros`, `ones_then_count`,
+`one_count_u16be`), dynamic-array variants (`marker_prefix`, and the
+`prefix_00xx0100` family, a misread neighbour plus markers) and
+`trailing_pad`. Byte-exact round-trips hid all of it.
 
 ### Version / parser-target
 

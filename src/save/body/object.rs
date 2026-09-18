@@ -149,6 +149,11 @@ pub enum FieldValue {
         child_sentinel2: u32,
         wrapper_prefix: Vec<u8>,
         child: Option<Box<ObjectBlock>>,
+        /// The child payload sits right after the wrapper (it does in every
+        /// game-written save; the decoder also accepts a payload elsewhere
+        /// at `child_payload_offset`). The encoder re-emits the child only
+        /// when this is set.
+        inline_child: bool,
     },
     /// Object list (meta_kind 6 / 7). `header_variant` is the
     /// disambiguator for the multiple known header shapes.
@@ -190,6 +195,15 @@ pub struct DecodedField {
     pub meta_size: u16,
     pub meta_aux: u32,
     pub present: bool,
+    /// For an absent field: whether its one-byte `0x01` absence marker is
+    /// on disk. The engine writes that byte for every absent dynamic array
+    /// (`meta_kind` 3) and object list (6 / 7), even though the presence
+    /// mask already says the field is absent; absent scalars, inline bytes
+    /// and locators write nothing. When set, `start..end` covers the
+    /// marker byte and the encoder re-emits it. Always `false` for present
+    /// fields, and for blocks decoded by the legacy walk, which leaves such
+    /// bytes inside neighbouring fields, list headers or `trailing_pad`.
+    pub absent_marker: bool,
     pub kind: FieldKind,
     pub value: FieldValue,
     pub start: usize,
@@ -198,6 +212,23 @@ pub struct DecodedField {
     /// Empty when not relevant.
     pub note: String,
 }
+
+/// Whether an absent field of this `meta_kind` is written as a one-byte
+/// `0x01` absence marker: dynamic arrays (3) and object lists (6 / 7).
+///
+/// Measured 2026-09-18 on all 12 live saves (written by game 1.10 through
+/// 2.03, 118k–135k objects and 170k–181k markers each): under this rule
+/// every object's field walk ends exactly on its boundary, with no bytes
+/// left over. The walk without it misread every field that follows such an
+/// absent field, and hid the markers in list-header variants, dynamic-array
+/// trailers and `trailing_pad`. Absent inline bytes (1) are not marked —
+/// adding kind 1 to the rule breaks ~60k objects per save.
+pub(crate) fn absent_kind_has_marker(meta_kind: u16) -> bool {
+    matches!(meta_kind, 3 | 6 | 7)
+}
+
+/// The byte an absent array / list writes in place of its payload.
+pub(crate) const ABSENT_MARKER: u8 = 0x01;
 
 #[derive(Debug, Clone)]
 pub struct ObjectBlock {

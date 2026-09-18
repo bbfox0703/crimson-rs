@@ -793,6 +793,120 @@ mod tests {
         let _ = path;
     }
 
+    /// Every live save decodes under the engine's absence-marker rule.
+    ///
+    /// The engine writes one `0x01` byte for every ABSENT dynamic array
+    /// (`meta_kind` 3) and object list (6 / 7), and nothing for other absent
+    /// fields; present arrays and lists open with a `0x00` tag and a u32
+    /// count. The decoder walks every object that way first and falls back
+    /// to the legacy walk only where the rule leaves a byte unexplained.
+    /// Here it must never need to: the test fails if any object — top-level
+    /// block, list element or locator child, at any depth — still carries an
+    /// absent array/list without its marker (the fallback's signature), or
+    /// if any `trailing_pad` byte is left over, since under the rule every
+    /// such byte is a marker.
+    ///
+    /// It also checks a VALUE, which a byte-identical round-trip cannot (the
+    /// 1.16 lesson): with the markers left in place, a mercenary's
+    /// `_currentHp` behind absent lists read as numbers like
+    /// 1,134,700,311,674,881 — its low bytes were the markers. Decoded
+    /// properly, every one is a u32-range stat.
+    #[test]
+    fn test_save_body_absent_markers_every_live_save() {
+        use crate::save::{Body, FieldValue, ObjectBlock, Save, ScalarValue};
+        fn visit<'a>(block: &'a ObjectBlock, f: &mut dyn FnMut(&'a ObjectBlock)) {
+            f(block);
+            for field in &block.fields {
+                match &field.value {
+                    FieldValue::Locator { child: Some(c), .. } => visit(c, f),
+                    FieldValue::ObjectList { elements, .. } => {
+                        for e in elements {
+                            visit(e, f);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Live saves plus the checked-in fixtures (1.09, 1.10 and the 1.10
+        // length-change set), so the rule is also held on older patches and
+        // wherever the fixtures are decryptable but no game is installed.
+        let mut saves = collect_all_saves();
+        let fixtures = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/saves");
+        for rel in [
+            "1.09/save.save",
+            "1.10/save.save",
+            "1.10/broken_save_after_length_change/base_sample/save.save",
+            "1.10/broken_save_after_length_change/add_2_sugar_in_game/save.save",
+            "1.10/broken_save_after_length_change/use_editor_add_sugar/save.save",
+        ] {
+            let p = fixtures.join(rel);
+            // git-crypt-locked clones check fixtures out as encrypted blobs.
+            if let Ok(data) = std::fs::read(&p)
+                && data.get(..4) == Some(b"SAVE")
+            {
+                saves.push((p, data));
+            }
+        }
+        if saves.is_empty() {
+            eprintln!("skipping absent-marker check: no saves found");
+            return;
+        }
+        for (path, data) in &saves {
+            let save = Save::parse(data).unwrap();
+            let body = Body::parse(&save.body).unwrap();
+            let blocks = body.decode_blocks(&save.body);
+
+            let mut objects = 0usize;
+            let mut markers = 0usize;
+            let mut pad_bytes = 0usize;
+            let mut fallback: Vec<String> = Vec::new();
+            let mut bad_hp: Vec<u64> = Vec::new();
+            for block in &blocks {
+                visit(block, &mut |obj| {
+                    objects += 1;
+                    pad_bytes += obj.trailing_pad.len();
+                    for f in &obj.fields {
+                        if f.present || !matches!(f.meta_kind, 3 | 6 | 7) {
+                            continue;
+                        }
+                        if f.absent_marker {
+                            markers += 1;
+                        } else if fallback.len() < 10 {
+                            fallback.push(format!("{}.{}", obj.class_name, f.name));
+                        }
+                    }
+                    if obj.class_name == "MercenarySaveData" {
+                        for f in &obj.fields {
+                            if f.name == "_currentHp"
+                                && let FieldValue::Scalar(ScalarValue::U64(hp)) = f.value
+                                && hp > u32::MAX as u64
+                            {
+                                bad_hp.push(hp);
+                            }
+                        }
+                    }
+                });
+            }
+            println!(
+                "{}: {objects} objects, {markers} absence markers, {pad_bytes} trailing_pad bytes",
+                path.display()
+            );
+            assert!(
+                fallback.is_empty(),
+                "{}: absent arrays/lists decoded without their 0x01 marker (legacy fallback): {fallback:?}",
+                path.display()
+            );
+            assert_eq!(pad_bytes, 0, "{}: trailing_pad bytes left over", path.display());
+            assert!(
+                bad_hp.is_empty(),
+                "{}: implausible MercenarySaveData._currentHp (misaligned read?): {bad_hp:?}",
+                path.display()
+            );
+        }
+    }
+
     /// Per-class `trailing_pad` census over every live save, oldest first,
     /// printed as a `pad/blocks` matrix. `test_save_body_decode_all_blocks`
     /// prints only the total, and that total moves with save *content*
