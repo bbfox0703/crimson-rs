@@ -113,9 +113,11 @@ def extract_paloc(game_dir: str, version: str, t: PalocTarget, out_dir: Path) ->
     dest = out_dir / "paloc" / t.lang
     dest.mkdir(parents=True, exist_ok=True)
     rows = []
+    wrapped = 0
     for fname in t.files:
         raw = bytes(crimson_rs.extract_file(game_dir, t.group, t.dir, fname))
         entries = len(crimson_rs.parse_paloc_bytes(raw))
+        wrapped += raw[:5] == b"paloc"
         digest = hashlib.sha256(raw).hexdigest()
         (dest / fname).write_bytes(raw)
         if hashlib.sha256((dest / fname).read_bytes()).hexdigest() != digest:
@@ -134,6 +136,15 @@ def extract_paloc(game_dir: str, version: str, t: PalocTarget, out_dir: Path) ->
         "a string_key is either a name or the decimal (hash << 32) | namespace, where",
         "hash = hashlittle2 of the owning row's internal name (0x100 quest titles,",
         "0x101 mission and stage titles).",
+    ]
+    if wrapped:
+        lines += [
+            f"{wrapped} of the {len(rows)} files are 2.03+ LZ4 containers (\"paloc\" magic,",
+            "0x200-byte header, one LZ4 block); parse_paloc_bytes() unwraps them and",
+            "unwrap_paloc_bytes() returns the bare entry list. bytes / sha256 below",
+            "are of the file as stored.",
+        ]
+    lines += [
         "",
         f"{'file':<{w}}  {'bytes':>10}  {'entries':>8}  sha256",
     ]

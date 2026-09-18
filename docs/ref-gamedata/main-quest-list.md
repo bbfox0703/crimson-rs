@@ -1,13 +1,14 @@
-> Titles are the live English display strings as of **Crimson Desert 2.02**, and every row is tied to the game
+> Titles are the live English display strings as of **Crimson Desert 2.03**, and every row is tied to the game
 > row its title comes from (`MissionKey` / `QuestKey`) in
 > [`src/c_abi/main_quest_chapter.rs`](../../src/c_abi/main_quest_chapter.rs). The live-install test
 > `curated_titles_match_live_install` fails when a key's title drifts, so future retitles surface on the next
-> patch run. See [Reconciliation against 2.02](#reconciliation-against-202) for what changed and why.
+> patch run. See [Reconciliation against 2.02](#reconciliation-against-202) for what changed and why, and
+> [Retitles in 2.03](#retitles-in-203) for the eight titles 2.03 changed.
 
 ### **Prologue: Dead of Night**
 
 * Ambush
-* Unfamiliar Land
+* Unfamiliar Lands
 * In Ashes
 * Unknown Space *(no counterpart in 2.02)*
 * Realm of Uncertainty
@@ -109,13 +110,13 @@
 * Gate to the Otherworld
 * Spire of the Stars
 * Obsession and Madness
-* A Looming Shadow
+* Cast Shadow
 
 
 
 ### **Chapter 5: Guest Unbidden**
 
-* **Uninvited Guest**
+* **Guest Unbidden**
 * Ulterior Motives
 * Unwelcomed Guests
 * Demenissian Delegation
@@ -128,7 +129,7 @@
 * The Crow's Warning
 * Blood on the Wind
 * The Church's Hidden Secret
-* Approaching the Nest
+* Toward the Nest
 
 
 
@@ -190,7 +191,7 @@
 * The Final Bridge
 * Broken Claws *(no counterpart in 2.02)*
 * Battle at Silver Wolf Mountain
-* Hollow Victory
+* Incomplete Victory
 
 
 * **Twisted Fate**
@@ -229,7 +230,7 @@
 ### **Chapter 9: The Sage of the Desert**
 
 * **The Calling**
-* An Unknown Voice
+* Mysterious Voice
 * Cloister of Enlightenment
 
 
@@ -268,7 +269,7 @@
 
 ### **Chapter 10: Counterattack**
 
-* **Secret Weapon**
+* **Hidden Ace**
 * A New Front
 * The Gate of War
 * Master of the Ironworks
@@ -279,7 +280,7 @@
 * **Greater Firepower**
 * Beating Heart
 * Invaders from the East
-* Cold-Hearted Hunter
+* Frozen Hearted Predator
 * Lingering Shadow
 
 
@@ -411,3 +412,22 @@ carry no key (`Unresolved`); the title lookups still answer for them:
 
 "Cradle of Defense" is kept as an arc heading, but its title belongs to a mission
 (`1001231` `Mission_Silver_Armor_Boss_Occupation_Refinery`), not a quest.
+
+## Retitles in 2.03
+
+Crimson Desert 2.03 made a large English copy pass (1,325 changed strings across 19 of the 39 PALOC namespace
+files, 154 in `quest.paloc` alone — "Speak with …" → "Talk to …", "Bonus Schedule" → "Extra Schedule", …).
+Eight of the titles above changed with it; the keys did not, so the key lookups were never affected. Four of
+them go back to titles this list had before the 2.02 reconciliation — the wiki spellings, two of which were
+also the titles of the stages those missions reference.
+
+| Row | 2.02 | 2.03 | Game row |
+|---|---|---|---|
+| 1 | Unfamiliar Land | Unfamiliar Lands | `1000157` `Mission_Intro_Tutorial_I` — the pre-2.01 title again |
+| 60 | A Looming Shadow | Cast Shadow | `1000269` `Mission_TrollUniversity_Brain_Lost_MasterGrundir` — now the same as its stage's title |
+| 70 | Approaching the Nest | Toward the Nest | `1000248` `Mission_Crowman_Boss_Battle` — the wiki title without "(Spire of Soaring)" |
+| 102 | Hollow Victory | Incomplete Victory | `1000259` `Mission_Mjordin_Boss_UncomfortableEnding_Return_I` — the wiki title, and its stage's |
+| 120 | An Unknown Voice | Mysterious Voice | `1000060` `Mission_Goblin_Master_Doo_WakeUp` |
+| 146 | Cold-Hearted Hunter | Frozen Hearted Predator | `1000232` `Mission_MarniDragon_Boss_SteelMillEscape` — the wiki title |
+| arc | Uninvited Guest | Guest Unbidden | quest `1000118` — now the same as the Chapter 5 heading |
+| arc | Secret Weapon | Hidden Ace | quest `1000767` — now the same as its own mission `1000229` |

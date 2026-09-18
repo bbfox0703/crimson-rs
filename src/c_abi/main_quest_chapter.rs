@@ -25,11 +25,12 @@
 //! one arc heading that is a mission title). Those are the keys a save
 //! stores, so the key lookups below keep answering when a patch retitles a
 //! mission, where a title lookup would silently return `NOT_FOUND`. The
-//! titles were last reconciled against 2.02, when 58 of them had drifted
-//! from the live strings and were re-paired with their game rows (the
-//! source MD's "Reconciliation against 2.02" lists each one with its
-//! evidence); `curated_titles_match_live_install` fails the next time a
-//! key's live title stops matching. Five wiki-only titles with no live
+//! titles were reconciled against 2.02, when 58 of them had drifted from
+//! the live strings and were re-paired with their game rows (the source
+//! MD's "Reconciliation against 2.02" lists each one with its evidence),
+//! and follow the live strings since: 2.03 retitled six missions and two
+//! arcs. `curated_titles_match_live_install` fails the next time a key's
+//! live title stops matching. Five wiki-only titles with no live
 //! counterpart are kept as [`Entry::Unresolved`]: the title lookups still
 //! answer for them, the key lookups cannot.
 //!
@@ -166,7 +167,8 @@ const PIONEERING: Option<Arc> = arc("Pioneering", Quest(1_001_048));
 const MYSTERIOUS_POT: Option<Arc> = arc("Mysterious Pot", Quest(1_000_142));
 const DAILY_LIFE: Option<Arc> = arc("Daily Life", Quest(1_001_216));
 const FORBIDDEN_KNOWLEDGE: Option<Arc> = arc("Forbidden Knowledge", Quest(10_040_400));
-const UNINVITED_GUEST: Option<Arc> = arc("Uninvited Guest", Quest(1_000_118));
+// 2.03 retitle (was "Uninvited Guest")
+const GUEST_UNBIDDEN: Option<Arc> = arc("Guest Unbidden", Quest(1_000_118));
 const BLACK_AND_WHITE: Option<Arc> = arc("Black and White", Quest(1_000_724));
 const BLAZING_BEACON: Option<Arc> = arc("Blazing Beacon", Quest(10_060_100));
 // was "Under the Banner"
@@ -192,7 +194,8 @@ const THINNING_BLADE: Option<Arc> = arc("Thinning Blade", Quest(1_000_292));
 const SIX_STATUES_AND_THE_BEAST: Option<Arc> = arc("Six Statues and the Beast", Quest(1_000_305));
 const VEILED_WITCH: Option<Arc> = arc("Veiled Witch", Quest(1_000_319));
 const ENLIGHTENMENT: Option<Arc> = arc("Enlightenment", Quest(1_000_355));
-const SECRET_WEAPON: Option<Arc> = arc("Secret Weapon", Quest(1_000_767));
+// 2.03 retitle (was "Secret Weapon")
+const HIDDEN_ACE: Option<Arc> = arc("Hidden Ace", Quest(1_000_767));
 const GREATER_FIREPOWER: Option<Arc> = arc("Greater Firepower", Quest(1_000_776));
 const BRAVE_NEW_WORLD: Option<Arc> = arc("Brave New World", Quest(1_000_741));
 const FOREBODING_SHADOW: Option<Arc> = arc("Foreboding Shadow", Quest(1_000_135));
@@ -201,15 +204,15 @@ const THE_VOID: Option<Arc> = arc("The Void", Quest(1_000_726));
 const JOURNEYS_END: Option<Arc> = arc("Journey's End", Quest(1_000_358));
 
 /// The curated table in story order. Titles are the live English display
-/// strings (last reconciled against Crimson Desert 2.02 — see the
-/// "Reconciliation against 2.02" section of the source MD for every change
-/// and its evidence); `curated_titles_match_live_install` fails as soon as
-/// a key's live title stops matching its row.
+/// strings (reconciled against Crimson Desert 2.02 and updated for 2.03's
+/// eight retitles — see the "Reconciliation against 2.02" and "Retitles in
+/// 2.03" sections of the source MD); `curated_titles_match_live_install`
+/// fails as soon as a key's live title stops matching its row.
 const ROWS: &[Row] = &[
     // ── Prologue: Dead of Night ────────────────────────────────────────
     row(PROLOGUE, None, "Ambush", Quest(10_001)),
-    // 2.01 retitle (was "Unfamiliar Lands").
-    row(PROLOGUE, None, "Unfamiliar Land", Mission(1_000_157)),
+    // 2.03 restored the pre-2.01 title (2.01–2.02: "Unfamiliar Land").
+    row(PROLOGUE, None, "Unfamiliar Lands", Mission(1_000_157)),
     row(PROLOGUE, None, "In Ashes", Mission(1_000_160)),
     // no counterpart in 2.02 — kept from the original transcription
     row(PROLOGUE, None, "Unknown Space", Unresolved),
@@ -294,14 +297,14 @@ const ROWS: &[Row] = &[
     row(CH4, FORBIDDEN_KNOWLEDGE, "Gate to the Otherworld", Mission(1_000_266)),
     row(CH4, FORBIDDEN_KNOWLEDGE, "Spire of the Stars", Mission(1_000_267)),
     row(CH4, FORBIDDEN_KNOWLEDGE, "Obsession and Madness", Mission(1_000_268)),
-    // was "Casted Shadow"
-    row(CH4, FORBIDDEN_KNOWLEDGE, "A Looming Shadow", Mission(1_000_269)),
+    // 2.03 retitle (2.02: "A Looming Shadow"; wiki: "Casted Shadow")
+    row(CH4, FORBIDDEN_KNOWLEDGE, "Cast Shadow", Mission(1_000_269)),
     // ── Chapter 5: Guest Unbidden ──────────────────────────────────────
     // was "Double-sided Invitation"
-    row(CH5, UNINVITED_GUEST, "Ulterior Motives", Mission(1_000_432)),
-    row(CH5, UNINVITED_GUEST, "Unwelcomed Guests", Mission(1_000_240)),
-    row(CH5, UNINVITED_GUEST, "Demenissian Delegation", Mission(1_000_242)),
-    row(CH5, UNINVITED_GUEST, "Exposed Plot", Mission(1_000_243)),
+    row(CH5, GUEST_UNBIDDEN, "Ulterior Motives", Mission(1_000_432)),
+    row(CH5, GUEST_UNBIDDEN, "Unwelcomed Guests", Mission(1_000_240)),
+    row(CH5, GUEST_UNBIDDEN, "Demenissian Delegation", Mission(1_000_242)),
+    row(CH5, GUEST_UNBIDDEN, "Exposed Plot", Mission(1_000_243)),
     row(CH5, BLACK_AND_WHITE, "The Missing Seal", Mission(1_001_574)),
     row(CH5, BLACK_AND_WHITE, "Crowcaller", Mission(1_000_580)),
     row(CH5, BLACK_AND_WHITE, "The Crow's Warning", Mission(1_000_244)),
@@ -309,8 +312,8 @@ const ROWS: &[Row] = &[
     row(CH5, BLACK_AND_WHITE, "Blood on the Wind", Mission(1_000_245)),
     // was "Secret at the Church"
     row(CH5, BLACK_AND_WHITE, "The Church's Hidden Secret", Mission(1_000_247)),
-    // was "Toward the Nest (Spire of Soaring)"
-    row(CH5, BLACK_AND_WHITE, "Approaching the Nest", Mission(1_000_248)),
+    // 2.03 retitle (2.02: "Approaching the Nest"; wiki: "Toward the Nest (Spire of Soaring)")
+    row(CH5, BLACK_AND_WHITE, "Toward the Nest", Mission(1_000_248)),
     // ── Chapter 6: Cracks in the Shield ────────────────────────────────
     // was "News"
     row(CH6, BLAZING_BEACON, "News Arrives", Mission(1_000_137)),
@@ -352,8 +355,8 @@ const ROWS: &[Row] = &[
     row(CH7, DECISIVE_BATTLE, "Broken Claws", Unresolved),
     // was "Battle at Silverwolf Mountain"
     row(CH7, DECISIVE_BATTLE, "Battle at Silver Wolf Mountain", Mission(1_000_258)),
-    // was "Incomplete Victory"
-    row(CH7, DECISIVE_BATTLE, "Hollow Victory", Mission(1_000_259)),
+    // 2.03 restored the wiki title (2.02: "Hollow Victory")
+    row(CH7, DECISIVE_BATTLE, "Incomplete Victory", Mission(1_000_259)),
     row(CH7, TWISTED_FATE, "Ludvig's Whereabouts", Mission(1_000_174)),
     row(CH7, TWISTED_FATE, "Time to Face Justice", Mission(1_000_400)),
     // ── Chapter 8: Blood Coronation ────────────────────────────────────
@@ -381,7 +384,8 @@ const ROWS: &[Row] = &[
     row(CH8, TRAITOR, "The Thread", Mission(1_000_271)),
     row(CH8, TRAITOR, "A Fleeting Dream", Mission(1_000_287)),
     // ── Chapter 9: The Sage of the Desert ──────────────────────────────
-    row(CH9, THE_CALLING, "An Unknown Voice", Mission(1_000_060)),
+    // 2.03 retitle (was "An Unknown Voice")
+    row(CH9, THE_CALLING, "Mysterious Voice", Mission(1_000_060)),
     row(CH9, THE_CALLING, "Cloister of Enlightenment", Mission(1_002_627)),
     // was "Mark of the Scar"
     row(CH9, SHATTERED_TIES, "The Spear's Mark", Mission(1_000_159)),
@@ -407,15 +411,15 @@ const ROWS: &[Row] = &[
     row(CH9, ENLIGHTENMENT, "Lust for Power", Unresolved),
     // ── Chapter 10: Counterattack ──────────────────────────────────────
     // was "Untouchable" (inferred)
-    row(CH10, SECRET_WEAPON, "A New Front", Mission(1_000_223)),
-    row(CH10, SECRET_WEAPON, "The Gate of War", Mission(1_000_224)),
-    row(CH10, SECRET_WEAPON, "Master of the Ironworks", Mission(1_000_411)),
-    row(CH10, SECRET_WEAPON, "Hidden Ace", Mission(1_000_229)),
-    row(CH10, SECRET_WEAPON, "Clockwork Insect Clash", Mission(1_001_404)),
+    row(CH10, HIDDEN_ACE, "A New Front", Mission(1_000_223)),
+    row(CH10, HIDDEN_ACE, "The Gate of War", Mission(1_000_224)),
+    row(CH10, HIDDEN_ACE, "Master of the Ironworks", Mission(1_000_411)),
+    row(CH10, HIDDEN_ACE, "Hidden Ace", Mission(1_000_229)),
+    row(CH10, HIDDEN_ACE, "Clockwork Insect Clash", Mission(1_001_404)),
     row(CH10, GREATER_FIREPOWER, "Beating Heart", Mission(1_000_418)),
     row(CH10, GREATER_FIREPOWER, "Invaders from the East", Mission(1_000_069)),
-    // was "Frozen Hearted Predator"
-    row(CH10, GREATER_FIREPOWER, "Cold-Hearted Hunter", Mission(1_000_232)),
+    // 2.03 restored the wiki title (2.02: "Cold-Hearted Hunter")
+    row(CH10, GREATER_FIREPOWER, "Frozen Hearted Predator", Mission(1_000_232)),
     row(CH10, GREATER_FIREPOWER, "Lingering Shadow", Mission(1_000_233)),
     // ── Chapter 11: Truth and Reality ──────────────────────────────────
     row(CH11, BRAVE_NEW_WORLD, "The City of Steel", Mission(1_000_107)),
@@ -626,7 +630,7 @@ pub unsafe extern "C" fn crimson_main_quest_chapter_for_arc(
 }
 
 /// Resolve a mission display title (e.g. "Where Rumors Gather",
-/// "Unfamiliar Land") to its chapter heading.
+/// "Unfamiliar Lands") to its chapter heading.
 ///
 /// Three titles repeat across chapters ("In Ashes", "Reclamation",
 /// "The Counterattack"); first match by table order wins. Callers that
@@ -973,7 +977,7 @@ mod tests {
     fn chapter_for_mission_known_cases() {
         // Prologue mission (no arc)
         assert_eq!(
-            call_chapter_for_mission("Unfamiliar Land").unwrap(),
+            call_chapter_for_mission("Unfamiliar Lands").unwrap(),
             "Prologue: Dead of Night"
         );
         // Mid-game arc mission

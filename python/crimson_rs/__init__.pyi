@@ -757,12 +757,40 @@ class LocalizationEntry(TypedDict):
 
 
 def parse_paloc_bytes(data: bytes) -> list[LocalizationEntry]:
-    """Parse localization entries from raw bytes."""
+    """Parse localization entries from an extracted ``.paloc`` file.
+
+    Accepts both layouts: the bare entry list (up to 2.02) and the 2.03+
+    container (``"paloc"`` magic, 0x200-byte header, one LZ4 block), which
+    is unwrapped first.
+    """
     ...
 
 
 def serialize_paloc(items: list[LocalizationEntry]) -> bytes:
-    """Serialize localization entries to raw bytes."""
+    """Serialize localization entries to a bare entry list (the <= 2.02
+    layout). Pass the result through :func:`wrap_paloc_bytes` for a 2.03+
+    install."""
+    ...
+
+
+def unwrap_paloc_bytes(data: bytes) -> bytes:
+    """The bare entry list of a ``.paloc`` file: decompressed out of the
+    2.03+ container, or ``data`` unchanged when it has none.
+
+    Raises:
+        ValueError: The container header or its LZ4 block does not check out.
+    """
+    ...
+
+
+def wrap_paloc_bytes(data: bytes) -> bytes:
+    """Wrap a bare entry list (e.g. :func:`serialize_paloc` output) in the
+    2.03+ container. Unwraps back to ``data`` exactly; the compressed bytes
+    are lz4_flex's, so they differ from the game's own.
+
+    Raises:
+        ValueError: ``data`` is already a container.
+    """
     ...
 
 

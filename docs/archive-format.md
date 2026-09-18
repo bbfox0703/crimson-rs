@@ -172,6 +172,43 @@ PABGB entry bodies have **no standard layout** — each table's body is schema-p
 
 ---
 
+## PALOC (Localization — `00NN/gamedata/stringtable/binary__/`)
+
+One set of files per language, in its own pack group (Korean `0019`, English `0020`, … Arabic `0033`).
+Through 2.00 each language is a single `localizationstring_<lang>.paloc`; from 2.01 it is 39 per-namespace
+files under `<lang>/` (`item.paloc`, `quest.paloc`, …) whose entry lists concatenate to the old blob.
+
+### Entry list (every version)
+
+```text
+repeat count × { u64 unk_id; CString string_key; CString string_value }
+u32 count                                  // trailing, not leading
+```
+
+`string_key` is a name, or the decimal `(hashlittle2(owning row's internal name) << 32) | namespace`
+(`0x70` item names, `0x100` quest titles, `0x101` mission and stage titles, …).
+
+### Container (2.03+)
+
+2.03 wraps every `.paloc` file — all 585 of them, 15 languages × 39 namespaces:
+
+| Offset | Size | Field |
+|---|---|---|
+| `0x000` | 5 | magic `"paloc"` |
+| `0x005` | 4 | `u32`, 0 on every 2.03 file |
+| `0x009` | 4 | `u32` LZ4 block length (= file length − 0x200) |
+| `0x00D` | 4 | `u32` decompressed length |
+| `0x011` | to `0x200` | zero padding |
+| `0x200` | block length | one LZ4 block → the entry list above, byte for byte |
+
+The compression moved into the file: the PAMT stores these entries with compression `0` (crypto stays
+ChaCha20), so `extract_file` returns the container. A bare entry list starts with a `u64 unk_id`, never
+the magic, which is how the readers tell the layouts apart. The game's LZ4 compressor is not lz4_flex's —
+re-compressing the 2.03 bodies reproduces only 21 of the 585 blocks — so a container roundtrips through its
+decompressed body, the same contract as the save format.
+
+---
+
 ## Checksum
 
 Jenkins hashlittle2 with constant seed `0xDEBA1DCD`.

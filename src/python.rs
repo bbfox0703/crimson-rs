@@ -663,15 +663,37 @@ fn to_py_paloc_entry<'py>(
     Ok(d)
 }
 
+/// Accepts both layouts: the bare entry list (≤ 2.02) and the 2.03 LZ4
+/// container, which is unwrapped first.
 #[pyfunction]
 pub fn parse_paloc_bytes(py: Python<'_>, data: &[u8]) -> PyResult<Py<PyAny>> {
-    let paloc = crate::binary::paloc::LocalizationFile::parse(data)
+    let body = crate::binary::paloc::unwrap_container(data)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let paloc = crate::binary::paloc::LocalizationFile::parse(&body)
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
     let entries = PyList::empty(py);
     for entry in &paloc.entries {
         entries.append(to_py_paloc_entry(py, entry)?)?;
     }
     Ok(entries.into_any().unbind())
+}
+
+/// The bare entry list of a paloc file — decompressed out of the 2.03
+/// container, or the input unchanged when it has none.
+#[pyfunction]
+pub fn unwrap_paloc_bytes(py: Python<'_>, data: &[u8]) -> PyResult<Py<PyAny>> {
+    let body = crate::binary::paloc::unwrap_container(data)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    Ok(PyBytes::new(py, &body).into_any().unbind())
+}
+
+/// Wrap a bare entry list (e.g. `serialize_paloc` output) in the 2.03
+/// container, the layout a 2.03+ install ships.
+#[pyfunction]
+pub fn wrap_paloc_bytes(py: Python<'_>, data: &[u8]) -> PyResult<Py<PyAny>> {
+    let wrapped = crate::binary::paloc::wrap_container(data)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    Ok(PyBytes::new(py, &wrapped).into_any().unbind())
 }
 
 #[pyfunction]
@@ -1845,6 +1867,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(serialize_skillinfo, m)?)?;
     m.add_function(wrap_pyfunction!(parse_paloc_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(serialize_paloc, m)?)?;
+    m.add_function(wrap_pyfunction!(unwrap_paloc_bytes, m)?)?;
+    m.add_function(wrap_pyfunction!(wrap_paloc_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(parse_save_from_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(parse_save_from_file, m)?)?;
     m.add_function(wrap_pyfunction!(write_save_with_nonce, m)?)?;

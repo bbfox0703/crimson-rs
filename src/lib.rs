@@ -263,18 +263,35 @@ mod tests {
     /// each has to come back byte-identical on its own — the merged blob
     /// `gamedata_layout::paloc_bytes` builds is a re-serialisation, so
     /// checking that instead would only prove self-consistency.
+    ///
+    /// From 2.03 each file is an LZ4 container. Its entry list must still
+    /// roundtrip byte-identically, and re-wrapping must give back the same
+    /// entry list; the compressed bytes themselves are not compared, since
+    /// lz4_flex is not the game's compressor (see `binary::paloc`).
     fn roundtrip_paloc_files(group: &str, lang: &str) {
+        use crate::binary::paloc::{is_wrapped, unwrap_container, wrap_container};
+
         let Some(blobs) = gamedata_layout::paloc_blobs(group, lang) else {
             eprintln!("skipping: no {lang} paloc in group {group} of {GAME_DIR}");
             return;
         };
         assert!(!blobs.is_empty());
         for (name, data) in blobs {
-            let paloc = LocalizationFile::parse(&data)
+            let body = unwrap_container(&data)
+                .unwrap_or_else(|e| panic!("{name}: container: {e}"));
+            let paloc = LocalizationFile::parse(&body)
                 .unwrap_or_else(|e| panic!("{name}: parse failed: {e}"));
             let written = paloc.to_bytes().unwrap();
-            assert_eq!(written.len(), data.len(), "{name}: roundtrip size mismatch");
-            assert_eq!(written, data, "{name}: roundtrip bytes mismatch");
+            assert_eq!(written.len(), body.len(), "{name}: roundtrip size mismatch");
+            assert_eq!(written, *body, "{name}: roundtrip bytes mismatch");
+            if is_wrapped(&data) {
+                let rewrapped = wrap_container(&written).unwrap();
+                assert_eq!(
+                    *unwrap_container(&rewrapped).unwrap(),
+                    *body,
+                    "{name}: re-wrapped container does not unwrap to the same entry list"
+                );
+            }
         }
     }
 
