@@ -15,6 +15,24 @@ variant in `src/save/body/decoder.rs`; regression test
 the original "## Root cause" section below correctly describes the *crash site*;
 this section describes *what put a bad pointer there*.
 
+## 2026-09-18: what the "unparseable header variant" actually was
+
+The `_reviveQuestList` header the decoder couldn't parse was never a header
+variant. The engine writes one `0x01` byte for every *absent* dynamic array
+and object list, and the decoder of the time skipped absent fields without
+consuming anything. In those elements three absent fields (#17 array, #22 and
+#23 lists) sit before `_lastRevivedFieldTimeRaw`, so that u64 was read three
+bytes early (`0101012cd61feb01` instead of `2cd61feb01000000`); its misread
+tail plus the next absent list's marker then looked like `00 00 XX 01 00` in
+front of the real `_reviveQuestList` (`00` tag, u32 count 1, one QuestKey),
+and the `01 01 01 01 01` "trailer" was the markers of the five absent fields
+after it. The `prefix_00xx0100_notrailer` fix made the walk continue, which
+is why it cured the crash; the marker-aware walk (`walk_fields_with_markers`
+in `src/save/body/decoder.rs`) now decodes these elements with no variant at
+all — every field at its true offset — and
+`test_faction_revive_quest_no_trailer_relocates` still passes on it. See
+`docs/c-abi-surface.md`, "Absence markers".
+
 ## 2026-06-09: the real root cause — a non-relocated `_factionNodeApplySkillList` offset
 
 Controlled experiment (`broken_save_after_length_change/`): same logical edit —

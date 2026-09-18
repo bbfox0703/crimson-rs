@@ -55,6 +55,10 @@ pub use body::{
 // clippy doesn't warn about an unused import.
 #[cfg(feature = "c_abi")]
 pub(crate) use body::decode_one_list_element_bytes;
+// The empty-element builder writes the absence markers the engine expects;
+// the element-template builder also needs the scalar encoder.
+#[cfg(feature = "c_abi")]
+pub(crate) use body::{ABSENT_MARKER, FieldDef, TypeDef, absent_kind_has_marker, encode_scalar};
 pub use header::{HEADER_SIZE, SaveHeader};
 pub use io::Save;
 #[cfg(feature = "c_abi")]

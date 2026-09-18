@@ -47,7 +47,8 @@ use std::io;
 
 use super::Body;
 use super::object::{
-    DecodedField, FieldKind, FieldValue, ObjectBlock, ObjectLocatorWrapper, ScalarValue,
+    ABSENT_MARKER, DecodedField, FieldKind, FieldValue, ObjectBlock, ObjectLocatorWrapper,
+    ScalarValue,
 };
 
 /// Encode a single top-level TOC block back to bytes, treating
@@ -257,29 +258,38 @@ fn write_block_fields(
     block_data_offset: u32,
     pad_ranges: &mut Vec<(usize, usize)>,
 ) -> io::Result<()> {
-    // Forward pass: emit every field except FixedSuffix in index order.
+    // Fields go out in schema order. The legacy decoder's reverse-peeled
+    // tail (`FixedSuffix`) is always the trailing run of present fields,
+    // with `trailing_pad` in front of it, so writing the pad just before
+    // the first FixedSuffix field (or at the end when there is none)
+    // reproduces the legacy forward / pad / tail layout byte for byte. It
+    // also keeps absence markers, which sit between fields in schema
+    // order, in place when a tail scalar is toggled present on a block the
+    // marker-aware walk decoded (those have no pad and no FixedSuffix
+    // fields until such a toggle classifies one).
+    let mut pad_written = false;
     for field in &block.fields {
-        if field.kind == FieldKind::FixedSuffix {
-            continue;
+        if field.kind == FieldKind::FixedSuffix && !pad_written {
+            write_trailing_pad(out, block, pad_ranges);
+            pad_written = true;
         }
         encode_field(out, field, block_data_offset, pad_ranges)?;
     }
-    // Trailing pad sits between forward fields and the reverse-peeled tail.
-    // Record its range so the relocation pass can scan it (it may carry an
-    // undecoded wrapper offset) without touching decoded field content.
+    if !pad_written {
+        write_trailing_pad(out, block, pad_ranges);
+    }
+    Ok(())
+}
+
+/// Trailing pad sits between the forward fields and the reverse-peeled
+/// tail. Record its range so the relocation pass can scan it (it may carry
+/// an undecoded wrapper offset) without touching decoded field content.
+fn write_trailing_pad(out: &mut Vec<u8>, block: &ObjectBlock, pad_ranges: &mut Vec<(usize, usize)>) {
     let pad_start = out.len();
     out.extend_from_slice(&block.trailing_pad);
     if !block.trailing_pad.is_empty() {
         pad_ranges.push((pad_start, out.len()));
     }
-    // Reverse pass: emit FixedSuffix fields in index order.
-    for field in &block.fields {
-        if field.kind != FieldKind::FixedSuffix {
-            continue;
-        }
-        encode_field(out, field, block_data_offset, pad_ranges)?;
-    }
-    Ok(())
 }
 
 fn encode_field(
@@ -289,6 +299,13 @@ fn encode_field(
     pad_ranges: &mut Vec<(usize, usize)>,
 ) -> io::Result<()> {
     match field.kind {
+        // An absent array / list writes its one-byte absence marker (see
+        // `DecodedField::absent_marker`); every other absent field, and a
+        // field the decoder could not place, writes nothing.
+        FieldKind::Absent if field.absent_marker => {
+            out.push(ABSENT_MARKER);
+            Ok(())
+        }
         FieldKind::Absent | FieldKind::Unknown => Ok(()),
         FieldKind::FixedPrefix | FieldKind::FixedSuffix => match &field.value {
             FieldValue::Scalar(v) => {
@@ -368,6 +385,7 @@ fn encode_locator_field(
         child_sentinel2,
         wrapper_prefix,
         child,
+        inline_child,
         ..
     } = &field.value
     else {
@@ -431,15 +449,12 @@ fn encode_locator_field(
     let wrapper_end_body_offset = block_data_offset + (out.len() as u32) + 4;
     write_u32(out, wrapper_end_body_offset);
 
-    // Inline child payload? The decoder advanced `end = child_end` only
-    // when payload_start == wrapper_end. For non-inline cases (payload
-    // lives elsewhere) the field's start..end covers wrapper_prefix +
-    // wrapper bytes only. Wrapper bytes = mbc + 17 (u16 mbc + mbc mask
-    // + u16 type_index + u8 reserved + u32×3 sentinel/offset = mbc+17).
-    let wrapper_size = wrapper_prefix.len() + (mbc as usize) + 17;
-    let field_len = field.end.saturating_sub(field.start);
-    if field_len > wrapper_size {
-        // Inline child payload follows. Emit it.
+    // Inline child payload? The decoder records it (payload_start ==
+    // wrapper_end); a non-inline child's payload lives elsewhere in the
+    // body and is not re-emitted here. This used to be inferred from the
+    // field's decoded byte range, which a field built from scratch (the
+    // element-template builder) doesn't have.
+    if *inline_child {
         encode_inline_payload(out, child_block, block_data_offset, pad_ranges)?;
     }
     Ok(())

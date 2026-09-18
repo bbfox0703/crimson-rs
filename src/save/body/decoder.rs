@@ -26,8 +26,8 @@ use std::collections::HashMap;
 use std::io;
 
 use super::object::{
-    DecodedField, FieldKind, FieldValue, ObjectBlock, ObjectLocatorWrapper, ScalarValue,
-    decode_scalar, field_present, type_index_map,
+    ABSENT_MARKER, DecodedField, FieldKind, FieldValue, ObjectBlock, ObjectLocatorWrapper,
+    ScalarValue, absent_kind_has_marker, decode_scalar, field_present, type_index_map,
 };
 use super::schema::{FieldDef, Schema, TypeDef};
 use super::toc::Toc;
@@ -76,6 +76,29 @@ fn decode_one_block(
             .try_into()
             .ok()?,
     );
+
+    // The engine's own layout first (`walk_fields_with_markers`), accepted
+    // only when it accounts for the block to the last byte. Anything it
+    // cannot explain falls through to the legacy walk below, unchanged.
+    if let Some((fields, end)) =
+        walk_fields_with_markers(raw, type_def, &mask_bytes, header_end, block_end, by_index)
+        && end == block_end
+    {
+        let undecoded_ranges = compute_undecoded_ranges(header_end, block_end, &fields);
+        return Some(ObjectBlock {
+            class_index: entry.class_index,
+            class_name: type_def.name.clone(),
+            data_offset: entry.data_offset,
+            data_size: entry.data_size,
+            mask_byte_count: mask_byte_count as u16,
+            mask_bytes,
+            reserved_u32,
+            fields,
+            trailing_pad: Vec::new(),
+            undecoded_ranges,
+            locator_wrapper: None,
+        });
+    }
 
     let (fields, mut undecoded) =
         decode_fields_in_region(raw, type_def, &mask_bytes, header_end, block_end, by_index);
@@ -144,6 +167,7 @@ pub(crate) fn decode_fields_in_region(
             meta_size: f.meta_size,
             meta_aux: f.meta_aux,
             present: field_present(mask_bytes, i),
+            absent_marker: false,
             kind: if field_present(mask_bytes, i) {
                 FieldKind::Unknown
             } else {
@@ -271,6 +295,181 @@ pub(crate) fn decode_fields_in_region(
 
     let undecoded = compute_undecoded_ranges(region_start, region_end, &fields);
     (fields, undecoded)
+}
+
+// ── Marker-aware walk ──────────────────────────────────────────────────────
+//
+// The engine serialises an object's fields strictly in schema order. A
+// present field writes its payload; an absent field writes nothing, EXCEPT
+// absent dynamic arrays (meta_kind 3) and object lists (6 / 7), which each
+// write one 0x01 byte (`absent_kind_has_marker`). Present arrays and lists
+// open with a 0x00 tag followed by a u32 count.
+//
+// The legacy walks (`decode_fields_in_region`, the inline-payload walk)
+// skip absent fields without consuming anything, so every marker landed in
+// the NEXT field: scalars read one byte early per preceding marker, list
+// headers grew "marker run" variants, dynamic arrays grew leading/trailing
+// 01 runs, and what was left at the end became `trailing_pad`. The bytes
+// still round-tripped, but the values after an absent array/list were
+// wrong.
+//
+// `walk_fields_with_markers` decodes with the real rule and is strict: it
+// returns `None` the moment the rule does not explain a byte (a missing
+// marker, an array or list without its 0x00 tag, a list whose elements do
+// not all decode, a locator without a decodable child). Callers then fall
+// back to the legacy walk unchanged, so a block the rule cannot explain
+// decodes exactly as it did before.
+
+/// Every schema field placed, and the cursor just past the last one.
+type MarkerWalk = (Vec<DecodedField>, usize);
+
+fn walk_fields_with_markers(
+    raw: &[u8],
+    type_def: &TypeDef,
+    mask_bytes: &[u8],
+    region_start: usize,
+    limit: usize,
+    by_index: &HashMap<u32, &TypeDef>,
+) -> Option<MarkerWalk> {
+    let mut cursor = region_start;
+    let mut fields = Vec::with_capacity(type_def.fields.len());
+    for (i, def) in type_def.fields.iter().enumerate() {
+        let present = field_present(mask_bytes, i);
+        let mut field = DecodedField {
+            field_index: i as u32,
+            name: def.name.clone(),
+            type_name: def.type_name.clone(),
+            meta_kind: def.meta_kind,
+            meta_size: def.meta_size,
+            meta_aux: def.meta_aux,
+            present,
+            absent_marker: false,
+            kind: if present {
+                FieldKind::Unknown
+            } else {
+                FieldKind::Absent
+            },
+            value: FieldValue::None,
+            start: 0,
+            end: 0,
+            note: String::new(),
+        };
+        if !present {
+            if absent_kind_has_marker(def.meta_kind) {
+                if cursor >= limit || raw[cursor] != ABSENT_MARKER {
+                    return None;
+                }
+                field.absent_marker = true;
+                field.start = cursor;
+                field.end = cursor + 1;
+                cursor += 1;
+            }
+            fields.push(field);
+            continue;
+        }
+        let start = cursor;
+        match def.meta_kind {
+            0 | 2 if def.meta_size > 0 => {
+                let end = cursor.checked_add(def.meta_size as usize)?;
+                if end > limit {
+                    return None;
+                }
+                field.kind = FieldKind::FixedPrefix;
+                field.value = FieldValue::Scalar(decode_scalar(&raw[cursor..end], def));
+                cursor = end;
+            }
+            1 if def.meta_size > 0 => {
+                let (end, value) = decode_inline_bytes(raw, cursor, def, limit).ok()?;
+                field.kind = FieldKind::InlineBytes;
+                field.value = value;
+                cursor = end;
+            }
+            3 if def.meta_size > 0 => {
+                let (end, value) = decode_tagged_dynamic_array(raw, cursor, def, limit)?;
+                field.kind = FieldKind::DynamicArray;
+                field.note = "generic".into();
+                field.value = value;
+                cursor = end;
+            }
+            4 | 5 => {
+                let (end, value) =
+                    decode_inline_object_locator(raw, cursor, limit, by_index, def.meta_kind).ok()?;
+                if !matches!(&value, FieldValue::Locator { child: Some(_), .. }) {
+                    return None;
+                }
+                field.kind = FieldKind::ObjectLocator;
+                field.value = value;
+                cursor = end;
+            }
+            6 | 7 => {
+                if cursor >= limit || raw[cursor] != 0 {
+                    return None;
+                }
+                let (end, value, variant) =
+                    try_decode_object_list_at(raw, cursor, cursor, limit, by_index).ok()?;
+                let FieldValue::ObjectList { count, elements, .. } = &value else {
+                    return None;
+                };
+                if !matches!(variant, "zero1_count_u24" | "zero4_count_u32")
+                    || elements.len() != *count as usize
+                    || elements.iter().any(is_placeholder_element)
+                {
+                    return None;
+                }
+                field.kind = FieldKind::ObjectList;
+                field.note = variant.into();
+                field.value = value;
+                cursor = end;
+            }
+            _ => return None,
+        }
+        field.start = start;
+        field.end = cursor;
+        fields.push(field);
+    }
+    Some((fields, cursor))
+}
+
+/// A present dynamic array as the engine writes it: a 0x00 tag, a u32
+/// element count, then `count * meta_size` bytes. Reported under the
+/// legacy `generic` variant name, whose `<u8><u32 count>` header is
+/// exactly this shape, so `update_dynamic_array_count_in_header` patches
+/// it unchanged.
+fn decode_tagged_dynamic_array(
+    raw: &[u8],
+    offset: usize,
+    field: &FieldDef,
+    limit: usize,
+) -> Option<(usize, FieldValue)> {
+    if offset + 5 > limit || raw[offset] != 0 {
+        return None;
+    }
+    let count = read_u32(raw, offset + 1);
+    if count >= 0x10000 {
+        return None;
+    }
+    let data_start = offset + 5;
+    let data_len = (count as usize).checked_mul(field.meta_size as usize)?;
+    let data_end = data_start.checked_add(data_len)?;
+    if data_end > limit {
+        return None;
+    }
+    Some((
+        data_end,
+        FieldValue::DynamicArray {
+            count,
+            bytes: raw[data_start..data_end].to_vec(),
+            header_variant: "generic",
+            header_bytes: raw[offset..data_start].to_vec(),
+            trailer_bytes: Vec::new(),
+        },
+    ))
+}
+
+/// The stand-in `decode_object_list_element` returns for an element whose
+/// child payload failed to decode: wrapper bytes only, no mask, no fields.
+fn is_placeholder_element(element: &ObjectBlock) -> bool {
+    element.mask_bytes.is_empty() && element.fields.is_empty()
 }
 
 fn compute_undecoded_ranges(
@@ -567,6 +766,7 @@ fn decode_inline_object_locator(
 
     let mut end = wrapper_end;
     let mut child_block: Option<Box<ObjectBlock>> = None;
+    let mut inline_child = false;
 
     if let Some(td) = child_type_def {
         let child_mask_owned = raw[body_cursor + 2..body_cursor + 2 + mbc].to_vec();
@@ -597,6 +797,7 @@ fn decode_inline_object_locator(
             if payload_start == wrapper_end {
                 // Inline: outer forward cursor advances past wrapper + child.
                 end = child_end;
+                inline_child = true;
             }
             child_block = Some(Box::new(ObjectBlock {
                 class_index: child_type_index as u32,
@@ -630,6 +831,7 @@ fn decode_inline_object_locator(
         child_sentinel2,
         wrapper_prefix,
         child: child_block,
+        inline_child,
     };
     Ok((end, value))
 }
@@ -654,6 +856,18 @@ fn decode_inline_object_payload(
     if payload_start + 8 > tail_cursor {
         return overrun("inline object payload");
     }
+    // The engine's own layout first (`walk_fields_with_markers`), accepted
+    // when the fields end exactly on the trailing size u32. The legacy walk
+    // below is the fallback; it leaves absence markers in `pad` instead.
+    if let Some((fields, cursor)) =
+        walk_fields_with_markers(raw, type_def, mask_bytes, payload_start + 4, tail_cursor, by_index)
+        && cursor + 4 <= tail_cursor
+        && read_u32(raw, cursor) as usize == cursor - payload_start
+    {
+        let reserved_u32 = read_u32(raw, payload_start);
+        let size_u32 = (cursor - payload_start) as u32;
+        return Ok((cursor + 4, reserved_u32, size_u32, fields, Vec::new()));
+    }
     let reserved_u32 = read_u32(raw, payload_start);
     let mut cursor = payload_start + 4;
 
@@ -669,6 +883,7 @@ fn decode_inline_object_payload(
             meta_size: f.meta_size,
             meta_aux: f.meta_aux,
             present: field_present(mask_bytes, i),
+            absent_marker: false,
             kind: if field_present(mask_bytes, i) {
                 FieldKind::Unknown
             } else {
@@ -957,6 +1172,7 @@ fn decode_object_list_element(
             child_sentinel2,
             child_payload_offset,
             wrapper_prefix: _,
+            inline_child: _,
         } => {
             let mut block = *b;
             // Inline iff the child's bytes end exactly where the locator
@@ -995,6 +1211,7 @@ fn decode_object_list_element(
             child_sentinel2,
             child_payload_offset,
             wrapper_prefix: _,
+            inline_child: _,
         } => {
             // The wrapper was structurally valid but the child payload
             // decode failed (e.g. an unfamiliar dynamic_array header

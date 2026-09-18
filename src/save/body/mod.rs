@@ -36,6 +36,12 @@ pub use object::{
 };
 #[cfg(feature = "c_abi")]
 pub(crate) use decoder::decode_one_list_element_bytes;
+#[cfg(feature = "c_abi")]
+pub(crate) use encoder::encode_scalar;
+#[cfg(feature = "c_abi")]
+pub(crate) use schema::{FieldDef, TypeDef};
+#[cfg(feature = "c_abi")]
+pub(crate) use object::{ABSENT_MARKER, absent_kind_has_marker};
 pub(crate) use schema::Schema;
 pub(crate) use toc::Toc;
 

@@ -1665,6 +1665,7 @@ fn field_to_py<'py>(py: Python<'py>, field: &crate::save::DecodedField) -> PyRes
     d.set_item("meta_size", field.meta_size)?;
     d.set_item("meta_aux", field.meta_aux)?;
     d.set_item("present", field.present)?;
+    d.set_item("absent_marker", field.absent_marker)?;
     d.set_item("kind", field.kind.as_str())?;
     d.set_item("start", field.start)?;
     d.set_item("end", field.end)?;
