@@ -9,10 +9,14 @@ This recipe is what was used for the 1.04 → 1.05 RE.
 Replace `<commit>` with the commit hash of the last-known-good parser for the previous version, and `<ver>` with a short identifier (e.g. `104`, `105`).
 
 ```powershell
-# 1. Check out the historical parser in a sibling worktree.
-git worktree add ../crimson-rs-<ver> <commit>
+# 1. Export the historical parser's sources into a sibling directory.
+#    (Not `git worktree add`: it fails on this repo with
+#    `external filter 'git-crypt smudge' failed` on tests/fixtures/saves/.
+#    Drop `.cargo` from the path list if it doesn't exist at <commit>.)
+mkdir ../crimson-rs-<ver>
+git archive <commit> src Cargo.toml Cargo.lock pyproject.toml python .cargo | tar -x -C ../crimson-rs-<ver>
 
-# 2. Build the wheel from that worktree.
+# 2. Build the wheel from that export.
 cd ../crimson-rs-<ver>
 maturin build --release
 
