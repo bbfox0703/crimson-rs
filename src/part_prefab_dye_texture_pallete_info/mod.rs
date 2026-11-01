@@ -25,12 +25,16 @@
 //! 68-byte `.pabgh`). The u16 key matches the save's `_texturePalleteKey`
 //! u16 type 1:1.
 //!
-//! **PABGB row layout** (verified byte-exact on all 11 rows in 1.07):
+//! **PABGB row layout** (verified byte-exact on all 11 rows in 2.04). These
+//! rows have no name; 2.04's key/name swap still applies, so the row opens
+//! with an empty name's zero length ahead of the u16 key. Everything from
+//! `key_copy` on matches 2.03 byte for byte on all 11 rows.
 //!
 //! ```text
 //! Row {
-//!     u32 key,                 // PABGH key extended to u32
-//!     u8 pad[3],               // = 00 00 00
+//!     u32 name_len,            // = 0, the empty name
+//!     u16 key,                 // matches PABGH key
+//!     u8 pad,                  // = 00
 //!     u32 key_copy,            // = key
 //!     u32 sub_count,           // 2 for key=0, 3 for key=1..10
 //!     Sub sub[sub_count],
@@ -47,6 +51,8 @@
 //!
 //! Each `CString` here is `[u32 len][len bytes]` with NO trailing NUL —
 //! the project's standard `CString` shape used by iteminfo.pabgb.
+
+use crate::binary::row_head::read_row_head;
 
 /// One sub-record inside a palette row.
 #[derive(Debug, Clone)]
@@ -157,27 +163,25 @@ fn read_cstring(data: &[u8], cursor: &mut usize) -> Option<String> {
 }
 
 /// Parse one palette row's body. Returns `None` if the body deviates
-/// from the verified 1.07 schema (e.g. truncated CString, wrong header
+/// from the verified schema (e.g. truncated CString, wrong header
 /// shape, sub_count overflow).
 fn parse_row(body: &[u8], expected_key: u32) -> Option<PartPrefabDyeTexturePalleteEntry> {
-    if body.len() < 15 {
+    let head = read_row_head(body, 2)?;
+    if head.key != expected_key || !head.name.is_empty() {
         return None;
     }
-    let key = u32::from_le_bytes([body[0], body[1], body[2], body[3]]);
-    if key != expected_key {
+    // One padding zero after the key — we don't enforce, just skip.
+    let fixed = body.get(head.body_at + 1..head.body_at + 9)?;
+    let key_copy = u32::from_le_bytes([fixed[0], fixed[1], fixed[2], fixed[3]]);
+    if key_copy != head.key {
         return None;
     }
-    // bytes 4..7 are padding zeros — we don't enforce, just skip.
-    let key_copy = u32::from_le_bytes([body[7], body[8], body[9], body[10]]);
-    if key_copy != key {
-        return None;
-    }
-    let sub_count = u32::from_le_bytes([body[11], body[12], body[13], body[14]]) as usize;
+    let sub_count = u32::from_le_bytes([fixed[4], fixed[5], fixed[6], fixed[7]]) as usize;
     if sub_count == 0 || sub_count > 16 {
         return None;
     }
 
-    let mut cursor = 15;
+    let mut cursor = head.body_at + 9;
     let mut subs = Vec::with_capacity(sub_count);
     for _ in 0..sub_count {
         let material_name = read_cstring(body, &mut cursor)?;
@@ -209,7 +213,7 @@ fn parse_row(body: &[u8], expected_key: u32) -> Option<PartPrefabDyeTexturePalle
         return None;
     }
 
-    Some(PartPrefabDyeTexturePalleteEntry { key, subs })
+    Some(PartPrefabDyeTexturePalleteEntry { key: head.key, subs })
 }
 
 /// Parse `partprefabdyetexturepalleteinfo.pabgb` using its `.pabgh`

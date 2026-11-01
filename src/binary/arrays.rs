@@ -56,17 +56,17 @@ impl BinaryWrite for [u32; 4] {
     }
 }
 
-// ── 10 × u16 (Crimson Desert ItemInfo `inventory_info_list`) ───────────────
+// ── 12 × u16 (Crimson Desert ItemInfo `inventory_info_list`) ───────────────
 //
 // 1.16 relocated the single head-side `inventory_info: InventoryKey` to the
 // item end and widened it to nine slots, absorbing the 1.13-era constant item
-// tail as slot 8; 2.03 appended a tenth. Each element is an `InventoryKey`
+// tail as slot 8; 2.03 appended a tenth and 2.04 two more. Each element is an `InventoryKey`
 // (u16); 0xFF marks an unused slot. See the "ItemInfo (2.03)" and
 // "ItemInfo (1.16)" headers in `src/item_info/item.rs`.
 
-impl<'a> BinaryRead<'a> for [u16; 10] {
+impl<'a> BinaryRead<'a> for [u16; 12] {
     fn read_from(data: &'a [u8], offset: &mut usize) -> io::Result<Self> {
-        let mut out = [0u16; 10];
+        let mut out = [0u16; 12];
         for slot in out.iter_mut() {
             *slot = u16::read_from(data, offset)?;
         }
@@ -74,7 +74,7 @@ impl<'a> BinaryRead<'a> for [u16; 10] {
     }
 }
 
-impl BinaryWrite for [u16; 10] {
+impl BinaryWrite for [u16; 12] {
     fn write_to(&self, w: &mut dyn Write) -> io::Result<()> {
         for v in self {
             v.write_to(w)?;
@@ -224,14 +224,14 @@ impl<'a> BinaryReadTracked<'a> for [u32; 2] {
     }
 }
 
-impl<'a> BinaryReadTracked<'a> for [u16; 10] {
+impl<'a> BinaryReadTracked<'a> for [u16; 12] {
     fn read_tracked(
         data: &'a [u8],
         offset: &mut usize,
         path: &mut String,
         ranges: &mut Vec<FieldRange>,
     ) -> io::Result<Self> {
-        let mut out = [0u16; 10];
+        let mut out = [0u16; 12];
         for (i, slot) in out.iter_mut().enumerate() {
             let saved = push_index(path, i);
             *slot = u16::read_tracked(data, offset, path, ranges)?;

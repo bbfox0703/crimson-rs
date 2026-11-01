@@ -40,7 +40,8 @@ use crate::binary::paver::{
 /// - `INVALID_PATH` — `path` is not valid UTF-8.
 /// - `NOT_FOUND` — the resolved path doesn't exist.
 /// - `IO` — read failed for any other reason (permissions, etc).
-/// - `BODY_PARSE` — the file is shorter than 10 bytes.
+/// - `BODY_PARSE` — the file is shorter than 10 bytes. A longer 2.04 stamp with
+///   a DLC list reads fine, with `build` taken from its end.
 /// - `PANIC` — internal panic (should never happen).
 ///
 /// # Safety
@@ -99,9 +100,9 @@ pub unsafe extern "C" fn crimson_paver_read_from_file(
 }
 
 /// Parse a paver buffer already in memory (e.g. when the caller pulled
-/// the 10 bytes through some other mechanism). The leading 10 bytes
-/// are read; any trailing bytes are tolerated so PA can add fields
-/// in a future version without breaking this surface.
+/// the file through some other mechanism). Both the 10-byte stamp and the
+/// longer 2.04 one with a DLC list are read; other trailing bytes are tolerated
+/// so PA can add fields in a future version without breaking this surface.
 ///
 /// Returns the same code set as [`crimson_paver_read_from_file`]
 /// minus the IO codes.

@@ -29,7 +29,8 @@ impl LanguageType {
     pub const POR_BR: u16 = 1 << 11;
     pub const ZHO_TW: u16 = 1 << 12;
     pub const ZHO_CN: u16 = 1 << 13;
-    pub const ALL: u16 = 0x3FFF;
+    pub const ARA: u16 = 1 << 14;
+    pub const ALL: u16 = 0x7FFF;
 }
 
 impl<'a> BinaryRead<'a> for LanguageType {
@@ -76,12 +77,44 @@ pub struct ResolvedEntry {
 
 // ── Top-level PAPGT ────────────────────────────────────────────────────────
 
+/// Length of the signature-sized trailer closing a 2.04+ PAPGT.
+pub const PAPGT_TRAILER_SIZE: usize = 64;
+
+/// Layout of a 2.04+ PAPGT:
+///
+/// ```text
+/// u16 unknown0, u8 entry_count, u8 unknown1 (2)
+/// entries, group names buffer   (unchanged)
+/// [u8; 64] trailer
+/// ```
+///
+/// There is no Jenkins checksum any more. The trailer is high-entropy and no
+/// plain hash of the body, and `meta/0.papk` sits next to it, so it is treated
+/// as a signature: it is carried verbatim, and it cannot be recomputed here.
+/// Told apart from the older layout by its section lengths adding up exactly.
+fn is_signed_layout(data: &[u8]) -> bool {
+    let Some(&entry_count) = data.get(2) else {
+        return false;
+    };
+    let names_len_at = 4 + entry_count as usize * 12;
+    let Some(names_len) = data.get(names_len_at..names_len_at + 4) else {
+        return false;
+    };
+    let names_len = u32::from_le_bytes(names_len.try_into().unwrap()) as usize;
+    names_len_at + 4 + names_len + PAPGT_TRAILER_SIZE == data.len()
+}
+
 #[derive(Debug)]
 pub struct PackGroupTreeMeta {
+    /// 2.04+ fills `unknown0` (low 16 bits), `entry_count` and `unknown1`;
+    /// `checksum` and `unknown2` are ≤ 2.03 fields and stay 0.
     pub header: PackGroupTreeMetaHeader,
     pub entries: Vec<ResolvedEntry>,
     /// Raw group names buffer (for roundtrip writing).
     pub group_names_buffer: Vec<u8>,
+    /// The 2.04+ closing trailer; `None` in a ≤ 2.03 PAPGT. Editing the entries
+    /// does not refresh it — see [`Self::add_entry`].
+    pub trailer: Option<[u8; PAPGT_TRAILER_SIZE]>,
 }
 
 impl PackGroupTreeMeta {
@@ -98,18 +131,34 @@ impl PackGroupTreeMeta {
             },
             entries: Vec::new(),
             group_names_buffer: Vec::new(),
+            trailer: None,
         }
     }
 
-    /// Parse a PAPGT from raw bytes (the entire file contents).
+    /// Parse a PAPGT from raw bytes (the entire file contents), either layout.
     pub fn parse(data: &[u8]) -> io::Result<Self> {
         let mut offset = 0;
-        let header = PackGroupTreeMetaHeader::read_from(data, &mut offset)?;
+        let header;
+        let mut trailer = None;
+        if is_signed_layout(data) {
+            header = PackGroupTreeMetaHeader {
+                unknown0: u16::from_le_bytes([data[0], data[1]]) as u32,
+                checksum: 0,
+                entry_count: data[2],
+                unknown1: data[3],
+                unknown2: 0,
+            };
+            offset = 4;
+            let tail = &data[data.len() - PAPGT_TRAILER_SIZE..];
+            trailer = Some(tail.try_into().unwrap());
+        } else {
+            header = PackGroupTreeMetaHeader::read_from(data, &mut offset)?;
 
-        // Everything after the header is checksummed
-        let post_header_data = &data[offset..];
-        checksum::validate_checksum(post_header_data, header.checksum)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            // Everything after the header is checksummed
+            let post_header_data = &data[offset..];
+            checksum::validate_checksum(post_header_data, header.checksum)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        }
 
         // Read entries
         let mut raw_entries = Vec::with_capacity(header.entry_count as usize);
@@ -135,6 +184,7 @@ impl PackGroupTreeMeta {
             header,
             entries,
             group_names_buffer,
+            trailer,
         })
     }
 
@@ -145,6 +195,9 @@ impl PackGroupTreeMeta {
     /// If an entry with the same `group_name` already exists, it is updated
     /// and moved to the front.
     /// Call `to_bytes()` afterwards to get the serialized form with recalculated checksum.
+    ///
+    /// A 2.04+ PAPGT keeps its old [`Self::trailer`], which no longer matches
+    /// the edited entries; whether the game accepts that is not established.
     pub fn add_entry(
         &mut self,
         group_name: &str,
@@ -199,6 +252,16 @@ impl PackGroupTreeMeta {
         (self.group_names_buffer.len() as i32).write_to(&mut post_header)?;
         post_header.write_all(&self.group_names_buffer)?;
 
+        if let Some(trailer) = &self.trailer {
+            let mut out = Vec::with_capacity(4 + post_header.len() + PAPGT_TRAILER_SIZE);
+            out.extend_from_slice(&(self.header.unknown0 as u16).to_le_bytes());
+            out.push(self.header.entry_count);
+            out.push(self.header.unknown1);
+            out.write_all(&post_header)?;
+            out.write_all(trailer)?;
+            return Ok(out);
+        }
+
         // Now build the full output with recalculated checksum
         let computed_checksum = checksum::calculate_checksum(&post_header);
 
@@ -218,5 +281,62 @@ impl PackGroupTreeMeta {
         out.write_all(&post_header)?;
 
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn signed_papgt() -> Vec<u8> {
+        let mut data = vec![0xc9, 0x16, 2, 2];
+        for (name_offset, checksum) in [(0u32, 0x11u32), (5, 0x22)] {
+            data.extend_from_slice(&[0, 0xff, 0x7f, 0]);
+            data.extend_from_slice(&name_offset.to_le_bytes());
+            data.extend_from_slice(&checksum.to_le_bytes());
+        }
+        data.extend_from_slice(&10u32.to_le_bytes());
+        data.extend_from_slice(b"0000\x000001\x00");
+        data.extend_from_slice(&[0xAB; PAPGT_TRAILER_SIZE]);
+        data
+    }
+
+    #[test]
+    fn signed_layout_roundtrips() {
+        let data = signed_papgt();
+        let papgt = PackGroupTreeMeta::parse(&data).unwrap();
+        assert_eq!(papgt.header.unknown0, 0x16c9);
+        assert_eq!(papgt.entries.len(), 2);
+        assert_eq!(papgt.entries[1].group_name, "0001");
+        assert_eq!(papgt.entries[1].entry.pack_meta_checksum, 0x22);
+        assert_eq!(papgt.trailer, Some([0xAB; PAPGT_TRAILER_SIZE]));
+        assert_eq!(papgt.to_bytes().unwrap(), data);
+    }
+
+    #[test]
+    fn signed_layout_survives_add_entry() {
+        let mut papgt = PackGroupTreeMeta::parse(&signed_papgt()).unwrap();
+        papgt.add_entry("0036", 0x33, 0, LanguageType::ALL);
+        let reparsed = PackGroupTreeMeta::parse(&papgt.to_bytes().unwrap()).unwrap();
+        assert_eq!(reparsed.entries.len(), 3);
+        assert_eq!(reparsed.entries[0].group_name, "0036");
+        assert_eq!(reparsed.entries[2].group_name, "0001");
+    }
+
+    #[test]
+    fn checksummed_layout_roundtrips() {
+        let mut papgt = PackGroupTreeMeta::new();
+        papgt.add_entry("0000", 0x11, 0, LanguageType::ALL);
+        let data = papgt.to_bytes().unwrap();
+        let reparsed = PackGroupTreeMeta::parse(&data).unwrap();
+        assert_eq!(reparsed.trailer, None);
+        assert_eq!(reparsed.entries[0].group_name, "0000");
+        assert_eq!(reparsed.to_bytes().unwrap(), data);
+    }
+
+    #[test]
+    fn garbage_is_still_a_checksum_error() {
+        let err = PackGroupTreeMeta::parse(&[0x55; 40]).unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("checksum"), "{err}");
     }
 }

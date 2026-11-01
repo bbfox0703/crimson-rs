@@ -2,7 +2,7 @@ use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
-use crate::binary::{CArray, COptional, CString, LocalizableString};
+use crate::binary::{CArray, CFlaggedArray, COptional, CString, LocalizableString, OptLocalizableString};
 
 // ── Traits ────────────────────────────────────────────────────────────────────
 
@@ -101,22 +101,22 @@ impl WritePyValue for [u32; 2] {
     }
 }
 
-// ItemInfo `inventory_info_list` — ten InventoryKey (u16) slots (nine in
-// 1.16–2.02).
-impl ToPyValue for [u16; 10] {
+// ItemInfo `inventory_info_list` — twelve InventoryKey (u16) slots (nine in
+// 1.16–2.02, ten in 2.03).
+impl ToPyValue for [u16; 12] {
     fn to_py_value(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         Ok(self.to_vec().into_pyobject(py)?.into_any().unbind())
     }
 }
 
-impl WritePyValue for [u16; 10] {
+impl WritePyValue for [u16; 12] {
     fn write_from_py(w: &mut Vec<u8>, obj: &Bound<'_, PyAny>) -> PyResult<()> {
         let list = obj.cast::<PyList>()?;
-        // The width changed in 2.03; a nine-slot list from an older export
-        // would otherwise write an item two bytes short.
-        if list.len() != 10 {
+        // The width changed in 2.03 and 2.04; a shorter list from an older
+        // export would otherwise write an item short.
+        if list.len() != 12 {
             return Err(PyValueError::new_err(format!(
-                "inventory_info_list needs 10 InventoryKey slots, got {}",
+                "inventory_info_list needs 12 InventoryKey slots, got {}",
                 list.len()
             )));
         }
@@ -244,6 +244,35 @@ impl WritePyValue for LocalizableString<'_> {
     }
 }
 
+// ── OptLocalizableString ──────────────────────────────────────────────────────
+
+impl ToPyValue for OptLocalizableString<'_> {
+    fn to_py_value(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let d = PyDict::new(py);
+        d.set_item("category", self.category)?;
+        d.set_item("index", self.index)?;
+        d.set_item("default", self.default.data)?;
+        Ok(d.into_any().unbind())
+    }
+}
+
+impl WritePyValue for OptLocalizableString<'_> {
+    fn write_from_py(w: &mut Vec<u8>, obj: &Bound<'_, PyAny>) -> PyResult<()> {
+        let d = obj.cast::<PyDict>()?;
+        let category: u8 = get_field(d, "category")?.extract()?;
+        w.push(category);
+        if category == 0 {
+            return Ok(());
+        }
+        let index: u64 = get_field(d, "index")?.extract()?;
+        let default: String = get_field(d, "default")?.extract()?;
+        w.extend_from_slice(&index.to_le_bytes());
+        w.extend_from_slice(&(default.len() as u32).to_le_bytes());
+        w.extend_from_slice(default.as_bytes());
+        Ok(())
+    }
+}
+
 // ── CArray ────────────────────────────────────────────────────────────────────
 
 impl<T: ToPyValue> ToPyValue for CArray<T> {
@@ -259,6 +288,34 @@ impl<T: ToPyValue> ToPyValue for CArray<T> {
 impl<T: WritePyValue> WritePyValue for CArray<T> {
     fn write_from_py(w: &mut Vec<u8>, obj: &Bound<'_, PyAny>) -> PyResult<()> {
         let list = obj.cast::<PyList>()?;
+        w.extend_from_slice(&(list.len() as u32).to_le_bytes());
+        for item in list.iter() {
+            T::write_from_py(w, &item)?;
+        }
+        Ok(())
+    }
+}
+
+// ── CFlaggedArray ─────────────────────────────────────────────────────────────
+
+impl<T: ToPyValue> ToPyValue for CFlaggedArray<T> {
+    fn to_py_value(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let list = PyList::empty(py);
+        for item in &self.items {
+            list.append(item.to_py_value(py)?)?;
+        }
+        Ok(list.into_any().unbind())
+    }
+}
+
+impl<T: WritePyValue> WritePyValue for CFlaggedArray<T> {
+    fn write_from_py(w: &mut Vec<u8>, obj: &Bound<'_, PyAny>) -> PyResult<()> {
+        let list = obj.cast::<PyList>()?;
+        if list.is_empty() {
+            w.push(0);
+            return Ok(());
+        }
+        w.push(1);
         w.extend_from_slice(&(list.len() as u32).to_le_bytes());
         for item in list.iter() {
             T::write_from_py(w, &item)?;

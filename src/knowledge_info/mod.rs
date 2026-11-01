@@ -1,7 +1,8 @@
 //! `knowledgeinfo.pabgb` parser — anchor-scan based.
 //!
 //! Sibling of [`crate::mission_info`] / [`crate::quest_info`] /
-//! [`crate::stage_info`]. Same row header shape, **same hash hop
+//! [`crate::stage_info`]. Same row head shape (`[u32 name_len][name]
+//! [u32 key][u8 0x00]...` since 2.04 moved the key), **same hash hop
 //! pattern** — contrary to the editor's earlier hypothesis (status.md
 //! item #6) that KnowledgeKey wouldn't resolve through PALOC, it does.
 //! The probe (recorded in `docs/save-editor-keys-plan.md`) found
@@ -32,6 +33,8 @@
 //! and its bridge surface the *leaf* knowledge rows; the category
 //! rollup would be a future enhancement on top.
 
+use crate::binary::row_head::{is_row_name_byte, read_row_head};
+
 /// One parsed knowledgeinfo row, reduced to what the bridge consumes.
 #[derive(Debug, Clone)]
 pub struct KnowledgeInfoEntry {
@@ -55,23 +58,13 @@ pub fn parse_knowledge_info_lossy(data: &[u8]) -> Vec<KnowledgeInfoEntry> {
     let mut entries = Vec::new();
     let mut cursor = 0;
     while let Some(start) = scan_next_anchor(data, cursor) {
-        let slen = u32::from_le_bytes([
-            data[start + 4],
-            data[start + 5],
-            data[start + 6],
-            data[start + 7],
-        ]) as usize;
-        let key = u32::from_le_bytes([
-            data[start],
-            data[start + 1],
-            data[start + 2],
-            data[start + 3],
-        ]);
-        let name_bytes = &data[start + 8..start + 8 + slen];
-        // Scanner already validated valid UTF-8 — the unwrap is sound.
-        let name = std::str::from_utf8(name_bytes).unwrap().to_owned();
-        entries.push(KnowledgeInfoEntry { key, name });
-        cursor = start + 8 + slen;
+        // Scanner already validated the head — the unwrap is sound.
+        let head = read_row_head(&data[start..], 4).unwrap();
+        entries.push(KnowledgeInfoEntry {
+            key: head.key,
+            name: head.name.to_owned(),
+        });
+        cursor = start + head.body_at;
     }
     entries
 }
@@ -80,40 +73,37 @@ fn scan_next_anchor(data: &[u8], from: usize) -> Option<usize> {
     let n = data.len();
     let mut o = from;
     while o + 12 < n {
-        let key = u32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]);
-        // Knowledge rows mostly use hi-byte=0 (regular knowledge IDs)
-        // but a chunk use hi-byte=0x7F for the auto-unlock / recipe
-        // category — e.g. `0x7FFFFD9F → "Knowledge_Recipe_Jerky"`,
-        // `0x7FFFFDAE → "Knowledge_Colette"`. The handoff bundle had
-        // 215 of these flagged as unresolved before the cap got
-        // widened. `< 0x80` covers them plus headroom and excludes
-        // 0x80+ body-byte noise.
-        if key != 0 && (key >> 24) < 0x80 {
-            let slen = u32::from_le_bytes([
-                data[o + 4],
-                data[o + 5],
-                data[o + 6],
-                data[o + 7],
-            ]) as usize;
-            if (2..=128).contains(&slen) && o + 8 + slen <= n {
-                let bytes = &data[o + 8..o + 8 + slen];
-                if bytes[0].is_ascii_alphabetic()
-                    && bytes.contains(&b'_')
-                    && bytes.iter().all(|&b| is_ident_byte(b))
-                    && std::str::from_utf8(bytes).is_ok()
-                {
-                    return Some(o);
-                }
+        let slen = u32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]) as usize;
+        // Length, name, key, then the 0x00 that opens every 2.04 row body —
+        // the byte that rejects most body strings followed by a small number.
+        if (2..=128).contains(&slen) && o + 9 + slen <= n && data[o + 8 + slen] == 0 {
+            let bytes = &data[o + 4..o + 4 + slen];
+            let key = u32::from_le_bytes([
+                data[o + 4 + slen],
+                data[o + 5 + slen],
+                data[o + 6 + slen],
+                data[o + 7 + slen],
+            ]);
+            // Knowledge rows mostly use hi-byte=0 (regular knowledge IDs)
+            // but a chunk use hi-byte=0x7F for the auto-unlock / recipe
+            // category — e.g. `0x7FFFFD9F → "Knowledge_Recipe_Jerky"`,
+            // `0x7FFFFDAE → "Knowledge_Colette"`. The handoff bundle had
+            // 215 of these flagged as unresolved before the cap got
+            // widened. `< 0x80` covers them plus headroom and excludes
+            // 0x80+ body-byte noise.
+            if key != 0
+                && (key >> 24) < 0x80
+                && bytes[0].is_ascii_alphabetic()
+                && bytes.contains(&b'_')
+                && bytes.iter().all(|&b| is_row_name_byte(b))
+                && std::str::from_utf8(bytes).is_ok()
+            {
+                return Some(o);
             }
         }
         o += 1;
     }
     None
-}
-
-#[inline]
-fn is_ident_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_' || b == b' ' || b >= 0x80
 }
 
 #[cfg(test)]

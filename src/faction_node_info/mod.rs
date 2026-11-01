@@ -13,9 +13,9 @@
 //!
 //! ```text
 //! Row {
-//!     u32 key,          // matches PABGH key
 //!     u32 name_len,
 //!     u8 name[name_len], // ASCII identifier, e.g. "Node_Her_Temporary_Camp"
+//!     u32 key,          // matches PABGH key (2.04 moved it after the name)
 //!     [...variable body — 200..800 bytes of position / sibling-node
 //!      references that this bridge does not consume]
 //! }
@@ -32,6 +32,8 @@
 //! exist. The bridge mirrors [`crate::sub_level_info`] / [`crate::quest_gauge_info`]
 //! in shape: **no `lookup_display_name` surface**, the internal name
 //! is the only resolution.
+
+use crate::binary::row_head::read_row_head;
 
 /// One parsed factionnode row, reduced to what the bridge consumes.
 #[derive(Debug, Clone)]
@@ -61,24 +63,13 @@ pub fn parse_faction_node_info_lossy(
         let Some(body) = pabgb.get(*start..*end) else {
             continue;
         };
-        if body.len() < 8 {
+        let Some(head) = read_row_head(body, 4) else { continue };
+        if head.key != entry.key || !(1..=128).contains(&head.name.len()) {
             continue;
         }
-        let key = u32::from_le_bytes([body[0], body[1], body[2], body[3]]);
-        if key != entry.key {
-            continue;
-        }
-        let name_len =
-            u32::from_le_bytes([body[4], body[5], body[6], body[7]]) as usize;
-        if !(1..=128).contains(&name_len) || 8 + name_len > body.len() {
-            continue;
-        }
-        let Ok(name) = std::str::from_utf8(&body[8..8 + name_len]) else {
-            continue;
-        };
         out.push(FactionNodeInfoEntry {
-            key,
-            name: name.to_owned(),
+            key: head.key,
+            name: head.name.to_owned(),
         });
     }
     out

@@ -146,7 +146,7 @@ pub unsafe extern "C" fn crimson_questinfo_load_from_bytes(
 ///
 /// Uses the PABGH `[u32 count][(u32 key, u32 offset)*]` index for the
 /// in-game-authoritative key list (1,019 on 1.08), then reads the
-/// `[u32 key_repeat][u32 slen][slen bytes]` name header at each offset
+/// `[u32 slen][slen bytes][u32 key_repeat]` row head at each offset
 /// from PABGB. Returns the same entries the in-game iterator does —
 /// no `_`-in-name validation rejecting legitimate rows.
 ///
@@ -603,10 +603,9 @@ mod tests {
         unsafe { crimson_paloc_free(ph) };
     }
 
-    /// PABGH-driven loader: pins the 1,019 in-game-authoritative
-    /// questinfo rows in 1.08 and confirms the anchor-scan path drops
-    /// the two no-underscore entries (`LevelSequencerSpawn`,
-    /// `StartGame`) that PABGH loads.
+    /// PABGH-driven loader: confirms the anchor-scan path drops the
+    /// no-underscore entry (`StartGame`) that PABGH loads. 2.04 removed the
+    /// other one this used to pin, `LevelSequencerSpawn` (key 1000414).
     #[test]
     fn c_abi_questinfo_with_pabgh_recovers_no_underscore_rows() {
         let Some(pamt_path) = find_pamt() else {
@@ -660,9 +659,9 @@ mod tests {
             "pabgh path returned {pabgh_count} entries vs anchor-scan {anchor_count}",
         );
 
-        // `LevelSequencerSpawn` (key=1000414) has no underscore in its name
-        // and is dropped by the anchor-scan `_`-in-name validation.
-        let key = 1_000_414u32;
+        // `StartGame` (key=1) has no underscore in its name and is dropped
+        // by the anchor-scan `_`-in-name validation.
+        let key = 1u32;
         let mut req: usize = 0;
         let rc_anchor = unsafe {
             crimson_questinfo_lookup_string_key(anchor_h, key, ptr::null_mut(), 0, &mut req)

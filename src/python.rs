@@ -73,37 +73,19 @@ pub fn parse_iteminfo_from_bytes_inner(py: Python<'_>, data: &[u8]) -> PyResult<
 ///   - `len` is between 2 and 64 (string keys are short identifiers);
 ///   - the next `len` bytes are printable ASCII followed by a NUL byte.
 fn scan_next_item_start(data: &[u8], from_offset: usize) -> Option<usize> {
-    let n = data.len();
-    let mut o = from_offset;
-    while o + 12 < n {
-        let key = u32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]);
-        if key != 0 && (key >> 24) == 0 {
-            let slen = u32::from_le_bytes([
-                data[o + 4],
-                data[o + 5],
-                data[o + 6],
-                data[o + 7],
-            ]) as usize;
-            if (2..=128).contains(&slen) && o + 8 + slen < n {
-                let bytes = &data[o + 8..o + 8 + slen];
-                let mut all_ident = true;
-                for &b in bytes {
-                    // ASCII word chars / space, OR any UTF-8 high byte
-                    // (1.05 string_keys can contain Ⅲ/Ⅳ/Ⅵ etc.).
-                    let ok = b.is_ascii_alphanumeric() || b == b'_' || b == b' ' || b >= 0x80;
-                    if !ok {
-                        all_ident = false;
-                        break;
-                    }
-                }
-                if all_ident && data[o + 8 + slen] == 0 {
-                    return Some(o);
-                }
-            }
-        }
-        o += 1;
-    }
-    None
+    use crate::binary::row_head::{is_row_name_byte, read_row_head};
+
+    // `[u32 len][name][u32 key][is_blocked: u8 = 0]`: the row shape since 2.04.
+    (from_offset..data.len()).find(|&o| {
+        let Some(head) = read_row_head(&data[o..], 4) else {
+            return false;
+        };
+        (2..=128).contains(&head.name.len())
+            && head.name.bytes().all(is_row_name_byte)
+            && head.key != 0
+            && (head.key >> 24) == 0
+            && data.get(o + head.body_at) == Some(&0)
+    })
 }
 
 /// Lossy parser: like `parse_iteminfo_tracked`, but on error scans forward to
@@ -364,6 +346,11 @@ pub fn to_py_papgt<'py>(
     d.set_item("checksum", papgt.header.checksum)?;
     d.set_item("unknown1", papgt.header.unknown1)?;
     d.set_item("unknown2", papgt.header.unknown2)?;
+    // The closing trailer of a 2.04+ PAPGT, None on an older one.
+    d.set_item(
+        "_trailer",
+        papgt.trailer.as_ref().map(|t| PyBytes::new(py, t)),
+    )?;
 
     let entries = PyList::empty(py);
     for entry in &papgt.entries {
@@ -425,6 +412,15 @@ pub fn wr_papgt_from_dict(d: &Bound<'_, PyDict>) -> PyResult<Vec<u8>> {
         });
     }
 
+    let trailer = match d.get_item("_trailer")? {
+        Some(t) if !t.is_none() => Some(
+            t.extract::<Vec<u8>>()?
+                .try_into()
+                .map_err(|_| PyValueError::new_err("_trailer must be 64 bytes"))?,
+        ),
+        _ => None,
+    };
+
     let papgt = PackGroupTreeMeta {
         header: PackGroupTreeMetaHeader {
             unknown0,
@@ -435,6 +431,7 @@ pub fn wr_papgt_from_dict(d: &Bound<'_, PyDict>) -> PyResult<Vec<u8>> {
         },
         entries,
         group_names_buffer,
+        trailer,
     };
 
     papgt
@@ -515,7 +512,7 @@ pub fn to_py_pamt<'py>(py: Python<'py>, pamt: &PackMeta) -> PyResult<Bound<'py, 
             fd.set_item("uncompressed_size", f.file.uncompressed_size)?;
             fd.set_item("chunk_id", f.file.chunk_id)?;
             fd.set_item("flags", f.file.flags)?;
-            fd.set_item("unknown0", f.file.unknown0)?;
+            fd.set_item("extension_index", f.file.extension_index)?;
             fd.set_item("compression", f.file.compression as u8)?;
             fd.set_item("crypto", f.file.crypto as u8)?;
             fd.set_item("is_partial", f.file.is_partial)?;
@@ -534,6 +531,11 @@ pub fn to_py_pamt<'py>(py: Python<'py>, pamt: &PackMeta) -> PyResult<Bound<'py, 
     d.set_item(
         "_file_names_buffer",
         PyBytes::new(py, &pamt.file_names_buffer),
+    )?;
+    // The extension table of a 2.04+ PAMT, None on an older one.
+    d.set_item(
+        "_extensions_buffer",
+        pamt.extensions_buffer.as_ref().map(|b| PyBytes::new(py, b)),
     )?;
 
     Ok(d)
@@ -619,7 +621,7 @@ pub fn wr_pamt_from_dict(d: &Bound<'_, PyDict>) -> PyResult<Vec<u8>> {
                 uncompressed_size: get(fd, "uncompressed_size")?,
                 chunk_id: get(fd, "chunk_id")?,
                 flags: get(fd, "flags")?,
-                unknown0: get(fd, "unknown0")?,
+                extension_index: get(fd, "extension_index")?,
             });
         }
     }
@@ -627,6 +629,10 @@ pub fn wr_pamt_from_dict(d: &Bound<'_, PyDict>) -> PyResult<Vec<u8>> {
     // Get trie buffers for roundtrip
     let dir_names_buffer: Vec<u8> = get(d, "_dir_names_buffer")?;
     let file_names_buffer: Vec<u8> = get(d, "_file_names_buffer")?;
+    let extensions_buffer = match d.get_item("_extensions_buffer")? {
+        Some(b) if !b.is_none() => Some(b.extract::<Vec<u8>>()?),
+        _ => None,
+    };
 
     let pamt = PackMeta {
         header: PackMetaHeader {
@@ -644,6 +650,7 @@ pub fn wr_pamt_from_dict(d: &Bound<'_, PyDict>) -> PyResult<Vec<u8>> {
         file_names_buffer,
         raw_directories,
         raw_files,
+        extensions_buffer,
     };
 
     pamt.to_bytes()
@@ -1331,6 +1338,7 @@ fn skill_entry_to_py<'py>(py: Python<'py>, e: &SkillEntry) -> PyResult<Bound<'py
     d.set_item("key", e.key)?;
     d.set_item("name_bytes", PyBytes::new(py, &e.name_bytes))?;
     d.set_item("name", String::from_utf8_lossy(&e.name_bytes).into_owned())?;
+    d.set_item("unk_post_key", e.unk_post_key)?;
     d.set_item("is_blocked", e.is_blocked)?;
     d.set_item("pad_01", PyBytes::new(py, &e.pad_01))?;
     match &e.buff_level_list {
@@ -1387,6 +1395,7 @@ fn skill_entry_from_py(d: &Bound<'_, PyDict>) -> PyResult<SkillEntry> {
     Ok(SkillEntry {
         key: get(d, "key")?,
         name_bytes: get(d, "name_bytes")?,
+        unk_post_key: get(d, "unk_post_key")?,
         is_blocked: get(d, "is_blocked")?,
         pad_01,
         buff_level_list,

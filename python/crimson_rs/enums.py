@@ -32,4 +32,5 @@ class Language(IntFlag):
     POR_BR = 1 << 11
     ZHO_TW = 1 << 12
     ZHO_CN = 1 << 13
-    ALL = 0x3FFF
+    ARA = 1 << 14
+    ALL = 0x7FFF

@@ -588,11 +588,34 @@ impl PackGroupBuilder {
             ordered_file_indices.extend_from_slice(&dir_files[dir]);
         }
 
-        let file_names: Vec<&str> = ordered_file_indices
-            .iter()
-            .map(|&i| self.file_metas[i].file_name.as_str())
-            .collect();
+        // The trie holds stems; each file names its extension by table index.
+        let mut extensions: Vec<&str> = vec![""];
+        let mut file_names: Vec<&str> = Vec::with_capacity(ordered_file_indices.len());
+        let mut extension_indices: Vec<u8> = Vec::with_capacity(ordered_file_indices.len());
+        for &i in &ordered_file_indices {
+            let name = self.file_metas[i].file_name.as_str();
+            let (stem, extension) = match name.rfind('.') {
+                Some(dot) if dot > 0 => name.split_at(dot),
+                _ => (name, ""),
+            };
+            let index = match extensions.iter().position(|e| *e == extension) {
+                Some(index) => index,
+                None => {
+                    extensions.push(extension);
+                    extensions.len() - 1
+                }
+            };
+            file_names.push(stem);
+            extension_indices.push(u8::try_from(index).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "a PAMT holds at most 256 distinct file extensions",
+                )
+            })?);
+        }
         let (file_names_buffer, file_name_offsets) = build_trie_buffer(&file_names);
+        let mut extensions_buffer = extensions.join("\0").into_bytes();
+        extensions_buffer.push(0);
 
         // PAMT chunks
         let pamt_chunks: Vec<PackMetaChunk> = self
@@ -630,7 +653,7 @@ impl PackGroupBuilder {
                     uncompressed_size: meta.uncompressed_size,
                     chunk_id: meta.chunk_id,
                     flags: meta.flags,
-                    unknown0: 0,
+                    extension_index: extension_indices[file_index as usize + local_idx],
                 });
             }
 
@@ -653,6 +676,7 @@ impl PackGroupBuilder {
             file_names_buffer,
             raw_directories,
             raw_files,
+            extensions_buffer: Some(extensions_buffer),
         };
 
         pamt.to_bytes_with_checksum()
@@ -1122,19 +1146,91 @@ mod tests {
 
         // Verify the radix trie structure: "gamedata" at root, "/binary" shared
         let buf = &pamt.dir_names_buffer;
-        let parent0 = i32::from_le_bytes(buf[0..4].try_into().unwrap());
-        let len0 = buf[4] as usize;
-        let data0 = std::str::from_utf8(&buf[5..5 + len0]).unwrap();
-        assert_eq!(parent0, -1);
-        assert_eq!(data0, "gamedata");
+        assert_eq!(buf[0], 0);
+        let len0 = buf[1] as usize;
+        assert_eq!(&buf[2..2 + len0], b"gamedata");
 
         // Second entry should be "/binary" (shared prefix of "binary__" and "binarygimmickchart__")
-        let off1 = 5 + len0;
-        let parent1 = i32::from_le_bytes(buf[off1..off1 + 4].try_into().unwrap());
-        let len1 = buf[off1 + 4] as usize;
-        let data1 = std::str::from_utf8(&buf[off1 + 5..off1 + 5 + len1]).unwrap();
-        assert_eq!(parent1, 0);
-        assert_eq!(data1, "/binary");
+        let off1 = 2 + len0;
+        assert_eq!(buf[off1] as usize, off1);
+        let len1 = buf[off1 + 1] as usize;
+        assert_eq!(&buf[off1 + 2..off1 + 2 + len1], b"/binary");
+    }
+
+    #[test]
+    fn test_pack_group_builder_splits_extensions() {
+        let dir = make_tempdir();
+        let mut builder = PackGroupBuilder::new(
+            dir.path(),
+            Compression::None,
+            CryptoType::None,
+            [0, 0, 0],
+            1_000_000,
+        );
+
+        let names = ["a.xml", "aidialog.dlc_01.paloc", "b.xml", "noextension", ".hidden"];
+        for name in names {
+            builder.add_file("data", name, b"payload").unwrap();
+        }
+
+        let pamt_bytes = builder.finish().unwrap();
+        let pamt = PackMeta::parse(&pamt_bytes, None).unwrap();
+
+        assert_eq!(
+            pamt.extensions_buffer.as_deref(),
+            Some(&b"\0.xml\0.paloc\0"[..])
+        );
+        let resolved: Vec<(&str, u8)> = pamt.directories[0]
+            .files
+            .iter()
+            .map(|f| (f.name.as_str(), f.file.extension_index))
+            .collect();
+        assert_eq!(
+            resolved,
+            [
+                ("a.xml", 1),
+                ("aidialog.dlc_01.paloc", 2),
+                ("b.xml", 1),
+                ("noextension", 0),
+                (".hidden", 0),
+            ]
+        );
+        assert_eq!(pamt.to_bytes().unwrap(), pamt_bytes);
+    }
+
+    /// Every group of the live install, DLC trees included: the PAMT parses
+    /// and writes back byte-identically, and the PAPGT names its checksum.
+    #[test]
+    fn live_install_pamt_and_papgt_roundtrip() {
+        use crate::binary::papgt::PackGroupTreeMeta;
+
+        let game_root = crate::binary::gamedata_layout::game_root();
+        let Ok(install) = std::fs::read_dir(game_root.join("dlc")) else {
+            eprintln!("no DLC tree at {}; skipping", game_root.display());
+            return;
+        };
+        let mut roots = vec![game_root.clone()];
+        roots.extend(install.flatten().map(|e| e.path()));
+
+        for root in roots {
+            let papgt_bytes = std::fs::read(root.join("meta").join("0.papgt")).unwrap();
+            let papgt = PackGroupTreeMeta::parse(&papgt_bytes).unwrap();
+            assert_eq!(papgt.to_bytes().unwrap(), papgt_bytes);
+            assert!(!papgt.entries.is_empty());
+
+            for entry in &papgt.entries {
+                let path = root.join(&entry.group_name).join("0.pamt");
+                // Optional groups (voice languages) need not be installed.
+                let Ok(bytes) = std::fs::read(&path) else {
+                    assert_ne!(entry.entry.is_optional, 0, "{}", path.display());
+                    continue;
+                };
+                let pamt = PackMeta::parse(&bytes, Some(entry.entry.pack_meta_checksum))
+                    .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+                assert_eq!(pamt.to_bytes().unwrap(), bytes, "{}", path.display());
+                assert_eq!(pamt.to_bytes_with_checksum().unwrap(), bytes);
+            }
+        }
     }
 
     #[test]

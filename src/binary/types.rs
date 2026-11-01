@@ -176,6 +176,66 @@ impl<'a, T: BinaryReadTracked<'a>> BinaryReadTracked<'a> for CArray<T> {
     }
 }
 
+// ── CFlaggedArray ───────────────────────────────────────────────────────────
+
+/// A 2.04 list: one presence byte, then — only when it is non-zero — the
+/// `CArray` layout. An empty list is the lone `0x00`.
+#[derive(Debug, PartialEq)]
+pub struct CFlaggedArray<T> {
+    pub items: Vec<T>,
+}
+
+impl<'a, T: BinaryRead<'a>> BinaryRead<'a> for CFlaggedArray<T> {
+    fn read_from(data: &'a [u8], offset: &mut usize) -> io::Result<Self> {
+        if u8::read_from(data, offset)? == 0 {
+            return Ok(CFlaggedArray { items: Vec::new() });
+        }
+        let CArray { items } = CArray::read_from(data, offset)?;
+        Ok(CFlaggedArray { items })
+    }
+}
+
+impl<T: BinaryWrite> BinaryWrite for CFlaggedArray<T> {
+    fn write_to(&self, w: &mut dyn Write) -> io::Result<()> {
+        if self.items.is_empty() {
+            return 0u8.write_to(w);
+        }
+        1u8.write_to(w)?;
+        (self.items.len() as u32).write_to(w)?;
+        for item in &self.items {
+            item.write_to(w)?;
+        }
+        Ok(())
+    }
+}
+
+impl<'a, T: BinaryReadTracked<'a>> BinaryReadTracked<'a> for CFlaggedArray<T> {
+    fn read_tracked(
+        data: &'a [u8],
+        offset: &mut usize,
+        path: &mut String,
+        ranges: &mut Vec<FieldRange>,
+    ) -> io::Result<Self> {
+        // presence tag (u8) — recorded under `<path>.__tag__`
+        let tag_start = *offset;
+        let flag = u8::read_from(data, offset)?;
+        let saved = push_path(path, "__tag__");
+        ranges.push(FieldRange {
+            path: path.clone(),
+            start: tag_start,
+            end: *offset,
+            ty: "CFlaggedArray.tag",
+        });
+        pop_path(path, saved);
+
+        if flag == 0 {
+            return Ok(CFlaggedArray { items: Vec::new() });
+        }
+        let CArray { items } = CArray::read_tracked(data, offset, path, ranges)?;
+        Ok(CFlaggedArray { items })
+    }
+}
+
 // ── COptional ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, PartialEq)]
@@ -285,6 +345,83 @@ impl<'a> BinaryReadTracked<'a> for LocalizableString<'a> {
         pop_path(path, saved);
 
         Ok(LocalizableString {
+            category,
+            index,
+            default,
+        })
+    }
+}
+
+// ── OptLocalizableString ────────────────────────────────────────────────────
+
+/// A [`LocalizableString`] as 2.04's item head stores it: category 0 is the
+/// lone `0x00`, with no index or default behind it. Reads back as the empty
+/// string so callers see the same shape either way.
+#[derive(Debug, PartialEq)]
+pub struct OptLocalizableString<'a> {
+    pub category: u8,
+    pub index: u64,
+    pub default: CString<'a>,
+}
+
+impl<'a> BinaryRead<'a> for OptLocalizableString<'a> {
+    fn read_from(data: &'a [u8], offset: &mut usize) -> io::Result<Self> {
+        let category = u8::read_from(data, offset)?;
+        if category == 0 {
+            return Ok(OptLocalizableString {
+                category,
+                index: 0,
+                default: CString { length: 0, data: "", raw: None },
+            });
+        }
+        let index = u64::read_from(data, offset)?;
+        let default = CString::read_from(data, offset)?;
+        Ok(OptLocalizableString {
+            category,
+            index,
+            default,
+        })
+    }
+}
+
+impl BinaryWrite for OptLocalizableString<'_> {
+    fn write_to(&self, w: &mut dyn Write) -> io::Result<()> {
+        self.category.write_to(w)?;
+        if self.category == 0 {
+            return Ok(());
+        }
+        self.index.write_to(w)?;
+        self.default.write_to(w)
+    }
+}
+
+impl<'a> BinaryReadTracked<'a> for OptLocalizableString<'a> {
+    fn read_tracked(
+        data: &'a [u8],
+        offset: &mut usize,
+        path: &mut String,
+        ranges: &mut Vec<FieldRange>,
+    ) -> io::Result<Self> {
+        let saved = push_path(path, "category");
+        let category = u8::read_tracked(data, offset, path, ranges)?;
+        pop_path(path, saved);
+        if category == 0 {
+            return Ok(OptLocalizableString {
+                category,
+                index: 0,
+                default: CString { length: 0, data: "", raw: None },
+            });
+        }
+
+        let saved = push_path(path, "index");
+        let index = u64::read_tracked(data, offset, path, ranges)?;
+        pop_path(path, saved);
+
+        let saved = push_path(path, "default");
+        let default = CString::read_tracked(data, offset, path, ranges)?;
+        pop_path(path, saved);
+
+        Ok(OptLocalizableString {
             category,
             index,
             default,

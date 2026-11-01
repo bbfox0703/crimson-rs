@@ -5,24 +5,29 @@
 //! pair — the rest of each row (HP / drops / level data / etc.) is
 //! opaque to the resolver chain and can be added later if needed.
 //!
-//! What's known about the row header (verified 2026-05-14 by anchor-
+//! What's known about the row head (verified 2026-05-14 by anchor-
 //! scanning the live 1.06 file and cross-referencing the editor's
-//! handoff keycases — see `docs/save-editor-keys-plan.md`):
+//! handoff keycases — see `docs/save-editor-keys-plan.md`; 2.04 moved the
+//! key after the name and opens the body with a 0x00 byte):
 //!
 //! ```text
-//! [u32 MissionKey][u32 name_len][name_len bytes ASCII][...variable body]
+//! [u32 name_len][name_len bytes ASCII][u32 MissionKey][u8 0x00][...variable body]
 //! ```
 //!
-//! The header is identical in shape to `iteminfo.pabgb`. The variable
+//! The head is identical in shape to `iteminfo.pabgb`. The variable
 //! body's size depends on the row's content (per-mission rewards / loc
 //! refs / conditional fields), ranging 334–390 bytes for the prologue
 //! cluster.
 //!
 //! Anchor scanner is byte-by-byte with rigorous validation, identical
 //! in spirit to `python::scan_next_item_start` (which underpins the
-//! iteminfo lossy parser). False-positive rate on the live file is
-//! empirically zero — every anchor's key resolves to a valid
-//! MissionKey in the save's keycases handoff.
+//! iteminfo lossy parser). False-positive rate on the live 2.04 file is
+//! zero against its `.pabgh` (4,428 anchors, every one an indexed row).
+//! The other 2,444 indexed rows are `Challenge_*` rows whose keys read as
+//! 0xFFFFFFxx (negative i32), outside the key rule below; 2.03 had the
+//! same 2,444.
+
+use crate::binary::row_head::{is_row_name_byte, read_row_head};
 
 /// One parsed missioninfo row, reduced to what the bridge consumes.
 #[derive(Debug, Clone)]
@@ -37,9 +42,9 @@ pub struct MissionInfoEntry {
 
 /// Lossy anchor-scan parse of an in-memory `missioninfo.pabgb` blob.
 ///
-/// Walks the file byte-by-byte, accepting each position where the next
-/// 8 bytes plus name-bytes form a plausible row header. The validation
-/// rules:
+/// Walks the file byte-by-byte, accepting each position where the length,
+/// name bytes, key and the body's opening 0x00 form a plausible row head.
+/// The validation rules:
 ///
 /// - `key != 0 && (key >> 24) == 0` — PA's gamedata keys are 7-digit
 ///   decimal numbers well under 2^24.
@@ -66,36 +71,18 @@ pub fn parse_mission_info_lossy(data: &[u8]) -> Vec<MissionInfoEntry> {
     let mut entries = Vec::new();
     let mut cursor = 0;
     while let Some(start) = scan_next_anchor(data, cursor) {
-        let slen = u32::from_le_bytes([
-            data[start + 4],
-            data[start + 5],
-            data[start + 6],
-            data[start + 7],
-        ]) as usize;
-        let key = u32::from_le_bytes([
-            data[start],
-            data[start + 1],
-            data[start + 2],
-            data[start + 3],
-        ]);
-        let name_bytes = &data[start + 8..start + 8 + slen];
-        // Scanner already validated valid UTF-8 — the unwrap is sound.
-        let name = std::str::from_utf8(name_bytes).unwrap().to_owned();
-        entries.push(MissionInfoEntry { key, name });
-        cursor = start + 8 + slen;
+        // Scanner already validated the head — the unwrap is sound.
+        let head = read_row_head(&data[start..], 4).unwrap();
+        entries.push(MissionInfoEntry {
+            key: head.key,
+            name: head.name.to_owned(),
+        });
+        cursor = start + head.body_at;
     }
     entries
 }
 
 /// Try to find the next plausible row start at or after `from`.
-///
-/// Mirrors the validation rules in
-/// [`crate::python::scan_next_item_start`] modulo the trailing-NUL
-/// check: iteminfo rows have an incidental NUL after the name (the next
-/// field starts with `is_blocked: u8 = 0` for almost every item).
-/// Missioninfo doesn't share that quirk — the byte after the name is
-/// the row's first body field, which can be any value. Dropping the
-/// NUL check keeps the scanner working without false negatives.
 ///
 /// Validates UTF-8 in addition to the byte-level identifier-shape
 /// check — the latter permits any `b >= 0x80`, which lets random
@@ -107,40 +94,35 @@ fn scan_next_anchor(data: &[u8], from: usize) -> Option<usize> {
     let n = data.len();
     let mut o = from;
     while o + 12 < n {
-        let key = u32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]);
-        if key != 0 && (key >> 24) == 0 {
-            let slen = u32::from_le_bytes([
-                data[o + 4],
-                data[o + 5],
-                data[o + 6],
-                data[o + 7],
-            ]) as usize;
-            if (2..=128).contains(&slen) && o + 8 + slen <= n {
-                let bytes = &data[o + 8..o + 8 + slen];
-                // Require `_` in the name. Every real
-                // `Mission_*` / `Challenge_*` row has at least one;
-                // the body-byte false-positives the editor reported
-                // were 2-char fragments like `"fI"` that happened to
-                // share a `(key, slen)` with a real row at a later
-                // offset. Without this check, first-wins dedup picked
-                // the noise over the real anchor (the keycases
-                // bundle's report has the dump).
-                if bytes.contains(&b'_')
-                    && bytes.iter().all(|&b| is_ident_byte(b))
-                    && std::str::from_utf8(bytes).is_ok()
-                {
-                    return Some(o);
-                }
+        let slen = u32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]) as usize;
+        // Length, name, key, then the 0x00 that opens every 2.04 row body —
+        // the byte that rejects most body strings followed by a small number.
+        if (2..=128).contains(&slen) && o + 9 + slen <= n && data[o + 8 + slen] == 0 {
+            let bytes = &data[o + 4..o + 4 + slen];
+            let key = u32::from_le_bytes([
+                data[o + 4 + slen],
+                data[o + 5 + slen],
+                data[o + 6 + slen],
+                data[o + 7 + slen],
+            ]);
+            // Require `_` in the name. Every real `Mission_*` / `Challenge_*`
+            // row has at least one; the body-byte false-positives the editor
+            // reported were 2-char fragments like `"fI"` that happened to
+            // share a `(key, slen)` with a real row at a later offset. Without
+            // this check, first-wins dedup picked the noise over the real
+            // anchor (the keycases bundle's report has the dump).
+            if key != 0
+                && (key >> 24) == 0
+                && bytes.contains(&b'_')
+                && bytes.iter().all(|&b| is_row_name_byte(b))
+                && std::str::from_utf8(bytes).is_ok()
+            {
+                return Some(o);
             }
         }
         o += 1;
     }
     None
-}
-
-#[inline]
-fn is_ident_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_' || b == b' ' || b >= 0x80
 }
 
 #[cfg(test)]

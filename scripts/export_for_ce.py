@@ -100,27 +100,45 @@ def _is_ident_byte(b: int) -> bool:
 
 
 def _looks_like_item_start(data: bytes, off: int, expected_key: int) -> bool:
+    """A 2.04 row head: ``[u32 len][name][u32 key][is_blocked: u8 = 0]``."""
     import struct
 
-    if off + 12 > len(data):
+    if off < 0 or off + 12 > len(data):
         return False
-    key, slen = struct.unpack_from("<II", data, off)
-    if key != expected_key:
-        return False
+    slen = struct.unpack_from("<I", data, off)[0]
     if not (2 <= slen <= 128):
         return False
-    if off + 8 + slen + 1 > len(data):
+    key_at = off + 4 + slen
+    if key_at + 5 > len(data):
         return False
-    if any(not _is_ident_byte(b) for b in data[off + 8 : off + 8 + slen]):
+    if struct.unpack_from("<I", data, key_at)[0] != expected_key:
         return False
-    return data[off + 8 + slen] == 0
+    if any(not _is_ident_byte(b) for b in data[off + 4 : key_at]):
+        return False
+    return data[key_at + 4] == 0
 
 
 def _read_string_key(data: bytes, off: int) -> str:
     import struct
 
-    slen = struct.unpack_from("<I", data, off + 4)[0]
-    return data[off + 8 : off + 8 + slen].decode("utf-8", errors="replace")
+    slen = struct.unpack_from("<I", data, off)[0]
+    return data[off + 4 : off + 4 + slen].decode("utf-8", errors="replace")
+
+
+def _row_start_for_key_at(data: bytes, key_at: int, expected_key: int) -> int:
+    """The row start whose name ends at ``key_at``, or -1. Names are 2..128
+    bytes, and only the true length reads back as its own length prefix."""
+    import struct
+
+    for slen in range(2, 129):
+        off = key_at - 4 - slen
+        if off < 0:
+            break
+        if struct.unpack_from("<I", data, off)[0] == slen and _looks_like_item_start(
+            data, off, expected_key
+        ):
+            return off
+    return -1
 
 
 def _find_anchors(data: bytes, keys: list[int]) -> list[int | None]:
@@ -147,8 +165,8 @@ def _find_anchors(data: bytes, keys: list[int]) -> list[int | None]:
             idx = data.find(target, cursor)
             if idx < 0:
                 break
-            if _looks_like_item_start(data, idx, keys[i]):
-                found = idx
+            found = _row_start_for_key_at(data, idx, keys[i])
+            if found >= 0:
                 break
             cursor = idx + 1
         if found < 0:

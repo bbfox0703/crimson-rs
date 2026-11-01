@@ -1,10 +1,20 @@
 use std::collections::HashMap;
 use std::io;
 
+/// How a trie node names its parent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrieEncoding {
+    /// Through 2.03: `i32` LE absolute offset of the parent, -1 for a root.
+    AbsoluteParent,
+    /// 2.04+: ULEB128 distance back from this node's start to its parent,
+    /// 0 for a root.
+    RelativeParent,
+}
+
 /// Trie-encoded string buffer used by PAMT files.
 ///
 /// Each entry at a given offset consists of:
-///   - next_offset: i32 (LE) — offset of parent entry, or -1 for root
+///   - parent reference, see [`TrieEncoding`]
 ///   - string_length: u8
 ///   - string_data: [u8; string_length]
 ///
@@ -13,14 +23,73 @@ use std::io;
 #[derive(Debug)]
 pub struct TrieStringBuffer {
     data: Vec<u8>,
+    encoding: TrieEncoding,
     cache: HashMap<i32, String>,
 }
 
 impl TrieStringBuffer {
+    /// A buffer in the ≤ 2.03 [`TrieEncoding::AbsoluteParent`] layout.
+    #[cfg(test)]
     pub fn new(data: Vec<u8>) -> Self {
+        Self::with_encoding(data, TrieEncoding::AbsoluteParent)
+    }
+
+    pub fn with_encoding(data: Vec<u8>, encoding: TrieEncoding) -> Self {
         TrieStringBuffer {
             data,
+            encoding,
             cache: HashMap::new(),
+        }
+    }
+
+    /// The parent's offset (-1 for a root) and where the string length sits.
+    fn read_parent(&self, offset: i32) -> io::Result<(i32, usize)> {
+        let out_of_bounds = || {
+            io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!(
+                    "trie offset {} out of bounds (buf len {})",
+                    offset,
+                    self.data.len()
+                ),
+            )
+        };
+        let o = usize::try_from(offset).map_err(|_| out_of_bounds())?;
+        match self.encoding {
+            TrieEncoding::AbsoluteParent => {
+                let raw = self.data.get(o..o + 4).ok_or_else(out_of_bounds)?;
+                Ok((i32::from_le_bytes(raw.try_into().unwrap()), o + 4))
+            }
+            TrieEncoding::RelativeParent => {
+                let mut pos = o;
+                let mut distance = 0u64;
+                let mut shift = 0;
+                loop {
+                    let byte = *self.data.get(pos).ok_or_else(out_of_bounds)?;
+                    pos += 1;
+                    distance |= u64::from(byte & 0x7F) << shift;
+                    if byte & 0x80 == 0 {
+                        break;
+                    }
+                    shift += 7;
+                    if shift > 28 {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("trie parent distance at offset {offset} is too long"),
+                        ));
+                    }
+                }
+                if distance == 0 {
+                    return Ok((-1, pos));
+                }
+                if distance > o as u64 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("trie parent distance {distance} at offset {offset} underflows"),
+                    ));
+                }
+                Ok((offset - distance as i32, pos))
+            }
         }
     }
 
@@ -33,22 +102,20 @@ impl TrieStringBuffer {
             return Ok(cached.clone());
         }
 
-        let o = offset as usize;
-        if o + 5 > self.data.len() {
-            return Err(io::Error::new(
+        let (next_offset, len_at) = self.read_parent(offset)?;
+        let string_length = *self.data.get(len_at).ok_or_else(|| {
+            io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 format!(
                     "trie offset {} out of bounds (buf len {})",
                     offset,
                     self.data.len()
                 ),
-            ));
-        }
+            )
+        })? as usize;
+        let start = len_at + 1;
 
-        let next_offset = i32::from_le_bytes(self.data[o..o + 4].try_into().unwrap());
-        let string_length = self.data[o + 4] as usize;
-
-        if o + 5 + string_length > self.data.len() {
+        if start + string_length > self.data.len() {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "trie string data out of bounds",
@@ -56,7 +123,7 @@ impl TrieStringBuffer {
         }
 
         // Copy the string data to avoid borrow conflict with recursive call
-        let string_part = std::str::from_utf8(&self.data[o + 5..o + 5 + string_length])
+        let string_part = std::str::from_utf8(&self.data[start..start + string_length])
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
             .to_string();
 
@@ -78,9 +145,11 @@ impl TrieStringBuffer {
 
 /// Build a trie-encoded string buffer from a list of strings.
 ///
-/// Returns `(buffer, offsets)` where `offsets[i]` is the trie offset for `strings[i]`.
+/// Returns `(buffer, offsets)` where `offsets[i]` is the trie offset for `strings[i]`;
+/// the empty string has no node and gets -1, the way the game stores a
+/// directory with an empty path.
 ///
-/// Matches the game's native format:
+/// Matches the game's native 2.04 format ([`TrieEncoding::RelativeParent`]):
 /// 1. Split paths on `/` into directory segments
 /// 2. Non-root segments get `/` prepended
 /// 3. Siblings at each level are radix-compressed (byte-level prefix sharing)
@@ -112,14 +181,6 @@ pub fn build_trie_buffer(strings: &[&str]) -> (Vec<u8>, Vec<i32>) {
     // Phase 2: Serialize with radix compression among siblings
     let mut buffer = Vec::new();
     let mut offsets = vec![-1i32; strings.len()];
-
-    // Handle empty-string terminals at root
-    for &idx in &seg_root.terminal_indices {
-        let my_offset = buffer.len() as i32;
-        buffer.extend_from_slice(&(-1i32).to_le_bytes());
-        buffer.push(0);
-        offsets[idx] = my_offset;
-    }
 
     // Emit root-level children (no "/" prefix)
     emit_seg_children(&seg_root.children, -1, true, &mut buffer, &mut offsets);
@@ -262,7 +323,12 @@ fn emit_sib_radix(
 
     // Write this node's entry
     let my_offset = buffer.len() as i32;
-    buffer.extend_from_slice(&parent_offset.to_le_bytes());
+    let distance = if parent_offset < 0 {
+        0
+    } else {
+        (my_offset - parent_offset) as u32
+    };
+    write_uleb128(distance, buffer);
     let frag_bytes = node.fragment.as_bytes();
     buffer.push(frag_bytes.len() as u8);
     buffer.extend_from_slice(frag_bytes);
@@ -283,6 +349,14 @@ fn emit_sib_radix(
     for child in &node.children {
         emit_sib_radix(child, my_offset, seg_children, buffer, offsets);
     }
+}
+
+fn write_uleb128(mut value: u32, buffer: &mut Vec<u8>) {
+    while value >= 0x80 {
+        buffer.push((value & 0x7F) as u8 | 0x80);
+        value >>= 7;
+    }
+    buffer.push(value as u8);
 }
 
 /// Read a null-terminated C string from a buffer at the given offset.
@@ -338,7 +412,7 @@ mod tests {
         let strings = ["hello"];
         let (buf, offsets) = build_trie_buffer(&strings);
         assert_eq!(offsets.len(), 1);
-        let mut trie = TrieStringBuffer::new(buf);
+        let mut trie = TrieStringBuffer::with_encoding(buf, TrieEncoding::RelativeParent);
         assert_eq!(trie.get_string(offsets[0]).unwrap(), "hello");
     }
 
@@ -347,7 +421,7 @@ mod tests {
         let strings = ["path/dir1", "path/dir2", "path/dir1/sub"];
         let (buf, offsets) = build_trie_buffer(&strings);
         assert_eq!(offsets.len(), 3);
-        let mut trie = TrieStringBuffer::new(buf);
+        let mut trie = TrieStringBuffer::with_encoding(buf, TrieEncoding::RelativeParent);
         assert_eq!(trie.get_string(offsets[0]).unwrap(), "path/dir1");
         assert_eq!(trie.get_string(offsets[1]).unwrap(), "path/dir2");
         assert_eq!(trie.get_string(offsets[2]).unwrap(), "path/dir1/sub");
@@ -357,7 +431,7 @@ mod tests {
     fn test_build_trie_no_shared_prefix() {
         let strings = ["alpha", "beta", "gamma"];
         let (buf, offsets) = build_trie_buffer(&strings);
-        let mut trie = TrieStringBuffer::new(buf);
+        let mut trie = TrieStringBuffer::with_encoding(buf, TrieEncoding::RelativeParent);
         for (i, s) in strings.iter().enumerate() {
             assert_eq!(trie.get_string(offsets[i]).unwrap(), *s);
         }
@@ -367,7 +441,7 @@ mod tests {
     fn test_build_trie_deep_paths() {
         let strings = ["a/b/c/d", "a/b/c/e", "a/b/f"];
         let (buf, offsets) = build_trie_buffer(&strings);
-        let mut trie = TrieStringBuffer::new(buf);
+        let mut trie = TrieStringBuffer::with_encoding(buf, TrieEncoding::RelativeParent);
         for (i, s) in strings.iter().enumerate() {
             assert_eq!(trie.get_string(offsets[i]).unwrap(), *s);
         }
@@ -385,7 +459,7 @@ mod tests {
             "gamedata/binarygimmickchart__",
         ];
         let (buf, offsets) = build_trie_buffer(&strings);
-        let mut trie = TrieStringBuffer::new(buf.clone());
+        let mut trie = TrieStringBuffer::with_encoding(buf.clone(), TrieEncoding::RelativeParent);
 
         // All strings should roundtrip correctly
         for (i, s) in strings.iter().enumerate() {
@@ -394,20 +468,16 @@ mod tests {
 
         // Verify structure: "gamedata/binary" should be shared between
         // "binary__" and "binarygimmickchart__"
-        // Entry 0 should be "gamedata" with parent=-1
-        let parent0 = i32::from_le_bytes(buf[0..4].try_into().unwrap());
-        let len0 = buf[4] as usize;
-        let data0 = std::str::from_utf8(&buf[5..5 + len0]).unwrap();
-        assert_eq!(parent0, -1);
-        assert_eq!(data0, "gamedata");
+        // Entry 0 should be "gamedata", a root
+        assert_eq!(buf[0], 0);
+        let len0 = buf[1] as usize;
+        assert_eq!(&buf[2..2 + len0], b"gamedata");
 
-        // Entry 1 should be "/binary" with parent=0
-        let off1 = 5 + len0;
-        let parent1 = i32::from_le_bytes(buf[off1..off1 + 4].try_into().unwrap());
-        let len1 = buf[off1 + 4] as usize;
-        let data1 = std::str::from_utf8(&buf[off1 + 5..off1 + 5 + len1]).unwrap();
-        assert_eq!(parent1, 0);
-        assert_eq!(data1, "/binary");
+        // Entry 1 should be "/binary", its parent one whole entry back
+        let off1 = 2 + len0;
+        assert_eq!(buf[off1] as usize, off1);
+        let len1 = buf[off1 + 1] as usize;
+        assert_eq!(&buf[off1 + 2..off1 + 2 + len1], b"/binary");
     }
 
     #[test]
@@ -426,5 +496,44 @@ mod tests {
         let mut trie = TrieStringBuffer::new(buf);
         assert_eq!(trie.get_string(0).unwrap(), "path");
         assert_eq!(trie.get_string(9).unwrap(), "path/file");
+    }
+
+    #[test]
+    fn test_trie_relative_parent() {
+        // The head of a live 2.04 `0008/0.pamt` directory trie.
+        let buf = b"\x00\x08gamedata\x0a\x01/\x03\x06binary\x08\x04/bin".to_vec();
+        let mut trie = TrieStringBuffer::with_encoding(buf, TrieEncoding::RelativeParent);
+        assert_eq!(trie.get_string(0).unwrap(), "gamedata");
+        assert_eq!(trie.get_string(10).unwrap(), "gamedata/");
+        assert_eq!(trie.get_string(13).unwrap(), "gamedata/binary");
+        assert_eq!(trie.get_string(21).unwrap(), "gamedata/binary/bin");
+        assert_eq!(trie.get_string(-1).unwrap(), "");
+    }
+
+    #[test]
+    fn test_trie_relative_multibyte_distance() {
+        let mut buf = vec![0u8, 200];
+        buf.extend_from_slice(&[b'a'; 200]);
+        let child = buf.len() as i32;
+        buf.extend_from_slice(&[0xCA, 0x01, 1, b'b']); // ULEB128 202
+        let mut trie = TrieStringBuffer::with_encoding(buf, TrieEncoding::RelativeParent);
+        assert_eq!(trie.get_string(child).unwrap().len(), 201);
+    }
+
+    #[test]
+    fn test_trie_relative_rejects_a_parent_before_the_buffer() {
+        let buf = vec![0x05, 1, b'x'];
+        let mut trie = TrieStringBuffer::with_encoding(buf, TrieEncoding::RelativeParent);
+        assert!(trie.get_string(0).is_err());
+    }
+
+    #[test]
+    fn test_build_trie_empty_string_has_no_node() {
+        let strings = ["", "a/b"];
+        let (buf, offsets) = build_trie_buffer(&strings);
+        assert_eq!(offsets[0], -1);
+        let mut trie = TrieStringBuffer::with_encoding(buf, TrieEncoding::RelativeParent);
+        assert_eq!(trie.get_string(offsets[0]).unwrap(), "");
+        assert_eq!(trie.get_string(offsets[1]).unwrap(), "a/b");
     }
 }

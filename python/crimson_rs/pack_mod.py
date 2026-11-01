@@ -92,6 +92,12 @@ def pack_mod(
         language=int(language),
     )
     print(f"  Added entry for '{group_name}', now {len(updated_papgt['entries'])} entries")
+    if papgt.get("_trailer"):
+        print(
+            "  WARNING: this 0.papgt ends in a 64-byte trailer that looks like a signature over the"
+            " file. It cannot be recomputed, so it no longer matches the edited entries. Whether"
+            " the game still loads it is not established."
+        )
 
     output_papgt = meta_dir / "0.papgt"
     crimson_rs.write_papgt_file(updated_papgt, str(output_papgt))

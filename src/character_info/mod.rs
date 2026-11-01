@@ -8,20 +8,22 @@
 //! display name — the cat-byte in the save's hi-byte (`0x02..=0xfe`,
 //! variant / region marker) is stripped at lookup time.
 //!
-//! Schema is the standard PA row header, identical in shape to
-//! `missioninfo.pabgb` / `gimmickinfo.pabgb`:
+//! Schema is the standard PA row head, identical in shape to
+//! `missioninfo.pabgb` / `gimmickinfo.pabgb`. 2.04 moved the key after the
+//! name, and the body now always opens with a 0x00 byte:
 //!
 //! ```text
-//! [u32 CharacterKey][u32 name_len][name_len bytes ASCII][...variable body]
+//! [u32 name_len][name_len bytes ASCII][u32 CharacterKey][u8 0x00][...variable body]
 //! ```
 //!
 //! Constraints observed on the live 1.06 / 1.07 `characterinfo.pabgb`
 //! (see `docs/save-editor-keys-plan.md` §6):
 //!
 //! - **Strict hi-byte**: `(key >> 24) == 0`. Row keys top out around
-//!   1.7M; every real row has a zero hi-byte. The cat-byte is a
-//!   save-side variant only — gamedata rows are stored with the bare
-//!   24-bit ID.
+//!   1.7M. The cat-byte is a save-side variant only — gamedata rows are
+//!   stored with the bare 24-bit ID. Exception: 359 of the 7,315 indexed
+//!   rows in 2.04 (the same 359 as 2.03) have a hashed 32-bit key
+//!   (`NHM_Noble_1` = 0x77395fed, …), which this scanner does not see.
 //! - **All-digit names rejected**: characterinfo bodies are dense with
 //!   embedded numeric stringinfo refs serialized as ASCII (e.g. `"81923"`).
 //!   They pass the byte-shape check but aren't real internal names.
@@ -41,6 +43,8 @@
 //! See `docs/save-editor-keys-plan.md` §6 for the full investigation
 //! (verified mappings: `0x07000002 → "Yann"`, `0x06000f4a → "Pierre"`,
 //! `0x0a000001 → "Kliff"`, `0x09000f4d → "Noble"`).
+
+use crate::binary::row_head::{is_row_name_byte, read_row_head};
 
 /// One parsed characterinfo row, reduced to what the bridge consumes.
 #[derive(Debug, Clone)]
@@ -66,23 +70,13 @@ pub fn parse_character_info_lossy(data: &[u8]) -> Vec<CharacterInfoEntry> {
     let mut entries = Vec::new();
     let mut cursor = 0;
     while let Some(start) = scan_next_anchor(data, cursor) {
-        let slen = u32::from_le_bytes([
-            data[start + 4],
-            data[start + 5],
-            data[start + 6],
-            data[start + 7],
-        ]) as usize;
-        let key = u32::from_le_bytes([
-            data[start],
-            data[start + 1],
-            data[start + 2],
-            data[start + 3],
-        ]);
-        let name_bytes = &data[start + 8..start + 8 + slen];
-        // Scanner already validated valid UTF-8 — the unwrap is sound.
-        let name = std::str::from_utf8(name_bytes).unwrap().to_owned();
-        entries.push(CharacterInfoEntry { key, name });
-        cursor = start + 8 + slen;
+        // Scanner already validated the head — the unwrap is sound.
+        let head = read_row_head(&data[start..], 4).unwrap();
+        entries.push(CharacterInfoEntry {
+            key: head.key,
+            name: head.name.to_owned(),
+        });
+        cursor = start + head.body_at;
     }
     entries
 }
@@ -92,47 +86,41 @@ pub fn parse_character_info_lossy(data: &[u8]) -> Vec<CharacterInfoEntry> {
 /// Same shape as `mission_info::scan_next_anchor` plus the all-digit
 /// rejection — characterinfo bodies pack numeric stringinfo refs as
 /// ASCII bytes, and without this filter the anchor scanner picks them
-/// up as fake "internal names" (`"5"`, `"81923"`, etc.).
+/// up as fake "internal names" (`"5"`, `"81923"`, etc.). Body strings
+/// followed by a small number still pass (154 on 2.04, none on a real
+/// row's key), so the bridge's first-wins dedup stays necessary.
 fn scan_next_anchor(data: &[u8], from: usize) -> Option<usize> {
     let n = data.len();
     let mut o = from;
     while o + 12 < n {
-        let key = u32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]);
-        if key != 0 && (key >> 24) == 0 {
-            let slen = u32::from_le_bytes([
-                data[o + 4],
-                data[o + 5],
-                data[o + 6],
-                data[o + 7],
-            ]) as usize;
-            if (2..=128).contains(&slen) && o + 8 + slen <= n {
-                let bytes = &data[o + 8..o + 8 + slen];
-                // Reject all-digit names — those are stringinfo numeric
-                // refs ASCII-serialised in row bodies, not real anchors.
-                // Otherwise accept identifier-shape bytes (alnum / `_` /
-                // space / UTF-8 high byte). Internal names in
-                // characterinfo can start with a digit (`2H_Soldier`)
-                // or underscore (`_NPC_Bandit`), so we don't pin the
-                // first byte to ASCII letter the way missioninfo does
-                // — `any-non-digit` plus a valid-UTF-8 check is
-                // sufficient to filter the numeric-ref body noise.
-                let has_non_digit = bytes.iter().any(|&b| !b.is_ascii_digit());
-                if has_non_digit
-                    && bytes.iter().all(|&b| is_ident_byte(b))
-                    && std::str::from_utf8(bytes).is_ok()
-                {
-                    return Some(o);
-                }
+        let slen = u32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]) as usize;
+        // Length, name, key, then the 0x00 that opens every 2.04 row body —
+        // the byte that rejects most body strings followed by a small number.
+        if (2..=128).contains(&slen) && o + 9 + slen <= n && data[o + 8 + slen] == 0 {
+            let bytes = &data[o + 4..o + 4 + slen];
+            let key = u32::from_le_bytes([
+                data[o + 4 + slen],
+                data[o + 5 + slen],
+                data[o + 6 + slen],
+                data[o + 7 + slen],
+            ]);
+            // Key rule and all-digit rejection as documented on the module.
+            // Reject all-digit names — those are stringinfo numeric refs
+            // ASCII-serialised in row bodies, not real anchors. Names can start
+            // with a digit (`2H_Soldier`) or underscore (`_NPC_Bandit`), so the
+            // first byte is not pinned to a letter the way missioninfo does.
+            if key != 0
+                && (key >> 24) == 0
+                && bytes.iter().any(|&b| !b.is_ascii_digit())
+                && bytes.iter().all(|&b| is_row_name_byte(b))
+                && std::str::from_utf8(bytes).is_ok()
+            {
+                return Some(o);
             }
         }
         o += 1;
     }
     None
-}
-
-#[inline]
-fn is_ident_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_' || b == b' ' || b >= 0x80
 }
 
 #[cfg(test)]

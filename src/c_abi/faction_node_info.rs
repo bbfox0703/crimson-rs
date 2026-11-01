@@ -12,7 +12,7 @@
 //! shipped `crimson_stageinfo_*` bridge handles much of that
 //! independently).
 //!
-//! Standard `[u32 key][u32 name_len][name][body]` row layout indexed by
+//! Standard `[u32 name_len][name][u32 key][body]` row layout indexed by
 //! a `u16 count + (u32 key, u32 offset)*` PABGH — re-uses
 //! `skill_info::parse_pabgh` under the hood. See
 //! `src/faction_node_info/mod.rs` for the byte-level schema notes.

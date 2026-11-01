@@ -249,7 +249,7 @@ const ROWS: &[Row] = &[
     row(CH2, HERNAND_IN_CHAOS, "Missing Companion", Mission(1_000_181)),
     // was "Secrets Hidden in the Dark"
     row(CH2, HERNAND_IN_CHAOS, "Shadowed Secrets", Mission(1_000_183)),
-    row(CH2, THE_END_OF_GREED, "The Dark Veil", Mission(1_000_185)),
+    row(CH2, THE_END_OF_GREED, "Veil of Darkness", Mission(1_000_185)),
     row(CH2, THE_END_OF_GREED, "The Flames of Greed", Mission(1_000_187)),
     row(CH2, THE_END_OF_GREED, "Kidnapped Healer", Mission(1_000_190)),
     row(CH2, THE_END_OF_GREED, "Rebellion or Revolution", Mission(1_000_191)),

@@ -123,6 +123,12 @@ def _update_papgt(
     pamt_checksum = crimson_rs.calculate_checksum(pamt_post_header)
 
     papgt = crimson_rs.parse_papgt_file(str(papgt_path))
+    if papgt.get("_trailer"):
+        print(
+            "  WARNING: this 0.papgt ends in a 64-byte trailer that looks like a signature over the"
+            " file. It cannot be recomputed, so it no longer matches the edited entries. Whether"
+            " the game still loads it is not established."
+        )
     updated_papgt = crimson_rs.add_papgt_entry(
         papgt_data=papgt,
         group_name=group_name,

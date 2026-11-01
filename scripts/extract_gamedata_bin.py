@@ -89,7 +89,8 @@ def read_paver(game_dir: str) -> str:
     if len(b) < 10:
         return "unknown"
     major, minor, patch = (int.from_bytes(b[i:i + 2], "little") for i in (0, 2, 4))
-    return f"{major} / {minor} / {patch} / {int.from_bytes(b[6:10], 'little'):#010x}"
+    # `build` closes the file: 2.04 put a DLC list between it and `patch`.
+    return f"{major} / {minor} / {patch} / {int.from_bytes(b[-4:], 'little'):#010x}"
 
 
 def resolve_paloc(game_dir: str, langs: list[str]) -> list[PalocTarget]:

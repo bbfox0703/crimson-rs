@@ -11,10 +11,13 @@
 //! Linear, self-describing. Each record:
 //!
 //! ```text
-//! [u32 hash] [u32 reserved_zero] [u8 reserved_flag] [u32 slen] [N bytes utf-8]
+//! [u32 reserved_zero] [u32 hash] [u8 reserved_flag] [u32 slen] [N bytes utf-8]
 //! ```
 //!
-//! `reserved_zero` and `reserved_flag` are always 0 in 1.06; carried for
+//! `reserved_zero` is the row's empty name: 2.04 moved the key after the
+//! name in every static-info table, which on a nameless row puts the zero
+//! length first (it swapped with `hash`, nothing else moved). `reserved_zero`
+//! and `reserved_flag` are 0 on all 33,888 rows of 2.04; carried for
 //! byte-identical round-trip in case a future patch promotes either to
 //! a real field. Walking the file front to back consumes every byte —
 //! no padding between entries.
@@ -27,8 +30,10 @@
 //! Cross-version stability
 //! -----------------------
 //!
-//! Both halves are pure data tables — fields and byte layout are
-//! unchanged from 1.05 to 1.06. A schema drift in a future patch will
+//! Both halves are pure data tables. Apart from 2.04's swap above, fields
+//! and byte layout are unchanged since 1.05: of the 30,313 hashes in both
+//! 2.03 and 2.04, every row is byte-identical after undoing the swap. A
+//! schema drift in a future patch will
 //! surface as either a size mismatch in `pabgh` (header count vs file
 //! size) or a non-zero `reserved_zero` / `reserved_flag` in `pabgb`;
 //! the latter currently parses (we keep the bytes) but the round-trip
@@ -56,11 +61,11 @@ pub use pabgh::{CountWidth, StringIndexEntry, StringInfoIndex, parse_pabgh, writ
 #[derive(Debug, Clone)]
 pub struct StringInfoEntry {
     pub hash: u32,
-    /// Reserved 4-byte field after the hash. Always 0 in 1.06 — kept
-    /// for round-trip.
+    /// Reserved 4-byte field before the hash, the row's empty name length.
+    /// Always 0 — kept for round-trip.
     pub reserved_zero: u32,
-    /// Reserved 1-byte field after the zero field. Always 0 in 1.06 —
-    /// kept for round-trip.
+    /// Reserved 1-byte field after the hash. Always 0 — kept for
+    /// round-trip.
     pub reserved_flag: u8,
     /// UTF-8 (lossy) view of the payload. Use [`Self::value_bytes`]
     /// when you need the original bytes for round-trip.
@@ -248,8 +253,8 @@ impl StringInfoData {
 // ── Per-entry codec ──────────────────────────────────────────────────────
 
 fn read_entry(data: &[u8], offset: &mut usize) -> io::Result<StringInfoEntry> {
-    let hash = u32::read_from(data, offset)?;
     let reserved_zero = u32::read_from(data, offset)?;
+    let hash = u32::read_from(data, offset)?;
     let reserved_flag = u8::read_from(data, offset)?;
     let slen = u32::read_from(data, offset)? as usize;
     if *offset + slen > data.len() {
@@ -282,8 +287,8 @@ fn read_entry(data: &[u8], offset: &mut usize) -> io::Result<StringInfoEntry> {
 }
 
 fn write_entry(entry: &StringInfoEntry, w: &mut Vec<u8>) -> io::Result<()> {
-    entry.hash.write_to(w)?;
     entry.reserved_zero.write_to(w)?;
+    entry.hash.write_to(w)?;
     entry.reserved_flag.write_to(w)?;
     let bytes = entry.value_bytes();
     let slen = u32::try_from(bytes.len()).map_err(|_| {
@@ -313,7 +318,7 @@ fn entry_size(entry: &StringInfoEntry) -> io::Result<u32> {
             ),
         )
     })?;
-    // 4 (hash) + 4 (reserved_zero) + 1 (reserved_flag) + 4 (slen) + slen
+    // 4 (reserved_zero) + 4 (hash) + 1 (reserved_flag) + 4 (slen) + slen
     Ok(13u32 + slen)
 }
 
@@ -344,9 +349,9 @@ mod tests {
         };
         let pabgb_bytes = data.write_pabgb().unwrap();
 
-        // Hash 0x2ad9f89e + zero4 + flag + slen=9 + "RealWorld" = 22 bytes
-        // Hash 0x04f6d06d + zero4 + flag + slen=9 + "ChildWild" = 22 bytes
-        // Hash 0xdeadbeef + zero4 + flag + slen=0 + ""          = 13 bytes
+        // zero4 + hash 0x2ad9f89e + flag + slen=9 + "RealWorld" = 22 bytes
+        // zero4 + hash 0x04f6d06d + flag + slen=9 + "ChildWild" = 22 bytes
+        // zero4 + hash 0xdeadbeef + flag + slen=0 + ""          = 13 bytes
         assert_eq!(pabgb_bytes.len(), 22 + 22 + 13);
 
         let parsed = StringInfoData::parse_pabgb(&pabgb_bytes).unwrap();
@@ -409,10 +414,10 @@ mod tests {
 
     #[test]
     fn pabgb_rejects_truncated_string() {
-        // hash=1, zero4, flag=0, slen=10, but only 5 bytes of payload
+        // zero4, hash=1, flag=0, slen=10, but only 5 bytes of payload
         let mut bad = Vec::new();
-        bad.extend_from_slice(&1u32.to_le_bytes());
         bad.extend_from_slice(&0u32.to_le_bytes());
+        bad.extend_from_slice(&1u32.to_le_bytes());
         bad.push(0);
         bad.extend_from_slice(&10u32.to_le_bytes());
         bad.extend_from_slice(b"abcde");
@@ -438,28 +443,49 @@ mod tests {
     }
 
     // ── Live-install integration test ────────────────────────────────────
-    // Exercises the parser against the real 1.06 stringinfo files when
-    // they're present in the maintainer's `out/` (extracted by Python
-    // tooling). Skips on a fresh checkout — same pattern as `item_info`.
-    const PABGB_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), r"\out\stringinfo.pabgb");
-    const PABGH_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), r"\out\stringinfo.pabgh");
+    // Exercises the parser against the live install's stringinfo pair.
+    // Skips when the game isn't present.
+    fn find_table_bytes() -> Option<(Vec<u8>, Vec<u8>)> {
+        use crate::binary::gamedata_layout;
+        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
+            });
+        let group_dir = game_root.join("0008");
+        let pamt_bytes = std::fs::read(group_dir.join("0.pamt")).ok()?;
+        let pamt = crate::binary::pamt::PackMeta::parse(&pamt_bytes, None).ok()?;
+        let dir = pamt
+            .directories
+            .iter()
+            .find(|d| d.path == gamedata_layout::bin_dir())?;
+        let extract = |name: String| {
+            crate::binary::paz::extract_file(
+                &group_dir,
+                dir.files.iter().find(|f| f.name == name)?,
+                gamedata_layout::bin_dir(),
+                &pamt.header.encrypt_info.encrypt_info,
+            )
+            .ok()
+        };
+        Some((
+            extract(gamedata_layout::body("stringinfo"))?,
+            extract(gamedata_layout::header("stringinfo"))?,
+        ))
+    }
 
     #[test]
     fn live_pair_roundtrip() {
-        let (Ok(pabgb), Ok(pabgh)) = (std::fs::read(PABGB_PATH), std::fs::read(PABGH_PATH)) else {
-            eprintln!(
-                "skipping live_pair_roundtrip: stringinfo files not present at \
-                 out/stringinfo.pabg{{b,h}}"
-            );
+        let Some((pabgb, pabgh)) = find_table_bytes() else {
+            eprintln!("skipping live_pair_roundtrip: no game install");
             return;
         };
         let parsed = StringInfoData::parse_pair(&pabgb, &pabgh).unwrap();
 
-        // 1.06 ships ~30k entries; sanity-check the order of magnitude.
-        assert!(
-            parsed.entries.len() > 20_000,
-            "expected >20k entries, got {}",
-            parsed.entries.len()
+        assert_eq!(
+            parsed.entries.len(),
+            33_888,
+            "expected 33,888 rows in 2.04 (31,812 in 2.03)"
         );
 
         // Byte-identical round-trip.
@@ -468,9 +494,9 @@ mod tests {
         assert_eq!(pabgb_out, pabgb, "pabgb round-trip differs");
         assert_eq!(pabgh_out, pabgh, "pabgh round-trip differs");
 
-        // First entry's hash + value are what we observed during format
-        // investigation. Pinned so future schema drift fails loudly.
-        assert_eq!(parsed.entries[0].hash, 0x2ad9f89e);
-        assert_eq!(parsed.entries[0].value, "RealWorld");
+        // First entry's hash + value on 2.04, read from the bytes during
+        // the 2.04 pass. Pinned so future schema drift fails loudly.
+        assert_eq!(parsed.entries[0].hash, 0x04f6d06d);
+        assert_eq!(parsed.entries[0].value, "rootlevel");
     }
 }

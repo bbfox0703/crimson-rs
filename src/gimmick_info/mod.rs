@@ -6,9 +6,9 @@
 //! to identify a placed gimmick instance; `_gimmickInfoKey` is the
 //! one with a gamedata entry.
 //!
-//! Schema-wise this is the same `[u32 key][u32 name_len][name][...body]`
-//! row header as mission/quest/stage/iteminfo, but with two
-//! complications the simpler parsers don't have:
+//! Schema-wise this is the same `[u32 name_len][name][u32 key][...body]`
+//! row head as mission/quest/stage/iteminfo (2.04 moved the key after the
+//! name), but with two complications the simpler parsers don't have:
 //!
 //! 1. **Cat-byte in the row key.** Gimmick row keys span multiple
 //!    hi-bytes: `0x00`, `0x01`, `0x07`, `0x08`, `0x09` (region or
@@ -19,14 +19,16 @@
 //!    observed in 1.06 with headroom).
 //!
 //! 2. **Body-byte noise.** Gimmick rows have bodies dense with
-//!    embedded references that occasionally satisfy the anchor
-//!    shape — e.g. `0x01000000` (lo24=0) reading as
-//!    `"UnnamedTrigger_0"` (the no-trigger placeholder embed), or
-//!    `0x7475706e` (= ASCII `"tupn"`) reading as `"GimmickOnExitState"`
-//!    (a state-enum byte sequence that happens to look like a real
-//!    anchor). Filtered out via two extra checks: `(key & 0xFFFFFF)
-//!    != 0` (no real row has a zero lo24) and `(key >> 24) < 0x10`
-//!    (the noise's hi-byte exceeds the observed cat-byte range).
+//!    embedded `[len][name][u32]` elements, far more of which fit the
+//!    2.04 head than fit the old one — 22,484 anchors on 2.04 under the
+//!    key and name rules alone, against 14,070 real rows, and two of them
+//!    took a real row's key (`InspectSocket_0` + the key of the gimmick it
+//!    sockets) ahead of that row. What settles it: every one of the 14,210
+//!    indexed rows continues `[u8 0x00][u32 len]["/object/..."]`, and none
+//!    of the noise does, so the scanner requires that. It keeps the earlier
+//!    checks: `(key & 0xFFFFFF) != 0` (no real row has a zero lo24) and
+//!    `(key >> 24) < 0x10` (the noise's hi-byte exceeds the observed
+//!    cat-byte range).
 //!
 //! No PALOC entries are produced by this parser — the bridge
 //! consumes the `(key, internal_name)` pair and lets the c_abi
@@ -36,6 +38,8 @@
 //!
 //! Coverage on the live 1.06 install: 527/530 (99.4%) of the editor's
 //! sample save `_gimmickInfoKey` values resolve through this parser.
+
+use crate::binary::row_head::{is_row_name_byte, read_row_head};
 
 /// One parsed gimmickinfo row, reduced to what the bridge consumes.
 #[derive(Debug, Clone)]
@@ -61,70 +65,66 @@ pub struct GimmickInfoEntry {
 ///   the `0x01000000 UnnamedTrigger_0` placeholder embed.
 /// - `name_len ∈ [2, 128]` — actual range ~5–60.
 /// - First byte ASCII letter; all bytes identifier-shape.
+/// - The key is followed by `0x00` and a non-empty `/`-rooted asset path.
 ///
 /// Returns entries in the order they appear in the file. The bridge's
-/// loader uses first-wins HashMap insertion so the real row (which
-/// appears first in the file) wins over any later body-byte
-/// collision that happens to share a key.
+/// loader uses first-wins HashMap insertion as a backstop.
 pub fn parse_gimmick_info_lossy(data: &[u8]) -> Vec<GimmickInfoEntry> {
     let mut entries = Vec::new();
     let mut cursor = 0;
     while let Some(start) = scan_next_anchor(data, cursor) {
-        let slen = u32::from_le_bytes([
-            data[start + 4],
-            data[start + 5],
-            data[start + 6],
-            data[start + 7],
-        ]) as usize;
-        let key = u32::from_le_bytes([
-            data[start],
-            data[start + 1],
-            data[start + 2],
-            data[start + 3],
-        ]);
-        let name_bytes = &data[start + 8..start + 8 + slen];
-        // Scanner already validated valid UTF-8 — the unwrap is sound.
-        let name = std::str::from_utf8(name_bytes).unwrap().to_owned();
-        entries.push(GimmickInfoEntry { key, name });
-        cursor = start + 8 + slen;
+        // Scanner already validated the head — the unwrap is sound.
+        let head = read_row_head(&data[start..], 4).unwrap();
+        entries.push(GimmickInfoEntry {
+            key: head.key,
+            name: head.name.to_owned(),
+        });
+        cursor = start + head.body_at;
     }
     entries
+}
+
+/// Does a `[u32 len]["/..."]` asset path start at `at`? Every real row's
+/// does; see the module docs.
+fn opens_with_path(data: &[u8], at: usize) -> bool {
+    let Some(head) = data.get(at..at + 5) else {
+        return false;
+    };
+    head[..4] != [0; 4] && head[4] == b'/'
 }
 
 fn scan_next_anchor(data: &[u8], from: usize) -> Option<usize> {
     let n = data.len();
     let mut o = from;
     while o + 12 < n {
-        let key = u32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]);
-        if key != 0
-            && (key >> 24) < 0x10
-            && (key & 0x00FF_FFFF) != 0
-        {
-            let slen = u32::from_le_bytes([
-                data[o + 4],
-                data[o + 5],
-                data[o + 6],
-                data[o + 7],
-            ]) as usize;
-            if (2..=128).contains(&slen) && o + 8 + slen <= n {
-                let bytes = &data[o + 8..o + 8 + slen];
-                if bytes[0].is_ascii_alphabetic()
-                    && bytes.contains(&b'_')
-                    && bytes.iter().all(|&b| is_ident_byte(b))
-                    && std::str::from_utf8(bytes).is_ok()
-                {
-                    return Some(o);
-                }
+        let slen = u32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]) as usize;
+        // Length, name, key, then the 0x00 that opens every 2.04 row body —
+        // the byte that rejects most body strings followed by a small number.
+        if (2..=128).contains(&slen) && o + 9 + slen <= n && data[o + 8 + slen] == 0 {
+            let bytes = &data[o + 4..o + 4 + slen];
+            let key = u32::from_le_bytes([
+                data[o + 4 + slen],
+                data[o + 5 + slen],
+                data[o + 6 + slen],
+                data[o + 7 + slen],
+            ]);
+            // `key` rules: see the parser's doc comment. The `/object/...` path is
+            // what separates a row from an element that names another gimmick.
+            if key != 0
+                && (key >> 24) < 0x10
+                && (key & 0x00FF_FFFF) != 0
+                && bytes[0].is_ascii_alphabetic()
+                && bytes.contains(&b'_')
+                && bytes.iter().all(|&b| is_row_name_byte(b))
+                && std::str::from_utf8(bytes).is_ok()
+                && opens_with_path(data, o + 9 + slen)
+            {
+                return Some(o);
             }
         }
         o += 1;
     }
     None
-}
-
-#[inline]
-fn is_ident_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_' || b == b' ' || b >= 0x80
 }
 
 #[cfg(test)]
@@ -152,6 +152,10 @@ mod tests {
         (0x000f_4ebc, "abyssruins_useartifact_01_part"),
         (0x000f_569e, "gimmick_trap_rope_03m_0001"),
         (0x000f_4288, "Background_DisplayStand_04"),
+        // Rows an earlier `InspectSocket_0` element names by key: only the
+        // scanner's asset-path check keeps the element from taking the key.
+        (0x000f_431b, "gimmick_equip_hp_summon_soulknight"),
+        (0x000f_44a2, "gimmick_equip_rocket_backpack"),
         (0x0089_a265, "box_close_01"),
         // cat=0x01 — secondary category
         (0x0103_db72, "mine_copper"),

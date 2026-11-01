@@ -24,13 +24,14 @@
 //! For 5 entries: 2 + 5 × 6 = 32 bytes (matches the live file's
 //! 32-byte `.pabgh`).
 //!
-//! **PABGB row layout** (verified byte-exact across all 5 rows in 1.07):
+//! **PABGB row layout** (verified byte-exact across all 5 rows in 1.07;
+//! 2.04 moved `key` after the name, and nothing else on these 5 rows):
 //!
 //! ```text
 //! Row {
-//!     u16 key,              // matches PABGH key
 //!     u32 name_len,
 //!     u8  name[name_len],   // ASCII identifier
+//!     u16 key,              // matches PABGH key
 //!     u8  pad1[5],          // = 00 00 00 00 00
 //!     u32 list1_count,
 //!     u16 list1[list1_count],   // u16 references back into this same table
@@ -55,6 +56,8 @@
 //! returned only coincidental collisions at `lo32 = 0x80` (UI tooltip
 //! sentinels). The bridge follows the
 //! [`crate::sub_level_info`] pattern: no `lookup_display_name`.
+
+use crate::binary::row_head::read_row_head;
 
 /// One parsed factionrelationgroup row.
 #[derive(Debug, Clone)]
@@ -114,21 +117,12 @@ pub fn parse_faction_relation_group_info_lossy(
         let Some(body) = pabgb.get(start..end) else {
             continue;
         };
-        if body.len() < 6 {
-            continue;
-        }
-        let body_key = u16::from_le_bytes([body[0], body[1]]);
-        if body_key != *key16 {
-            continue;
-        }
-        let name_len =
-            u32::from_le_bytes([body[2], body[3], body[4], body[5]]) as usize;
-        if !(1..=128).contains(&name_len) || 6 + name_len > body.len() {
-            continue;
-        }
-        let Ok(name) = std::str::from_utf8(&body[6..6 + name_len]) else {
+        let Some(head) = read_row_head(body, 2) else {
             continue;
         };
+        if head.key != u32::from(*key16) || !(1..=128).contains(&head.name.len()) {
+            continue;
+        }
         // Parse the two embedded reference lists. Layout per row:
         //   [u32 list1_count][list1: list1_count × u16]
         //   [u8 pad2[4]]
@@ -137,7 +131,7 @@ pub fn parse_faction_relation_group_info_lossy(
         // that fails the layout check, still surfaces the (key, name)
         // pair with whatever `related` was parsed so far.
         let mut related: Vec<u32> = Vec::new();
-        let mut cursor = 6 + name_len + 5; // skip the 5 pad bytes after `name`
+        let mut cursor = head.body_at + 5; // skip the 5 pad bytes after `key`
         for list_idx in 0..2 {
             if cursor + 4 > body.len() {
                 break;
@@ -165,7 +159,7 @@ pub fn parse_faction_relation_group_info_lossy(
         }
         out.push(FactionRelationGroupEntry {
             key: u32::from(*key16),
-            name: name.to_owned(),
+            name: head.name.to_owned(),
             related,
         });
     }

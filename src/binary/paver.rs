@@ -1,4 +1,5 @@
-//! `meta/0.paver` — game-install version stamp (10 bytes).
+//! `meta/0.paver` — game-install version stamp (10 bytes through 2.03, longer
+//! once an install ships DLC).
 //!
 //! Each Crimson Desert install carries a fixed-layout
 //! `meta/0.paver` file that Pearl Abyss writes at install / patch
@@ -26,6 +27,18 @@
 //! 2.00.00: 02 00 00 00 00 00 14 d2 41 b2   (build = 0xb241d214)
 //! ```
 //!
+//! 2.04 inserts a DLC list between `patch` and `build`, so `build` moves to
+//! the end of the file:
+//!
+//! ```text
+//! 2.04.03: 02 00 04 00 03 00
+//!          01 00 00 00                       u32 DLC count
+//!          06 00 00 00 "dlc_01" 02 00 00 00  u32 len, name, u32 revision
+//!          e2 7e be 3e                       (build = 0x3ebe7ee2)
+//! ```
+//!
+//! The per-DLC u32 is named by position only: it reads 2 on the one DLC seen.
+//!
 //! No HMAC / checksum protection on this file — it's plain bytes the
 //! game writes once per install.
 
@@ -34,7 +47,7 @@ use std::path::Path;
 
 use crate::binary::{BinaryRead, BinaryWrite};
 
-/// On-disk size of `meta/0.paver`.
+/// Smallest on-disk size of `meta/0.paver`, the whole file through 2.03.
 pub const PAVER_SIZE: usize = 10;
 
 /// The Crimson Desert gamedata `major` version this build's parsers target.
@@ -58,15 +71,17 @@ pub const PARSER_TARGET_GAMEDATA_MAJOR: u16 = 2;
 /// `crimson_parser_target_gamedata_minor()` C ABI instead of duplicating the
 /// number; before that bridge existed this had to be hand-bumped in lock-step
 /// on the C# side every patch (8 → 9 → … → 16 → 17 → 18 → 2.00's 0 → 2.01's 1
-/// → 2.02's 2 → 2.03's 3).
-pub const PARSER_TARGET_GAMEDATA_MINOR: u16 = 3;
+/// → 2.02's 2 → 2.03's 3 → 2.04's 4).
+pub const PARSER_TARGET_GAMEDATA_MINOR: u16 = 4;
 
 /// Every gamedata `minor` this build's parsers can load without mis-decoding.
 ///
 /// Always includes [`PARSER_TARGET_GAMEDATA_MINOR`]. Kept a single-element
-/// allow-list tracking just the target. The last *structural* change was 2.03,
-/// which appended a tenth slot to iteminfo's `inventory_info_list` — so 2.02
-/// and earlier are no longer byte-compatible (2.00 had already broken
+/// allow-list tracking just the target. The last *structural* change was 2.04,
+/// which moved every table row's name ahead of its key and reordered iteminfo
+/// and skill. 2.03 had already appended a tenth slot to iteminfo's
+/// `inventory_info_list` — so 2.02 and earlier were no longer byte-compatible
+/// (2.00 had already broken
 /// compatibility with 1.18 by widening `SubItem` to tag 18 and inserting a
 /// `u32` between `respawn_time_seconds` and `max_endurance`; 1.18 with 1.17
 /// via the `MergedPrefabVisualData` u32; and 1.16 with 1.15 via four iteminfo
@@ -90,20 +105,48 @@ pub const COMPATIBLE_GAMEDATA_MINORS: &[u16] = &[PARSER_TARGET_GAMEDATA_MINOR];
 /// [`PARSER_TARGET_GAMEDATA_MINOR`]) should refuse / warn on mismatched values
 /// rather than risk a parse crash. `patch` and `build` change within a
 /// compatible minor and are informational only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Paver {
     pub major: u16,
     pub minor: u16,
     pub patch: u16,
     pub build: u32,
+    /// The DLCs the install ships (2.04+); empty on a 10-byte stamp.
+    pub dlcs: Vec<PaverDlc>,
+}
+
+/// One entry of the 2.04+ DLC list.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PaverDlc {
+    pub name: String,
+    pub revision: u32,
+}
+
+/// The DLC list and closing `build` of a 2.04+ stamp, starting at `offset`.
+/// `None` when the rest of the file does not read exactly as one.
+fn read_dlc_tail(bytes: &[u8], mut offset: usize) -> Option<(Vec<PaverDlc>, u32)> {
+    let count = u32::read_from(bytes, &mut offset).ok()?;
+    if count == 0 || count as usize > bytes.len() {
+        return None;
+    }
+    let mut dlcs = Vec::new();
+    for _ in 0..count {
+        let len = u32::read_from(bytes, &mut offset).ok()? as usize;
+        let name = bytes.get(offset..offset.checked_add(len)?)?;
+        let name = std::str::from_utf8(name).ok()?.to_string();
+        offset += len;
+        let revision = u32::read_from(bytes, &mut offset).ok()?;
+        dlcs.push(PaverDlc { name, revision });
+    }
+    let build = u32::read_from(bytes, &mut offset).ok()?;
+    (offset == bytes.len()).then_some((dlcs, build))
 }
 
 impl Paver {
     /// Parse from a byte slice. Returns `Err(UnexpectedEof)` when fewer
-    /// than `PAVER_SIZE` bytes are available; extra bytes past offset 10
-    /// are tolerated (the file size is exactly 10 bytes on every install
-    /// observed to date, but tolerating trailing bytes future-proofs
-    /// against PA adding fields).
+    /// than `PAVER_SIZE` bytes are available. A longer file that is not a
+    /// well-formed DLC stamp keeps the leading 10-byte reading, tolerating
+    /// PA adding fields.
     pub fn from_bytes(bytes: &[u8]) -> io::Result<Self> {
         if bytes.len() < PAVER_SIZE {
             return Err(io::Error::new(
@@ -118,8 +161,11 @@ impl Paver {
         let major = u16::read_from(bytes, &mut offset)?;
         let minor = u16::read_from(bytes, &mut offset)?;
         let patch = u16::read_from(bytes, &mut offset)?;
+        if let Some((dlcs, build)) = read_dlc_tail(bytes, offset) {
+            return Ok(Self { major, minor, patch, build, dlcs });
+        }
         let build = u32::read_from(bytes, &mut offset)?;
-        Ok(Self { major, minor, patch, build })
+        Ok(Self { major, minor, patch, build, dlcs: Vec::new() })
     }
 
     /// Read `meta/0.paver` from disk. The caller passes the full path
@@ -133,12 +179,11 @@ impl Paver {
 }
 
 impl<'a> BinaryRead<'a> for Paver {
+    /// The stamp owns the whole slice: a 2.04+ one is variable-length.
     fn read_from(data: &'a [u8], offset: &mut usize) -> io::Result<Self> {
-        let major = u16::read_from(data, offset)?;
-        let minor = u16::read_from(data, offset)?;
-        let patch = u16::read_from(data, offset)?;
-        let build = u32::read_from(data, offset)?;
-        Ok(Self { major, minor, patch, build })
+        let paver = Self::from_bytes(&data[*offset..])?;
+        *offset = data.len();
+        Ok(paver)
     }
 }
 
@@ -147,6 +192,14 @@ impl BinaryWrite for Paver {
         self.major.write_to(w)?;
         self.minor.write_to(w)?;
         self.patch.write_to(w)?;
+        if !self.dlcs.is_empty() {
+            (self.dlcs.len() as u32).write_to(w)?;
+            for dlc in &self.dlcs {
+                (dlc.name.len() as u32).write_to(w)?;
+                w.write_all(dlc.name.as_bytes())?;
+                dlc.revision.write_to(w)?;
+            }
+        }
         self.build.write_to(w)
     }
 }
@@ -195,6 +248,24 @@ mod tests {
         let p = Paver::from_bytes(&bytes).unwrap();
         assert_eq!(p.major, 1);
         assert_eq!(p.minor, 8);
+    }
+
+    /// Live-install hex dump (2.04.03, build 0x3ebe7ee2).
+    const PAVER_2_04_LIVE: [u8; 28] = [
+        0x02, 0x00, 0x04, 0x00, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, b'd',
+        b'l', b'c', b'_', b'0', b'1', 0x02, 0x00, 0x00, 0x00, 0xe2, 0x7e, 0xbe, 0x3e,
+    ];
+
+    #[test]
+    fn parse_2_04_dlc_stamp() {
+        let p = Paver::from_bytes(&PAVER_2_04_LIVE).unwrap();
+        assert_eq!((p.major, p.minor, p.patch), (2, 4, 3));
+        assert_eq!(p.build, 0x3ebe7ee2);
+        assert_eq!(p.dlcs, [PaverDlc { name: "dlc_01".into(), revision: 2 }]);
+
+        let mut out = Vec::new();
+        p.write_to(&mut out).unwrap();
+        assert_eq!(out, PAVER_2_04_LIVE);
     }
 
     #[test]
