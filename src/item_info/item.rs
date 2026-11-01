@@ -3,6 +3,48 @@ use super::structs::*;
 use crate::binary::*;
 use crate::py_binary_struct;
 
+// ── ItemInfo (2.04) ─────────────────────────────────────────────────────────
+//
+// Crimson Desert 2.04 (`meta/0.paver` 2/4/3, Steam build 26345091) changes how
+// every static-info row is laid out, and iteminfo with it. Nothing below is a
+// new fact about what an item holds; the same values were rearranged. 6,816 →
+// 7,064 items (+259 / -11), iteminfo 6,465,724 → 5,804,162 B (the rows shrank).
+//
+//   - **The name comes first**: `[u32 len][name][u32 key]`, not `[key][len][name]`.
+//     This is table-wide; see `binary::row_header`.
+//   - **A fixed block, then the variable part**: `is_blocked` through
+//     `unk_post_max_charged_b` are 157 B after the name on every item, u8s first,
+//     then (mostly) u32s. The struct below is in file order, not in topic order.
+//   - **Empty lists and strings cost one byte.** Most top-level `CArray`s became
+//     `CFlaggedArray` (`0x00`, or `0x01` + the old `CArray`), `item_name` /
+//     `item_desc` / `item_desc2` became `OptLocalizableString`, and
+//     `drop_default_data`, `sharpness_data` and `inspect_action` became
+//     `COptional`. Lists inside elements keep the old count prefix.
+//   - **Strings became hashes**: `unk_texture_path` and `emoji_texture_id`.
+//   - **Removed, with no byte left for them**: `quick_slot_index`,
+//     `consumable_type_list`, `unk_pre_pattern_key`, `unk_pre_pattern_flag`,
+//     `unk_pre_respawn_flag`, `unk_post_respawn_data_list`. A structural walk of
+//     all 6,805 carried-over rows ends exactly on each row's last byte without
+//     them.
+//   - **Added**: `docking_child_data_list`, `EnchantData::unk_post_equip_buffs`,
+//     two f32s on `InspectData`, `DockingChildData`'s three `unk_*` fields, two
+//     more `inventory_info_list` slots. `unk_pre_respawn_data_list` moved into
+//     the optional `unk_pre_respawn_block`.
+//   - **Old misreadings the new order exposed**: `packed_item_info`,
+//     `unpacked_item_info` and `convert_item_info_by_drop_npc` were one byte out
+//     of step, so `packed_item_info` read 1 on 1,486 items where it is really
+//     the separate `unk_pre_packed_item_flag`, and the real keys read shifted
+//     (`00 fd 48 0f`). `unk_pre_pattern_key` was the top byte of `convert...`.
+//
+// Pinned by re-encoding every 2.03 field and matching it against the 2.04 row:
+// fields found at one fixed offset on every item give the 157-byte head, and a
+// structural walk gives the tail. `iteminfo.dlc_01` (`dlc/dlc_01/0008`, 1,552
+// rows) reads and round-trips with the same layout, and is what exposed
+// `unk_pre_respawn_block`, absent from the base table. Which of two always-equal
+// or always-zero fields is which (`is_dyeable` / `is_editable_grime`,
+// `material_key` / `material_match_info`, the zero u8s and u32s of the head)
+// cannot be told from the data, and those keep the order they had.
+
 // ── ItemInfo (2.03) ─────────────────────────────────────────────────────────
 //
 // Crimson Desert 2.03 (`meta/0.paver` 2/3/0/0x03045138) makes ONE layout
@@ -412,205 +454,150 @@ use crate::py_binary_struct;
 
 py_binary_struct! {
     pub struct ItemInfo<'a> {
-        pub key: ItemKey,
         pub string_key: CString<'a>,
+        pub key: ItemKey,
         pub is_blocked: u8,
+        pub max_endurance: u16,
         pub max_stack_count: u64,
-        pub item_name: LocalizableString<'a>,
-        pub broken_item_prefix_string: LocalStringInfoKey,
-        // 1.16: `inventory_info: InventoryKey` used to sit here. It moved to
-        // the item end and widened to eight slots — see `inventory_info_list`
-        // and the "ItemInfo (1.16)" header note above.
-        pub equip_type_info: EquipTypeKey,
-        pub occupied_equip_slot_data_list: CArray<OccupiedEquipSlotData>,
-        pub item_tag_list: CArray<u32>,
-        pub equipable_hash: u32,
-        pub consumable_type_list: CArray<u32>,
-        pub item_use_info_list: CArray<ItemUseKey>,
-        pub item_icon_list: CArray<ItemIconData>,
-        pub map_icon_path: StringInfoKey,
-        // money_icon_path: StringInfoKey  — removed in 1.10. See header comment.
-        pub use_map_icon_alert: u8,
-        pub item_type: u8,
-        pub material_key: u32,
-        pub material_match_info: MaterialMatchKey,
-        pub item_desc: LocalizableString<'a>,
-        pub item_desc2: LocalizableString<'a>,
-        pub equipable_level: u32,
-        pub category_info: CategoryKey,
-        pub knowledge_info: KnowledgeKey,
-        pub knowledge_obtain_type: u8,
-        pub destroy_effec_info: EffectKey,
-        pub equip_passive_skill_list: CArray<PassiveSkillLevel>,
-        pub use_immediately: u8,
-        pub apply_max_stack_cap: u8,
-        pub extract_multi_change_info: MultiChangeKey,
-        // Removed in Crimson Desert 1.08:
-        //   pub extract_additional_drop_set_info: u32,
-        pub minimum_extract_enchant_level: u16,
-        pub item_memo: CString<'a>,
-        pub filter_type: CString<'a>,
-        pub gimmick_info: GimmickInfoKey,
-        pub gimmick_tag_list: CArray<CString<'a>>,
-        pub max_drop_result_sub_item_count: u32,
-        pub use_drop_set_target: u8,
-        pub is_all_gimmick_sealable: u8,
-        pub sealable_item_info_list: CArray<SealableItemInfo<'a>>,
-        pub sealable_character_info_list: CArray<SealableItemInfo<'a>>,
-        pub sealable_gimmick_info_list: CArray<SealableItemInfo<'a>>,
-        pub sealable_gimmick_tag_list: CArray<SealableItemInfo<'a>>,
-        pub sealable_tribe_info_list: CArray<SealableItemInfo<'a>>,
-        pub sealable_money_info_list: CArray<ItemKey>,
-        pub delete_by_gimmick_unlock: u8,
-        pub gimmick_unlock_message_local_string_info: LocalStringInfoKey,
-        pub can_disassemble: u8,
-        pub transmutation_material_gimmick_list: CArray<GimmickInfoKey>,
-        pub transmutation_material_item_list: CArray<ItemKey>,
-        pub transmutation_material_item_group_list: CArray<ItemGroupKey>,
-        pub is_register_trade_market: u8,
-        pub multi_change_info_list: CArray<MultiChangeKey>,
-        pub is_editor_usable: u8,
-        pub discardable: u8,
+        pub apply_drop_stat_type: u8,
+        // 2.04: reads 0 on the 654 items the old `is_important_item` marked,
+        // 2 on the others, and 1 once. See "ItemInfo (2.04)" above.
+        pub item_importance_kind: u8,
         pub is_dyeable: u8,
         pub is_editable_grime: u8,
-        pub is_destroy_when_broken: u8,
+        pub discardable: u8,
+        // The 59 `Trade_*_PackedInVehicle` items. Through 2.03 this byte was the
+        // top of the 4-byte `unk_pre_max_endurance` (0x01000000 on those 59).
+        pub is_packed_in_vehicle: u8,
         pub is_housing_only: u8,
+        pub is_destroy_when_broken: u8,
+        pub hide_from_inventory_on_pop_item: u8,
+        pub is_blocked_store_sell: u8,
+        pub enable_equip_in_clone_actor: u8,
+        pub is_save_game_data_at_use_item: u8,
+        pub is_preserved_on_extract: u8,
+        pub is_has_item_use_data_inventory_buff: u8,
+        pub is_preorder_item: u8,
+        pub is_wild: u8,
+        pub is_tower_shield_item: u8,
+        pub is_shield_item: u8,
+        pub is_logout_at_use_item: u8,
+        pub enable_alert_system_to_ui: u8,
+        // Through 2.03 this byte was read as `packed_item_info` = 1 (1,486 items)
+        // because the fields around it were one byte out of step.
+        pub unk_pre_packed_item_flag: u8,
+        pub is_editor_usable: u8,
+        pub use_map_icon_alert: u8,
         // Added in Crimson Desert 1.08: boolean (only 0 / 1 observed). Marks
         // items that participate in the reorganized equip-quick-bar system
         // — every weapon, armor piece, accessory, and tool-slot tool reads
         // 1; quest items / recipes / consumables / cosmetic items read 0.
-        // Name is a best-effort guess from value-distribution correlation
-        // with the 1.08 patch-notes "tool slot" reorganization; revisit
-        // once the underlying gamedata symbol is known.
         pub is_equip_quick_slot_visible: u8,
-        pub quick_slot_index: u8,
-        pub reserve_slot_target_data_list: CArray<ReserveSlotTargetData>,
+        pub use_immediately: u8,
+        pub apply_max_stack_cap: u8,
+        pub can_disassemble: u8,
+        pub is_register_trade_market: u8,
+        pub use_drop_set_target: u8,
+        pub delete_by_gimmick_unlock: u8,
+        pub is_all_gimmick_sealable: u8,
+        pub item_type: u8,
+        pub knowledge_obtain_type: u8,
         pub item_tier: u8,
-        pub is_important_item: u8,
-        pub apply_drop_stat_type: u8,
-        // 1.11 inserted a new boolean u8 here (between `apply_drop_stat_type`
-        // and `drop_default_data`). Reads 0/1 only; semantic role unknown.
-        // See the "ItemInfo (1.11)" header note above.
+        pub usable_alert_type: u8,
+        pub item_charge_type: u8,
+        // 1.11 boolean; reads 0/1 only, semantic role unknown.
         pub unk_post_apply_drop_stat_type: u8,
-        pub drop_default_data: DropDefaultData,
-        // 1.13 RE: prefab_data_list and gimmick_visual_prefab_data_list both
-        // relocated to the item END (merged into one list; see the placeholder
-        // removed after repair_data_list — the parser's leftover exposes it).
-        // enchant_data_list and the equip/gem-gated unk_pre_gimmick_visual STAY
-        // here in the middle, in their 1.12 order.
+        pub look_detail_mission_info: MissionKey,
+        pub look_detail_game_advice_info_wrapper: GameAdviceInfoKey,
+        pub convert_item_info_by_drop_npc: ItemKey,
+        pub unpacked_item_info: ItemKey,
+        // 1.16: 0 on nearly every item; an ItemKey-shaped value on the
+        // `Wood_Branch_*` gathering-node tiers.
+        pub unk_pre_respawn_a: u32,
+        pub broken_item_prefix_string: LocalStringInfoKey,
+        pub equip_type_info: EquipTypeKey,
+        pub material_key: u32,
+        pub map_icon_path: StringInfoKey,
+        pub packed_item_info: ItemKey,
+        pub gimmick_info: GimmickInfoKey,
+        pub destroy_effec_info: EffectKey,
+        pub equipable_level: u32,
+        pub minimum_extract_enchant_level: u16,
+        pub category_info: CategoryKey,
+        pub gimmick_unlock_message_local_string_info: LocalStringInfoKey,
+        pub knowledge_info: KnowledgeKey,
+        pub max_drop_result_sub_item_count: u32,
+        pub equipable_hash: u32,
+        pub default_sub_item: SubItem,
+        pub discard_offset_y: f32,
+        pub extract_multi_change_info: MultiChangeKey,
+        pub material_match_info: MaterialMatchKey,
+        pub shared_cool_time_group_name_hash: u32,
+        pub unk_pre_max_endurance_a: u32,
+        pub max_charged_useable_count: u32,
+        pub unk_post_max_charged_a: u32,
+        pub unk_post_max_charged_b: u32,
+        pub item_name: OptLocalizableString<'a>,
+        pub item_desc: OptLocalizableString<'a>,
+        pub item_desc2: OptLocalizableString<'a>,
+        pub item_memo: CString<'a>,
+        pub filter_type: CString<'a>,
+        // Both were CStrings through 2.03. The hash is Jenkins of the old string,
+        // which now lives in `stringinfo`; the empty string is 0xeac5e173.
+        pub unk_texture_path: StringInfoKey,
+        pub emoji_texture_id: StringInfoKey,
+        pub occupied_equip_slot_data_list: CFlaggedArray<OccupiedEquipSlotData>,
+        pub item_tag_list: CFlaggedArray<u32>,
+        pub item_use_info_list: CFlaggedArray<ItemUseKey>,
+        pub item_icon_list: CArray<ItemIconData>,
+        pub equip_passive_skill_list: CFlaggedArray<PassiveSkillLevel>,
+        pub gimmick_tag_list: CFlaggedArray<CString<'a>>,
+        pub sealable_item_info_list: CFlaggedArray<SealableItemInfo<'a>>,
+        pub sealable_character_info_list: CFlaggedArray<SealableItemInfo<'a>>,
+        pub sealable_gimmick_info_list: CFlaggedArray<SealableItemInfo<'a>>,
+        pub sealable_gimmick_tag_list: CFlaggedArray<SealableItemInfo<'a>>,
+        pub sealable_tribe_info_list: CFlaggedArray<SealableItemInfo<'a>>,
+        pub sealable_money_info_list: CFlaggedArray<ItemKey>,
+        pub transmutation_material_gimmick_list: CFlaggedArray<GimmickInfoKey>,
+        pub transmutation_material_item_list: CFlaggedArray<ItemKey>,
+        pub transmutation_material_item_group_list: CFlaggedArray<ItemGroupKey>,
+        pub multi_change_info_list: CFlaggedArray<MultiChangeKey>,
+        pub reserve_slot_target_data_list: CFlaggedArray<ReserveSlotTargetData>,
+        // Absent where it would be all defaults (no sockets, tag-18 sub item).
+        pub drop_default_data: COptional<DropDefaultData>,
         pub enchant_data_list: EnchantDataList,
         pub unk_pre_gimmick_visual: u32 => equip_type_info.0 != 0 || item_type == 74,
         pub price_list: CArray<ItemPriceInfo>,
         pub docking_child_data: COptional<DockingChildData<'a>>,
+        // New in 2.04, empty except on the eight `Item_wagon_wheel_*` items (four
+        // wheel sockets each). `docking_child_data` above stays singular.
+        pub docking_child_data_list: CFlaggedArray<DockingChildData<'a>>,
         pub inventory_change_data: COptional<InventoryChangeData>,
-        pub unk_texture_path: CString<'a>,
-        pub fixed_page_data_list: CArray<PageData<'a>>,
-        pub dynamic_page_data_list: CArray<PageData<'a>>,
-        pub inspect_data_list: CArray<InspectData<'a>>,
-        pub inspect_action: InspectAction<'a>,
-        pub default_sub_item: SubItem,
+        pub fixed_page_data_list: CFlaggedArray<PageData<'a>>,
+        pub dynamic_page_data_list: CFlaggedArray<PageData<'a>>,
+        pub inspect_data_list: CFlaggedArray<InspectData<'a>>,
+        pub inspect_action: COptional<InspectAction<'a>>,
+        // Reads 1 on every item.
+        pub unk_pre_cooltime_flag: u8,
         pub cooltime: i64,
         pub unk_post_cooltime_a: i64,
         pub unk_post_cooltime_b: i64,
-        pub item_charge_type: u8,
-        pub usable_alert_type: u8,
-        pub sharpness_data: ItemInfoSharpnessData,
-        pub max_charged_useable_count: u32,
-        pub unk_post_max_charged_a: u32,
-        pub unk_post_max_charged_b: u32,
-        pub hackable_character_group_info_list: CArray<CharacterGroupKey>,
+        pub sharpness_data: COptional<ItemInfoSharpnessData>,
+        pub hackable_character_group_info_list: CFlaggedArray<CharacterGroupKey>,
         pub item_group_info_list: CArray<ItemGroupKey>,
-        pub discard_offset_y: f32,
-        pub hide_from_inventory_on_pop_item: u8,
-        pub is_shield_item: u8,
-        pub is_tower_shield_item: u8,
-        pub is_wild: u8,
-        pub packed_item_info: ItemKey,
-        pub unpacked_item_info: ItemKey,
-        pub convert_item_info_by_drop_npc: ItemKey,
-        // Added in Crimson Desert 1.05: a u32 + u8 pair before
-        // `pattern_description_data_list`. Across 6,236 items the u32 is
-        // always 0; the u8 is 1 only for the 48 fish-food items
-        // (`Food_Salmon`, `Food_Trout`, `Food_Carp`, …) and 0 otherwise.
-        pub unk_pre_pattern_key: u32,
-        pub unk_pre_pattern_flag: u8,
-        pub pattern_description_data_list: CArray<PatternDescriptionData<'a>>,
-        pub look_detail_game_advice_info_wrapper: GameAdviceInfoKey,
-        pub look_detail_mission_info: MissionKey,
-        pub enable_alert_system_to_ui: u8,
-        pub is_save_game_data_at_use_item: u8,
-        pub is_logout_at_use_item: u8,
-        pub shared_cool_time_group_name_hash: u32,
-        pub item_bundle_data_list: CArray<ItemBundleData>,
+        pub pattern_description_data_list: CFlaggedArray<PatternDescriptionData<'a>>,
+        pub item_bundle_data_list: CFlaggedArray<ItemBundleData>,
         pub money_type_define: COptional<MoneyTypeDefine<'a>>,
-        pub emoji_texture_id: CString<'a>,
-        pub enable_equip_in_clone_actor: u8,
-        pub is_blocked_store_sell: u8,
-        pub is_preorder_item: u8,
-        pub is_has_item_use_data_inventory_buff: u8,
-        pub is_preserved_on_extract: u8,
-        // 1.16 inserted a 10 + 28×N byte block here. On 6,567 of 6,581 items
-        // the list is empty, so it costs a flat 10 B. Value distributions:
-        //   unk_pre_respawn_a         0 on 6,545 items; on the other 36 it
-        //                             holds an ItemKey-shaped value (1002011…
-        //                             1002020) — all of them `Wood_Branch_*`
-        //                             gathering-node tiers, which is why it is
-        //                             NOT documented as a constant.
-        //   unk_pre_respawn_flag      1 on 17 items, 0 on the rest. Tracks
-        //                             "list non-empty" on 14 of those 17; the
-        //                             3 exceptions (Sidmon/Silien/Leinstead
-        //                             OneHandSword) set the flag with an empty
-        //                             list, so it is read unconditionally
-        //                             rather than as a COptional tag.
-        //   unk_post_respawn_...      0 / 1 / 2 / 3.
-        // See the "ItemInfo (1.16)" header above.
-        pub unk_pre_respawn_a: u32,
-        pub unk_pre_respawn_flag: u8,
-        pub unk_pre_respawn_data_list: CArray<UnkPreRespawnData>,
-        pub unk_post_respawn_data_list: u8,
-        // 2.00 inserted this u32 — 0 on all 6,810 items — directly ahead of
-        // the 1.12-era `unk_pre_max_endurance`, so the block now carries two
-        // u32s before `respawn_time_seconds`. Unconditional: 6,513 of the
-        // 6,573 items carried over from 1.18 grew by exactly 4 B and nothing
-        // else in the item moved.
-        //
-        // Position matters and is *not* settled by the byte diff — an insert
-        // anywhere in this all-zero run reproduces the same bytes. It is
-        // settled by which reading keeps the two known value distributions
-        // intact, the same argument the 1.16 swap below rests on: only with
-        // the new u32 *first* does `unk_pre_max_endurance` still read
-        // 0x01000000 on exactly the 59 `Trade_*_PackedInVehicle` items and
-        // `respawn_time_seconds` still read 0 / -1 / 604800. Placing it after
-        // `unk_pre_max_endurance` (or after `respawn_time_seconds`) round-trips
-        // just as byte-perfectly while dragging 0x01000000 into the wrong field
-        // and turning the two `Item_Egg_*` items' 7-day respawn into
-        // 604800 << 32.
-        pub unk_pre_max_endurance_a: u32,
-        // 1.12 inserted this u32 (0 on every item through 1.15; in 1.16 it
-        // reads 0x01000000 on the 59 `Trade_*_PackedInVehicle` items and 0
-        // everywhere else). 1.16 also moved it from
-        // *after* `respawn_time_seconds` to *before* it. Byte-wise the move is
-        // indistinguishable from "1.16 deleted the old field and added a new
-        // always-zero u32 here", but the swap reading is what makes
-        // `respawn_time_seconds` decode sanely (0 / -1 / 604800 = 7 days)
-        // instead of the nonsense values the un-swapped order produces.
-        pub unk_pre_max_endurance: u32,
+        // Absent on every base-table item; only `iteminfo.dlc_01` carries it.
+        pub unk_pre_respawn_block: COptional<UnkPreRespawnBlock>,
         pub respawn_time_seconds: i64,
-        pub max_endurance: u16,
-        pub repair_data_list: CArray<RepairData>,
-        // 1.13: the merged prefab + gimmick-visual list, relocated here from the
-        // item middle (see MergedPrefabVisualData). Its count equals the 1.12
-        // `prefab_data_list` + `gimmick_visual_prefab_data_list` element totals.
+        pub repair_data_list: CFlaggedArray<RepairData>,
+        // 1.13: the merged prefab + gimmick-visual list (see
+        // MergedPrefabVisualData).
         pub merged_prefab_visual_list: CArray<MergedPrefabVisualData>,
-        // 1.16: the head-side `inventory_info` relocated here, widened to nine
-        // InventoryKey (u16) slots. Slot 0 == the pre-1.16 `inventory_info` on
-        // every item; 0xFF marks an unused slot. Slot 8 is the field 1.13–1.15
-        // carried as the constant `unk_tail` (`0xff, 0x00`) — see the
-        // "ItemInfo (1.16)" header note above for why it is read as part of
-        // this array rather than as a separate tail. 2.03 appended slot 9
-        // (InventoryKey 21 `Ship` on the 59 `Trade_*_PackedInVehicle` items,
-        // 0xFF elsewhere) — see "ItemInfo (2.03)".
-        pub inventory_info_list: [u16; 10],
+        // InventoryKey slots; slot 0 is the pre-1.16 `inventory_info` and 0xFF
+        // marks an unused slot. 1.16 had nine, 2.03 ten, 2.04 twelve.
+        pub inventory_info_list: [u16; 12],
     }
 }
 

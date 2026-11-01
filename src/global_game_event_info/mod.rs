@@ -5,10 +5,17 @@
 //! `Typhoon_Delesyian`, …). 103 rows in 1.07. The save layer
 //! references these as active-event identifiers.
 //!
-//! `u16 count + (u16 key, u32 offset)*` PABGH. Body: `[u16 key][u32
-//! name_len][name]` followed by per-event payload (timing, action list,
+//! `u16 count + (u16 key, u32 offset)*` PABGH. Body: `[u32 name_len]
+//! [name][u16 key]` followed by per-event payload (timing, action list,
 //! cross-references). See [`docs/archive/globalgameevent-body-re.md`](../../docs/archive/globalgameevent-body-re.md)
-//! for the full body-schema analysis.
+//! for the full body-schema analysis, written against the pre-2.04 layout.
+//!
+//! ## 2.04 layout change
+//!
+//! Besides swapping key and name, 2.04 inserted 13 zero bytes right after
+//! `group_key` on every row (each of the 191 rows is exactly that insertion
+//! away from its 2.03 payload), which moves the `PalocStringRef` from
+//! `payload[0x12..]` to `payload[0x1F..]`. `group_key` itself stayed put.
 //!
 //! ## Bridge surface (v1)
 //!
@@ -24,6 +31,8 @@
 //! Per-group action lists and per-row payload schemas are NOT exposed
 //! yet — see the docs above for what's been mapped vs deferred.
 
+use crate::binary::row_head::read_row_head;
+
 #[derive(Debug, Clone)]
 pub struct GlobalGameEventInfoEntry {
     /// `GlobalGameEventInfoKey` (u16 on disk, widened to u32).
@@ -31,10 +40,10 @@ pub struct GlobalGameEventInfoEntry {
     /// ASCII internal name (e.g. `"Drought_Varnian"`).
     pub name: String,
     /// `GlobalGameEventGroupKey` cross-reference — pulled from
-    /// `body[1..3]` as u16 LE, widened to u32. Always present.
+    /// `payload[1..3]` as u16 LE, widened to u32. Always present.
     pub group_key: u32,
     /// PALOC localization key for the event's display name, parsed
-    /// from the 14-char ASCII decimal field at body offset ~0x1F.
+    /// from the 14-char ASCII decimal field at payload offset 0x2C.
     /// `0` when absent (RoyalSupply / FactionBlockEvent_* groups
     /// lack the embedded `PalocStringRef` structure).
     pub paloc_key: u64,
@@ -62,29 +71,18 @@ pub fn parse_global_game_event_info_lossy(
             pabgh[pos + 5],
         ]) as usize;
         let Some(body) = pabgb.get(off..) else { continue };
-        if body.len() < 6 {
+        let Some(head) = read_row_head(body, 2) else { continue };
+        if head.key != u32::from(key16) || !(1..=128).contains(&head.name.len()) {
             continue;
         }
-        if u16::from_le_bytes([body[0], body[1]]) != key16 {
-            continue;
-        }
-        let name_len =
-            u32::from_le_bytes([body[2], body[3], body[4], body[5]]) as usize;
-        if !(1..=128).contains(&name_len) || 6 + name_len > body.len() {
-            continue;
-        }
-        let Ok(name) = std::str::from_utf8(&body[6..6 + name_len]) else {
-            continue;
-        };
-        // Per-row payload (everything after the name) — used to extract
-        // group_key + paloc_key per the body schema in
-        // docs/archive/globalgameevent-body-re.md.
-        let payload = &body[6 + name_len..];
+        // Per-row payload (everything after the key) — used to extract
+        // group_key + paloc_key; see the module docs for the 2.04 layout.
+        let payload = &body[head.body_at..];
         let group_key = extract_group_key(payload).unwrap_or(0);
         let paloc_key = extract_paloc_key(payload).unwrap_or(0);
         out.push(GlobalGameEventInfoEntry {
             key: u32::from(key16),
-            name: name.to_owned(),
+            name: head.name.to_owned(),
             group_key,
             paloc_key,
         });
@@ -104,26 +102,26 @@ fn extract_group_key(payload: &[u8]) -> Option<u32> {
 }
 
 /// Pull `paloc_key` from the embedded `PalocStringRef` structure that
-/// sits at `payload[0x12..]` on most rows. Layout:
+/// sits at `payload[0x1F..]` on most rows. Layout:
 ///
 /// ```text
-/// payload[0x12..0x16]: u32 class_tag = 0x0002C12C (signals PalocStringRef)
-/// payload[0x16]:       u8 zero
-/// payload[0x17..0x19]: u16 key_echo (= the row's key)
-/// payload[0x19..0x1B]: u16 zero
-/// payload[0x1B..0x1F]: u32 name_len = 14 (always, for the PALOC numeric key)
-/// payload[0x1F..0x2D]: 14 ASCII decimal digits — the u64 PALOC key
+/// payload[0x1F..0x23]: u32 class_tag = 0x0002C12C (signals PalocStringRef)
+/// payload[0x23]:       u8 zero
+/// payload[0x24..0x26]: u16 key_echo (= the row's key)
+/// payload[0x26..0x28]: u16 zero
+/// payload[0x28..0x2C]: u32 name_len = 14 (always, for the PALOC numeric key)
+/// payload[0x2C..0x3A]: 14 ASCII decimal digits — the u64 PALOC key
 /// ```
 ///
 /// Returns `None` (caller maps to 0) when:
-/// - payload is shorter than `0x2D`
+/// - payload is shorter than `0x3A`
 /// - `class_tag` doesn't match — signals the row uses a different
 ///   payload shape (RoyalSupply / FactionBlockEvent_*)
 /// - the 14 bytes aren't valid ASCII digits / don't parse as u64
 const PALOC_STRING_REF_TAG: u32 = 0x0002_C12C;
-const PALOC_STRING_REF_TAG_OFFSET: usize = 0x12;
-const PALOC_STRING_REF_LEN_OFFSET: usize = 0x1B;
-const PALOC_STRING_REF_NAME_OFFSET: usize = 0x1F;
+const PALOC_STRING_REF_TAG_OFFSET: usize = 0x1F;
+const PALOC_STRING_REF_LEN_OFFSET: usize = 0x28;
+const PALOC_STRING_REF_NAME_OFFSET: usize = 0x2C;
 /// The numeric PALOC key is always rendered as exactly 14 ASCII
 /// decimal digits — `(hi32 = event_key) << 32 + lo32 = namespace`
 /// always fits in 14 digits because `event_key < 0x4300` and the
@@ -150,7 +148,7 @@ fn extract_paloc_key(payload: &[u8]) -> Option<u64> {
         payload[PALOC_STRING_REF_LEN_OFFSET + 3],
     ]) as usize;
     if name_len != PALOC_NUMERIC_LEN {
-        // Defensive: the field-length should always be 14 in 1.07.
+        // Defensive: the field-length should always be 14 (1.07-2.04).
         // If a future patch changes it, return None rather than risk
         // mis-reading.
         return None;
@@ -263,11 +261,10 @@ mod tests {
         for (i, &(_k, off)) in idx.iter().enumerate() {
             let end = if i + 1 < idx.len() { idx[i + 1].1 as usize } else { pabgb.len() };
             let row = &pabgb[off as usize..end];
-            let name_len = u32::from_le_bytes([row[2], row[3], row[4], row[5]]) as usize;
-            let body_len = row.len() - 6 - name_len;
-            *size_hist.entry(body_len).or_insert(0) += 1;
+            let head = read_row_head(row, 2).expect("row head");
+            *size_hist.entry(row.len() - head.body_at).or_insert(0) += 1;
         }
-        eprintln!("\nbody-size histogram (after `[u16 key][u32 name_len][name]`):");
+        eprintln!("\nbody-size histogram (after `[u32 name_len][name][u16 key]`):");
         for (size, count) in &size_hist {
             eprintln!("  {size} bytes: {count} rows");
         }
@@ -279,9 +276,9 @@ mod tests {
         for (i, &(key, off)) in idx.iter().enumerate() {
             let end = if i + 1 < idx.len() { idx[i + 1].1 as usize } else { pabgb.len() };
             let row = &pabgb[off as usize..end];
-            let name_len = u32::from_le_bytes([row[2], row[3], row[4], row[5]]) as usize;
-            let name = std::str::from_utf8(&row[6..6 + name_len]).unwrap_or("<bad>");
-            let body = &row[6 + name_len..];
+            let head = read_row_head(row, 2).expect("row head");
+            let name = head.name;
+            let body = &row[head.body_at..];
 
             // Print: first 8 rows ALWAYS; then one example per distinct size class.
             let should_print = i < 8 || printed_sizes.insert(body.len());
@@ -313,8 +310,7 @@ mod tests {
         for (i, &(_k, off)) in idx.iter().enumerate() {
             let end = if i + 1 < idx.len() { idx[i + 1].1 as usize } else { pabgb.len() };
             let row = &pabgb[off as usize..end];
-            let name_len = u32::from_le_bytes([row[2], row[3], row[4], row[5]]) as usize;
-            let body = row[6 + name_len..].to_vec();
+            let body = row[read_row_head(row, 2).expect("row head").body_at..].to_vec();
             first_bodies.push(body.clone());
             for o in (0..body.len().saturating_sub(4)).step_by(1) {
                 let v = u32::from_le_bytes([body[o], body[o+1], body[o+2], body[o+3]]);
@@ -436,15 +432,15 @@ mod tests {
     #[test]
     fn extract_paloc_key_round_trip() {
         // Build a synthetic payload with the WeatherEventGroup-style
-        // PalocStringRef at offset 0x12. Anything before that is
+        // PalocStringRef at offset 0x1F. Anything before that is
         // arbitrary header content.
-        let mut payload = vec![0u8; 0x12];
-        payload.extend_from_slice(&PALOC_STRING_REF_TAG.to_le_bytes()); // 0x12..0x16
-        payload.push(0);                                                 // 0x16
-        payload.extend_from_slice(&0x4258u16.to_le_bytes());            // 0x17..0x19 (key echo)
-        payload.extend_from_slice(&[0, 0]);                             // 0x19..0x1B (u16 zero)
-        payload.extend_from_slice(&14u32.to_le_bytes());                // 0x1B..0x1F (name_len = 14)
-        // 0x1F..0x2D: "72945724555969" (= 14 ASCII digits)
+        let mut payload = vec![0u8; 0x1F];
+        payload.extend_from_slice(&PALOC_STRING_REF_TAG.to_le_bytes()); // 0x1F..0x23
+        payload.push(0);                                                 // 0x23
+        payload.extend_from_slice(&0x4258u16.to_le_bytes());            // 0x24..0x26 (key echo)
+        payload.extend_from_slice(&[0, 0]);                             // 0x26..0x28 (u16 zero)
+        payload.extend_from_slice(&14u32.to_le_bytes());                // 0x28..0x2C (name_len = 14)
+        // 0x2C..0x3A: "72945724555969" (= 14 ASCII digits)
         payload.extend_from_slice(b"72945724555969");
         assert_eq!(extract_paloc_key(&payload), Some(72_945_724_555_969));
     }
@@ -453,7 +449,7 @@ mod tests {
     fn extract_paloc_key_rejects_wrong_tag() {
         // Wrong tag → None (signals a different body shape, like
         // RoyalSupply / FactionBlockEvent_*).
-        let mut payload = vec![0u8; 0x12];
+        let mut payload = vec![0u8; PALOC_STRING_REF_TAG_OFFSET];
         payload.extend_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
         payload.extend(std::iter::repeat_n(0, 32));
         assert_eq!(extract_paloc_key(&payload), None);
@@ -463,7 +459,7 @@ mod tests {
     fn extract_paloc_key_rejects_wrong_length() {
         // Tag matches but name_len != 14 → None (defensive guard
         // against schema drift).
-        let mut payload = vec![0u8; 0x12];
+        let mut payload = vec![0u8; PALOC_STRING_REF_TAG_OFFSET];
         payload.extend_from_slice(&PALOC_STRING_REF_TAG.to_le_bytes());
         payload.push(0);
         payload.extend_from_slice(&0x4258u16.to_le_bytes());

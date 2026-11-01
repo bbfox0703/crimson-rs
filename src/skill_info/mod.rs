@@ -16,6 +16,10 @@
 //!   preserves bytes for roundtrip but loses semantic structure.
 //! - Format flag `field_58` is present in 1.04+ format and absent in
 //!   1.03. We auto-detect by probing the first non-null buff entry.
+//! - 2.04 lays an entry out `[len][name][key][head][buff matrix][tail]`, where
+//!   head and tail are the post-buff fields split around the matrix (see
+//!   `post_buff`). Nothing inside `BuffData` moved: 1,976 of the 2,068 entries
+//!   carried over from 2.03 keep their exact length.
 //! - Cross-version probe (May 2026) showed 11 type_id sizes drift
 //!   between 1.03 / 1.04 / 1.05, so the brute-force probe must stay —
 //!   hard-coding sizes would silently break older or future versions.
@@ -26,7 +30,7 @@ mod post_buff;
 
 pub use buff_data::{BuffData, BuffDataBody, SkillFormat, TailSizeCache};
 pub use pabgh::{SkillIndexEntry, entry_ranges, parse_pabgh, write_pabgh};
-pub use post_buff::{Graph, PostBuff, ResourceItem, ResourceStat};
+pub use post_buff::{EntryHead, Graph, PostBuff, ResourceItem, ResourceStat};
 
 use std::io;
 
@@ -38,16 +42,16 @@ const PROBE_MAX_TAIL: usize = 500;
 #[derive(Debug, Clone)]
 pub struct SkillEntry {
     pub key: u32,
-    /// Raw name bytes (without the trailing NUL; written back as len + bytes + NUL).
+    /// Raw name bytes (`u32 len + len bytes`, no terminator).
     pub name_bytes: Vec<u8>,
+    pub unk_post_key: u8,
     pub is_blocked: u8,
     pub pad_01: [u8; 3],
     /// Decoded buff matrix; `None` when the raw fallback is used.
     pub buff_level_list: Option<Vec<Vec<BuffData>>>,
     /// Raw buff blob preserved for entries the probe could not resolve.
-    /// Mutually exclusive with `buff_level_list`. The bytes start at
-    /// `body[4..]` (i.e. after `is_blocked + pad_01`) up to (but not
-    /// including) the post-buff fields.
+    /// Mutually exclusive with `buff_level_list`. The bytes run from the end
+    /// of the entry head up to (but not including) the post-buff tail.
     pub buff_raw_fallback: Option<Vec<u8>>,
     pub post_buff: PostBuff,
 }
@@ -181,24 +185,18 @@ fn parse_skill_entry(
     cache: &mut TailSizeCache,
 ) -> io::Result<SkillEntry> {
     let mut p: usize = 0;
-    let key = u32::read_from(entry_bytes, &mut p)?;
     let name_bytes = read_name_bytes(entry_bytes, &mut p)?;
+    let key = u32::read_from(entry_bytes, &mut p)?;
 
-    if p > entry_bytes.len() || entry_bytes.len() - p < 4 {
-        return Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            format!("body too short after header: {} bytes left", entry_bytes.len() - p),
-        ));
-    }
     let body = &entry_bytes[p..];
-    let (is_blocked, pad_01, buff_level_list, buff_raw_fallback, post_buff) =
-        parse_body(body, format, cache)?;
+    let (head, buff_level_list, buff_raw_fallback, post_buff) = parse_body(body, format, cache)?;
 
     Ok(SkillEntry {
         key,
         name_bytes,
-        is_blocked,
-        pad_01,
+        unk_post_key: head.unk_post_key,
+        is_blocked: head.is_blocked,
+        pad_01: head.pad_01,
         buff_level_list,
         buff_raw_fallback,
         post_buff,
@@ -210,11 +208,15 @@ fn write_skill_entry<W: io::Write>(
     entry: &SkillEntry,
     format: SkillFormat,
 ) -> io::Result<()> {
-    entry.key.write_to(w)?;
     write_name_bytes(w, &entry.name_bytes)?;
+    entry.key.write_to(w)?;
 
-    entry.is_blocked.write_to(w)?;
-    w.write_all(&entry.pad_01)?;
+    let head = EntryHead {
+        unk_post_key: entry.unk_post_key,
+        is_blocked: entry.is_blocked,
+        pad_01: entry.pad_01,
+    };
+    post_buff::write_entry_head(w, &head, &entry.post_buff)?;
 
     if let Some(raw) = &entry.buff_raw_fallback {
         // Raw path: write the preserved blob (already includes level_count
@@ -235,7 +237,7 @@ fn write_skill_entry<W: io::Write>(
         ));
     }
 
-    post_buff::write_post_buff(w, &entry.post_buff)?;
+    post_buff::write_post_buff_tail(w, &entry.post_buff)?;
     let _ = format; // currently unused at the entry level; kept for symmetry.
     Ok(())
 }
@@ -248,70 +250,61 @@ fn parse_body(
     format: SkillFormat,
     cache: &mut TailSizeCache,
 ) -> io::Result<(
-    u8,                       // is_blocked
-    [u8; 3],                  // pad_01
+    EntryHead,
     Option<Vec<Vec<BuffData>>>,
     Option<Vec<u8>>,
     PostBuff,
 )> {
     let body_end = body.len();
-    if body_end < 4 {
-        return Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "body shorter than 4 bytes (need is_blocked + pad_01)",
-        ));
-    }
-    let is_blocked = body[0];
-    let pad_01 = [body[1], body[2], body[3]];
+    let mut head_end = 0;
+    let (head, mut post_buff) = post_buff::read_entry_head(body, &mut head_end)?;
 
-    let parse_attempt = try_parse_buff_levels(body, 4, format, cache);
+    let parse_attempt = try_parse_buff_levels(body, head_end, format, cache);
 
     let (buff_level_list, buff_raw_fallback, mut p_after_buffs) = match parse_attempt {
         Ok((levels, after)) => (Some(levels), None, after),
         Err(_) => {
-            // Brute-force: find a position where the post-buff section
-            // parses cleanly to body_end.
-            let pb_start = find_post_buff_start(body, 8).ok_or_else(|| {
+            // Brute-force: find a position where the post-buff tail parses
+            // cleanly to body_end.
+            let pb_start = find_post_buff_start(body, head_end + 4).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
                     "could not locate post-buff boundary for raw fallback",
                 )
             })?;
-            (None, Some(body[4..pb_start].to_vec()), pb_start)
+            (None, Some(body[head_end..pb_start].to_vec()), pb_start)
         }
     };
 
-    // Try post-buff from the cursor we ended at. If that doesn't reach
+    // Try the tail from the cursor we ended at. If that doesn't reach
     // body_end exactly, fall back to brute-force scan.
-    let post_buff = match read_post_buff_strict(body, &mut p_after_buffs, body_end) {
-        Ok(pb) => pb,
-        Err(_) => {
-            let pb_start = find_post_buff_start(body, 8).ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "post-buff parse failed and brute-force scan found no boundary",
-                )
-            })?;
-            // If we already had a decoded buff list, demote to raw fallback.
-            let raw = body[4..pb_start].to_vec();
-            let mut p2 = pb_start;
-            let pb = read_post_buff_strict(body, &mut p2, body_end).map_err(|e| {
-                io::Error::new(e.kind(), format!("post-buff at fallback start failed: {}", e))
-            })?;
-            return Ok((is_blocked, pad_01, None, Some(raw), pb));
-        }
-    };
+    if read_post_buff_strict(body, &mut p_after_buffs, body_end, &mut post_buff).is_err() {
+        let pb_start = find_post_buff_start(body, head_end + 4).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "post-buff parse failed and brute-force scan found no boundary",
+            )
+        })?;
+        // If we already had a decoded buff list, demote to raw fallback.
+        let raw = body[head_end..pb_start].to_vec();
+        let mut p2 = pb_start;
+        read_post_buff_strict(body, &mut p2, body_end, &mut post_buff).map_err(|e| {
+            io::Error::new(e.kind(), format!("post-buff at fallback start failed: {}", e))
+        })?;
+        return Ok((head, None, Some(raw), post_buff));
+    }
 
-    Ok((is_blocked, pad_01, buff_level_list, buff_raw_fallback, post_buff))
+    Ok((head, buff_level_list, buff_raw_fallback, post_buff))
 }
 
 fn read_post_buff_strict(
     body: &[u8],
     p: &mut usize,
     body_end: usize,
-) -> io::Result<PostBuff> {
+    post_buff: &mut PostBuff,
+) -> io::Result<()> {
     let saved = *p;
-    let pb = post_buff::read_post_buff(body, p)?;
+    post_buff::read_post_buff_tail(body, p, post_buff)?;
     if *p != body_end {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -323,7 +316,7 @@ fn read_post_buff_strict(
             ),
         ));
     }
-    Ok(pb)
+    Ok(())
 }
 
 /// Walk every buff in every level using the cache + per-type_id probing.
@@ -515,8 +508,9 @@ fn find_post_buff_start(body: &[u8], min_start: usize) -> Option<usize> {
             continue;
         }
         let mut p = start;
-        match post_buff::read_post_buff(body, &mut p) {
-            Ok(_) if p == body_end => return Some(start),
+        let mut scratch = PostBuff::default();
+        match post_buff::read_post_buff_tail(body, &mut p, &mut scratch) {
+            Ok(()) if p == body_end => return Some(start),
             _ => continue,
         }
     }
@@ -541,34 +535,26 @@ fn detect_format(
         for ((start, end), _idx) in ranges.iter().zip(index.iter()) {
             let entry = &pabgb[*start..*end];
             let Some(body) = entry_body(entry) else { continue };
-            // Need at least level_count + buff_count.
-            if body.len() < 8 {
+            let mut head_end = 0;
+            if post_buff::read_entry_head(body, &mut head_end).is_err() {
                 continue;
             }
-            let level_count =
-                u32::from_le_bytes([body[4], body[5], body[6], body[7]]) as usize;
+            let mut p = head_end;
+            let Ok(level_count) = u32::read_from(body, &mut p) else { continue };
             if level_count == 0 {
                 continue;
             }
-            if body.len() < 12 {
-                continue;
-            }
-            let buff_count =
-                u32::from_le_bytes([body[8], body[9], body[10], body[11]]) as usize;
+            let Ok(buff_count) = u32::read_from(body, &mut p) else { continue };
             if buff_count == 0 {
                 continue;
             }
-            // Need flag byte at body[12].
-            if body.len() < 13 {
-                continue;
-            }
-            if body[12] != 0 {
+            let Ok(flag) = u8::read_from(body, &mut p) else { continue };
+            if flag != 0 {
                 // First buff is null — can't probe with this entry.
                 break;
             }
             // Read common base under `candidate` starting after the flag
             // byte. We don't propagate errors — this is just a probe.
-            let mut p = 13;
             if buff_data::read_common_base(body, &mut p, candidate).is_err() {
                 break; // candidate is wrong shape; try the other candidate
             }
@@ -591,32 +577,22 @@ fn detect_format(
     Ok(SkillFormat::WithField58)
 }
 
-/// Slice off the body of an entry: skips `u32 key + u32 name_len + name + NUL`.
+/// Slice off the body of an entry: skips `u32 name_len + name + u32 key`.
 /// Returns `None` if the header is malformed.
 fn entry_body(entry: &[u8]) -> Option<&[u8]> {
-    if entry.len() < 8 {
-        return None;
-    }
-    let name_len =
-        u32::from_le_bytes([entry[4], entry[5], entry[6], entry[7]]) as usize;
-    let body_start = 8 + name_len + 1;
-    if body_start > entry.len() || entry[body_start - 1] != 0 {
-        return None;
-    }
-    Some(&entry[body_start..])
+    entry.get(crate::binary::row_head::read_row_head(entry, 4)?.body_at..)
 }
 
 // ── Header helpers ────────────────────────────────────────────────────────
 
-/// Read `u32 len + len bytes + u8 NUL`. Returns the bytes (without the
-/// NUL).
+/// Read `u32 len + len bytes`.
 pub(crate) fn read_name_bytes(data: &[u8], offset: &mut usize) -> io::Result<Vec<u8>> {
     let len = u32::read_from(data, offset)? as usize;
-    if *offset + len + 1 > data.len() {
+    if *offset + len > data.len() {
         return Err(io::Error::new(
             io::ErrorKind::UnexpectedEof,
             format!(
-                "name_bytes: need {} + 1 bytes at {}, have {}",
+                "name_bytes: need {} bytes at {}, have {}",
                 len,
                 *offset,
                 data.len() - *offset
@@ -625,20 +601,10 @@ pub(crate) fn read_name_bytes(data: &[u8], offset: &mut usize) -> io::Result<Vec
     }
     let bytes = data[*offset..*offset + len].to_vec();
     *offset += len;
-    let nul = data[*offset];
-    *offset += 1;
-    if nul != 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("expected NUL terminator after name, got 0x{:02X}", nul),
-        ));
-    }
     Ok(bytes)
 }
 
 pub(crate) fn write_name_bytes<W: io::Write>(w: &mut W, bytes: &[u8]) -> io::Result<()> {
     (bytes.len() as u32).write_to(w)?;
-    w.write_all(bytes)?;
-    w.write_all(&[0])?;
-    Ok(())
+    w.write_all(bytes)
 }

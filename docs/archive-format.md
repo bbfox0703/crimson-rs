@@ -5,7 +5,10 @@
 ```
 game_dir/
 ├── meta/
-│   └── 0.papgt          # Master index — lists all pack groups
+│   ├── 0.papgt          # Master index — lists all pack groups
+│   ├── 0.paver          # Version stamp, see src/binary/paver.rs
+│   ├── 0.papk           # 2.04: 32 B, not parsed (looks like a public key)
+│   └── 0.pathc          # not parsed
 ├── 0000/
 │   ├── 0.pamt           # VFS index for this group (trie + file metadata)
 │   ├── 0.paz            # Concatenated compressed/encrypted file data
@@ -14,14 +17,36 @@ game_dir/
 ├── 0001/
 │   ├── 0.pamt
 │   └── *.paz
-└── ...
+├── ...
+└── dlc/dlc_01/          # 2.04: the same tree again, for one DLC
+    ├── meta/            # 0.papgt, 0.paver, 0.pathc, plus 0.paeid (75 B: u32 len, "5001840", 64 B)
+    └── 0000/ ...        # groups the DLC has nothing for are a 33-byte empty 0.pamt
 ```
+
+A DLC table carries its own rows, named `<table>.dlc_01.staticinfobody` / `.staticinfoheader` in
+`gamedata/binarystaticinfo__/bin`, and localization the same way (`<namespace>.dlc_01.paloc`). Its layouts
+match the base table's. Some rows are new keys and some replace a base row: `iteminfo.dlc_01` has 1,552 rows,
+242 of them keys the base table also has. 67 of the 142 headers have no body file at all. The library reads
+whichever install root it is given, so `dlc/dlc_01` works as a `game_dir`; nothing merges a DLC into the base
+tables yet.
 
 ## PAPGT (Pack Group Tree Meta) — `meta/0.papgt`
 
 Master index listing all pack groups in the game.
 
-### Header (12 bytes)
+### Header, 2.04+ (4 bytes)
+| Offset | Type | Field |
+|--------|------|-------|
+| 0 | u16 | unknown0 (0x16c9 base, 0x16d3 `dlc_01`) |
+| 2 | u8 | entry_count |
+| 3 | u8 | unknown1 (2) |
+
+There is no checksum, and the file closes with a **64-byte trailer** after the group names buffer. The trailer
+is high-entropy and no plain hash of the body (SHA-512, SHA3-512 and BLAKE2b were tried), and `meta/0.papk`
+appeared with it, so it is treated as a signature. It round-trips verbatim and cannot be recomputed here, so
+it goes stale when entries change. See [Mod Loading](#mod-loading-overlay-approach).
+
+### Header, through 2.03 (12 bytes)
 | Offset | Type | Field |
 |--------|------|-------|
 | 0 | u32 | unknown0 |
@@ -30,11 +55,13 @@ Master index listing all pack groups in the game.
 | 9 | u8 | unknown1 |
 | 10 | u16 | unknown2 |
 
+A parser tells them apart by whether the 2.04 section lengths add up to the file size.
+
 ### Entry (repeated `entry_count` times)
 | Offset | Type | Field |
 |--------|------|-------|
 | 0 | u8 | is_optional |
-| 1 | u16 | language (bitmask, 0x3FFF = ALL) |
+| 1 | u16 | language (bitmask, 0x7FFF = ALL; 0x4000 is Arabic) |
 | 3 | u8 | always_zero |
 | 4 | u32 | group_name_offset (into group_names_buffer) |
 | 8 | u32 | pack_meta_checksum (checksum of group's 0.pamt post-header) |
@@ -66,7 +93,8 @@ Virtual filesystem index for a single pack group. Maps directory paths and file 
 2. **Dir names trie buffer** — trie-encoded directory paths (i32 length prefix)
 3. **File names trie buffer** — trie-encoded file names (i32 length prefix)
 4. **Directories array** — `(name_checksum: u32, name_offset: i32, file_start_index: u32, file_count: u32)`
-5. **Files array** — `(name_offset: i32, chunk_offset: u32, compressed_size: u32, uncompressed_size: u32, chunk_id: u16, flags: u8, unknown0: u8)`
+5. **Files array** — `(name_offset: i32, chunk_offset: u32, compressed_size: u32, uncompressed_size: u32, chunk_id: u16, flags: u8, extension_index: u8)`
+6. **Extension table** (2.04+) — u32 length, then NUL-terminated strings where entry 0 is empty: `"\0.xml\0.dds\0"`. A file's name is its trie string plus `extensions[extension_index]`. Its presence is what says the tries use relative parents. Through 2.03 the section is absent, `extension_index` is 0, and the trie string is the whole name.
 
 ### File Flags Byte
 - Bits 0-3: compression type (0=None, 2=LZ4, 3=Zlib, 4=QuickLZ)
@@ -90,7 +118,16 @@ Headerless concatenated file data. Each file's raw bytes (after compression and 
 
 Used by PAMT for both directory names and file names. A compact prefix-sharing encoding.
 
-### Entry Format
+### Entry Format, 2.04+
+| Type | Field |
+|------|-------|
+| ULEB128 | distance back from this entry's start to its parent (0 for root entries) |
+| u8 | string_length |
+| u8[string_length] | string_data |
+
+A directory with an empty path has no entry; its `name_offset` is -1.
+
+### Entry Format, through 2.03
 | Offset | Type | Field |
 |--------|------|-------|
 | 0 | i32 (LE) | parent_offset (-1 for root entries) |
@@ -103,7 +140,7 @@ Used by PAMT for both directory names and file names. A compact prefix-sharing e
 3. Siblings at each trie level are radix-compressed (byte-level prefix sharing)
 
 ### Example
-For paths `gamedata/binary__` and `gamedata/binarygimmickchart__`:
+For paths `gamedata/binary__` and `gamedata/binarygimmickchart__`, through 2.03:
 ```
 offset=0   parent=-1  data="gamedata"
 offset=13  parent=0   data="/binary"           # shared prefix
@@ -116,6 +153,8 @@ To reconstruct a full string, walk parent pointers to root and concatenate.
 ---
 
 ## PABGB / PABGH (Game Data Tables — `0008/gamedata/binarystaticinfo__/bin/`)
+
+**Row shape since 2.04**: a named row opens `[u32 len][name][key]` (it was `[key][u32 len][name]`), the key still as wide as the header's. See `src/binary/row_head.rs`. Passages below that show the old order predate this.
 
 PAPGT / PAMT / PAZ are the **archive layer**. The files actually packed inside the archives — `iteminfo`, `missioninfo`, `skill` (body + index), `characterappearanceindexinfo` (body + index), etc. — are the **game-data layer** and share a couple of well-trodden patterns documented here.
 
@@ -215,7 +254,7 @@ Jenkins hashlittle2 with constant seed `0xDEBA1DCD`.
 
 Used in:
 - PAMT header (covers post-header data)
-- PAPGT header (covers post-header data)
+- PAPGT header (covers post-header data; through 2.03 only)
 - PAZ chunk verification
 - Directory name hashing in PAMT
 
@@ -231,6 +270,8 @@ The game resolves files by scanning PAPGT entries front-to-back. First match win
 3. **Replace `meta/0.papgt`** with the updated version
 
 The original game archives are never modified. When the game looks up a file, it finds the mod's version first (because the mod's entry is at index 0), effectively overlaying the original.
+
+**Unverified on 2.04.** The PAPGT now ends in what looks like a signature (see above) that this library cannot produce, so an edited `0.papgt` carries a stale one. `pack_mod()` warns about it. Whether the game rejects such a file has not been tested, so treat mod loading on 2.04 as unknown. The PAMT a mod group writes is in the 2.04 layout.
 
 This is the same approach used by other Crimson Desert mod loaders.
 

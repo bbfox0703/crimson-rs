@@ -11,13 +11,16 @@
 //! Stage internal names are **region-themed**, not `Stage_*`-prefixed
 //! (e.g. `Intro_Tutorial_Miseenscene_00`, `DelesyiaCastle_Herbert_BlueStone`,
 //! `Hernand_Normal_Start_Child6`). The anchor scanner's only assumption
-//! is the `[u32 key][u32 name_len][identifier-byte name]` header shape,
-//! which holds across the whole family.
+//! is the `[u32 name_len][identifier-byte name][u32 key][u8 0x00]` head
+//! shape (2.04 moved the key after the name), which holds across the
+//! whole family.
 //!
 //! Stage rows resolve to PALOC at two common namespaces:
 //! - `lo32 = 0x101` (257) — the stage title (6,492 matches observed)
 //! - `lo32 = 0x102` (258) — the stage / shop description; longer text
 //!   describing the row (404 matches observed)
+
+use crate::binary::row_head::{is_row_name_byte, read_row_head};
 
 /// One parsed stageinfo row, reduced to what the bridge consumes.
 #[derive(Debug, Clone)]
@@ -36,7 +39,7 @@ pub struct StageInfoEntry {
 /// followed by `(u32 key, u32 offset)` rows (the u32-count variant —
 /// stageinfo and questinfo are the two tables on this shape). For each
 /// pair we jump into `pabgb` at the offset and read the standard
-/// `[u32 key_repeat][u32 slen][slen bytes]` name header. This bypasses
+/// `[u32 slen][slen bytes][u32 key_repeat]` row head. This bypasses
 /// the anchor-scan's body-byte validation, so legitimate rows with
 /// punctuation in their names (e.g. `LevelSequencerSpawn_UUID_2910822923,…`,
 /// 1,403 of which are present in 1.08's stageinfo) are no longer
@@ -69,25 +72,15 @@ pub fn parse_stage_info_via_pabgh(pabgh: &[u8], pabgb: &[u8]) -> Vec<StageInfoEn
             pabgh[pos + 6],
             pabgh[pos + 7],
         ]) as usize;
-        if off + 8 > pabgb.len() {
-            continue;
-        }
-        let slen = u32::from_le_bytes([
-            pabgb[off + 4],
-            pabgb[off + 5],
-            pabgb[off + 6],
-            pabgb[off + 7],
-        ]) as usize;
-        if slen == 0 || slen > 256 || off + 8 + slen > pabgb.len() {
-            continue;
-        }
-        let name_bytes = &pabgb[off + 8..off + 8 + slen];
-        let Ok(name) = std::str::from_utf8(name_bytes) else {
+        let Some(head) = pabgb.get(off..).and_then(|row| read_row_head(row, 4)) else {
             continue;
         };
+        if head.key != key || !(1..=256).contains(&head.name.len()) {
+            continue;
+        }
         entries.push(StageInfoEntry {
             key,
-            name: name.to_owned(),
+            name: head.name.to_owned(),
         });
     }
     entries
@@ -112,23 +105,13 @@ pub fn parse_stage_info_lossy(data: &[u8]) -> Vec<StageInfoEntry> {
     let mut entries = Vec::new();
     let mut cursor = 0;
     while let Some(start) = scan_next_anchor(data, cursor) {
-        let slen = u32::from_le_bytes([
-            data[start + 4],
-            data[start + 5],
-            data[start + 6],
-            data[start + 7],
-        ]) as usize;
-        let key = u32::from_le_bytes([
-            data[start],
-            data[start + 1],
-            data[start + 2],
-            data[start + 3],
-        ]);
-        let name_bytes = &data[start + 8..start + 8 + slen];
-        // Scanner already validated valid UTF-8 — the unwrap is sound.
-        let name = std::str::from_utf8(name_bytes).unwrap().to_owned();
-        entries.push(StageInfoEntry { key, name });
-        cursor = start + 8 + slen;
+        // Scanner already validated the head — the unwrap is sound.
+        let head = read_row_head(&data[start..], 4).unwrap();
+        entries.push(StageInfoEntry {
+            key: head.key,
+            name: head.name.to_owned(),
+        });
+        cursor = start + head.body_at;
     }
     entries
 }
@@ -137,47 +120,44 @@ fn scan_next_anchor(data: &[u8], from: usize) -> Option<usize> {
     let n = data.len();
     let mut o = from;
     while o + 12 < n {
-        let key = u32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]);
-        // Stage rows use category-prefixed keys: hi-byte 0x00 for
-        // mainline stages, 0x05 for `HerStore_*` (Hernandian stores),
-        // 0x41 for `Shop_*` (city shops), and a handful of others
-        // observed in the 1.06 install. Cap at < 0x80 — covers every
-        // real category seen, excludes the body-byte noise that
-        // tends to start with high-bit bytes (e.g. checksum tails),
-        // and naturally excludes the i32-negative-encoded save
-        // sentinels (`0xFFFF*`) the editor's issue #2 pattern 2
-        // flagged as save-internal. Verified against the editor's
-        // CrimsonAtomtic issue #2 dump for `StageKey 1100170020`
-        // (0x41934324 → "Shop_Hernand_General"), `1100170040`
-        // (0x41934338 → "Shop_Hernand_Pub"), and `98200060`
-        // (0x05DA69FC → "HerStore_Grocery").
-        if key != 0 && (key >> 24) < 0x80 {
-            let slen = u32::from_le_bytes([
-                data[o + 4],
-                data[o + 5],
-                data[o + 6],
-                data[o + 7],
-            ]) as usize;
-            if (2..=128).contains(&slen) && o + 8 + slen <= n {
-                let bytes = &data[o + 8..o + 8 + slen];
-                // Same `_` requirement as mission_info — every real
-                // Stage_*/Intro_*/etc. row has it.
-                if bytes.contains(&b'_')
-                    && bytes.iter().all(|&b| is_ident_byte(b))
-                    && std::str::from_utf8(bytes).is_ok()
-                {
-                    return Some(o);
-                }
+        let slen = u32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]) as usize;
+        // Length, name, key, then the 0x00 that opens every 2.04 row body —
+        // the byte that rejects most body strings followed by a small number.
+        if (2..=128).contains(&slen) && o + 9 + slen <= n && data[o + 8 + slen] == 0 {
+            let bytes = &data[o + 4..o + 4 + slen];
+            let key = u32::from_le_bytes([
+                data[o + 4 + slen],
+                data[o + 5 + slen],
+                data[o + 6 + slen],
+                data[o + 7 + slen],
+            ]);
+            // Stage rows use category-prefixed keys: hi-byte 0x00 for
+            // mainline stages, 0x05 for `HerStore_*` (Hernandian stores),
+            // 0x41 for `Shop_*` (city shops), and a handful of others
+            // observed in the 1.06 install. Cap at < 0x80 — covers every
+            // real category seen, excludes the body-byte noise that
+            // tends to start with high-bit bytes (e.g. checksum tails),
+            // and naturally excludes the i32-negative-encoded save
+            // sentinels (`0xFFFF*`) the editor's issue #2 pattern 2
+            // flagged as save-internal. Verified against the editor's
+            // CrimsonAtomtic issue #2 dump for `StageKey 1100170020`
+            // (0x41934324 → "Shop_Hernand_General"), `1100170040`
+            // (0x41934338 → "Shop_Hernand_Pub"), and `98200060`
+            // (0x05DA69FC → "HerStore_Grocery").
+            // Same `_` requirement as mission_info — every real
+            // Stage_*/Intro_*/etc. row has it.
+            if key != 0
+                && (key >> 24) < 0x80
+                && bytes.contains(&b'_')
+                && bytes.iter().all(|&b| is_row_name_byte(b))
+                && std::str::from_utf8(bytes).is_ok()
+            {
+                return Some(o);
             }
         }
         o += 1;
     }
     None
-}
-
-#[inline]
-fn is_ident_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_' || b == b' ' || b >= 0x80
 }
 
 #[cfg(test)]

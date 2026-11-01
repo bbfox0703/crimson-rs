@@ -12,14 +12,13 @@
 //! file — that bridge lives in `iteminfo.pabgb` (joined via
 //! `stringinfo.pabgb`; see [`crate::c_abi::item_part_prefab`]).
 //!
-//! Schema (verified byte-perfect across a sampling of 1.07 rows and the
-//! full live 1.12 table; `slot_count` and `row_prefab_name` checked
-//! across the full table):
+//! Schema (every row of the live 2.04 table walks it exactly):
 //!
 //! ```text
 //! Row {
+//!     u32 name_len,             // = 0, the empty name (see 2.04 below)
 //!     u32 key,                  // matches PABGH key
-//!     u8 pad[5],                // = 00 00 00 00 00
+//!     u8 pad,                   // = 00
 //!     u32 slot_count,           // 1..N (N reaches 36 in 1.12 for vehicle meshes)
 //!     CString row_prefab_name,  // e.g. "cd_phm_00_lb_00_0054"
 //!     Slot[slot_count] {
@@ -28,28 +27,29 @@
 //!         CString material_b,
 //!         CString material_c,
 //!         u8 mask[12],               // active/visible flags; 3 before 2.01
-//!         // 1.12 ONLY: a 5-byte field inserted here (u8 + u32),
-//!         //   observed uniformly (0xFF, 0) on all 3,893 live slots.
-//!         //   Absent in 1.07-1.11; consumed-but-not-stored (no
-//!         //   downstream reader). See "Cross-version layout drift".
+//!         u8 marker,                 // 0xFF, not stored
+//!         u32 extra_layer_count,     // see `PartPrefabDyeSlot::extra_layers`
+//!         ExtraLayer[extra_layer_count],
 //!         CString tail_name,         // next sub-prefab name; for the LAST
 //!                                    //   slot, the full .pac asset path
 //!     }
 //! }
 //! ```
 //!
-//! ## Cross-version layout drift (1.12, 2.01)
+//! ## Cross-version layout drift (1.12, 2.01, 2.04)
 //!
 //! 1.12 inserted the `u8 + u32` field per slot. 2.01 widened `mask` from
 //! 3 bytes to 12, in **both** the slot and the extra layer — the only
-//! schema change 2.01 made to anything crimson-rs parses. The three
-//! layouts are **empirically disjoint** — across the full 1.11 (1,111
-//! rows), 1.12 (968 rows) and 2.01 (1,626 rows) tables, every row walks
-//! cleanly under exactly one and zero rows are ambiguous. The parser
-//! therefore tries them newest-first per row (see [`SLOT_LAYOUTS`]),
-//! keeping support for older installs while reading the live table. A
-//! future patch that drifts the per-slot layout again will fail every
-//! attempt and the row drops out — the lossy safety net.
+//! schema change 2.01 made to anything crimson-rs parses. 2.04 only touched
+//! the row's opening: these rows have no name, so the table-wide key/name
+//! swap puts the empty name's zero length ahead of the key (the old `pad[5]`
+//! was that length plus the one pad byte). Of the 1,637 keys common to 2.03
+//! and 2.04, 1,623 rows are byte-identical after undoing that swap, and the
+//! slots are untouched.
+//!
+//! The parser reads the current layout only, and requires a row to walk
+//! its body exactly. A future patch that drifts the per-slot layout fails
+//! that and the row drops out — the lossy safety net.
 //!
 //! The 12-byte width is pinned by a tandem walk against the kept 2.00
 //! binary (`gamedata-bin/2.00/partprefabdyeslotinfo.pabgb`): reading 2.00
@@ -75,6 +75,8 @@
 //! "default material per slot" suggestions in the dye UI.
 //!
 //! Each `CString` is `[u32 len][len bytes]` with NO trailing NUL.
+
+use crate::binary::row_head::read_row_head;
 
 /// One dye slot within a prefab — captures everything the editor
 /// needs to render per-slot UI (default materials + which material
@@ -155,14 +157,10 @@ impl PartPrefabDyeSlotInfoEntry {
     }
 }
 
-/// Read `mask_len` mask bytes into the fixed 12-wide field, zero-filling
-/// the rest. Pre-2.01 rows carry only 3 (see "Cross-version layout drift"),
-/// so the tail stays zero — which is also what those channels mean.
-fn read_mask(body: &[u8], cursor: &mut usize, mask_len: usize) -> Option<[u8; 12]> {
-    let bytes = body.get(*cursor..*cursor + mask_len)?;
-    let mut mask = [0u8; 12];
-    mask[..mask_len].copy_from_slice(bytes);
-    *cursor += mask_len;
+/// Read the 12 mask bytes (see "Cross-version layout drift").
+fn read_mask(body: &[u8], cursor: &mut usize) -> Option<[u8; 12]> {
+    let mask: [u8; 12] = body.get(*cursor..*cursor + 12)?.try_into().ok()?;
+    *cursor += 12;
     Some(mask)
 }
 
@@ -190,16 +188,9 @@ fn read_cstring(data: &[u8], cursor: &mut usize) -> Option<String> {
     Some(s)
 }
 
-/// Parse one slot starting at `cursor`. Returns the parsed slot and
-/// the new cursor position, or `None` if the body is truncated /
-/// invalid. When `new_schema` is set, consume the 1.12 per-slot
-/// `u8 + u32` field inserted between `mask` and `tail_name`.
-fn parse_slot(
-    body: &[u8],
-    cursor: &mut usize,
-    new_schema: bool,
-    mask_len: usize,
-) -> Option<PartPrefabDyeSlot> {
+/// Parse one slot starting at `cursor`, advancing it past the slot.
+/// Returns `None` if the body is truncated / invalid.
+fn parse_slot(body: &[u8], cursor: &mut usize) -> Option<PartPrefabDyeSlot> {
     if *cursor + 3 > body.len() {
         return None;
     }
@@ -210,52 +201,45 @@ fn parse_slot(
     let mat_b = read_cstring(body, cursor)?;
     let mat_c = read_cstring(body, cursor)?;
 
-    let mask = read_mask(body, cursor, mask_len)?;
+    let mask = read_mask(body, cursor)?;
 
-    let mut extra_layers: Vec<DyeExtraLayer> = Vec::new();
-    if new_schema {
-        // 1.12 introduced a per-slot `u8 marker (0xFF) + u32` here. What
-        // looked like a uniform `(0xFF, 0)` 5-byte pad in 1.12 is actually
-        // `marker + extra_layer_count`: 1.12's count is always 0, but
-        // 1.13's "expanded dyeable" gear sets it to 1, adding a second
-        // material/dye layer inline (RE'd 2026-07-04 via
-        // `scripts/decode_dyeslot_113.py`; enhanced model consumes all
-        // 1,538 live 1.13 rows exactly). 1.07-1.11 rows have no such field
-        // and are handled by the `new_schema == false` fallback.
-        if *cursor + 5 > body.len() {
+    // 1.12 introduced a per-slot `u8 marker (0xFF) + u32` here. What
+    // looked like a uniform `(0xFF, 0)` 5-byte pad in 1.12 is actually
+    // `marker + extra_layer_count`: 1.12's count is always 0, but
+    // 1.13's "expanded dyeable" gear sets it to 1, adding a second
+    // material/dye layer inline (RE'd 2026-07-04 via
+    // `scripts/decode_dyeslot_113.py`).
+    if *cursor + 5 > body.len() {
+        return None;
+    }
+    // body[*cursor] is the 0xFF marker; not stored.
+    let extra_count = u32::from_le_bytes([
+        body[*cursor + 1],
+        body[*cursor + 2],
+        body[*cursor + 3],
+        body[*cursor + 4],
+    ]) as usize;
+    *cursor += 5;
+    // Plausibility cap — only 0 and 1 observed.
+    if extra_count > 8 {
+        return None;
+    }
+    let mut extra_layers: Vec<DyeExtraLayer> = Vec::with_capacity(extra_count);
+    for _ in 0..extra_count {
+        let e_a = read_cstring(body, cursor)?;
+        let e_b = read_cstring(body, cursor)?;
+        let e_c = read_cstring(body, cursor)?;
+        let e_mask = read_mask(body, cursor)?;
+        if *cursor >= body.len() {
             return None;
         }
-        // body[*cursor] is the 0xFF marker; not stored.
-        let extra_count = u32::from_le_bytes([
-            body[*cursor + 1],
-            body[*cursor + 2],
-            body[*cursor + 3],
-            body[*cursor + 4],
-        ]) as usize;
-        *cursor += 5;
-        // Plausibility cap — only 0 (1.07-1.12) and 1 (1.13) observed; a
-        // large value means we're mis-reading a 1.07-1.11 row under the
-        // wrong layout, so reject and let the caller fall back.
-        if extra_count > 8 {
-            return None;
-        }
-        extra_layers.reserve(extra_count);
-        for _ in 0..extra_count {
-            let e_a = read_cstring(body, cursor)?;
-            let e_b = read_cstring(body, cursor)?;
-            let e_c = read_cstring(body, cursor)?;
-            let e_mask = read_mask(body, cursor, mask_len)?;
-            if *cursor >= body.len() {
-                return None;
-            }
-            let e_flag = body[*cursor];
-            *cursor += 1;
-            extra_layers.push(DyeExtraLayer {
-                default_materials: [e_a, e_b, e_c],
-                mask: e_mask,
-                flag: e_flag,
-            });
-        }
+        let e_flag = body[*cursor];
+        *cursor += 1;
+        extra_layers.push(DyeExtraLayer {
+            default_materials: [e_a, e_b, e_c],
+            mask: e_mask,
+            flag: e_flag,
+        });
     }
 
     let tail_name = read_cstring(body, cursor)?;
@@ -269,59 +253,41 @@ fn parse_slot(
     })
 }
 
-/// Per-slot layouts, newest first — `(new_schema, mask_len)`. See
-/// "Cross-version layout drift": 1.12 added the `u8 + u32` after the mask
-/// (`new_schema`), and 2.01 widened the mask itself from 3 bytes to 12.
-const SLOT_LAYOUTS: [(bool, usize); 3] = [(true, 12), (true, 3), (false, 3)];
-
-/// Try to parse one full row body under a single layout. Returns
-/// `Some(entry)` only when the row's header validates against
-/// `expected_key` and the slot walk consumes the body **exactly**
-/// (`cursor == body.len()`); otherwise `None`. `new_schema` selects the
-/// 1.12 per-slot marker + extra-layer count, and `mask_len` the 2.01
-/// mask width — see [`SLOT_LAYOUTS`]. The exact-consume requirement is
-/// what makes the multi-layout fallback in
-/// [`parse_part_prefab_dye_slot_info_lossy`] unambiguous.
-fn try_parse_row(
-    body: &[u8],
-    expected_key: u32,
-    new_schema: bool,
-    mask_len: usize,
-) -> Option<PartPrefabDyeSlotInfoEntry> {
-    // Header: u32 key + 5 pad + u32 slot_count + CString prefab_name
-    if body.len() < 17 {
+/// Parse one full row body. Returns `Some(entry)` only when the row's
+/// head validates against `expected_key` and the slot walk consumes the
+/// body **exactly** (`cursor == body.len()`); otherwise `None`.
+fn try_parse_row(body: &[u8], expected_key: u32) -> Option<PartPrefabDyeSlotInfoEntry> {
+    let head = read_row_head(body, 4)?;
+    if head.key != expected_key || !head.name.is_empty() {
         return None;
     }
-    let key = u32::from_le_bytes([body[0], body[1], body[2], body[3]]);
-    if key != expected_key {
-        return None;
-    }
-    let slot_count = u32::from_le_bytes([body[9], body[10], body[11], body[12]]);
+    // Head, then 1 pad + u32 slot_count + CString prefab_name.
+    let count_bytes = body.get(head.body_at + 1..head.body_at + 5)?;
+    let slot_count =
+        u32::from_le_bytes([count_bytes[0], count_bytes[1], count_bytes[2], count_bytes[3]]);
     // Plausibility cap — 64 covers everything observed through 1.12
     // (peak 36 for vehicle/robot meshes).
     if slot_count == 0 || slot_count > 64 {
         return None;
     }
-    let name_len = u32::from_le_bytes([body[13], body[14], body[15], body[16]]) as usize;
-    if 17 + name_len > body.len() || !(1..=128).contains(&name_len) {
+    let mut cursor = head.body_at + 5;
+    let prefab_name = read_cstring(body, &mut cursor)?;
+    if !(1..=128).contains(&prefab_name.len()) {
         return None;
     }
-    let prefab_name = std::str::from_utf8(&body[17..17 + name_len]).ok()?;
 
-    let mut cursor = 17 + name_len;
     let mut slots: Vec<PartPrefabDyeSlot> = Vec::with_capacity(slot_count as usize);
     for _ in 0..slot_count {
-        slots.push(parse_slot(body, &mut cursor, new_schema, mask_len)?);
+        slots.push(parse_slot(body, &mut cursor)?);
     }
-    // Mismatched body length signals schema drift / wrong layout; reject
-    // the row so the caller can try the other layout (or drop it).
+    // Mismatched body length signals schema drift; reject the row.
     if cursor != body.len() {
         return None;
     }
 
     Some(PartPrefabDyeSlotInfoEntry {
-        key,
-        prefab_name: prefab_name.to_owned(),
+        key: head.key,
+        prefab_name,
         slots,
     })
 }
@@ -329,14 +295,8 @@ fn try_parse_row(
 /// Parse `partprefabdyeslotinfo.pabgb` using its `.pabgh` index.
 ///
 /// Returns entries in PABGH on-disk order. Rows whose body doesn't match
-/// any supported per-slot layout (truncated, slot_count out of plausible
-/// range, key mismatch with PABGH, or leftover bytes under every layout)
-/// are silently dropped.
-///
-/// Each row is tried against [`SLOT_LAYOUTS`] newest-first, keeping
-/// whichever consumes the body exactly. The layouts are empirically
-/// disjoint (no row parses cleanly under two — verified across the full
-/// 1.11, 1.12 and 2.01 tables), so the fallback never mis-reads a row.
+/// the layout (truncated, slot_count out of plausible range, key mismatch
+/// with PABGH, or leftover bytes) are silently dropped.
 pub fn parse_part_prefab_dye_slot_info_lossy(
     pabgb: &[u8],
     pabgh: &[u8],
@@ -350,15 +310,7 @@ pub fn parse_part_prefab_dye_slot_info_lossy(
         let Some(body) = pabgb.get(*start..*end) else {
             continue;
         };
-        // Newest layout first; whichever consumes the body exactly wins,
-        // all of them failing drops the row (the lossy net). On the live
-        // 2.01 install the first layout parses all 1,626 rows.
-        if let Some(parsed) = SLOT_LAYOUTS
-            .iter()
-            .find_map(|&(new_schema, mask_len)| {
-                try_parse_row(body, entry.key, new_schema, mask_len)
-            })
-        {
+        if let Some(parsed) = try_parse_row(body, entry.key) {
             out.push(parsed);
         }
     }
@@ -447,14 +399,12 @@ mod tests {
             entries.len(),
             pabgb.len()
         );
-        // Row counts drift per patch: 1.13 = 1,538, 1.12 = 968, 1.07-1.11 =
-        // ~1105-1111. Pin >=900 as a version-agnostic floor that catches the
-        // 0-rows breakage on any install; the live-1.13 exact count (1,538,
-        // all rows parsing after the extra-layer RE) is asserted below.
-        assert!(
-            entries.len() >= 900,
-            "expected >=900 partprefabdyeslotinfo entries, got {}",
-            entries.len()
+        // Every indexed row must walk the layout exactly; the lossy parser
+        // drops any that doesn't (2.04 ships 1,704).
+        assert_eq!(
+            entries.len(),
+            crate::skill_info::parse_pabgh(&pabgh).unwrap().len(),
+            "a partprefabdyeslotinfo row failed to walk"
         );
 
         let by_key: std::collections::HashMap<u32, (&str, u32)> = entries

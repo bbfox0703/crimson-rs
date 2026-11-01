@@ -9,10 +9,12 @@
 //! `(u16 key, u32 offset)*` shape used by `factionrelationgroup`,
 //! `storeinfo`, and `partprefabdyetexturepalleteinfo`.
 //!
-//! Row body — bridge consumes the leading `(u16 key, u32 name_len, name)`
-//! triple. The rest of each row (~140 B of asset references — a
+//! Row body — bridge consumes the leading `(u32 name_len, name, u16 key)`
+//! triple (2.04 swapped key and name). The rest of each row (~140 B of asset references — a
 //! decimal-ASCII ID and `KliffHouse_Hernand_…` model name) is not yet
 //! surfaced; can be added later if the editor expands beyond name.
+
+use crate::binary::row_head::read_row_head;
 
 /// One parsed houseinfo row.
 #[derive(Debug, Clone)]
@@ -43,23 +45,13 @@ pub fn parse_house_info_lossy(pabgb: &[u8], pabgh: &[u8]) -> Vec<HouseInfoEntry>
             pabgh[pos + 5],
         ]) as usize;
         let Some(body) = pabgb.get(off..) else { continue };
-        if body.len() < 6 {
+        let Some(head) = read_row_head(body, 2) else { continue };
+        if head.key != u32::from(key16) || !(1..=128).contains(&head.name.len()) {
             continue;
         }
-        if u16::from_le_bytes([body[0], body[1]]) != key16 {
-            continue;
-        }
-        let name_len =
-            u32::from_le_bytes([body[2], body[3], body[4], body[5]]) as usize;
-        if !(1..=128).contains(&name_len) || 6 + name_len > body.len() {
-            continue;
-        }
-        let Ok(name) = std::str::from_utf8(&body[6..6 + name_len]) else {
-            continue;
-        };
         out.push(HouseInfoEntry {
             key: u32::from(key16),
-            name: name.to_owned(),
+            name: head.name.to_owned(),
         });
     }
     out
@@ -118,7 +110,7 @@ mod tests {
             return;
         };
         let entries = parse_house_info_lossy(&pabgb, &pabgh);
-        assert_eq!(entries.len(), 22, "expected 22 rows in 2.01 (12 in 1.18-2.00, 4 in 1.07-1.17)");
+        assert_eq!(entries.len(), 4, "expected 4 rows in 2.04 (22 in 2.01-2.03, 12 in 1.18-2.00, 4 in 1.07-1.17)");
         let by_key: std::collections::HashMap<u32, &str> =
             entries.iter().map(|e| (e.key, e.name.as_str())).collect();
         for &(k, expected) in KNOWN {

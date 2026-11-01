@@ -141,7 +141,7 @@ pub unsafe extern "C" fn crimson_stageinfo_load_from_bytes(
 ///
 /// Uses the PABGH `[u32 count][(u32 key, u32 offset)*]` index for the
 /// in-game-authoritative key list (51,037 on 1.08), then reads the
-/// `[u32 key_repeat][u32 slen][slen bytes]` name header at each offset
+/// `[u32 slen][slen bytes][u32 key_repeat]` row head at each offset
 /// from PABGB. Returns the same entries the in-game iterator does —
 /// no body-byte validation rejecting legitimate rows.
 ///

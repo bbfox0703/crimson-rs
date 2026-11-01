@@ -12,7 +12,10 @@
 //! (`Advice_Control_Move` etc.) is the save-layer's stable identifier
 //! and is what most consumers need today.
 //!
-//! Standard `u16 count + (u32 key, u32 offset)*` PABGH.
+//! Standard `u16 count + (u32 key, u32 offset)*` PABGH. Row body starts
+//! with `[u32 name_len][name][u32 key]` (2.04 swapped key and name).
+
+use crate::binary::row_head::read_row_head;
 
 #[derive(Debug, Clone)]
 pub struct GameAdviceInfoEntry {
@@ -32,24 +35,13 @@ pub fn parse_game_advice_info_lossy(
         let Some(body) = pabgb.get(e.offset as usize..) else {
             continue;
         };
-        if body.len() < 8 {
+        let Some(head) = read_row_head(body, 4) else { continue };
+        if head.key != e.key || !(1..=128).contains(&head.name.len()) {
             continue;
         }
-        let body_key = u32::from_le_bytes([body[0], body[1], body[2], body[3]]);
-        if body_key != e.key {
-            continue;
-        }
-        let name_len =
-            u32::from_le_bytes([body[4], body[5], body[6], body[7]]) as usize;
-        if !(1..=128).contains(&name_len) || 8 + name_len > body.len() {
-            continue;
-        }
-        let Ok(name) = std::str::from_utf8(&body[8..8 + name_len]) else {
-            continue;
-        };
         out.push(GameAdviceInfoEntry {
             key: e.key,
-            name: name.to_owned(),
+            name: head.name.to_owned(),
         });
     }
     out
@@ -110,8 +102,8 @@ mod tests {
         let entries = parse_game_advice_info_lossy(&pabgb, &pabgh);
         assert_eq!(
             entries.len(),
-            478,
-            "expected 478 rows in 2.00 (was 472 in 1.12-1.18, 470 in 1.10/1.11)"
+            482,
+            "expected 482 rows in 2.04 (478 in 2.00-2.03, 472 in 1.12-1.18, 470 in 1.10/1.11)"
         );
         let by_key: std::collections::HashMap<u32, &str> =
             entries.iter().map(|e| (e.key, e.name.as_str())).collect();

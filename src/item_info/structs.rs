@@ -107,6 +107,9 @@ py_binary_struct! {
         pub enchant_stat_data: EnchantStatData,
         pub buy_price_list: CArray<ItemPriceInfo>,
         pub equip_buffs: CArray<EquipmentBuff>,
+        // 2.04: a trailing u32 on every element, on top of the 1.12
+        // inter-element separator below. See "ItemInfo (2.04)" in `item.rs`.
+        pub unk_post_equip_buffs: u32,
     }
 }
 
@@ -126,8 +129,12 @@ py_binary_struct! {
 // separators are reconstructed on write), so the items.jsonl shape is
 // unchanged. The Rust round-trip stores the separators verbatim for byte
 // fidelity.
+//
+// 2.04 opens the list with a presence byte that reads 1 even when the count is
+// 0 — the one flagged list that does not collapse to `0x00` when empty.
 #[derive(Debug)]
 pub struct EnchantDataList {
+    pub flag: u8,
     pub items: Vec<EnchantData>,
     /// `items.len().saturating_sub(1)` separators, in element order. Always
     /// zero on every 1.12 item observed; kept for exact byte round-trip.
@@ -136,6 +143,14 @@ pub struct EnchantDataList {
 
 impl<'a> BinaryRead<'a> for EnchantDataList {
     fn read_from(data: &'a [u8], offset: &mut usize) -> io::Result<Self> {
+        let flag = u8::read_from(data, offset)?;
+        if flag == 0 {
+            return Ok(EnchantDataList {
+                flag,
+                items: Vec::new(),
+                separators: Vec::new(),
+            });
+        }
         let count = u32::read_from(data, offset)? as usize;
         let remaining = data.len().saturating_sub(*offset);
         if count > remaining {
@@ -155,12 +170,20 @@ impl<'a> BinaryRead<'a> for EnchantDataList {
             }
             items.push(EnchantData::read_from(data, offset)?);
         }
-        Ok(EnchantDataList { items, separators })
+        Ok(EnchantDataList {
+            flag,
+            items,
+            separators,
+        })
     }
 }
 
 impl BinaryWrite for EnchantDataList {
     fn write_to(&self, w: &mut dyn Write) -> io::Result<()> {
+        self.flag.write_to(w)?;
+        if self.flag == 0 {
+            return Ok(());
+        }
         (self.items.len() as u32).write_to(w)?;
         for (i, item) in self.items.iter().enumerate() {
             if i > 0 {
@@ -182,6 +205,24 @@ impl<'a> BinaryReadTracked<'a> for EnchantDataList {
         path: &mut String,
         ranges: &mut Vec<FieldRange>,
     ) -> io::Result<Self> {
+        let flag_start = *offset;
+        let flag = u8::read_from(data, offset)?;
+        let saved = crate::binary::push_path(path, "__tag__");
+        ranges.push(FieldRange {
+            path: path.clone(),
+            start: flag_start,
+            end: *offset,
+            ty: "EnchantDataList.tag",
+        });
+        crate::binary::pop_path(path, saved);
+        if flag == 0 {
+            return Ok(EnchantDataList {
+                flag,
+                items: Vec::new(),
+                separators: Vec::new(),
+            });
+        }
+
         let count_start = *offset;
         let count = u32::read_from(data, offset)? as usize;
         let saved = crate::binary::push_path(path, "__count__");
@@ -226,7 +267,11 @@ impl<'a> BinaryReadTracked<'a> for EnchantDataList {
             items.push(EnchantData::read_tracked(data, offset, path, ranges)?);
             crate::binary::pop_path(path, saved);
         }
-        Ok(EnchantDataList { items, separators })
+        Ok(EnchantDataList {
+            flag,
+            items,
+            separators,
+        })
     }
 }
 
@@ -248,6 +293,7 @@ impl WritePyValue for EnchantDataList {
         use pyo3::types::{PyList, PyListMethods};
         let list = obj.cast::<PyList>()?;
         let n = list.len();
+        w.push(1);
         w.extend_from_slice(&(n as u32).to_le_bytes());
         for (i, item) in list.iter().enumerate() {
             if i > 0 {
@@ -317,6 +363,9 @@ py_binary_struct! {
         pub refer_to_left_page_inspect_data: u8,
         pub inspect_effect_info_key: EffectKey,
         pub inspect_complete_effect_info_key: EffectKey,
+        // 2.04: two trailing f32s on every element, 0.1 and 1.048 on nearly all.
+        pub unk_post_inspect_effect_a: f32,
+        pub unk_post_inspect_effect_b: f32,
     }
 }
 
@@ -447,10 +496,19 @@ py_binary_struct! {
         pub detected_by_npc: u8,
         pub is_bag_docking: u8,
         pub enable_collision: u8,
+        // 2.04: four new bytes ahead of the one `disable_collision...` byte
+        // that reads non-zero. All zero, so where exactly in this run they sit
+        // cannot be told from the data; read as one u32.
+        pub unk_pre_disable_collision: u32,
         pub disable_collision_with_other_gimmick: u8,
         pub docking_slot_key: CString<'a>,
         pub inherit_summoner: u8,
         pub summon_tag_name_hash: [u32; 4],
+        // 2.04: a closing u32 (always 0) + u8 (always 1) on all 392 carried-over
+        // elements. Through 2.03 that u32 did exist, unmodelled: the parser read
+        // it as `default_sub_item` type 0, with the real tag 18 as its top byte.
+        pub unk_post_summon_tag_a: u32,
+        pub unk_post_summon_tag_b: u8,
         // Crimson Desert 1.08 added a trailing `unk_post_summon_tag: u8` here;
         // **1.16 removed it again**. It read 0x00 on every item that ever
         // carried it, matching the reserved-placeholder reading in the 1.08
@@ -492,6 +550,20 @@ py_binary_struct! {
         pub unk_b: u64,
         pub unk_c: u64,
         pub unk_d: u64,
+    }
+}
+
+py_binary_struct! {
+    /// The block `unk_pre_respawn_data_list` lives in since 2.04. Present on 197
+    /// of the 1,552 `iteminfo.dlc_01` rows and on no base-table row. All 197
+    /// have `unk_a` 1 and `unk_flag` 0; `unk_b` reads 1..=4. `item_group_list`
+    /// holds the same `0x4xxx` keys `item_group_info_list` does.
+    pub struct UnkPreRespawnBlock {
+        pub unk_a: u32,
+        pub unk_flag: u8,
+        pub unk_pre_respawn_data_list: CArray<UnkPreRespawnData>,
+        pub unk_b: u32,
+        pub item_group_list: CArray<ItemGroupKey>,
     }
 }
 

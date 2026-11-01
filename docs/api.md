@@ -28,7 +28,7 @@ Crypto.ICE            # 1
 Crypto.AES            # 2
 Crypto.CHACHA20       # 3
 
-Language.ALL          # 0x3FFF (all 14 languages)
+Language.ALL          # 0x7FFF (all 15 languages)
 Language.KOR          # 0x0001
 Language.ENG          # 0x0002
 Language.JPN          # 0x0004
@@ -117,7 +117,7 @@ Upsert a pack group entry. Inserts at front for mod priority (see [Mod Loading](
 
 ```python
 papgt = crimson_rs.parse_papgt_file("meta/0.papgt")
-updated = crimson_rs.add_papgt_entry(papgt, "0036", checksum, 0, 0x3FFF)
+updated = crimson_rs.add_papgt_entry(papgt, "0036", checksum, 0, 0x7FFF)
 crimson_rs.write_papgt_file(updated, "output/meta/0.papgt")
 ```
 
@@ -455,20 +455,18 @@ Each item is a dict with 105 fields. All fields are required for serialization.
 
 | Field | Type | Description |
 |---|---|---|
-| `inventory_info_list` | `list[int]` | InventoryKey (u16) slots at the item end — **ten** from 2.03 (nine in 1.16–2.02). Replaces the pre-1.16 head-side `inventory_info` (now slot 0) and the 1.13-era constant `unk_tail` (now slot 8); 2.03 added slot 9 (21 `Ship` on the `Trade_*_PackedInVehicle` items). `0xFF` = unused slot. `serialize_iteminfo` rejects a list of any other length. |
+| `inventory_info_list` | `list[int]` | InventoryKey (u16) slots at the item end — **twelve** from 2.04 (nine in 1.16–2.02, ten in 2.03). Replaces the pre-1.16 head-side `inventory_info` (now slot 0) and the 1.13-era constant `unk_tail` (now slot 8); 2.03 added slot 9 (21 `Ship` on the `Trade_*_PackedInVehicle` items). `0xFF` = unused slot. `serialize_iteminfo` rejects a list of any other length. |
 | `equip_type_info` | `int` | EquipTypeKey (u32) |
 | `occupied_equip_slot_data_list` | `list[dict]` | See [OccupiedEquipSlotData](#occupiedequipslotdata) |
 | `equipable_hash` | `int` | (u32) |
 | `equipable_level` | `int` | Required level to equip (u32) |
 | `category_info` | `int` | CategoryKey (u16) |
-| `quick_slot_index` | `int` | Quick slot position (u8) |
 
 ### Tags & Classification
 
 | Field | Type | Description |
 |---|---|---|
 | `item_tag_list` | `list[int]` | Item tags (u32 list) |
-| `consumable_type_list` | `list[int]` | Consumable types (u32 list) |
 | `item_type` | `int` | Item type ID (u8) |
 | `item_tier` | `int` | Item tier/rarity (u8) |
 | `material_key` | `int` | Material ID (u32) |
@@ -498,7 +496,7 @@ Each item is a dict with 105 fields. All fields are required for serialization.
 | `map_icon_path` | `int` | StringInfoKey (u32) |
 | `money_icon_path` | `int` | StringInfoKey (u32) |
 | `use_map_icon_alert` | `int` | (u8) |
-| `emoji_texture_id` | `str` | Emoji texture string |
+| `emoji_texture_id` | `int` | StringInfoKey (u32) since 2.04, a string before it |
 | `prefab_data_list` | `list[dict]` | See [PrefabData](#prefabdata) |
 | `gimmick_visual_prefab_data_list` | `list[dict]` | See [GimmickVisualPrefabData](#gimmickvisualprefabdata) |
 
@@ -525,7 +523,7 @@ Each item is a dict with 105 fields. All fields are required for serialization.
 |---|---|---|
 | `equip_passive_skill_list` | `list[dict]` | See [PassiveSkillLevel](#passiveskilllevel) |
 | `enchant_data_list` | `list[dict]` | See [EnchantData](#enchantdata) |
-| `sharpness_data` | `dict` | See [ItemInfoSharpnessData](#iteminfoSharpnessdata) |
+| `sharpness_data` | `dict \| None` | See [ItemInfoSharpnessData](#iteminfoSharpnessdata). `None` when absent (2.04) |
 | `max_endurance` | `int` | Maximum durability (u16). |
 | `repair_data_list` | `list[dict]` | See [RepairData](#repairdata) |
 | `is_shield_item` | `int` | (u8) |
@@ -566,7 +564,7 @@ Each item is a dict with 105 fields. All fields are required for serialization.
 | `max_drop_result_sub_item_count` | `int` | (u32) |
 | `use_drop_set_target` | `int` | (u8) |
 | `apply_drop_stat_type` | `int` | (u8) |
-| `drop_default_data` | `dict` | See [DropDefaultData](#dropdefaultdata) |
+| `drop_default_data` | `dict \| None` | See [DropDefaultData](#dropdefaultdata). `None` where it would be all defaults (2.04) |
 | `default_sub_item` | `dict` | See [SubItem](#subitem) |
 
 ### Pages & Inspect
@@ -576,7 +574,7 @@ Each item is a dict with 105 fields. All fields are required for serialization.
 | `fixed_page_data_list` | `list[dict]` | See [PageData](#pagedata) |
 | `dynamic_page_data_list` | `list[dict]` | See [PageData](#pagedata) |
 | `inspect_data_list` | `list[dict]` | See [InspectData](#inspectdata) |
-| `inspect_action` | `dict` | See [InspectAction](#inspectaction) |
+| `inspect_action` | `dict \| None` | See [InspectAction](#inspectaction). `None` when absent (2.04) |
 
 ### Docking & Inventory Change
 
@@ -594,7 +592,7 @@ Each item is a dict with 105 fields. All fields are required for serialization.
 | `is_dyeable` | `int` | (u8) |
 | `is_editable_grime` | `int` | (u8) |
 | `is_destroy_when_broken` | `int` | (u8) |
-| `is_important_item` | `int` | (u8) |
+| `item_importance_kind` | `int` | (u8) 2.04: 0 where the old `is_important_item` read 1, 2 where it read 0, 1 on one item |
 | `is_wild` | `int` | (u8) |
 | `enable_equip_in_clone_actor` | `int` | (u8) |
 | `hide_from_inventory_on_pop_item` | `int` | (u8) |
@@ -602,6 +600,16 @@ Each item is a dict with 105 fields. All fields are required for serialization.
 | `usable_alert` | `int` | (u8) |
 | `discard_offset_y` | `float` | (f32) |
 | `respawn_time_seconds` | `int` | (i64). |
+
+### 2.04 schema delta
+
+2.04 keeps almost every value and rearranges all of them: the row opens with `string_key` then `key`, a fixed 157-byte block of flags and keys comes next, and empty lists and absent structs shrink to one byte. The field-by-field record is the "ItemInfo (2.04)" header in `src/item_info/item.rs`. What changes for a caller of this API:
+
+- **Gone**: `quick_slot_index`, `consumable_type_list`, `is_important_item` (see `item_importance_kind`), `unk_pre_pattern_key`, `unk_pre_pattern_flag`, `unk_pre_respawn_flag`, `unk_post_respawn_data_list`, `unk_pre_max_endurance` (see `is_packed_in_vehicle`), and the top-level `unk_pre_respawn_data_list` (now inside `unk_pre_respawn_block`).
+- **Can now be `None`**: `drop_default_data`, `sharpness_data`, `inspect_action`. Check before indexing.
+- **Now an int**: `unk_texture_path`, `emoji_texture_id`, resolved through `stringinfo`.
+- **New**: `docking_child_data_list`, `is_packed_in_vehicle`, `item_importance_kind`, `unk_pre_cooltime_flag`, `unk_pre_packed_item_flag`, `unk_pre_respawn_block`, `EnchantData.unk_post_equip_buffs`, `InspectData.unk_post_inspect_effect_a` / `_b`, `DockingChildData.unk_pre_disable_collision` / `unk_post_summon_tag_a` / `_b`.
+- **Corrected values**: `packed_item_info`, `unpacked_item_info` and `convert_item_info_by_drop_npc` were one byte out of step through 2.03. They now hold real item keys.
 
 ### 1.05 schema delta
 

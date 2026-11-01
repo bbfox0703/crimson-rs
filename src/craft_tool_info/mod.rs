@@ -7,8 +7,10 @@
 //! `crafttoolgroupinfo`).
 //!
 //! `u16 count + (u16 key, u32 offset)*` PABGH. Body starts with
-//! `[u16 key][u32 name_len][name]`; trailing ~10 B carry the group
+//! `[u32 name_len][name][u16 key]` (2.04 swapped key and name); trailing ~10 B carry the group
 //! key reference + sentinels which this bridge doesn't surface.
+
+use crate::binary::row_head::read_row_head;
 
 #[derive(Debug, Clone)]
 pub struct CraftToolInfoEntry {
@@ -38,23 +40,13 @@ pub fn parse_craft_tool_info_lossy(
             pabgh[pos + 5],
         ]) as usize;
         let Some(body) = pabgb.get(off..) else { continue };
-        if body.len() < 6 {
+        let Some(head) = read_row_head(body, 2) else { continue };
+        if head.key != u32::from(key16) || !(1..=128).contains(&head.name.len()) {
             continue;
         }
-        if u16::from_le_bytes([body[0], body[1]]) != key16 {
-            continue;
-        }
-        let name_len =
-            u32::from_le_bytes([body[2], body[3], body[4], body[5]]) as usize;
-        if !(1..=128).contains(&name_len) || 6 + name_len > body.len() {
-            continue;
-        }
-        let Ok(name) = std::str::from_utf8(&body[6..6 + name_len]) else {
-            continue;
-        };
         out.push(CraftToolInfoEntry {
             key: u32::from(key16),
-            name: name.to_owned(),
+            name: head.name.to_owned(),
         });
     }
     out

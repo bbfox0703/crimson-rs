@@ -940,10 +940,14 @@ mod tests {
             by_kind.get(&container_kind::INVENTORY).copied().unwrap_or(0) > 100,
             "expected >100 INVENTORY records (baseline ~545)",
         );
-        // Mercenary equip: 245 in probe baseline.
+        // Mercenary equip: 245 through 2.03, 51 on 2.04. Re-saving on 2.04 strips
+        // `_equipItemList` from most hired mercenaries (slot0 → slot102: 52 → 14
+        // owners, 252 → 57 items, the same 98 mercenaries and the same schema,
+        // and 191 of the item numbers appear nowhere else in the save). See
+        // `_probe_items_by_container_all_saves`.
         assert!(
-            by_kind.get(&container_kind::MERCENARY_EQUIP).copied().unwrap_or(0) > 100,
-            "expected >100 MERCENARY_EQUIP records (baseline ~245)",
+            by_kind.get(&container_kind::MERCENARY_EQUIP).copied().unwrap_or(0) > 20,
+            "expected >20 MERCENARY_EQUIP records (baseline ~51 on 2.04)",
         );
 
         // Owner identity must be consistent with kind.
@@ -1004,6 +1008,73 @@ mod tests {
         assert_eq!(version, 0, "fresh handle should report mutation_version=0");
 
         unsafe { super::super::crimson_save_free(handle) };
+    }
+
+    /// Per-save `(container_kind, count)` table over every live save, oldest
+    /// first. A count that moves between a pre-patch save and its post-patch
+    /// re-save is the question to answer before reading it as decoder drift.
+    #[test]
+    #[ignore]
+    fn _probe_items_by_container_all_saves() {
+        let Some(local) = std::env::var_os("LOCALAPPDATA") else {
+            return;
+        };
+        let root = std::path::PathBuf::from(local).join("Pearl Abyss/CD/save");
+        let mut saves = Vec::new();
+        for user in std::fs::read_dir(root).into_iter().flatten().flatten() {
+            for slot in std::fs::read_dir(user.path()).into_iter().flatten().flatten() {
+                let path = slot.path().join("save.save");
+                if let Ok(meta) = std::fs::metadata(&path) {
+                    saves.push((meta.modified().unwrap(), path));
+                }
+            }
+        }
+        saves.sort();
+        for (_, path) in saves {
+            let path_c = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+            let mut handle: *mut CrimsonSaveHandle = ptr::null_mut();
+            let rc =
+                unsafe { super::super::crimson_save_load_from_file(path_c.as_ptr(), &mut handle) };
+            if rc != error::OK {
+                eprintln!("{}: load rc {rc}", path.display());
+                continue;
+            }
+            let mut count = 0usize;
+            unsafe {
+                crimson_save_list_all_items(handle, ptr::null_mut(), 0, &mut count, ptr::null_mut())
+            };
+            let mut records = vec![
+                CrimsonItemRecord {
+                    block_idx: 0, container_kind: u32::MAX, path_len: 0,
+                    path_step_0_field: 0, path_step_0_element: 0,
+                    path_step_1_field: 0, path_step_1_element: 0,
+                    inventory_key: 0, item_key: 0, slot_no: 0,
+                    flags: 0, owner_character_key: 0,
+                    item_no: 0, owner_mercenary_no: 0,
+                };
+                count
+            ];
+            let mut filled = count;
+            unsafe {
+                crimson_save_list_all_items(
+                    handle,
+                    records.as_mut_ptr(),
+                    records.len(),
+                    &mut filled,
+                    ptr::null_mut(),
+                )
+            };
+            let mut by_kind: std::collections::BTreeMap<u32, usize> = Default::default();
+            let mut owners: std::collections::BTreeSet<u64> = Default::default();
+            for r in &records {
+                *by_kind.entry(r.container_kind).or_insert(0) += 1;
+                if r.container_kind == container_kind::MERCENARY_EQUIP {
+                    owners.insert(r.owner_mercenary_no);
+                }
+            }
+            eprintln!("{}: {by_kind:?} mercenary owners: {}", path.display(), owners.len());
+            unsafe { super::super::crimson_save_free(handle) };
+        }
     }
 
     /// Verify the 2-step path recorded for **every** container kind

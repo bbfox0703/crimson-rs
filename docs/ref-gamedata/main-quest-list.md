@@ -1,9 +1,10 @@
-> Titles are the live English display strings as of **Crimson Desert 2.03**, and every row is tied to the game
+> Titles are the live English display strings as of **Crimson Desert 2.04**, and every row is tied to the game
 > row its title comes from (`MissionKey` / `QuestKey`) in
 > [`src/c_abi/main_quest_chapter.rs`](../../src/c_abi/main_quest_chapter.rs). The live-install test
 > `curated_titles_match_live_install` fails when a key's title drifts, so future retitles surface on the next
 > patch run. See [Reconciliation against 2.02](#reconciliation-against-202) for what changed and why, and
-> [Retitles in 2.03](#retitles-in-203) for the eight titles 2.03 changed.
+> [Retitles in 2.03](#retitles-in-203) for the eight titles 2.03 changed, and
+> [Retitles in 2.04](#retitles-in-204) for the one 2.04 changed.
 
 ### **Prologue: Dead of Night**
 
@@ -52,7 +53,7 @@
 
 
 * **The End of Greed**
-* The Dark Veil
+* Veil of Darkness
 * The Flames of Greed
 * Kidnapped Healer
 * Rebellion or Revolution
@@ -412,6 +413,12 @@ carry no key (`Unresolved`); the title lookups still answer for them:
 
 "Cradle of Defense" is kept as an arc heading, but its title belongs to a mission
 (`1001231` `Mission_Silver_Armor_Boss_Occupation_Refinery`), not a quest.
+
+## Retitles in 2.04
+
+| 2.03 | 2.04 | Game row |
+|---|---|---|
+| The Dark Veil | Veil of Darkness | `1000185` `Mission_SplitHorn_Boss_TwinkleManner` |
 
 ## Retitles in 2.03
 

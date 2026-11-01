@@ -326,6 +326,8 @@ class DockingChildData(TypedDict):
     """u8"""
     enable_collision: int
     """u8"""
+    unk_pre_disable_collision: int
+    """2.04: u32, always 0."""
     disable_collision_with_other_gimmick: int
     """u8"""
     docking_slot_key: str
@@ -357,7 +359,9 @@ class PatternDescriptionData(TypedDict):
 class ItemInfo(TypedDict):
     """A single item parsed from the iteminfo binary file."""
 
-    # Identity
+    # Identity. On disk since 2.04 a row opens with ``string_key`` then ``key``,
+    # and fields come in file order, not this order: see the "ItemInfo (2.04)"
+    # header in ``src/item_info/item.rs``.
     key: int
     """Unique item ID. ItemKey (u32)."""
     string_key: str
@@ -378,8 +382,6 @@ class ItemInfo(TypedDict):
     """u32 list."""
     equipable_hash: int
     """u32"""
-    consumable_type_list: list[int]
-    """u32 list."""
     item_use_info_list: list[int]
     """ItemUseKey list (u32)."""
     item_icon_list: list[ItemIconData]
@@ -464,27 +466,33 @@ class ItemInfo(TypedDict):
     """u8"""
     is_housing_only: int
     """u8"""
-    quick_slot_index: int
-    """u8"""
     reserve_slot_target_data_list: list[ReserveSlotTargetData]
     item_tier: int
     """u8"""
-    is_important_item: int
-    """u8"""
+    item_importance_kind: int
+    """2.04: u8. 0 where the old ``is_important_item`` read 1, 2 where it read
+    0, and 1 on one item."""
     apply_drop_stat_type: int
     """u8"""
-    drop_default_data: DropDefaultData
+    drop_default_data: DropDefaultData | None
+    """2.04: None where it would be all defaults (no sockets, tag-18 sub item)."""
     prefab_data_list: list[PrefabData]
     enchant_data_list: list[EnchantData]
     gimmick_visual_prefab_data_list: list[GimmickVisualPrefabData]
     price_list: list[ItemPriceInfo]
     docking_child_data: DockingChildData | None
+    docking_child_data_list: list[DockingChildData]
+    """2.04: empty except on the eight ``Item_wagon_wheel_*`` items."""
     inventory_change_data: InventoryChangeData | None
-    unk_texture_path: str
+    unk_texture_path: int
+    """2.04: StringInfoKey (u32), was str. Empty string is 0xeac5e173."""
     fixed_page_data_list: list[PageData]
     dynamic_page_data_list: list[PageData]
     inspect_data_list: list[InspectData]
-    inspect_action: InspectAction
+    inspect_action: InspectAction | None
+    """2.04: None when absent."""
+    unk_pre_cooltime_flag: int
+    """2.04: u8, 1 on every item."""
     default_sub_item: SubItem
     cooltime: int
     """i64"""
@@ -496,7 +504,8 @@ class ItemInfo(TypedDict):
     """u8"""
     usable_alert_type: int
     """u8"""
-    sharpness_data: ItemInfoSharpnessData
+    sharpness_data: ItemInfoSharpnessData | None
+    """2.04: None when absent."""
     max_charged_useable_count: int
     """u32"""
     unk_post_max_charged_a: int
@@ -538,7 +547,8 @@ class ItemInfo(TypedDict):
     """u32"""
     item_bundle_data_list: list[ItemBundleData]
     money_type_define: MoneyTypeDefine | None
-    emoji_texture_id: str
+    emoji_texture_id: int
+    """2.04: StringInfoKey (u32), was str. Empty string is 0xeac5e173."""
     enable_equip_in_clone_actor: int
     """u8"""
     new_icon_path: str
@@ -570,16 +580,30 @@ class ItemInfo(TypedDict):
     unk_pre_respawn_a: int
     """1.16: u32. 0 on all but 36 items (Wood_Branch_* tiers, which carry an
     ItemKey-shaped value)."""
-    unk_pre_respawn_flag: int
-    """1.16: u8. 1 on 17 items, 0 elsewhere."""
-    unk_pre_respawn_data_list: list[UnkPreRespawnData]
-    """1.16: 28-byte elements; non-empty on only 14 items."""
-    unk_post_respawn_data_list: int
-    """1.16: u8. Observed 0 / 1 / 2 / 3."""
+    unk_pre_respawn_block: UnkPreRespawnBlock | None
+    """2.04: holds `unk_pre_respawn_data_list`. None on every base-table item;
+    only `iteminfo.dlc_01` carries it."""
+    is_packed_in_vehicle: int
+    """2.04: u8, 1 on the `Trade_*_PackedInVehicle` items. Was the top byte of
+    the 4-byte `unk_pre_max_endurance`."""
+    unk_pre_packed_item_flag: int
+    """2.04: u8. Through 2.03 it was misread as `packed_item_info == 1`."""
     inventory_info_list: list[int]
-    """1.16: nine InventoryKey (u16) slots at the item end, replacing the
-    pre-1.16 head-side `inventory_info` (slot 0) and the 1.13-era constant
-    `unk_tail` (slot 8). 0xFF marks an unused slot."""
+    """Twelve InventoryKey (u16) slots at the item end (nine in 1.16-2.02, ten
+    in 2.03). Slot 0 is the pre-1.16 head-side `inventory_info`, slot 8 the
+    1.13-era constant `unk_tail`. 0xFF marks an unused slot."""
+
+
+class UnkPreRespawnBlock(TypedDict):
+    unk_a: int
+    """u32, 1 everywhere seen."""
+    unk_flag: int
+    """u8, 0 everywhere seen."""
+    unk_pre_respawn_data_list: list[UnkPreRespawnData]
+    unk_b: int
+    """u32, 1..=4."""
+    item_group_list: list[int]
+    """ItemGroupKey (u16)."""
 
 
 class UnkPreRespawnData(TypedDict):
@@ -829,14 +853,18 @@ class PapgtEntry(TypedDict):
 
 class PapgtData(TypedDict):
     unknown0: int
-    """u32"""
+    """u32 (<= 2.03) / u16 (2.04+)"""
     checksum: int
-    """u32 — checksum of the post-header data."""
+    """u32 — checksum of the post-header data; 0 on a 2.04+ file, which has none."""
     unknown1: int
     """u8"""
     unknown2: int
-    """u16"""
+    """u16; <= 2.03 only."""
     entries: list[PapgtEntry]
+    _trailer: bytes | None
+    """The 64 closing bytes of a 2.04+ file, carried verbatim. They look like a
+    signature over the file and cannot be recomputed, so they go stale when
+    entries are edited. None on a <= 2.03 file."""
 
 
 def parse_papgt_file(path: str) -> PapgtData:
@@ -900,8 +928,9 @@ class PamtFile(TypedDict):
     """u16 — references a chunk by ID."""
     flags: int
     """u8 — raw flags byte."""
-    unknown0: int
-    """u8"""
+    extension_index: int
+    """u8 — index into the 2.04+ extension table; ``name`` already includes the
+    extension. Always 0 on a <= 2.03 file."""
     compression: int
     """u8 — decoded compression type (0=None, 2=LZ4, 3=Zlib, 4=QuickLZ)."""
     crypto: int
@@ -936,6 +965,9 @@ class PamtData(TypedDict):
     """Raw trie buffer (needed for roundtrip serialization)."""
     _file_names_buffer: bytes
     """Raw trie buffer (needed for roundtrip serialization)."""
+    _extensions_buffer: bytes | None
+    """Raw 2.04+ extension table, NUL-separated with entry 0 empty. None on a
+    <= 2.03 file, whose tries also use absolute parent offsets."""
 
 
 def parse_pamt_file(path: str) -> PamtData:
@@ -1047,7 +1079,7 @@ def add_papgt_entry(
         group_name: Pack group name (e.g. "0036").
         pack_meta_checksum: Checksum of the group's 0.pamt post-header data.
         is_optional: Whether this group is optional (0 or 1).
-        language: Language bitmask (0x3FFF for ALL).
+        language: Language bitmask (0x7FFF for ALL).
 
     Returns:
         Updated PAPGT data dict with the new entry and recalculated checksum.

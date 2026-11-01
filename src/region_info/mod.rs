@@ -5,8 +5,10 @@
 //! …). 1,004 rows in 1.07. The save layer references these as
 //! discovery / map-state keys.
 //!
-//! `u16 count + (u16 key, u32 offset)*` PABGH. Body: `[u16 key][u32
-//! name_len][name]`; rest carries region geometry / sub-region tree.
+//! `u16 count + (u16 key, u32 offset)*` PABGH. Body: `[u32 name_len]
+//! [name][u16 key]` (2.04 swapped key and name); rest carries region geometry / sub-region tree.
+
+use crate::binary::row_head::read_row_head;
 
 #[derive(Debug, Clone)]
 pub struct RegionInfoEntry {
@@ -36,23 +38,13 @@ pub fn parse_region_info_lossy(
             pabgh[pos + 5],
         ]) as usize;
         let Some(body) = pabgb.get(off..) else { continue };
-        if body.len() < 6 {
+        let Some(head) = read_row_head(body, 2) else { continue };
+        if head.key != u32::from(key16) || !(1..=128).contains(&head.name.len()) {
             continue;
         }
-        if u16::from_le_bytes([body[0], body[1]]) != key16 {
-            continue;
-        }
-        let name_len =
-            u32::from_le_bytes([body[2], body[3], body[4], body[5]]) as usize;
-        if !(1..=128).contains(&name_len) || 6 + name_len > body.len() {
-            continue;
-        }
-        let Ok(name) = std::str::from_utf8(&body[6..6 + name_len]) else {
-            continue;
-        };
         out.push(RegionInfoEntry {
             key: u32::from(key16),
-            name: name.to_owned(),
+            name: head.name.to_owned(),
         });
     }
     out
@@ -111,7 +103,7 @@ mod tests {
             return;
         };
         let entries = parse_region_info_lossy(&pabgb, &pabgh);
-        assert_eq!(entries.len(), 1007, "expected 1007 rows in 1.10 (was 1006 in 1.08/1.09)");
+        assert_eq!(entries.len(), 1012, "expected 1012 rows in 2.04 (1007 in 1.10-2.03, 1006 in 1.08/1.09)");
         let by_key: std::collections::HashMap<u32, &str> =
             entries.iter().map(|e| (e.key, e.name.as_str())).collect();
         for &(k, expected) in KNOWN {

@@ -12,7 +12,7 @@
 //!
 //! Pairs with [`super::pabgb`]: each entry's `offset` is a byte offset
 //! into the matching `stringinfo.pabgb`, where the record at that offset
-//! starts with the same `hash` u32.
+//! carries the same `hash` u32 (after the 4-byte zero since 2.04).
 
 // Index helpers are exercised by `string_info::tests::live_pair_roundtrip`
 // and the synthetic pair test; the `c_abi` bridge intentionally ignores

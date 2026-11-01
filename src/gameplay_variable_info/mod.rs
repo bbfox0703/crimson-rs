@@ -6,8 +6,11 @@
 //! references these as toggle / progression keys.
 //!
 //! Standard `u16 count + (u32 key, u32 offset)*` PABGH. Row body
-//! starts with `[u32 key][u32 name_len][name]`; the trailing body
+//! starts with `[u32 name_len][name][u32 key]` (2.04 swapped key and
+//! name); the trailing body
 //! carries the per-row UTF-8 display string and is not consumed here.
+
+use crate::binary::row_head::read_row_head;
 
 #[derive(Debug, Clone)]
 pub struct GamePlayVariableInfoEntry {
@@ -27,24 +30,13 @@ pub fn parse_gameplay_variable_info_lossy(
         let Some(body) = pabgb.get(e.offset as usize..) else {
             continue;
         };
-        if body.len() < 8 {
+        let Some(head) = read_row_head(body, 4) else { continue };
+        if head.key != e.key || !(1..=128).contains(&head.name.len()) {
             continue;
         }
-        let body_key = u32::from_le_bytes([body[0], body[1], body[2], body[3]]);
-        if body_key != e.key {
-            continue;
-        }
-        let name_len =
-            u32::from_le_bytes([body[4], body[5], body[6], body[7]]) as usize;
-        if !(1..=128).contains(&name_len) || 8 + name_len > body.len() {
-            continue;
-        }
-        let Ok(name) = std::str::from_utf8(&body[8..8 + name_len]) else {
-            continue;
-        };
         out.push(GamePlayVariableInfoEntry {
             key: e.key,
-            name: name.to_owned(),
+            name: head.name.to_owned(),
         });
     }
     out
@@ -105,8 +97,8 @@ mod tests {
         let entries = parse_gameplay_variable_info_lossy(&pabgb, &pabgh);
         assert_eq!(
             entries.len(),
-            59,
-            "expected 59 rows in 2.03 (62 in 2.01-2.02, 59 in 2.00, 56 in 1.16-1.18, 57 in 1.13-1.15, 56 in 1.12, 55 in 1.11, 47 through 1.10)"
+            68,
+            "expected 68 rows in 2.04 (59 in 2.03, 62 in 2.01-2.02, 59 in 2.00, 56 in 1.16-1.18, 57 in 1.13-1.15, 56 in 1.12, 55 in 1.11, 47 through 1.10)"
         );
         let by_key: std::collections::HashMap<u32, &str> =
             entries.iter().map(|e| (e.key, e.name.as_str())).collect();

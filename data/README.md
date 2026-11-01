@@ -4,7 +4,9 @@ Bundled inputs that travel with the repo so the iteminfo export pipeline runs ou
 
 | File | What it is | Source | Size |
 |---|---|---|---|
-| `keys.txt` | Current-version Crimson Desert itemKey list (one decimal key per line, in in-game order). Tracks the latest game patch — currently **2.03** with 6,816 keys: the 2.02 list plus 1006028–1006030, inserted together after position 4,579 (none removed or moved). | Dumped from `CrimsonDesert.exe` process memory via Cheat Engine (see Generation below) | ~58 KB |
+| `keys.txt` | Current-version Crimson Desert itemKey list (one decimal key per line, in in-game order). Tracks the latest game patch — currently **2.04** with 7,064 keys: +259 / −11 vs 2.03. Identical, order included, to the base `iteminfo.staticinfoheader`, so on 2.04 it can also be read from the archive. | Dumped from `CrimsonDesert.exe` process memory via Cheat Engine (see Generation below) | ~61 KB |
+| `keys-2.04.txt` | Snapshot dumped against the live 2.04 install. Byte-identical to `keys.txt`. Holds none of the 1,310 keys only `iteminfo.dlc_01` has, so the DLC was not loaded when it was dumped. | Frozen from the live 2.04 dump | ~61 KB |
+| `keys-2.04-dlc_01.txt` | The 1,552 keys of `iteminfo.dlc_01` in file order: 1,310 new, 242 also in the base table (same `string_key`). **Not** an in-game order: where these sit in memory with the DLC loaded has not been dumped. | `dlc/dlc_01/0008` `iteminfo.dlc_01.staticinfoheader` | ~13 KB |
 | `keys-2.03.txt` | Snapshot dumped against the live 2.03 install. Byte-identical to `keys.txt`; +3 items vs 2.02 (1006028–1006030), none removed. | Frozen from the live 2.03 dump | ~58 KB |
 | `keys-2.02.txt` | Snapshot dumped against the live 2.02 install. Byte-identical to `keys-2.01.txt` (content-only patch, no item add/remove). | Frozen from the live 2.02 dump | ~58 KB |
 | `keys-2.01.txt` | Snapshot dumped against the live 2.01 install. +3 items vs 2.00 (1005600, 1005601, 1005852), none removed; key 1000319 moved position. | Frozen from the live 2.01 dump | ~58 KB |

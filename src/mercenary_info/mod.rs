@@ -19,15 +19,16 @@
 //! file).
 //!
 //! **PABGB row layout** — bridge consumes the leading
-//! `(u8 key, u32 name_len, name)` triple. The rest of each row
+//! `(u32 name_len, name, u8 key)` triple (2.04 swapped key and name). The
+//! rest of each row
 //! (~58 bytes of template body — version tag, sentinel bytes, anchor
 //! marker, then a hash trailer) is left untouched.
 //!
 //! ```text
 //! Row {
-//!     u8  key,              // matches PABGH key
 //!     u32 name_len,
 //!     u8  name[name_len],   // ASCII template name, e.g. "Mercenary_Main"
+//!     u8  key,              // matches PABGH key
 //!     [variable body — version + flags + trailing hash, ~58 B/row,
 //!      length determined by the next row's offset]
 //! }
@@ -40,6 +41,8 @@
 //! player sees is resolved through a separate gamedata path; the
 //! template internal name is the save-layer identifier and is what
 //! this bridge surfaces.
+
+use crate::binary::row_head::read_row_head;
 
 /// One parsed mercenaryinfo row, reduced to what the bridge consumes.
 #[derive(Debug, Clone)]
@@ -83,24 +86,15 @@ pub fn parse_mercenary_info_lossy(
         let Some(body) = pabgb.get(start..) else {
             continue;
         };
-        // Row needs at least `u8 key + u32 name_len = 5` bytes.
-        if body.len() < 5 {
-            continue;
-        }
-        if body[0] != key8 {
-            continue;
-        }
-        let name_len =
-            u32::from_le_bytes([body[1], body[2], body[3], body[4]]) as usize;
-        if !(1..=64).contains(&name_len) || 5 + name_len > body.len() {
-            continue;
-        }
-        let Ok(name) = std::str::from_utf8(&body[5..5 + name_len]) else {
+        let Some(head) = read_row_head(body, 1) else {
             continue;
         };
+        if head.key != u32::from(key8) || !(1..=64).contains(&head.name.len()) {
+            continue;
+        }
         out.push(MercenaryInfoEntry {
-            key: u32::from(key8),
-            name: name.to_owned(),
+            key: head.key,
+            name: head.name.to_owned(),
         });
     }
     out
@@ -162,7 +156,7 @@ mod tests {
     }
 
     /// Body-dump probe — reads every 1.07 mercenaryinfo row and prints
-    /// the full body (everything after `(u8 key, u32 name_len, name)`)
+    /// the full body (everything after `(u32 name_len, name, u8 key)`)
     /// as hex + repr + interpretation hints. Used to RE the per-row
     /// body schema (price / cooldown / faction / requirements).
     ///
@@ -182,7 +176,7 @@ mod tests {
         // Re-parse the PABGH index to get sorted (key, offset) so we
         // can compute each row's exact length from the next offset.
         let count = u16::from_le_bytes([pabgh[0], pabgh[1]]) as usize;
-        assert_eq!(count, 18);
+        assert_eq!(count, 21);
         let mut idx: Vec<(u8, u32)> = (0..count)
             .map(|i| {
                 let off = 2 + i * 5;
@@ -204,9 +198,9 @@ mod tests {
                 pabgb.len()
             };
             let row = &pabgb[off as usize..end];
-            let name_len = u32::from_le_bytes([row[1], row[2], row[3], row[4]]) as usize;
-            let name = std::str::from_utf8(&row[5..5 + name_len]).unwrap_or("<bad>");
-            let body = &row[5 + name_len..];
+            let head = read_row_head(row, 1).expect("row head");
+            let name = head.name;
+            let body = &row[head.body_at..];
             eprintln!(
                 "\n=== key={} ({:32}) offset={} row_len={} body_len={} ===",
                 key, name, off, row.len(), body.len(),

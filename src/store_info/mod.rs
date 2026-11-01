@@ -19,7 +19,9 @@
 //! 1,754 bytes (matches the live file).
 //!
 //! **PABGB row layout** — the bridge only consumes the leading
-//! `(u16 key, u32 name_len, name)` triple. The rest of each row (~4 KB
+//! `(u32 name_len, name, u16 key)` triple (2.04 swapped key and name, and
+//! reordered the body, so the hexpat and the offsets it documents are
+//! pre-2.04). The rest of each row (~4 KB
 //! of price / item / format-tag body) is left untouched; the hexpat
 //! pattern at `references/store_info.hexpat` documents the per-format
 //! layouts for callers that want to RE the embedded item list. Per-row
@@ -35,9 +37,9 @@
 //!
 //! ```text
 //! Row {
-//!     u16 key,              // matches PABGH key
 //!     u32 name_len,
 //!     u8  name[name_len],   // ASCII template name, e.g. "Store_Her_General"
+//!     u16 key,              // matches PABGH key
 //!     [variable body — store header + items + tail, format-specific,
 //!      length determined by the next row's offset]
 //! }
@@ -49,6 +51,8 @@
 //! player sees in-game ("General Store of Herennen") is resolved through
 //! a different gamedata path; the internal template name is the
 //! save-layer's only stable identifier and is what this bridge surfaces.
+
+use crate::binary::row_head::read_row_head;
 
 /// One parsed storeinfo row, reduced to what the bridge consumes.
 #[derive(Debug, Clone)]
@@ -89,30 +93,20 @@ pub fn parse_store_info_lossy(pabgb: &[u8], pabgh: &[u8]) -> Vec<StoreInfoEntry>
     let mut out = Vec::with_capacity(count);
     for &(key16, off) in &entries {
         let start = off as usize;
-        // Row needs at least `u16 key + u32 name_len = 6` bytes to be
-        // parseable. We don't need the end-of-row offset for a
-        // name-only bridge — the `name_len` field bounds the read.
+        // We don't need the end-of-row offset for a name-only bridge —
+        // the `name_len` field bounds the read.
         let Some(body) = pabgb.get(start..) else {
             continue;
         };
-        if body.len() < 6 {
-            continue;
-        }
-        let body_key = u16::from_le_bytes([body[0], body[1]]);
-        if body_key != key16 {
-            continue;
-        }
-        let name_len =
-            u32::from_le_bytes([body[2], body[3], body[4], body[5]]) as usize;
-        if !(1..=128).contains(&name_len) || 6 + name_len > body.len() {
-            continue;
-        }
-        let Ok(name) = std::str::from_utf8(&body[6..6 + name_len]) else {
+        let Some(head) = read_row_head(body, 2) else {
             continue;
         };
+        if head.key != u32::from(key16) || !(1..=128).contains(&head.name.len()) {
+            continue;
+        }
         out.push(StoreInfoEntry {
-            key: u32::from(key16),
-            name: name.to_owned(),
+            key: head.key,
+            name: head.name.to_owned(),
         });
     }
     out
@@ -213,7 +207,9 @@ mod tests {
     /// Forensic probe for the next-session per-row body RE pass.
     /// Classifies every row by `(field_e, format_tag)` (the
     /// common-header discriminators at offsets +21 and +26..+27) and
-    /// dumps the first 96 bytes of body for each variant group.
+    /// dumps the first 96 bytes of body for each variant group. Those
+    /// offsets are the pre-2.04 body's; the groups below are 1.07's and
+    /// have not been re-derived on the reordered 2.04 body.
     ///
     /// 1.07 distribution (2026-05-17 baseline):
     /// - `field_e=0, format_tag=0x01FD/0x03FC/0x83FC`: 181 rows (standard family;
@@ -275,17 +271,11 @@ mod tests {
                 .unwrap_or(pabgb.len() as u32);
             let len = row_end - start;
             let body = &pabgb[start as usize..row_end as usize];
-            if body.len() < 6 {
+            let Some(head) = read_row_head(body, 2) else {
                 continue;
-            }
-            let name_len = u32::from_le_bytes([body[2], body[3], body[4], body[5]]) as usize;
-            if 6 + name_len > body.len() {
-                continue;
-            }
-            let name = std::str::from_utf8(&body[6..6 + name_len])
-                .unwrap_or("<bad utf8>")
-                .to_owned();
-            let common_start = 6 + name_len;
+            };
+            let name = head.name.to_owned();
+            let common_start = head.body_at;
             if common_start + 28 > body.len() {
                 continue;
             }
@@ -321,9 +311,7 @@ mod tests {
         for ((field_e, fta, ftb), rows) in &by_variant {
             let (key, start, len, name) = &rows[0];
             let body = &pabgb[*start as usize..(*start as usize + *len as usize)];
-            let name_len =
-                u32::from_le_bytes([body[2], body[3], body[4], body[5]]) as usize;
-            let after_name = 6 + name_len;
+            let after_name = read_row_head(body, 2).expect("row head").body_at;
             let head = &body[after_name..(after_name + 96).min(body.len())];
             print!(
                 "  variant=(field_e={}, 0x{:02X}{:02X}) key={} name={:?} body_len={} :",

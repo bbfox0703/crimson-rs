@@ -6,22 +6,26 @@
 //! palettes** the in-game NPC dye menu offers (e.g.
 //! `Her_Color_Group_I` = 埃爾南德, `Por_Color_Group_I` = 波羅琳).
 //!
-//! ## Schema (verified against the live 1.07 install, every row, byte-perfect)
+//! ## Schema (verified against the live 2.04 install, every row, byte-perfect)
+//!
+//! 2.04 moved `key` after the name and `row_hash` (formerly the row's last
+//! 4 bytes) up in front of `color_count`. Against 2.03, all 10 rows carry
+//! the same flag, hash, palette and trailer.
 //!
 //! ```text
 //! Row {
-//!     u32 key,                  // matches PABGH key
 //!     u32 name_len,
 //!     u8 name[name_len],        // ASCII, e.g. "Her_Color_Group_I"
+//!     u32 key,                  // matches PABGH key
 //!     u8 flag,                  // always 0
-//!     u32 color_count,          // always 109 in 1.07
+//!     u8 row_hash[4],           // per-row hash value
+//!     u32 color_count,          // always 109
 //!     u8 color_data[8 * color_count],  // palette (BGRA + 4-byte tail per record, see below)
-//!     // 37-byte trailer:
+//!     // trailer:
 //!     u8 trailer_marker[5],     // 23 31 02 00 00 — constant across rows
 //!     u32 key_copy,             // = key
-//!     u32 numeric_id_len,       // always 20
-//!     u8 numeric_id[20],        // ASCII decimal digits (u64 hash serialized as text)
-//!     u8 trailing_hash[4],      // per-row hash value
+//!     u32 numeric_id_len,       // 16..=20
+//!     u8 numeric_id[numeric_id_len],  // ASCII decimal digits (u64 hash serialized as text)
 //! }
 //! ```
 //!
@@ -76,6 +80,8 @@
 //! parser uses `skill_info::parse_pabgh` since the layout is identical
 //! (`u16 count + (u32 key, u32 offset)*`).
 
+use crate::binary::row_head::read_row_head;
+
 /// One parsed dye color group row.
 #[derive(Debug, Clone)]
 pub struct DyeColorGroupInfoEntry {
@@ -98,7 +104,7 @@ pub struct DyeColorGroupInfoEntry {
 /// Parse `dyecolorgroupinfo.pabgb` using its `.pabgh` index.
 ///
 /// Returns entries in PABGH on-disk order. Skips any row whose body
-/// is too short to contain `[u32 key][u32 name_len][name_len bytes]`
+/// is too short to contain `[u32 name_len][name_len bytes][u32 key]`
 /// or whose name bytes are not valid UTF-8 — both treated as anchor
 /// noise rather than panics so a future patch with new row shapes
 /// doesn't break the build.
@@ -115,34 +121,27 @@ pub fn parse_dye_color_group_info_lossy(
         let Some(body) = pabgb.get(*start..*end) else {
             continue;
         };
-        if body.len() < 8 {
+        let Some(head) = read_row_head(body, 4) else {
             continue;
-        }
-        let key = u32::from_le_bytes([body[0], body[1], body[2], body[3]]);
-        if key != entry.key {
+        };
+        if head.key != entry.key || !(1..=128).contains(&head.name.len()) {
             // PABGH/PABGB mismatch — refuse the row rather than emit
             // garbage. A future patch could change the row prefix; the
             // bridge surface treats this as "row missing".
             continue;
         }
-        let name_len = u32::from_le_bytes([body[4], body[5], body[6], body[7]]) as usize;
-        if 8 + name_len > body.len() || !(1..=128).contains(&name_len) {
-            continue;
-        }
-        let Ok(name) = std::str::from_utf8(&body[8..8 + name_len]) else {
-            continue;
-        };
 
         // Parse the 109-record palette body.
-        // Layout after the name: `u8 flag + u32 color_count + 8 * color_count bytes`.
+        // Layout after the key: `u8 flag + 4-byte hash + u32 color_count +
+        // 8 * color_count bytes`.
         // Bytes per record: [B, G, R, A, tail0..tail3]; we keep only the
         // logical RGBA (post-swap) so palette comparisons against the
         // save's u8 _dyeColorR/G/B/A are direct.
-        let palette = parse_palette_after_name(body, 8 + name_len).unwrap_or_default();
+        let palette = parse_palette_after_key(body, head.body_at).unwrap_or_default();
 
         out.push(DyeColorGroupInfoEntry {
-            key,
-            name: name.to_owned(),
+            key: head.key,
+            name: head.name.to_owned(),
             palette,
         });
     }
@@ -191,13 +190,13 @@ pub(crate) fn extract_pair_for_tests() -> Option<(Vec<u8>, Vec<u8>)> {
     Some((pabgb, pabgh))
 }
 
-/// Parse the post-name palette body. Returns `None` when the body is
+/// Parse the post-key palette body. Returns `None` when the body is
 /// too short or `color_count` is unreasonable — both are treated as
 /// anchor noise (row stays in the entry list but with an empty
 /// palette, mirroring the parser's "lossy" contract).
-fn parse_palette_after_name(body: &[u8], after_name_off: usize) -> Option<Vec<[u8; 4]>> {
-    let flag_off = after_name_off;
-    let count_off = flag_off + 1;
+fn parse_palette_after_key(body: &[u8], after_key_off: usize) -> Option<Vec<[u8; 4]>> {
+    // `u8 flag + 4-byte row hash`.
+    let count_off = after_key_off + 5;
     if count_off + 4 > body.len() {
         return None;
     }
@@ -320,13 +319,11 @@ mod tests {
             };
             let body = &pabgb[*start..*end];
             if body.len() < 12 { continue; }
-            let key = u32::from_le_bytes([body[0], body[1], body[2], body[3]]);
-            assert_eq!(key, target_key);
-            let name_len = u32::from_le_bytes([body[4], body[5], body[6], body[7]]) as usize;
-            // After name + 1-byte flag we hit color_count then 8*N bytes.
-            let after_name = 8 + name_len;
-            let flag = body[after_name];
-            let color_count_off = after_name + 1;
+            let head = read_row_head(body, 4).expect("row head");
+            assert_eq!(head.key, target_key);
+            // After key + 1-byte flag + 4-byte hash we hit color_count then 8*N bytes.
+            let flag = body[head.body_at];
+            let color_count_off = head.body_at + 5;
             let color_count = u32::from_le_bytes([
                 body[color_count_off],
                 body[color_count_off + 1],
@@ -335,7 +332,7 @@ mod tests {
             ]) as usize;
             let color_data_off = color_count_off + 4;
             eprintln!(
-                "\n[{target_name}] key=0x{key:08x} name_len={name_len} flag={flag} color_count={color_count} color_data_off={color_data_off}",
+                "\n[{target_name}] key=0x{target_key:08x} flag={flag} color_count={color_count} color_data_off={color_data_off}",
             );
 
             // Walk every position and check exact match.

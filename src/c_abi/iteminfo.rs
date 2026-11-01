@@ -84,10 +84,11 @@ fn pack_iteminfo_flags(item: &ItemInfo) -> u32 {
         item.is_equip_quick_slot_visible,
         CRIMSON_ITEMINFO_FLAG_IS_EQUIP_QUICK_SLOT_VISIBLE
     );
-    set_if!(
-        item.is_important_item,
-        CRIMSON_ITEMINFO_FLAG_IS_IMPORTANT_ITEM
-    );
+    // 2.04 replaced the boolean with a three-valued byte: 0 is what used to
+    // read "important".
+    if item.item_importance_kind == 0 {
+        f |= CRIMSON_ITEMINFO_FLAG_IS_IMPORTANT_ITEM;
+    }
     set_if!(item.is_shield_item, CRIMSON_ITEMINFO_FLAG_IS_SHIELD_ITEM);
     set_if!(
         item.is_tower_shield_item,
@@ -364,7 +365,8 @@ impl CrimsonItemInfoHandle {
                     max_endurance: item.max_endurance,
                     item_type: item.item_type,
                     item_tier: item.item_tier,
-                    quick_slot_index: item.quick_slot_index,
+                    // Removed from iteminfo in 2.04; kept in the ABI struct.
+                    quick_slot_index: 0,
                     item_charge_type: item.item_charge_type,
                     usable_alert_type: item.usable_alert_type,
                     knowledge_obtain_type: item.knowledge_obtain_type,
@@ -394,8 +396,11 @@ impl CrimsonItemInfoHandle {
             // than `NOT_FOUND`. The editor needs to distinguish
             // "item missing from iteminfo" (NOT_FOUND) from "item
             // exists but is not socket-capable" (`use_socket=0`).
-            let dd = &item.drop_default_data;
-            socket_caps_by_key.insert(item.key.0, (dd.use_socket, dd.socket_valid_count));
+            let dd = item.drop_default_data.value.as_ref();
+            socket_caps_by_key.insert(
+                item.key.0,
+                dd.map_or((0, 0), |dd| (dd.use_socket, dd.socket_valid_count)),
+            );
             // Allowed-gem list = union of `socket_item_list` (explicit
             // allow list, often used for vendor/crafting display) and
             // `add_socket_material_item_list` (the broader set of
@@ -407,14 +412,16 @@ impl CrimsonItemInfoHandle {
             // enumeration stays clean.
             let mut union: Vec<u32> = Vec::new();
             let mut seen: std::collections::HashSet<u32> = Default::default();
-            for k in &dd.socket_item_list.items {
-                if seen.insert(k.0) {
-                    union.push(k.0);
+            if let Some(dd) = dd {
+                for k in &dd.socket_item_list.items {
+                    if seen.insert(k.0) {
+                        union.push(k.0);
+                    }
                 }
-            }
-            for m in &dd.add_socket_material_item_list.items {
-                if seen.insert(m.item.0) {
-                    union.push(m.item.0);
+                for m in &dd.add_socket_material_item_list.items {
+                    if seen.insert(m.item.0) {
+                        union.push(m.item.0);
+                    }
                 }
             }
             if !union.is_empty() {
@@ -2004,14 +2011,16 @@ mod tests {
                 item.is_dyeable, item.is_destroy_when_broken);
             eprintln!("    max_stack={} apply_max_stack_cap={}",
                 item.max_stack_count, item.apply_max_stack_cap);
-            eprintln!(
-                "    drop_default_data: use_socket={} valid_count={} \
-                 socket_item_list_count={} add_socket_material_item_list_count={}",
-                item.drop_default_data.use_socket,
-                item.drop_default_data.socket_valid_count,
-                item.drop_default_data.socket_item_list.items.len(),
-                item.drop_default_data.add_socket_material_item_list.items.len(),
-            );
+            if let Some(dd) = &item.drop_default_data.value {
+                eprintln!(
+                    "    drop_default_data: use_socket={} valid_count={} \
+                     socket_item_list_count={} add_socket_material_item_list_count={}",
+                    dd.use_socket,
+                    dd.socket_valid_count,
+                    dd.socket_item_list.items.len(),
+                    dd.add_socket_material_item_list.items.len(),
+                );
+            }
         }
     }
 
@@ -2450,16 +2459,17 @@ mod tests {
             error::OK
         );
         // The ammo item_type has been remapped twice: Pyeonjeon_Arrow read 0
-        // through 1.12, 23 in 1.13–1.15, and 0 again in 1.16. item_tier /
-        // quick_slot_index / flags below are unchanged across all three, which
-        // is what confirms the field is still correctly aligned (a game-side
-        // enum change, not a parse drift).
+        // through 1.12, 23 in 1.13–1.15, and 0 again in 1.16. item_tier / flags
+        // below are unchanged across all three, which is what confirms the field
+        // is still correctly aligned (a game-side enum change, not a parse
+        // drift). `quick_slot_index` read 1 through 2.03; iteminfo dropped the
+        // field in 2.04 and the ABI reports 0.
         assert_eq!(
             item_type, 0,
             "Pyeonjeon_Arrow item_type drifted (0 in ≤1.12, 23 in 1.13–1.15, 0 in 1.16)"
         );
         assert_eq!(item_tier, 0, "Pyeonjeon_Arrow item_tier drifted");
-        assert_eq!(qs_idx, 1, "Pyeonjeon_Arrow quick_slot_index drifted");
+        assert_eq!(qs_idx, 0, "quick_slot_index is gone from 2.04 iteminfo");
         // Consumable arrow — should NOT be on the new equip-quick-bar
         // (only weapons / armor / accessories / tool-slot tools are).
         assert_eq!(
@@ -2564,8 +2574,8 @@ mod tests {
             }
         }
         assert_eq!(
-            visible, 1008,
-            "IS_EQUIP_QUICK_SLOT_VISIBLE count drifted (2.00 baseline 1008; 1006 on 1.18, 1005 on 1.13-1.17, 970 on 1.12, 950 on 1.10/1.11, 949 on 1.08/1.09)",
+            visible, 1010,
+            "IS_EQUIP_QUICK_SLOT_VISIBLE count drifted (2.04 baseline 1010; 1008 on 2.00-2.03, 1006 on 1.18, 1005 on 1.13-1.17, 970 on 1.12, 950 on 1.10/1.11, 949 on 1.08/1.09)",
         );
 
         // ── Negative path: unknown key → NOT_FOUND ─────────────────

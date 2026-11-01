@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 
-use super::trie::TrieStringBuffer;
+use super::trie::{TrieEncoding, TrieStringBuffer};
 use super::{BinaryRead, BinaryWrite, check_remaining};
 use crate::binary_struct;
 use crate::crypto::checksum;
@@ -64,6 +64,8 @@ binary_struct! {
 
 // Raw file entry as stored in the binary format.
 // The `flags` byte encodes both compression (bits 0-3) and crypto (bits 4-7).
+// `extension_index` (2.04+) picks the file's extension out of the PAMT's
+// extension table; through 2.03 the byte was always 0 and names kept theirs.
 binary_struct! {
     pub struct PackMetaFileRaw {
         pub name_offset: u32,
@@ -72,7 +74,7 @@ binary_struct! {
         pub uncompressed_size: u32,
         pub chunk_id: u16,
         pub flags: u8,
-        pub unknown0: u8,
+        pub extension_index: u8,
     }
 }
 
@@ -85,7 +87,7 @@ pub struct PackMetaFile {
     pub uncompressed_size: u32,
     pub chunk_id: u16,
     pub flags: u8,
-    pub unknown0: u8,
+    pub extension_index: u8,
     // Decoded from flags
     pub compression: Compression,
     pub crypto: CryptoType,
@@ -127,7 +129,7 @@ impl PackMetaFile {
             uncompressed_size: raw.uncompressed_size,
             chunk_id: raw.chunk_id,
             flags: raw.flags,
-            unknown0: raw.unknown0,
+            extension_index: raw.extension_index,
             compression,
             crypto,
             is_partial,
@@ -165,6 +167,23 @@ pub struct PackMeta {
     pub raw_directories: Vec<PackMetaDirectory>,
     /// Raw file entries (for roundtrip ordering).
     pub raw_files: Vec<PackMetaFileRaw>,
+    /// Raw extension table, NUL-separated with entry 0 the empty string
+    /// (`"\0.xml\0.dds\0"`). `None` in a ≤ 2.03 PAMT, which has no such
+    /// section and spells its tries with absolute parent offsets.
+    pub extensions_buffer: Option<Vec<u8>>,
+}
+
+/// The entries of a PAMT extension table.
+fn split_extensions(buffer: &[u8]) -> io::Result<Vec<&str>> {
+    let Some(body) = buffer.strip_suffix(&[0]) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "PAMT extension table is not NUL-terminated",
+        ));
+    };
+    body.split(|&b| b == 0)
+        .map(|e| std::str::from_utf8(e).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)))
+        .collect()
 }
 
 impl PackMeta {
@@ -240,9 +259,39 @@ impl PackMeta {
             raw_files.push(PackMetaFileRaw::read_from(data, &mut offset)?);
         }
 
+        // 2.04+: an extension table closes the file, and its presence is what
+        // says the tries use relative parents.
+        let extensions_buffer = if offset == data.len() {
+            None
+        } else {
+            check_remaining(data, offset, 4)?;
+            let len = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
+            offset += 4;
+            check_remaining(data, offset, len)?;
+            let buffer = data[offset..offset + len].to_vec();
+            offset += len;
+            if offset != data.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("{} trailing bytes after the PAMT", data.len() - offset),
+                ));
+            }
+            Some(buffer)
+        };
+        let extensions = match &extensions_buffer {
+            Some(buffer) => split_extensions(buffer)?,
+            None => vec![""],
+        };
+        let trie_encoding = if extensions_buffer.is_some() {
+            TrieEncoding::RelativeParent
+        } else {
+            TrieEncoding::AbsoluteParent
+        };
+
         // Resolve names
-        let mut dir_trie = TrieStringBuffer::new(dir_names_buffer.clone());
-        let mut file_trie = TrieStringBuffer::new(file_names_buffer.clone());
+        let mut dir_trie = TrieStringBuffer::with_encoding(dir_names_buffer.clone(), trie_encoding);
+        let mut file_trie =
+            TrieStringBuffer::with_encoding(file_names_buffer.clone(), trie_encoding);
 
         let chunk_map: std::collections::HashMap<u32, &PackMetaChunk> =
             chunks.iter().map(|c| (c.id, c)).collect();
@@ -280,15 +329,16 @@ impl PackMeta {
 
             let mut resolved_files = Vec::with_capacity(dir.file_count as usize);
             for raw_file in &raw_files[start..end] {
-                if raw_file.unknown0 != 0 {
+                let Some(extension) = extensions.get(raw_file.extension_index as usize) else {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!(
-                            "PackMetaFile.unknown0 expected 0, got {}",
-                            raw_file.unknown0
+                            "PackMetaFile.extension_index {} exceeds the {} table entries",
+                            raw_file.extension_index,
+                            extensions.len()
                         ),
                     ));
-                }
+                };
 
                 if !chunk_map.contains_key(&(raw_file.chunk_id as u32)) {
                     return Err(io::Error::new(
@@ -308,7 +358,7 @@ impl PackMeta {
                     ));
                 }
 
-                let file_name = file_trie.get_string(raw_file.name_offset as i32)?;
+                let file_name = file_trie.get_string(raw_file.name_offset as i32)? + extension;
                 let file = PackMetaFile::from_raw(PackMetaFileRaw {
                     name_offset: raw_file.name_offset,
                     chunk_offset: raw_file.chunk_offset,
@@ -316,7 +366,7 @@ impl PackMeta {
                     uncompressed_size: raw_file.uncompressed_size,
                     chunk_id: raw_file.chunk_id,
                     flags: raw_file.flags,
-                    unknown0: raw_file.unknown0,
+                    extension_index: raw_file.extension_index,
                 });
 
                 resolved_files.push(ResolvedFile {
@@ -345,12 +395,12 @@ impl PackMeta {
             file_names_buffer,
             raw_directories,
             raw_files,
+            extensions_buffer,
         })
     }
 
-    /// Serialize back to bytes (roundtrip).
-    pub fn to_bytes(&self) -> io::Result<Vec<u8>> {
-        // Build post-header data
+    /// Everything the header's checksum covers.
+    fn post_header_bytes(&self) -> io::Result<Vec<u8>> {
         let mut post_header = Vec::new();
 
         // Chunks
@@ -378,6 +428,19 @@ impl PackMeta {
             file.write_to(&mut post_header)?;
         }
 
+        // Extension table
+        if let Some(extensions) = &self.extensions_buffer {
+            (extensions.len() as u32).write_to(&mut post_header)?;
+            post_header.write_all(extensions)?;
+        }
+
+        Ok(post_header)
+    }
+
+    /// Serialize back to bytes (roundtrip).
+    pub fn to_bytes(&self) -> io::Result<Vec<u8>> {
+        let post_header = self.post_header_bytes()?;
+
         // Build full output
         let mut out = Vec::new();
 
@@ -392,28 +455,7 @@ impl PackMeta {
     /// Serialize to bytes with a freshly computed checksum.
     /// Use this when creating a new PAMT from scratch.
     pub fn to_bytes_with_checksum(&self) -> io::Result<Vec<u8>> {
-        // Build post-header data
-        let mut post_header = Vec::new();
-
-        for chunk in &self.chunks {
-            chunk.write_to(&mut post_header)?;
-        }
-
-        (self.dir_names_buffer.len() as u32).write_to(&mut post_header)?;
-        post_header.write_all(&self.dir_names_buffer)?;
-
-        (self.file_names_buffer.len() as u32).write_to(&mut post_header)?;
-        post_header.write_all(&self.file_names_buffer)?;
-
-        (self.raw_directories.len() as u32).write_to(&mut post_header)?;
-        for dir in &self.raw_directories {
-            dir.write_to(&mut post_header)?;
-        }
-
-        (self.raw_files.len() as u32).write_to(&mut post_header)?;
-        for file in &self.raw_files {
-            file.write_to(&mut post_header)?;
-        }
+        let post_header = self.post_header_bytes()?;
 
         let computed_checksum = checksum::calculate_checksum(&post_header);
 

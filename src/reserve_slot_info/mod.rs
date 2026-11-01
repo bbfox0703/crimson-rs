@@ -8,7 +8,9 @@
 //! session.
 //!
 //! Standard `u16 count + (u32 key, u32 offset)*` PABGH. Body:
-//! `[u32 key][u32 name_len][name]`.
+//! `[u32 name_len][name][u32 key]` (2.04 swapped key and name).
+
+use crate::binary::row_head::read_row_head;
 
 #[derive(Debug, Clone)]
 pub struct ReserveSlotInfoEntry {
@@ -28,24 +30,13 @@ pub fn parse_reserve_slot_info_lossy(
         let Some(body) = pabgb.get(e.offset as usize..) else {
             continue;
         };
-        if body.len() < 8 {
+        let Some(head) = read_row_head(body, 4) else { continue };
+        if head.key != e.key || !(1..=128).contains(&head.name.len()) {
             continue;
         }
-        let body_key = u32::from_le_bytes([body[0], body[1], body[2], body[3]]);
-        if body_key != e.key {
-            continue;
-        }
-        let name_len =
-            u32::from_le_bytes([body[4], body[5], body[6], body[7]]) as usize;
-        if !(1..=128).contains(&name_len) || 8 + name_len > body.len() {
-            continue;
-        }
-        let Ok(name) = std::str::from_utf8(&body[8..8 + name_len]) else {
-            continue;
-        };
         out.push(ReserveSlotInfoEntry {
             key: e.key,
-            name: name.to_owned(),
+            name: head.name.to_owned(),
         });
     }
     out

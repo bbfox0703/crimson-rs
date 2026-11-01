@@ -1,7 +1,8 @@
 //! `questinfo.pabgb` parser — anchor-scan based.
 //!
 //! Sibling of [`crate::mission_info`]. Same architecture and same row
-//! header shape (`[u32 key][u32 name_len][name_bytes][...body]`).
+//! head shape (`[u32 name_len][name_bytes][u32 key][...body]`; 2.04 moved
+//! the key after the name).
 //!
 //! Pearl Abyss's terminology assignment is the inverse of what the
 //! English UI shows:
@@ -17,6 +18,8 @@
 //! versus `lo32 = 0x101` for individual quest titles in missioninfo.
 //! The bridge's `lookup_display_name` takes `lo32_namespace` as an
 //! argument so the caller chooses per-row.
+
+use crate::binary::row_head::{is_row_name_byte, read_row_head};
 
 /// One parsed questinfo row, reduced to what the bridge consumes.
 #[derive(Debug, Clone)]
@@ -61,25 +64,15 @@ pub fn parse_quest_info_via_pabgh(pabgh: &[u8], pabgb: &[u8]) -> Vec<QuestInfoEn
             pabgh[pos + 6],
             pabgh[pos + 7],
         ]) as usize;
-        if off + 8 > pabgb.len() {
-            continue;
-        }
-        let slen = u32::from_le_bytes([
-            pabgb[off + 4],
-            pabgb[off + 5],
-            pabgb[off + 6],
-            pabgb[off + 7],
-        ]) as usize;
-        if slen == 0 || slen > 256 || off + 8 + slen > pabgb.len() {
-            continue;
-        }
-        let name_bytes = &pabgb[off + 8..off + 8 + slen];
-        let Ok(name) = std::str::from_utf8(name_bytes) else {
+        let Some(head) = pabgb.get(off..).and_then(|row| read_row_head(row, 4)) else {
             continue;
         };
+        if head.key != key || !(1..=256).contains(&head.name.len()) {
+            continue;
+        }
         entries.push(QuestInfoEntry {
             key,
-            name: name.to_owned(),
+            name: head.name.to_owned(),
         });
     }
     entries
@@ -98,23 +91,13 @@ pub fn parse_quest_info_lossy(data: &[u8]) -> Vec<QuestInfoEntry> {
     let mut entries = Vec::new();
     let mut cursor = 0;
     while let Some(start) = scan_next_anchor(data, cursor) {
-        let slen = u32::from_le_bytes([
-            data[start + 4],
-            data[start + 5],
-            data[start + 6],
-            data[start + 7],
-        ]) as usize;
-        let key = u32::from_le_bytes([
-            data[start],
-            data[start + 1],
-            data[start + 2],
-            data[start + 3],
-        ]);
-        let name_bytes = &data[start + 8..start + 8 + slen];
-        // Scanner already validated valid UTF-8 — the unwrap is sound.
-        let name = std::str::from_utf8(name_bytes).unwrap().to_owned();
-        entries.push(QuestInfoEntry { key, name });
-        cursor = start + 8 + slen;
+        // Scanner already validated the head — the unwrap is sound.
+        let head = read_row_head(&data[start..], 4).unwrap();
+        entries.push(QuestInfoEntry {
+            key: head.key,
+            name: head.name.to_owned(),
+        });
+        cursor = start + head.body_at;
     }
     entries
 }
@@ -123,35 +106,33 @@ fn scan_next_anchor(data: &[u8], from: usize) -> Option<usize> {
     let n = data.len();
     let mut o = from;
     while o + 12 < n {
-        let key = u32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]);
-        if key != 0 && (key >> 24) == 0 {
-            let slen = u32::from_le_bytes([
-                data[o + 4],
-                data[o + 5],
-                data[o + 6],
-                data[o + 7],
-            ]) as usize;
-            if (2..=128).contains(&slen) && o + 8 + slen <= n {
-                let bytes = &data[o + 8..o + 8 + slen];
-                // Same `_` requirement as mission_info — every real
-                // Quest_*/Challenge_* row has it, body-byte noise
-                // mostly doesn't.
-                if bytes.contains(&b'_')
-                    && bytes.iter().all(|&b| is_ident_byte(b))
-                    && std::str::from_utf8(bytes).is_ok()
-                {
-                    return Some(o);
-                }
+        let slen = u32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]) as usize;
+        // Length, name, key, then the 0x00 that opens every 2.04 row body —
+        // the byte that rejects most body strings followed by a small number.
+        if (3..=128).contains(&slen) && o + 9 + slen <= n && data[o + 8 + slen] == 0 {
+            let bytes = &data[o + 4..o + 4 + slen];
+            let key = u32::from_le_bytes([
+                data[o + 4 + slen],
+                data[o + 5 + slen],
+                data[o + 6 + slen],
+                data[o + 7 + slen],
+            ]);
+            // Same `_` requirement as mission_info — every real
+            // Quest_*/Challenge_* row has it, body-byte noise mostly doesn't.
+            // The noise that does (5 on 2.04: `_N`, `o_`, ...) is two bytes
+            // long, hence the 3-byte floor; the shortest real name is 8.
+            if key != 0
+                && (key >> 24) == 0
+                && bytes.contains(&b'_')
+                && bytes.iter().all(|&b| is_row_name_byte(b))
+                && std::str::from_utf8(bytes).is_ok()
+            {
+                return Some(o);
             }
         }
         o += 1;
     }
     None
-}
-
-#[inline]
-fn is_ident_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_' || b == b' ' || b >= 0x80
 }
 
 #[cfg(test)]
