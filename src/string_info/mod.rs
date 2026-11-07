@@ -484,8 +484,8 @@ mod tests {
 
         assert_eq!(
             parsed.entries.len(),
-            33_888,
-            "expected 33,888 rows in 2.04 (31,812 in 2.03)"
+            33_890,
+            "expected 33,890 rows in 2.04.08 (33,888 in 2.04.03, 31,812 in 2.03)"
         );
 
         // Byte-identical round-trip.

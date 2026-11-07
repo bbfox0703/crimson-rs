@@ -22,7 +22,8 @@ use std::path::PathBuf;
 
 use super::error;
 use crate::binary::paver::{
-    COMPATIBLE_GAMEDATA_MINORS, PARSER_TARGET_GAMEDATA_MAJOR, PARSER_TARGET_GAMEDATA_MINOR, Paver,
+    COMPATIBLE_GAMEDATA_MINORS, PARSER_MIN_GAMEDATA_PATCH, PARSER_TARGET_GAMEDATA_MAJOR,
+    PARSER_TARGET_GAMEDATA_MINOR, Paver,
 };
 
 /// Parse `meta/0.paver` from disk into the four version components.
@@ -177,6 +178,22 @@ pub extern "C" fn crimson_parser_target_gamedata_major() -> u16 {
 #[unsafe(no_mangle)]
 pub extern "C" fn crimson_parser_target_gamedata_minor() -> u16 {
     PARSER_TARGET_GAMEDATA_MINOR
+}
+
+/// The lowest gamedata `patch` this build's parsers read on the target
+/// `(major, minor)`.
+///
+/// 2.04.08 changed the iteminfo layout without moving the minor, so a gate on
+/// `(major, minor)` alone accepts a 2.04.03 install that no longer parses. When
+/// the install's minor equals [`crimson_parser_target_gamedata_minor`], also
+/// require its `patch` (from [`crimson_paver_read_from_file`]) to be at least
+/// this. `0` means any patch of the target minor.
+///
+/// Infallible — returns the compile-time constant
+/// [`crate::binary::paver::PARSER_MIN_GAMEDATA_PATCH`].
+#[unsafe(no_mangle)]
+pub extern "C" fn crimson_parser_min_gamedata_patch() -> u16 {
+    PARSER_MIN_GAMEDATA_PATCH
 }
 
 /// Write the full allow-list of gamedata `minor` versions this build's parsers
@@ -354,6 +371,18 @@ mod tests {
         assert_eq!(
             minor, PARSER_TARGET_GAMEDATA_MINOR,
             "live game install minor should match PARSER_TARGET_GAMEDATA_MINOR in this test environment",
+        );
+        assert!(
+            patch >= PARSER_MIN_GAMEDATA_PATCH,
+            "live game install patch {patch} is below PARSER_MIN_GAMEDATA_PATCH {PARSER_MIN_GAMEDATA_PATCH}",
+        );
+    }
+
+    #[test]
+    fn parser_min_gamedata_patch_returns_constant() {
+        assert_eq!(
+            crimson_parser_min_gamedata_patch(),
+            PARSER_MIN_GAMEDATA_PATCH
         );
     }
 

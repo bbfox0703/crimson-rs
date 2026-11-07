@@ -3,6 +3,24 @@ use super::structs::*;
 use crate::binary::*;
 use crate::py_binary_struct;
 
+// ── ItemInfo (2.04.08) ──────────────────────────────────────────────────────
+//
+// Crimson Desert 2.04.08 (`meta/0.paver` 2/4/8, build 0xe4d53a97, `dlc_01`
+// revision 7) adds two `CString`s between `filter_type` and `unk_texture_path`
+// (`charged_sound_name`, `charged_sound_param`). Nothing else moved. Every one
+// of the 7,064 base rows carried over from 2.04.03 is exactly +8 B: the two
+// empty strings (`u32 0` each). Every one of the 1,552 `iteminfo.dlc_01` rows is
+// also +8 B, except seven ship cannons, which fill both strings (+63 B), and
+// one row with a content change. Splicing 8 zero bytes in after `filter_type`
+// reproduces the 2.04.08 row on 6,003 base and 1,275 DLC rows. Every other row
+// differs further on only in `multi_change_info_list`, whose keys were renumbered
+// (+18). Within the minor, a patch-level drift: base 7,064 → 7,069 rows
+// (+5, none removed), iteminfo 5,804,162 → 5,865,384 B.
+//
+// The first parse error on 2.04.08 (`CArray count 1944765921` at row offset
+// 275) is the old `unk_texture_path` hash `0xeac5e173` read as a list count,
+// eight bytes early.
+//
 // ── ItemInfo (2.04) ─────────────────────────────────────────────────────────
 //
 // Crimson Desert 2.04 (`meta/0.paver` 2/4/3, Steam build 26345091) changes how
@@ -542,6 +560,11 @@ py_binary_struct! {
         pub item_desc2: OptLocalizableString<'a>,
         pub item_memo: CString<'a>,
         pub filter_type: CString<'a>,
+        // New in 2.04.08, empty on every row except seven `iteminfo.dlc_01` ship
+        // cannons, which read "env_walla_ship_combat_cannon_ready" /
+        // "SoundNameOnMaxCharged". Named from those seven rows only.
+        pub charged_sound_name: CString<'a>,
+        pub charged_sound_param: CString<'a>,
         // Both were CStrings through 2.03. The hash is Jenkins of the old string,
         // which now lives in `stringinfo`; the empty string is 0xeac5e173.
         pub unk_texture_path: StringInfoKey,
