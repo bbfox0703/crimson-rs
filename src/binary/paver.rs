@@ -98,13 +98,26 @@ pub const PARSER_TARGET_GAMEDATA_MINOR: u16 = 4;
 /// from a different major says nothing about compatibility.
 pub const COMPATIBLE_GAMEDATA_MINORS: &[u16] = &[PARSER_TARGET_GAMEDATA_MINOR];
 
+/// The lowest gamedata `patch`, within [`PARSER_TARGET_GAMEDATA_MAJOR`].
+/// [`PARSER_TARGET_GAMEDATA_MINOR`], that this build's parsers read.
+///
+/// The first drift *inside* a minor came with 2.04.08: two `CString`s were
+/// added to every iteminfo row, so 2.04.03 (patch 3) shares minor 4 with
+/// 2.04.08 and still no longer parses. `(major, minor)` alone would let that
+/// install through. A full gate is `major == MAJOR && minor ∈
+/// COMPATIBLE_GAMEDATA_MINORS && (minor != MINOR || patch >= this)`.
+/// Reset it to `0` when the target minor moves. Consumers read it through
+/// `crimson_parser_min_gamedata_patch()`.
+pub const PARSER_MIN_GAMEDATA_PATCH: u16 = 8;
+
 /// Parsed version stamp from `meta/0.paver`.
 ///
 /// `(major, minor)` identifies the parser-compatible schema: callers
 /// that target a single `minor` (e.g. the parsers, currently
 /// [`PARSER_TARGET_GAMEDATA_MINOR`]) should refuse / warn on mismatched values
-/// rather than risk a parse crash. `patch` and `build` change within a
-/// compatible minor and are informational only.
+/// rather than risk a parse crash. `build` is informational only. `patch`
+/// was too until 2.04.08, the first patch to change a layout within a minor;
+/// see [`PARSER_MIN_GAMEDATA_PATCH`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Paver {
     pub major: u16,

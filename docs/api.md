@@ -472,6 +472,8 @@ Each item is a dict with 105 fields. All fields are required for serialization.
 | `material_key` | `int` | Material ID (u32) |
 | `material_match_info` | `int` | MaterialMatchKey (u32) |
 | `filter_type` | `str` | Filter type string |
+| `charged_sound_name` | `str` | 2.04.08: sound event (empty except on seven DLC ship cannons) |
+| `charged_sound_param` | `str` | 2.04.08: its parameter name (`SoundNameOnMaxCharged` on those cannons) |
 | `item_group_info_list` | `list[int]` | ItemGroupKey list (u16) |
 
 ### Usage & Interaction

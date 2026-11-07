@@ -107,7 +107,7 @@ absorbed by list-header variants (`marker_run_plus_zeros`, `ones_then_count`,
   compares the install's `(major, minor)` against this and the minor bridge.
   Backs onto `crate::binary::paver::PARSER_TARGET_GAMEDATA_MAJOR`.
 - `crimson_parser_target_gamedata_minor() -> u16` — the gamedata `minor` this
-  build's parsers target (currently **3**, i.e. 2.03). **Single source of
+  build's parsers target (currently **4**, i.e. 2.04). **Single source of
   truth**: the value lives in `crate::binary::paver::PARSER_TARGET_GAMEDATA_MINOR`,
   so a new patch is one Rust bump and every consumer follows — no more lock-step
   `ParserTargetMinor` edits on the C# side (promoting this killed the 5th such
@@ -121,6 +121,13 @@ absorbed by list-header variants (`marker_run_plus_zeros`, `ones_then_count`,
   `crate::binary::paver::COMPATIBLE_GAMEDATA_MINORS`. Entries are minors
   *within* the target major — read them alongside
   `crimson_parser_target_gamedata_major()`.
+- `crimson_parser_min_gamedata_patch() -> u16` — the lowest gamedata `patch`
+  this build reads on the target `(major, minor)` (currently **8**, i.e.
+  2.04.08). Added when 2.04.08 changed the iteminfo layout without moving the
+  minor, so `(major, minor)` alone would accept a 2.04.03 install that no longer
+  parses. Full gate: `major == target_major && minor ∈ compatible_minors &&
+  (minor != target_minor || patch >= min_patch)`. `0` means any patch. Backs onto
+  `crate::binary::paver::PARSER_MIN_GAMEDATA_PATCH`.
 
 ### Status & remaining work
 
@@ -183,7 +190,7 @@ src/
     │                       #   (ActiveEquip/ActiveUseReserve/Inventory/MercenaryEquip/MercenaryInventory)
     ├── checksum.rs          # crimson_calculate_checksum (Jenkins hash hop helper)
     ├── paver.rs             # crimson_paver_read_from_file/_bytes (game-install version stamp)
-    │                         # + crimson_parser_target_gamedata_major/_minor, _compatible_gamedata_minors
+    │                         # + crimson_parser_target_gamedata_major/_minor, _compatible_gamedata_minors, _min_gamedata_patch
     ├── iteminfo.rs          # ItemKey → string_key / max_stack / icon_path_hash /
                              #   look_detail_mission_info (item→challenge) +
                              #   artifact_for_mission (challenge→artifact reverse, 1:1) /

@@ -422,6 +422,10 @@ class ItemInfo(TypedDict):
     """u16"""
     item_memo: str
     filter_type: str
+    charged_sound_name: str
+    """2.04.08: empty except on seven DLC ship cannons."""
+    charged_sound_param: str
+    """2.04.08: empty except on seven DLC ship cannons."""
     gimmick_info: int
     """GimmickInfoKey (u32)."""
     gimmick_tag_list: list[str]
