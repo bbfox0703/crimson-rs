@@ -1198,19 +1198,22 @@ mod tests {
         assert_eq!(pamt.to_bytes().unwrap(), pamt_bytes);
     }
 
-    /// Every group of the live install, DLC trees included: the PAMT parses
-    /// and writes back byte-identically, and the PAPGT names its checksum.
+    /// Every group of the live install, and of each DLC tree if there is one:
+    /// the PAMT parses and writes back byte-identically, and the PAPGT names
+    /// its checksum.
     #[test]
     fn live_install_pamt_and_papgt_roundtrip() {
         use crate::binary::papgt::PackGroupTreeMeta;
 
         let game_root = crate::binary::gamedata_layout::game_root();
-        let Ok(install) = std::fs::read_dir(game_root.join("dlc")) else {
-            eprintln!("no DLC tree at {}; skipping", game_root.display());
+        if !game_root.join("meta").join("0.papgt").is_file() {
+            eprintln!("no game install at {}; skipping", game_root.display());
             return;
-        };
+        }
         let mut roots = vec![game_root.clone()];
-        roots.extend(install.flatten().map(|e| e.path()));
+        if let Ok(dlcs) = std::fs::read_dir(game_root.join("dlc")) {
+            roots.extend(dlcs.flatten().map(|e| e.path()));
+        }
 
         for root in roots {
             let papgt_bytes = std::fs::read(root.join("meta").join("0.papgt")).unwrap();
