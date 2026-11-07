@@ -38,6 +38,8 @@
 //! ```
 //!
 //! The per-DLC u32 is named by position only: it reads 2 on the one DLC seen.
+//! An install without DLC has not been seen; a DLC count of 0 (a 14-byte
+//! stamp) and the 10-byte stamp both read, and both write back as they came.
 //!
 //! No HMAC / checksum protection on this file — it's plain bytes the
 //! game writes once per install.
@@ -124,8 +126,9 @@ pub struct Paver {
     pub minor: u16,
     pub patch: u16,
     pub build: u32,
-    /// The DLCs the install ships (2.04+); empty on a 10-byte stamp.
-    pub dlcs: Vec<PaverDlc>,
+    /// The DLC list of a 2.04+ stamp, which may be empty; `None` on a 10-byte
+    /// stamp. Nothing here requires a DLC to be present.
+    pub dlcs: Option<Vec<PaverDlc>>,
 }
 
 /// One entry of the 2.04+ DLC list.
@@ -139,7 +142,7 @@ pub struct PaverDlc {
 /// `None` when the rest of the file does not read exactly as one.
 fn read_dlc_tail(bytes: &[u8], mut offset: usize) -> Option<(Vec<PaverDlc>, u32)> {
     let count = u32::read_from(bytes, &mut offset).ok()?;
-    if count == 0 || count as usize > bytes.len() {
+    if count as usize > bytes.len() {
         return None;
     }
     let mut dlcs = Vec::new();
@@ -174,11 +177,13 @@ impl Paver {
         let major = u16::read_from(bytes, &mut offset)?;
         let minor = u16::read_from(bytes, &mut offset)?;
         let patch = u16::read_from(bytes, &mut offset)?;
+        // A 10-byte stamp never reads as a DLC list: the count would take
+        // `build`'s place and leave nothing for `build` itself.
         if let Some((dlcs, build)) = read_dlc_tail(bytes, offset) {
-            return Ok(Self { major, minor, patch, build, dlcs });
+            return Ok(Self { major, minor, patch, build, dlcs: Some(dlcs) });
         }
         let build = u32::read_from(bytes, &mut offset)?;
-        Ok(Self { major, minor, patch, build, dlcs: Vec::new() })
+        Ok(Self { major, minor, patch, build, dlcs: None })
     }
 
     /// Read `meta/0.paver` from disk. The caller passes the full path
@@ -205,9 +210,9 @@ impl BinaryWrite for Paver {
         self.major.write_to(w)?;
         self.minor.write_to(w)?;
         self.patch.write_to(w)?;
-        if !self.dlcs.is_empty() {
-            (self.dlcs.len() as u32).write_to(w)?;
-            for dlc in &self.dlcs {
+        if let Some(dlcs) = &self.dlcs {
+            (dlcs.len() as u32).write_to(w)?;
+            for dlc in dlcs {
                 (dlc.name.len() as u32).write_to(w)?;
                 w.write_all(dlc.name.as_bytes())?;
                 dlc.revision.write_to(w)?;
@@ -274,11 +279,27 @@ mod tests {
         let p = Paver::from_bytes(&PAVER_2_04_LIVE).unwrap();
         assert_eq!((p.major, p.minor, p.patch), (2, 4, 3));
         assert_eq!(p.build, 0x3ebe7ee2);
-        assert_eq!(p.dlcs, [PaverDlc { name: "dlc_01".into(), revision: 2 }]);
+        assert_eq!(p.dlcs, Some(vec![PaverDlc { name: "dlc_01".into(), revision: 2 }]));
 
         let mut out = Vec::new();
         p.write_to(&mut out).unwrap();
         assert_eq!(out, PAVER_2_04_LIVE);
+    }
+
+    /// No DLC: the 2.04 shape with a count of 0 keeps its real `build`.
+    #[test]
+    fn parse_stamp_without_dlc() {
+        let mut bytes = PAVER_2_04_LIVE[..6].to_vec();
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0x3ebe7ee2u32.to_le_bytes());
+        let p = Paver::from_bytes(&bytes).unwrap();
+        assert_eq!((p.major, p.minor, p.patch, p.build), (2, 4, 3, 0x3ebe7ee2));
+        assert_eq!(p.dlcs, Some(Vec::new()));
+        let mut out = Vec::new();
+        p.write_to(&mut out).unwrap();
+        assert_eq!(out, bytes);
+
+        assert_eq!(Paver::from_bytes(&PAVER_1_08_LIVE).unwrap().dlcs, None);
     }
 
     #[test]
