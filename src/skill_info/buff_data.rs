@@ -125,7 +125,7 @@ pub fn read_common_base(
     let field_88 = u32::read_from(data, offset)?;
     let field_90 = u32::read_from(data, offset)?;
 
-    let cnt96 = u32::read_from(data, offset)? as usize;
+    let cnt96 = super::post_buff::read_count(data, offset, 4)?;
     let mut field_96_list = Vec::with_capacity(cnt96);
     for _ in 0..cnt96 {
         field_96_list.push(u32::read_from(data, offset)?);
@@ -137,7 +137,7 @@ pub fn read_common_base(
     let field_80 = u32::read_from(data, offset)?;
     let field_84 = u32::read_from(data, offset)?;
 
-    let cnt112 = u32::read_from(data, offset)? as usize;
+    let cnt112 = super::post_buff::read_count(data, offset, 4)?;
     let mut field_112_list = Vec::with_capacity(cnt112);
     for _ in 0..cnt112 {
         field_112_list.push(u32::read_from(data, offset)?);
@@ -224,4 +224,51 @@ pub fn write_buff_data<W: io::Write>(w: &mut W, bd: &BuffData) -> io::Result<()>
     body.field_136.write_to(w)?;
     w.write_all(&body.subclass_tail)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A common base up to (not including) `cnt96`, field_48 empty.
+    fn base_until_cnt96() -> Vec<u8> {
+        let mut b = vec![0u8]; // type_id
+        b.extend_from_slice(&[0; 4 + 4 + 1 + 1 + 8 + 8 + 8]);
+        b.extend_from_slice(&0u32.to_le_bytes()); // field_48 len
+        b.extend_from_slice(&[0; 4 + 1 + 4 * 4 + 1 + 1 + 4 + 4]);
+        b
+    }
+
+    /// The probe reads at mostly-wrong offsets, so a count can be any u32.
+    /// 0xEB000000 is the one that once asked for 15.7 GB and aborted.
+    #[test]
+    fn huge_list_count_is_an_error_not_an_allocation() {
+        let mut b = base_until_cnt96();
+        b.extend_from_slice(&0xEB00_0000u32.to_le_bytes());
+        b.extend_from_slice(&[0; 64]);
+        let err = read_common_base(&b, &mut 0, SkillFormat::WithField58).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
+
+        // Same for field_112_list, behind an empty field_96_list.
+        let mut b = base_until_cnt96();
+        b.extend_from_slice(&0u32.to_le_bytes());
+        b.extend_from_slice(&[0; 4 * 5]);
+        b.extend_from_slice(&0xEB00_0000u32.to_le_bytes());
+        let err = read_common_base(&b, &mut 0, SkillFormat::WithField58).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
+    }
+
+    #[test]
+    fn list_count_that_fits_exactly_still_reads() {
+        let mut b = base_until_cnt96();
+        b.extend_from_slice(&2u32.to_le_bytes());
+        b.extend_from_slice(&[7, 0, 0, 0, 9, 0, 0, 0]);
+        b.extend_from_slice(&[0; 4 * 5]); // field_128, 72, 76, 80, 84
+        b.extend_from_slice(&1u32.to_le_bytes());
+        b.extend_from_slice(&5u32.to_le_bytes());
+        b.extend_from_slice(&[0; 1 + 4]); // field_132, field_136
+        let body = read_common_base(&b, &mut 0, SkillFormat::WithField58).unwrap();
+        assert_eq!(body.field_96_list, [7, 9]);
+        assert_eq!(body.field_112_list, [5]);
+    }
 }

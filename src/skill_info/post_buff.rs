@@ -125,8 +125,29 @@ fn write_graph<W: io::Write>(w: &mut W, g: &Graph) -> io::Result<()> {
     Ok(())
 }
 
-fn read_list_u32(data: &[u8], offset: &mut usize) -> io::Result<Vec<u32>> {
+/// Read a `u32` element count and refuse one whose `elem_size`-byte elements
+/// cannot fit in what is left of `data`.
+///
+/// The subclass-tail probe reads at candidate offsets that are mostly wrong, so
+/// a count can be any u32. Handed to `Vec::with_capacity` unchecked, one such
+/// count (0xEB000000 × 4 B) once asked for 15.7 GB and aborted the process.
+pub(super) fn read_count(data: &[u8], offset: &mut usize, elem_size: usize) -> io::Result<usize> {
     let cnt = u32::read_from(data, offset)? as usize;
+    let remaining = data.len().saturating_sub(*offset);
+    if cnt > remaining / elem_size {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "count {cnt} of {elem_size}-byte elements exceeds the {remaining} bytes left at offset {}",
+                *offset
+            ),
+        ));
+    }
+    Ok(cnt)
+}
+
+fn read_list_u32(data: &[u8], offset: &mut usize) -> io::Result<Vec<u32>> {
+    let cnt = read_count(data, offset, 4)?;
     let mut out = Vec::with_capacity(cnt);
     for _ in 0..cnt {
         out.push(u32::read_from(data, offset)?);
@@ -178,8 +199,8 @@ pub struct EntryHead {
 }
 
 fn read_resource_stats(data: &[u8], offset: &mut usize) -> io::Result<Vec<ResourceStat>> {
-    let cnt = u32::read_from(data, offset)? as usize;
-    let mut out = Vec::with_capacity(cnt.min(data.len()));
+    let cnt = read_count(data, offset, 22)?;
+    let mut out = Vec::with_capacity(cnt);
     for _ in 0..cnt {
         out.push(read_resource_stat(data, offset)?);
     }
@@ -240,8 +261,8 @@ pub fn read_post_buff_tail(data: &[u8], offset: &mut usize, p: &mut PostBuff) ->
     p.usable_condition = read_list_u32(data, offset)?;
     p.use_resource_stat_list = read_resource_stats(data, offset)?;
 
-    let cnt = u32::read_from(data, offset)? as usize;
-    p.use_resource_item_list = Vec::with_capacity(cnt.min(data.len()));
+    let cnt = read_count(data, offset, 12)?;
+    p.use_resource_item_list = Vec::with_capacity(cnt);
     for _ in 0..cnt {
         let item_hash = u32::read_from(data, offset)?;
         let count = i64::read_from(data, offset)?;
@@ -252,8 +273,8 @@ pub fn read_post_buff_tail(data: &[u8], offset: &mut usize, p: &mut PostBuff) ->
     p.use_battery_stat = i64::read_from(data, offset)?;
     p.reserve_slot_info_list = read_list_u32(data, offset)?;
 
-    let cnt = u32::read_from(data, offset)? as usize;
-    p.skill_group_key_list = Vec::with_capacity(cnt.min(data.len()));
+    let cnt = read_count(data, offset, 2)?;
+    p.skill_group_key_list = Vec::with_capacity(cnt);
     for _ in 0..cnt {
         p.skill_group_key_list.push(u16::read_from(data, offset)?);
     }
@@ -383,4 +404,19 @@ fn read_u32_at(data: &[u8], at: usize) -> Option<u32> {
         data[at + 2],
         data[at + 3],
     ]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn huge_list_count_in_the_tail_is_an_error() {
+        // Both graphs, then `_usableCharacterInfoList` with a garbage count.
+        let mut b = vec![0u8; 28 + 28];
+        b.extend_from_slice(&0xEB00_0000u32.to_le_bytes());
+        b.extend_from_slice(&[0; 64]);
+        let err = read_post_buff_tail(&b, &mut 0, &mut PostBuff::default()).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
+    }
 }
