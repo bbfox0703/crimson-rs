@@ -43,14 +43,17 @@ The game ships an updated `iteminfo.pabgb` with each patch and may add/remove/re
 
 1. Launch the game (any save / main menu is fine).
 2. Open Cheat Engine and attach to `CrimsonDesert.exe`.
-3. Load the **Dump Item Keys** entry from the CE table at
-   `D:\Github\Mydev-Cheat-Engine-Tables\Crimson Desert\` (source: `dump_item_keys.CEA`).
+3. Load `D:\Github\My-Cheat-Tables\Crimson Desert\CrimsonDesert.CT` and find the
+   **Dump in-game item key array** entry.
 4. Toggle `[ENABLE]` — the script AOBScans for the loaded itemKey array, then walks it
-   slot-by-slot. The in-game array is `[u32 itemKey][u32 offset]` where the second
-   field is the byte offset of the item inside `iteminfo.pabgb`. The Lua auto-terminates
-   on the first slot whose offset is non-monotonic (= one past the real array end),
-   so what lands in `keys.txt` is exactly the live array — **no manual trimming required**.
-   It also stops on `key == 0xFFFFFFFF` / `key == 0` / page fault as defensive backstops.
+   slot-by-slot. Each element is `[u32 itemKey][u32 offset][u64 pointer][u64 0]`, 24 bytes per element since 2.05 (`[u32 itemKey][u32 offset]`, 8 bytes, through 2.04.08); `offset` is the byte offset of the item
+   inside `iteminfo.staticinfobody`. The base items come first, in header order; the
+   offset going backwards marks their end, and `keys.txt` gets exactly that segment —
+   **no manual trimming required**. The DLC's own items follow, in `iteminfo.dlc_01`
+   order with offsets into that file, and go to `keys-dlc.txt`; the walk ends where the
+   offset goes back again or the pointer is 0. `key == 0xFFFFFFFF` / `key == 0` / page
+   fault are defensive backstops. When the AOB stops matching after a patch, the
+   element layout probably changed again: it did on 2.05.
 5. Replace this file with that fresh `keys.txt` (or pass `--keys path\to\new\keys.txt`
    to the exporter without copying). Before overwriting, consider snapshotting the
    outgoing version as `keys-<previous-patch>.txt` next to the new one (the bundled

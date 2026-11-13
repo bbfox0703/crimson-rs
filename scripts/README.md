@@ -67,7 +67,7 @@ Every diagnostic script accepts `--game-dir <path>` to point at the Crimson Dese
 ### Refresh CE dropdown after a game patch
 
 ```powershell
-# 1. Re-dump itemKey order from the running game (CE — see Mydev-Cheat-Engine-Tables/dump_item_keys.CEA).
+# 1. Re-dump itemKey order from the running game (CE: My-Cheat-Tables/Crimson Desert/CrimsonDesert.CT, "Dump in-game item key array").
 # 2. Replace data\keys.txt with the new dump (or pass --keys path/to/new/keys.txt).
 # 3. Run the exporter.
 python scripts\export_for_ce.py
