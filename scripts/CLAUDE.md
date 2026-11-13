@@ -100,6 +100,11 @@ The fastest "did Pearl Abyss break anything?" loop:
    Invoke with `cargo test --lib --features c_abi <probe_name> -- --ignored --nocapture`.
 6. There is no publish step — `ci.yml` is the only workflow.
 7. **Snapshot the per-table key lists.** Run [`dump_gamedata_keys.py`](dump_gamedata_keys.py) to write the new `data\gamedata-keys-<ver>\<table>.txt` directory. This is the cross-version anchor snapshot for every non-iteminfo gamedata table (skill, mission, quest, stage, gimmick, character, faction, store, mercenary, the dye triple, the niche bridges, etc. — 30 tables, ~93 K keys for 1.08). Keep it committed alongside the new `data\keys-<ver>.txt`; future-patch diffs read it the same way `keys-1.07.txt` already serves iteminfo cross-version comparisons.
+8. **Move every "current version" mention to the new patch** — they are easy to miss because nothing fails when they go stale (on 2.05 the README badge still said 2.04.08 after the merge). Check each of these, then grep the repo for the previous version string and update whatever still presents it as current (rows in history tables stay):
+    - `README.md`: the `Game-Crimson Desert 1.05–<ver>` badge; the "Crimson Desert 1.05–<ver>" overview bullet and its "currently <ver>" item counts; a bullet for the new patch; the "row counts are <ver>" catalog list and the `stageinfo` / `questinfo` counts beside it; the language count and coverage table under the `export_for_ce` section; the "Per-patch parser (currently <ver>)" heading, the anchor link pointing at it, and a new row in its table.
+    - `CLAUDE.md` (repo root): the opening "Supports … currently <ver>" paragraph, a paragraph for the new patch, "Current: …, paver …" in the carry-forward list, and "Latest validated" under Active workstreams.
+    - `data/README.md` (the `keys.txt` row plus a row per new snapshot) and the "Past versions" table in `data/CLAUDE.md`.
+    - `bin_backup\README.txt` in the version archive, and this file's "Validated patches" table.
 
 ### Validated patches
 
