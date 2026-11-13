@@ -25,14 +25,15 @@
 //! 68-byte `.pabgh`). The u16 key matches the save's `_texturePalleteKey`
 //! u16 type 1:1.
 //!
-//! **PABGB row layout** (verified byte-exact on all 11 rows in 2.04). These
-//! rows have no name; 2.04's key/name swap still applies, so the row opens
-//! with an empty name's zero length ahead of the u16 key. Everything from
-//! `key_copy` on matches 2.03 byte for byte on all 11 rows.
+//! **PABGB row layout** (verified byte-exact on all 11 rows in 2.05). 2.04's
+//! key/name swap put the row's name ahead of the u16 key; the name was empty
+//! until 2.05 filled it in (`PartPrefabDyeTexturePallete_DyeingEditorTest`
+//! and the like). Everything from `key_copy` on matches 2.03 byte for byte on
+//! all 11 rows.
 //!
 //! ```text
 //! Row {
-//!     u32 name_len,            // = 0, the empty name
+//!     CString row_name,        // empty through 2.04.08
 //!     u16 key,                 // matches PABGH key
 //!     u8 pad,                  // = 00
 //!     u32 key_copy,            // = key
@@ -167,7 +168,7 @@ fn read_cstring(data: &[u8], cursor: &mut usize) -> Option<String> {
 /// shape, sub_count overflow).
 fn parse_row(body: &[u8], expected_key: u32) -> Option<PartPrefabDyeTexturePalleteEntry> {
     let head = read_row_head(body, 2)?;
-    if head.key != expected_key || !head.name.is_empty() {
+    if head.key != expected_key {
         return None;
     }
     // One padding zero after the key — we don't enforce, just skip.

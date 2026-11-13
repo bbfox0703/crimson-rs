@@ -2574,8 +2574,8 @@ mod tests {
             }
         }
         assert_eq!(
-            visible, 1011,
-            "IS_EQUIP_QUICK_SLOT_VISIBLE count drifted (2.04.08 baseline 1011, +1 from the new 1007079 armor; 1010 on 2.04.03; 1008 on 2.00-2.03, 1006 on 1.18, 1005 on 1.13-1.17, 970 on 1.12, 950 on 1.10/1.11, 949 on 1.08/1.09)",
+            visible, 1013,
+            "IS_EQUIP_QUICK_SLOT_VISIBLE count drifted (2.05 baseline 1013, +2 from the new Ranek / Deberon fabric helms; 2.04.08 1011, +1 from the new 1007079 armor; 1010 on 2.04.03; 1008 on 2.00-2.03, 1006 on 1.18, 1005 on 1.13-1.17, 970 on 1.12, 950 on 1.10/1.11, 949 on 1.08/1.09)",
         );
 
         // ── Negative path: unknown key → NOT_FOUND ─────────────────
