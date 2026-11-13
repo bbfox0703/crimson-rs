@@ -73,15 +73,18 @@ pub const PARSER_TARGET_GAMEDATA_MAJOR: u16 = 2;
 /// `crimson_parser_target_gamedata_minor()` C ABI instead of duplicating the
 /// number; before that bridge existed this had to be hand-bumped in lock-step
 /// on the C# side every patch (8 → 9 → … → 16 → 17 → 18 → 2.00's 0 → 2.01's 1
-/// → 2.02's 2 → 2.03's 3 → 2.04's 4).
-pub const PARSER_TARGET_GAMEDATA_MINOR: u16 = 4;
+/// → 2.02's 2 → 2.03's 3 → 2.04's 4 → 2.05's 5).
+pub const PARSER_TARGET_GAMEDATA_MINOR: u16 = 5;
 
 /// Every gamedata `minor` this build's parsers can load without mis-decoding.
 ///
 /// Always includes [`PARSER_TARGET_GAMEDATA_MINOR`]. Kept a single-element
-/// allow-list tracking just the target. The last *structural* change was 2.04,
-/// which moved every table row's name ahead of its key and reordered iteminfo
-/// and skill. 2.03 had already appended a tenth slot to iteminfo's
+/// allow-list tracking just the target. 2.05 named the two dye tables' rows,
+/// which the parsers now accept either way, so minor 4 would still read; it
+/// stays out because the patch floor below applies to the target minor only,
+/// and listing 4 would let 2.04.03 through. The last *structural* change
+/// before that was 2.04, which moved every table row's name ahead of its key
+/// and reordered iteminfo and skill. 2.03 had already appended a tenth slot to iteminfo's
 /// `inventory_info_list` — so 2.02 and earlier were no longer byte-compatible
 /// (2.00 had already broken
 /// compatibility with 1.18 by widening `SubItem` to tag 18 and inserting a
@@ -108,9 +111,9 @@ pub const COMPATIBLE_GAMEDATA_MINORS: &[u16] = &[PARSER_TARGET_GAMEDATA_MINOR];
 /// 2.04.08 and still no longer parses. `(major, minor)` alone would let that
 /// install through. A full gate is `major == MAJOR && minor ∈
 /// COMPATIBLE_GAMEDATA_MINORS && (minor != MINOR || patch >= this)`.
-/// Reset it to `0` when the target minor moves. Consumers read it through
-/// `crimson_parser_min_gamedata_patch()`.
-pub const PARSER_MIN_GAMEDATA_PATCH: u16 = 8;
+/// Reset it to `0` when the target minor moves, as it was for 2.05. Consumers
+/// read it through `crimson_parser_min_gamedata_patch()`.
+pub const PARSER_MIN_GAMEDATA_PATCH: u16 = 0;
 
 /// Parsed version stamp from `meta/0.paver`.
 ///

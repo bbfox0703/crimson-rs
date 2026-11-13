@@ -372,8 +372,12 @@ mod tests {
             minor, PARSER_TARGET_GAMEDATA_MINOR,
             "live game install minor should match PARSER_TARGET_GAMEDATA_MINOR in this test environment",
         );
+        // Always true while the floor is 0 (a fresh minor); it bites again
+        // once a patch inside the minor moves a layout.
+        #[allow(clippy::absurd_extreme_comparisons)]
+        let patch_ok = patch >= PARSER_MIN_GAMEDATA_PATCH;
         assert!(
-            patch >= PARSER_MIN_GAMEDATA_PATCH,
+            patch_ok,
             "live game install patch {patch} is below PARSER_MIN_GAMEDATA_PATCH {PARSER_MIN_GAMEDATA_PATCH}",
         );
     }

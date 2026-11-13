@@ -103,7 +103,7 @@ mod tests {
             return;
         };
         let entries = parse_region_info_lossy(&pabgb, &pabgh);
-        assert_eq!(entries.len(), 1012, "expected 1012 rows in 2.04 (1007 in 1.10-2.03, 1006 in 1.08/1.09)");
+        assert_eq!(entries.len(), 1013, "expected 1013 rows in 2.05 (1012 in 2.04, 1007 in 1.10-2.03, 1006 in 1.08/1.09)");
         let by_key: std::collections::HashMap<u32, &str> =
             entries.iter().map(|e| (e.key, e.name.as_str())).collect();
         for &(k, expected) in KNOWN {

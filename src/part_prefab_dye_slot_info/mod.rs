@@ -12,11 +12,12 @@
 //! file — that bridge lives in `iteminfo.pabgb` (joined via
 //! `stringinfo.pabgb`; see [`crate::c_abi::item_part_prefab`]).
 //!
-//! Schema (every row of the live 2.04 table walks it exactly):
+//! Schema (every row of the live 2.05 table walks it exactly):
 //!
 //! ```text
 //! Row {
-//!     u32 name_len,             // = 0, the empty name (see 2.04 below)
+//!     CString row_name,         // empty through 2.04.08, set on every row
+//!                               //   from 2.05
 //!     u32 key,                  // matches PABGH key
 //!     u8 pad,                   // = 00
 //!     u32 slot_count,           // 1..N (N reaches 36 in 1.12 for vehicle meshes)
@@ -36,7 +37,7 @@
 //! }
 //! ```
 //!
-//! ## Cross-version layout drift (1.12, 2.01, 2.04)
+//! ## Cross-version layout drift (1.12, 2.01, 2.04, 2.05)
 //!
 //! 1.12 inserted the `u8 + u32` field per slot. 2.01 widened `mask` from
 //! 3 bytes to 12, in **both** the slot and the extra layer — the only
@@ -45,7 +46,8 @@
 //! swap puts the empty name's zero length ahead of the key (the old `pad[5]`
 //! was that length plus the one pad byte). Of the 1,637 keys common to 2.03
 //! and 2.04, 1,623 rows are byte-identical after undoing that swap, and the
-//! slots are untouched.
+//! slots are untouched. 2.05 gave all 1,700 rows a name (on 270 of them the
+//! same string as `row_prefab_name`). Nothing after the key moved.
 //!
 //! The parser reads the current layout only, and requires a row to walk
 //! its body exactly. A future patch that drifts the per-slot layout fails
@@ -258,7 +260,7 @@ fn parse_slot(body: &[u8], cursor: &mut usize) -> Option<PartPrefabDyeSlot> {
 /// body **exactly** (`cursor == body.len()`); otherwise `None`.
 fn try_parse_row(body: &[u8], expected_key: u32) -> Option<PartPrefabDyeSlotInfoEntry> {
     let head = read_row_head(body, 4)?;
-    if head.key != expected_key || !head.name.is_empty() {
+    if head.key != expected_key {
         return None;
     }
     // Head, then 1 pad + u32 slot_count + CString prefab_name.
