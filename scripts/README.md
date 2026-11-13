@@ -8,7 +8,7 @@ Driver and diagnostic Python scripts for working with Crimson Desert game data.
 python scripts\export_for_ce.py
 ```
 
-One command, three deliverables (`out\items.jsonl`, three `paloc_*.json`, three `output*.txt`). See the project [`README.md`](../README.MD) for the full description.
+One command, three deliverables (`out\items.jsonl`, three `paloc_*.json`, three `output*.txt`). See the project [`README.md`](../README.md) for the full description.
 
 **Prerequisites:**
 1. Crimson Desert installed (the script auto-detects D:/F:/E:/C: SteamLibrary paths; override with `--game-dir`).
