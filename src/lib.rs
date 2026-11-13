@@ -1,12 +1,16 @@
-// Default-features build (neither `python` nor `c_abi` enabled) is a
-// minimal dev sub-surface — there's no shipping consumer that links
-// only the pure-Rust core, so save/* + paloc/* + item_info helpers that
-// the `python` facade or `c_abi` bridges would normally pull in look
-// dead to the linter. Silence dead_code globally in that combo only;
-// the two real-build clippy gates in `.github/workflows/ci.yml` keep
-// the public-surface code paths covered.
+// Dead-code / unused-import lints are only meaningful on the full
+// surface (`c_abi` + `python`). Each consumer feature uses a different
+// slice of the core: the pack writer (PAZ/PAMT/PAPGT builders, trie
+// builder, skill writers) is reached only from the `python` facade,
+// the paver gate only from `c_abi`, and the bare-default build reaches
+// neither. Every partial build would therefore warn about code the
+// other feature uses — notably `cargo build --release --features c_abi`,
+// the build downstream links. Silence those two lints everywhere except
+// the full-surface build, where the strict clippy gate in
+// `.github/workflows/ci.yml` (`--all-targets --features c_abi,python
+// -- -D warnings`) still fails on genuinely dead code.
 #![cfg_attr(
-    not(any(feature = "python", feature = "c_abi")),
+    not(all(feature = "python", feature = "c_abi")),
     allow(dead_code, unused_imports)
 )]
 
