@@ -33,9 +33,9 @@ Bundled inputs that travel with the repo so the iteminfo export pipeline runs ou
 
 ## How `keys.txt` is used
 
-`scripts/export_for_ce.py` reads `keys.txt` and uses each key as an *anchor* in the live `iteminfo.pabgb` binary — it scans for the u32 key + valid `string_key` prefix, locates every item exactly, then parses each item chunk independently. This decouples the user-facing pipeline (items.jsonl + CE dropdown) from parser completeness, so the output is 100% covering even when the Rust parser doesn't yet understand the full layout.
+Since the 2.05 DLC work, `scripts/export_for_ce.py` takes the CE item order from the game files: the base `iteminfo.staticinfoheader` rows in order (indices 0..N-1), then each DLC's `iteminfo.<dlc>` rows whose keys the base lacks, in that table's order. That is the order the running 2.05 game holds in memory, and an in-game check (DLC item 1004792 Clams at ID 7718 = 7068 + 650) confirmed it. `keys.txt` is now a **cross-check**: when present it is compared with the base segment (or with base + DLC, if it is that long), `--dlc-keys` compares a DLC dump with the DLC-only segment, and a mismatch is reported while the header order is still used. `--order keys` restores the older mode, in which `keys.txt` is the order and each key is anchored in the base `iteminfo.pabgb`.
 
-Order matters: the index of a key in `keys.txt` is the *in-game item index* used by the Cheat Engine dropdown. The `output.txt` line `123:Some Name/1004899` means index 123 = key 1004899 = "Some Name".
+The index is the *in-game item index* used by the Cheat Engine dropdown. The `output.txt` line `123:Some Name/1004899` means index 123 = key 1004899 = "Some Name"; DLC items read `7718:(DLC1)Clams/1004792`.
 
 ## How to regenerate after a game patch
 

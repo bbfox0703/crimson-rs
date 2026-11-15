@@ -46,24 +46,29 @@ So **PyO3 is not built by default** — it only links when the `python` feature 
 
 ## One-shot CE table data export
 
-**Prerequisites:** Crimson Desert installed locally + this repo + the bundled [`data/keys.txt`](data/keys.txt) (already included; see [`data/README.md`](data/README.md) for how to refresh it after a game patch).
+**Prerequisites:** Crimson Desert installed locally + this repo. The item order comes from the game's own `iteminfo` headers, so no key dump is needed; the bundled [`data/keys.txt`](data/keys.txt) is only cross-checked when present (see [`data/README.md`](data/README.md)).
 
 ```powershell
 python scripts\export_for_ce.py
 ```
 
-That single command writes everything `Generate_item_id_list.ps1` needs to `out/`. The script auto-discovers every language the game ships (15 as of 2.05 — eng, jpn, kor, zho-tw, zho-cn, …) under whichever PALOC layout is installed — the pre-2.01 single `localizationstring_<lang>.paloc` blob, or 2.01’s 39 per-namespace files per language (LZ4-wrapped from 2.03), merged back into one table — and emits one `paloc_<lang>.json` plus one CE dropdown file per language. Counts below are for **2.05** (7,068 keys; the per-patch progression — 6,236 in 1.05, 6,253 in 1.06 / 1.07, 6,314 in 1.08 / 1.09 (identical key list), 6,325 in 1.10, 6,333 in 1.11, 6,483 in 1.12, 6,508 in 1.13 / 1.14 / 1.15, 6,581 in 1.16, 6,572 in 1.17, 6,573 in 1.18, 6,810 in 2.00, 6,813 in 2.01 / 2.02 (identical key list), 6,816 in 2.03, 7,064 in 2.04.03, 7,069 in 2.04.08, 7,068 in 2.05 — is tabulated in [`scripts/CLAUDE.md`](scripts/CLAUDE.md)):
+That single command writes everything `Generate_item_id_list.ps1` needs to `out/`. The script auto-discovers every language the game ships (15 as of 2.05 — eng, jpn, kor, zho-tw, zho-cn, …) under whichever PALOC layout is installed — the pre-2.01 single `localizationstring_<lang>.paloc` blob, or 2.01’s 39 per-namespace files per language (LZ4-wrapped from 2.03), merged back into one table — and emits one `paloc_<lang>.json` plus one CE dropdown file per language.
+
+**Item index = CE item ID.** Indices 0..N-1 are the base `iteminfo.staticinfoheader` rows in order; then come each installed DLC's `iteminfo.<dlc>` rows whose keys the base lacks, in that table's order (keys a DLC overrides keep their base slot). On 2.05 that is 7,068 base items (0–7067) plus 1,311 `dlc_01` items (7068–8378), the same order the running game holds in memory; a DLC item placed in-game (1004792 Clams, the 651st DLC-only row) showed ID 7718. DLC items are written with a `(DLC1)` prefix (`7718:(DLC1)Clams/1004792`), and their names come from the DLC's own PALOC. If any DLC data file is missing or unreadable (a `dlc/<name>` folder without `0008`, no `iteminfo.<dlc>` table, or a language missing from the DLC PALOC), the export falls back to the base game alone; an install without a `dlc` folder exports the base game as well.
+
+Base counts below are for **2.05** (7,068 keys; the per-patch progression — 6,236 in 1.05, 6,253 in 1.06 / 1.07, 6,314 in 1.08 / 1.09 (identical key list), 6,325 in 1.10, 6,333 in 1.11, 6,483 in 1.12, 6,508 in 1.13 / 1.14 / 1.15, 6,581 in 1.16, 6,572 in 1.17, 6,573 in 1.18, 6,810 in 2.00, 6,813 in 2.01 / 2.02 (identical key list), 6,816 in 2.03, 7,064 in 2.04.03, 7,069 in 2.04.08, 7,068 in 2.05 — is tabulated in [`scripts/CLAUDE.md`](scripts/CLAUDE.md)):
 
 | File | Contents | 2.05 coverage |
 |---|---|---|
-| `iteminfo.pabgb` | Raw decompressed binary from group 0008 | — |
-| `items.jsonl` | One item per line; `key` + `string_key` always populated, parsed fields when the parser succeeds | 7,068 (100%) |
+| `iteminfo.pabgb`, `iteminfo.dlc_01.pabgb` | Raw base / DLC table bodies from group 0008 | — |
+| `items.jsonl` | One item per line in CE index order; `key` + `string_key` always populated, parsed fields when the parser succeeds; `_index` is the CE item ID and `_source` is `base` or `dlc_01` | 8,379 (100%; 7,068 + 1,311) |
 | `paloc_<lang>.json` (one per language) | `{item_key: name}` lookup tables (paloc 0x70). Filenames use the raw paloc lang code, e.g. `paloc_eng.json`, `paloc_jpn.json`, `paloc_kor.json`, `paloc_zho-tw.json`, `paloc_zho-cn.json`, … | 7,266 each |
-| `output.txt` (eng) + `output_<suffix>.txt` (one per remaining language) | CE dropdown lists `idx:name/key`. eng → `output.txt`; jpn → `output_ja.txt`; kor → `output_ko.txt`; zho-tw → `output_zh-tw.txt`; everything else falls through to its raw lang code | 7,068 each |
+| `paloc_<lang>.dlc_01.json` (one per language) | The DLC's own item names | 1,321 each |
+| `output.txt` (eng) + `output_<suffix>.txt` (one per remaining language) | CE dropdown lists `idx:name/key`, DLC items as `idx:(DLC1)name/key`. eng → `output.txt`; jpn → `output_ja.txt`; kor → `output_ko.txt`; zho-tw → `output_zh-tw.txt`; everything else falls through to its raw lang code | 8,379 each |
 
 The CE dropdown coverage is full because the script falls back to `string_key` for the ~71 dev/QA items the game itself doesn't ship localized names for (in any of the 15 languages — see [`docs/paloc-71-dev-items.md`](docs/paloc-71-dev-items.md) for the analysis). Exactly one item (key 1000019) is still a paloc-placeholder row — its name is the literal string `"Name"` in 14 of the 15 languages (Arabic ships the translated word) — and shows as `<idx>:Name/<key>` in the dropdown lists. 2.00 had 21 such rows; 2.01’s localization copy pass filled the other 20 in.
 
-Override the game install path or `keys.txt` location with `--game-dir` and `--keys`. Pass `--keys ''` to skip anchor mode and fall back to lossy parsing (lower coverage, useful when no `keys.txt` is available).
+Override the game install path with `--game-dir`; `--no-dlc` writes the base game only. `--keys` (default `data/keys.txt`) and `--dlc-keys` (e.g. `data/keys-2.05-dlc_01.txt`) name CE dumps to cross-check: a mismatch is reported and the header order is still used. `--order keys` restores the old behaviour, where `keys.txt` is the order and each key is anchored in the base binary (base table only; `--keys ''` then falls back to lossy parsing).
 
 ## Repository layout
 
