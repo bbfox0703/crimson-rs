@@ -22,7 +22,7 @@ Such files belong under `out/` (gitignored) or `references/samples/` (gitignored
 
 ## When `keys.txt` needs replacing
 
-After every game patch that adds/removes items. The patch notes will tell you "X new items added"; if the count or values in `keys.txt` haven't changed, the existing file is still valid.
+After every game patch that adds/removes items. The patch notes will tell you "X new items added"; if the count or values in `keys.txt` haven't changed, the existing file is still valid. Since the 2.05 DLC work the exporter no longer needs it: the CE order comes from the `iteminfo` headers (base rows, then DLC-only rows), and `keys.txt` is only cross-checked, so a stale copy produces a warning, not a wrong list.
 
 If parser fixes for a new patch require regenerating, snapshot the previous `keys.txt` first as `keys-<old-version>.txt` next to the new one — the *order* matters because Cheat Engine table dropdowns reference items by index. A saved table from a prior version will desync if `keys.txt` ordering changes between game patches.
 

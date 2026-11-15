@@ -8,12 +8,12 @@ Driver and diagnostic Python scripts for working with Crimson Desert game data.
 python scripts\export_for_ce.py
 ```
 
-One command, three deliverables (`out\items.jsonl`, three `paloc_*.json`, three `output*.txt`). See the project [`README.md`](../README.md) for the full description.
+One command, three deliverables (`out\items.jsonl`, a `paloc_*.json` per language, an `output*.txt` CE dropdown list per language), covering the base game plus any installed DLC (`(DLC1)`-prefixed, after the base items). See the project [`README.md`](../README.md) for the full description.
 
 **Prerequisites:**
 1. Crimson Desert installed (the script auto-detects D:/F:/E:/C: SteamLibrary paths; override with `--game-dir`).
 2. `crimson_rs` Python wheel installed — build into a **Python 3.12** venv (the wheel is `abi3` for ≥ 3.12): `maturin develop --release` inside `.venv`, or `maturin build --release && pip install target/wheels/crimson_rs-*.whl` from the repo root. Run this script from that same env.
-3. `data/keys.txt` (bundled — 6,333 itemKey list dumped from game memory; see [`../data/README.md`](../data/README.md)).
+3. Optional: `data/keys.txt` (bundled CE dump of the in-game key order). The order comes from the `iteminfo` headers; the dump is only cross-checked. See [`../data/README.md`](../data/README.md).
 
 ## Index
 
@@ -21,7 +21,7 @@ One command, three deliverables (`out\items.jsonl`, three `paloc_*.json`, three 
 
 | Script | Purpose | Inputs | Outputs |
 |---|---|---|---|
-| [`export_for_ce.py`](export_for_ce.py) | **Main one-shot pipeline.** Extracts iteminfo + paloc, builds items.jsonl + paloc JSONs + CE dropdown lists. | game install + `data\keys.txt` | `out\iteminfo.pabgb`, `out\items.jsonl`, `out\paloc_*.json`, `out\output*.txt` |
+| [`export_for_ce.py`](export_for_ce.py) | **Main one-shot pipeline.** Extracts iteminfo + paloc for the base game and each DLC, builds items.jsonl + paloc JSONs + CE dropdown lists in CE item-ID order (base header rows, then DLC-only rows). Falls back to the base game when any DLC file is missing. | game install (`data\keys.txt` optional cross-check) | `out\iteminfo*.pabgb`, `out\items.jsonl`, `out\paloc_*.json`, `out\output*.txt` |
 | [`build_items_jsonl.py`](build_items_jsonl.py) | Standalone anchor-based items.jsonl builder (subset of `export_for_ce.py`). | `keys.txt` + raw `iteminfo.pabgb` | `items.jsonl` |
 | [`gamedata_layout.py`](gamedata_layout.py) | **Shared helper, not a runnable script.** Resolves where the gamedata tables and paloc files live in a given install — 2.01 renamed the directory and every extension, so every script that touches an archive goes through this. Newest layout first, falls back to the pre-2.01 one. | live install | — |
 | [`dump_gamedata_keys.py`](dump_gamedata_keys.py) | Snapshot per-version key lists for the 30 non-iteminfo gamedata tables (skill, mission, quest, stage, gimmick, character, faction triple, store, mercenary, dye triple, niche bridges, …). Auto-detects four PABGH shapes. Mirrors the role `keys.txt` plays for iteminfo. | live install | `data\gamedata-keys-<ver>\<table>.txt` |
@@ -67,10 +67,11 @@ Every diagnostic script accepts `--game-dir <path>` to point at the Crimson Dese
 ### Refresh CE dropdown after a game patch
 
 ```powershell
-# 1. Re-dump itemKey order from the running game (CE: My-Cheat-Tables/Crimson Desert/CrimsonDesert.CT, "Dump in-game item key array").
-# 2. Replace data\keys.txt with the new dump (or pass --keys path/to/new/keys.txt).
-# 3. Run the exporter.
+# 1. Run the exporter. The order comes from the iteminfo headers (base, then DLC-only rows).
 python scripts\export_for_ce.py
+# 2. Optional cross-check: re-dump the key array from the running game (CE: My-Cheat-Tables/Crimson Desert/CrimsonDesert.CT,
+#    "Dump in-game item key array") and pass both segments; the run reports whether they agree.
+python scripts\export_for_ce.py --keys path\to\keys.txt --dlc-keys path\to\keys-dlc.txt
 ```
 
 ### Investigate parser failures after a game patch
