@@ -106,6 +106,15 @@ The fastest "did Pearl Abyss break anything?" loop:
     - `data/README.md` (the `keys.txt` row plus a row per new snapshot) and the "Past versions" table in `data/CLAUDE.md`.
     - `bin_backup\README.txt` in the version archive, and this file's "Validated patches" table.
 
+### Machine notes
+
+The maintainer works on two Windows PCs, and these notes describe where things live on them (see also "Working conventions" in the root [`CLAUDE.md`](../CLAUDE.md)).
+
+- **Version archive** (the step-0 output): on the PC with Google Drive mounted it is `G:\我的雲端硬碟\temp\Crimson Desert\bin_backup\<ver>\`, flat bins one folder per version, `paloc\eng\` from 2.02 and a `dlc_01\` subfolder (with its own `paloc\eng\`) from 2.04. That PC has no `X:` drive, so pass `--out "G:/我的雲端硬碟/temp/Crimson Desert/bin_backup/<ver>"` to `extract_gamedata_bin.py`. Append each new version to `bin_backup\README.txt`. Older baselines (1.13.01, 1.15, 1.16, loose `iteminfo.<ver>.pabgb` copies) used other layouts and some exist only on the other PC.
+- **G: is a Google Drive stream.** `ls -la` on one version folder took minutes and `du -sb` timed out; walk it with Python `os.scandir` and hash with `read_bytes` instead (~30 s for a whole version).
+- **Dating the install and spotting a queued patch:** `D:\SteamLibrary\steamapps\appmanifest_3321460.acf`. `lastupdated` is the epoch of the last Steam patch and `buildid` the build; a queued patch shows `StateFlags 6` plus `TargetBuildID`, `BytesToDownload` and `ScheduledAutoUpdate`. The top-level group folders' mtimes show which groups a patch rewrote. Builds seen: 2.02 = 25246367, 2.03 = 25381195, 2.04 = 26345091, 2.05 = 26636972.
+- **Saves** live under `%LOCALAPPDATA%\Pearl Abyss\CD\save\<account id>\slot<N>\save.save`; the live-save tests search that folder themselves, but several pin a slot (`slot107`, `slot103`) and the save probes take `CRIMSON_SAVE_A` / `CRIMSON_SAVE_B`. Which slot holds which patch's save differs per machine, so check the slot's mtime instead of assuming.
+
 ### Validated patches
 
 | Patch | Items | iteminfo parse | Skill | Notes |

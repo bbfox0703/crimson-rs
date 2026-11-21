@@ -74,6 +74,20 @@ Update docs when adding new features or changing binary-format understanding.
 - Binary format must roundtrip (read and write back identically).
 - Custom types for binary serialization: `CString` (u32 len + len bytes — NO trailing NUL; this is what `iteminfo.pabgb` uses), `BString`-shape (u32 len + len bytes + u8 NUL terminator — used by `skill.pabgb` entry names + the PAPGT group_names_buffer; no shared Rust type yet, handled inline in `src/skill_info/mod.rs`), `optional<T>` (u8 flag + T if nonzero), `array<T>` (u32 count + count × T), `Variant` (u8 tag + match on tag).
 
+# Working conventions
+The maintainer works on two Windows PCs. These rules used to live in one machine's Claude memory; they are here so both clones share them. Machine and archive specifics (archive paths, the Steam manifest, reading the Google Drive archive) are under "Machine notes" in [`scripts/CLAUDE.md`](scripts/CLAUDE.md).
+- **Commit, push, open a PR or merge only when asked.** After a commit, check `git show --stat HEAD`: on 2026-11-13 a `git add` whose path differed from the tracked file only in case matched nothing, and the PR merged without its README.
+- **Merging:** the repo does not allow auto-merge, and `main` requires "clippy + cargo test". Don't poll CI; the maintainer says when it is green. Then confirm `gh pr checks <n> --repo bbfox0703/crimson-rs` passes and `gh pr view <n> --json mergeStateStatus` is `CLEAN`, and run `gh pr merge <n> --repo bbfox0703/crimson-rs --merge --match-head-commit <head sha>`.
+- **Downstream:** the C# editor (`CrimsonAtomtic`) refreshes its vendored crimson-rs copy itself; don't edit that repo from a crimson-rs session. Doc-only changes need no downstream notice.
+- **Mods on 2.04+:** don't state that `pack_mod` output loads in the game, and don't try to get around the PAPGT signature-like trailer.
+- **Live-game RE:** reading the running game's memory read-only (`ReadProcessMemory`) is fine. That is how the 2.05 item key array was found. Never write to the process.
+- **Tell version binaries apart by hash, never by size.** `iteminfo.pabgb` was 5,938,891 B in 1.13.01, 1.14 and 1.15 alike.
+- **A per-version archive missing on one PC is not lost.** The archives are split across the two machines, so ask before concluding one is gone, and don't "correct" docs that name an archive this machine lacks.
+- **When the other PC has done a patch:** `git pull`, then `maturin develop --release` before any parse (the stale-`.pyd` trap under Development). Run `scripts/setup-fork-guards.ps1` once on each clone.
+- **Line endings:** `core.autocrlf=true`. `sed -i` over a CRLF file silently rewrites it LF, so edit with the Edit tool or a script that keeps the file's line endings. Compare key snapshots by content (`tr -d '\r'`), never by hash.
+- **Long test runs:** `cargo test … | grep` prints nothing if the process dies (the `TailSizeCache` balloon). Redirect to a file and tail it.
+- **A tripped heuristic pin is not automatically a drift.** Check that every row parsed (row count equals the header count), that the `KNOWN` pins pass and that the value distribution looks sane before touching a parser. A byte-identical round-trip doesn't prove the field boundaries either.
+
 # Binary Exploration
 - For a first look at an unfamiliar binary, write partial `.hexpat` patterns in `references/` and iterate with `plcli run -i <file> -p <pattern.hexpat> -v -d`.
 - For cross-version drift, use the tandem-walk / `diff_<old>_<new>.py` workflow and the Rust `_probe_*` tests in [`scripts/CLAUDE.md`](scripts/CLAUDE.md) — they diff two versions, which a pattern file can't.
