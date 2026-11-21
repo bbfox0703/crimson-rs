@@ -22,6 +22,7 @@ One command, three deliverables (`out\items.jsonl`, a `paloc_*.json` per languag
 | Script | Purpose | Inputs | Outputs |
 |---|---|---|---|
 | [`export_for_ce.py`](export_for_ce.py) | **Main one-shot pipeline.** Extracts iteminfo + paloc for the base game and each DLC, builds items.jsonl + paloc JSONs + CE dropdown lists in CE item-ID order (base header rows, then DLC-only rows). Falls back to the base game when any DLC file is missing. | game install (`data\keys.txt` optional cross-check) | `out\iteminfo*.pabgb`, `out\items.jsonl`, `out\paloc_*.json`, `out\output*.txt` |
+| [`update_ce_table.py`](update_ce_table.py) | **Run after `export_for_ce.py`.** Rewrites the CE table in place: replaces the `ItemID.` / `ItemID-zh_tw.` / `ItemID-ja.` dropdowns, recomputes every `define(Name, #<CE ID>) // name/<item key>` from the key in its comment, reports the items that entered or left each ID range, and regenerates the shared "Item data table" AA record (per-item max stack + Quest / Kuku flags) that the amount scripts read. | `out\output*.txt`, `out\items.jsonl` (or `--props-bin <archived version>`), the `.CT` | the `.CT` (backup in `out\ce-backup\`), `out\ce_update_report.txt`, `out\ce_item_data.tsv` |
 | [`build_items_jsonl.py`](build_items_jsonl.py) | Standalone anchor-based items.jsonl builder (subset of `export_for_ce.py`). | `keys.txt` + raw `iteminfo.pabgb` | `items.jsonl` |
 | [`gamedata_layout.py`](gamedata_layout.py) | **Shared helper, not a runnable script.** Resolves where the gamedata tables and paloc files live in a given install — 2.01 renamed the directory and every extension, so every script that touches an archive goes through this. Newest layout first, falls back to the pre-2.01 one. | live install | — |
 | [`dump_gamedata_keys.py`](dump_gamedata_keys.py) | Snapshot per-version key lists for the 30 non-iteminfo gamedata tables (skill, mission, quest, stage, gimmick, character, faction triple, store, mercenary, dye triple, niche bridges, …). Auto-detects four PABGH shapes. Mirrors the role `keys.txt` plays for iteminfo. | live install | `data\gamedata-keys-<ver>\<table>.txt` |
@@ -72,7 +73,21 @@ python scripts\export_for_ce.py
 # 2. Optional cross-check: re-dump the key array from the running game (CE: My-Cheat-Tables/Crimson Desert/CrimsonDesert.CT,
 #    "Dump in-game item key array") and pass both segments; the run reports whether they agree.
 python scripts\export_for_ce.py --keys path\to\keys.txt --dlc-keys path\to\keys-dlc.txt
+# 3. Update the CE table itself: dropdowns, item defines, the item data table.
+python scripts\update_ce_table.py --ct "D:\Github\My-Cheat-Tables\Crimson Desert\CrimsonDesert.CT"
+#    If the parser can't read the new patch yet (items.jsonl has keys only), take max stack and
+#    inventory tab from the last archived version, matched by item key:
+python scripts\update_ce_table.py --ct "...\CrimsonDesert.CT" --props-bin "X:\Crimson Desert\gamedata-bin\<prev>"
+# 4. Read out\ce_update_report.txt: lines marked [!] (a define whose comment and ID disagreed, a
+#    range whose start is past its end) and any item that entered or left a range.
 ```
+
+The table's conventions that make step 3 work:
+
+- An item define carries its key at the end of its comment: `define(Copper, #2075) // 銅幣/1`. The comment wins; a define without `/<key>` is left alone.
+- A range row is `dq <first>, <last>, <amount>, <force>`. Items the data table protects (Quest tab, Kuku tab, max stack 1, or not in the table) are skipped unless `<force>` is 1. Single-item exception rows always apply.
+- The "Item data table (auto-generated, do not edit)" record is replaced wholesale on every run, wherever it sits in the table. The two amount scripts assemble its script themselves (Lua `autoAssemble`), reloading it when the game process changes or the table text changed, so the record never needs ticking. (They used to set the record's `Active`, which stopped working once it was moved into a group with `moHideChildren` / `moDeactivateChildrenAsWell`; observed 2026-11-21, CE's reason not established.) A table without the record gets it as the first child of the "Crimson Desert  /  …" helper group.
+- Keys the base game and the DLC share keep their base CE ID and base properties, the same as in the game's own key array.
 
 ### Investigate parser failures after a game patch
 
