@@ -145,6 +145,8 @@ class PageData(TypedDict):
     """KnowledgeKey (u32)."""
     right_page_related_knowledge_info: int
     """KnowledgeKey (u32)."""
+    unk_post_right_page_related_knowledge_info: int
+    """2.05.01: u8. 0, or 2 on the DLC's treasure-map pages."""
 
 
 class InspectData(TypedDict):
@@ -462,6 +464,8 @@ class ItemInfo(TypedDict):
     """u8"""
     discardable: int
     """u8"""
+    unk_post_discardable: int
+    """2.05.01: u8. 1 on exactly the items with `item_type` 102 or 103, else 0."""
     is_dyeable: int
     """u8"""
     is_editable_grime: int
