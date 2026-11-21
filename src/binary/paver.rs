@@ -111,9 +111,11 @@ pub const COMPATIBLE_GAMEDATA_MINORS: &[u16] = &[PARSER_TARGET_GAMEDATA_MINOR];
 /// 2.04.08 and still no longer parses. `(major, minor)` alone would let that
 /// install through. A full gate is `major == MAJOR && minor ∈
 /// COMPATIBLE_GAMEDATA_MINORS && (minor != MINOR || patch >= this)`.
-/// Reset it to `0` when the target minor moves, as it was for 2.05. Consumers
-/// read it through `crimson_parser_min_gamedata_patch()`.
-pub const PARSER_MIN_GAMEDATA_PATCH: u16 = 0;
+/// Reset it to `0` when the target minor moves, as it was for 2.05. It is `1`
+/// since 2.05.01, which added a byte to every iteminfo row and to every
+/// `PageData` element, so 2.05.00 no longer parses. Consumers read it through
+/// `crimson_parser_min_gamedata_patch()`.
+pub const PARSER_MIN_GAMEDATA_PATCH: u16 = 1;
 
 /// Parsed version stamp from `meta/0.paver`.
 ///

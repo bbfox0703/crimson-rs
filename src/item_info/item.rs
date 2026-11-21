@@ -3,6 +3,34 @@ use super::structs::*;
 use crate::binary::*;
 use crate::py_binary_struct;
 
+// ── ItemInfo (2.05.01) ──────────────────────────────────────────────────────
+//
+// Crimson Desert 2.05.01 (`meta/0.paver` 2/5/1, build 0x4ef4be86, `dlc_01`
+// revision 9, Steam build 26776744) adds two `u8`s. Like 2.04.08 it moves a
+// layout without moving the minor. Row counts and order are unchanged
+// (7,068 base, 1,555 `iteminfo.dlc_01`), iteminfo 5,867,433 → 5,966,606 B.
+//
+//   1. `unk_post_discardable`, between `discardable` and `is_packed_in_vehicle`,
+//      on every row. It is 1 on exactly the 133 base rows with `item_type` 102
+//      or 103 (117 gimmick attach / puzzle parts, plus 16 weapons, armour,
+//      backpacks and machine cores) and 0 on every other row, base and DLC.
+//   2. `PageData::unk_post_right_page_related_knowledge_info`, a trailing byte
+//      on every page element. 0, except 2 on the 40 pages of the DLC's
+//      `Hidden_Ocean_TreasureMap_*` items.
+//
+// Pinned by tandem walk against the kept 2.05 binary. 6,054 base and 1,216 DLC
+// rows are exactly +1 B. Of all candidate insertion points, only head offset
+// 16 (after the key) reproduces every one of them; the 2.05 parser then reads
+// each such row with the byte removed and round-trips it. The remaining 1,014
+// base and 339 DLC rows have page elements, which are +1 B each. Position 8 in
+// the element follows from the DLC value 2: read at 7, it would turn those
+// pages' right-page KnowledgeKey into 0x02000000. The rest is content. 804 base
+// and 273 DLC notice/quest papers gained one fixed page, mostly a
+// `cd_t0000_boardpaper_*` texture, and their inspect point now targets it
+// (`target_page_index` −1 → 0, `is_left_page` 0 → 1). Field by field, nothing
+// else changed on any item. The first 2.05.01 error was `item_desc2.default`,
+// one byte early.
+//
 // ── ItemInfo (2.04.08) ──────────────────────────────────────────────────────
 //
 // Crimson Desert 2.04.08 (`meta/0.paver` 2/4/8, build 0xe4d53a97, `dlc_01`
@@ -484,6 +512,12 @@ py_binary_struct! {
         pub is_dyeable: u8,
         pub is_editable_grime: u8,
         pub discardable: u8,
+        // New in 2.05.01. Reads 1 on exactly the 133 base items whose
+        // `item_type` is 102 (115) or 103 (18), mostly gimmick attach and puzzle
+        // parts (`Item_gimmick_puzzle_antumbra_tokamak_*`,
+        // `Item_gimmick_attach_*`), and 0 everywhere else. `iteminfo.dlc_01` has
+        // no item of either type. Named for its position.
+        pub unk_post_discardable: u8,
         // The 59 `Trade_*_PackedInVehicle` items. Through 2.03 this byte was the
         // top of the 4-byte `unk_pre_max_endurance` (0x01000000 on those 59).
         pub is_packed_in_vehicle: u8,

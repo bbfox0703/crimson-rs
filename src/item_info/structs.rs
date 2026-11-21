@@ -338,6 +338,10 @@ py_binary_struct! {
         pub right_page_texture_path: CString<'a>,
         pub left_page_related_knowledge_info: KnowledgeKey,
         pub right_page_related_knowledge_info: KnowledgeKey,
+        // New in 2.05.01, a trailing u8 on every element: 0, except 2 on the 40
+        // pages of the DLC's `Hidden_Ocean_TreasureMap_*` items. Named for its
+        // position.
+        pub unk_post_right_page_related_knowledge_info: u8,
     }
 }
 

@@ -591,6 +591,7 @@ Each item is a dict with 105 fields. All fields are required for serialization.
 |---|---|---|
 | `is_editor_usable` | `int` | (u8) |
 | `discardable` | `int` | (u8) |
+| `unk_post_discardable` | `int` | (u8) 2.05.01: 1 on exactly the items with `item_type` 102 or 103, else 0 |
 | `is_dyeable` | `int` | (u8) |
 | `is_editable_grime` | `int` | (u8) |
 | `is_destroy_when_broken` | `int` | (u8) |
@@ -882,7 +883,8 @@ Variant type with a type tag.
     "left_page_texture_path": str,               # string
     "right_page_texture_path": str,              # string
     "left_page_related_knowledge_info": int,     # KnowledgeKey (u32)
-    "right_page_related_knowledge_info": int     # KnowledgeKey (u32)
+    "right_page_related_knowledge_info": int,    # KnowledgeKey (u32)
+    "unk_post_right_page_related_knowledge_info": int  # u8, 2.05.01: 0, or 2 on DLC treasure-map pages
 }
 ```
 
