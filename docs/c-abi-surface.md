@@ -122,10 +122,10 @@ absorbed by list-header variants (`marker_run_plus_zeros`, `ones_then_count`,
   *within* the target major — read them alongside
   `crimson_parser_target_gamedata_major()`.
 - `crimson_parser_min_gamedata_patch() -> u16` — the lowest gamedata `patch`
-  this build reads on the target `(major, minor)` (currently **8**, i.e.
-  2.04.08). Added when 2.04.08 changed the iteminfo layout without moving the
+  this build reads on the target `(major, minor)` (currently **1**, i.e.
+  2.05.01). Added when 2.04.08 changed the iteminfo layout without moving the
   minor, so `(major, minor)` alone would accept a 2.04.03 install that no longer
-  parses. Full gate: `major == target_major && minor ∈ compatible_minors &&
+  parses. 2.05.01 did the same inside minor 5, so 2.05.00 is now refused. Full gate: `major == target_major && minor ∈ compatible_minors &&
   (minor != target_minor || patch >= min_patch)`. `0` means any patch. Backs onto
   `crate::binary::paver::PARSER_MIN_GAMEDATA_PATCH`.
 
