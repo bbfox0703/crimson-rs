@@ -73,6 +73,66 @@ body-only `*_load_from_bytes` calls to the `_with_header` variants above, passin
 the table's `.staticinfoheader`, or those bridges come up empty (and item names
 blank) on 2.06.
 
+### Factions: character membership, groups and relation types (2026-11-27)
+
+The save records which factions exist and their relations
+(`FactionSaveData._factionElementSaveDataList[i]._factionRelationDataList[j]
+= {_targetFactionKey, _relationTypeRaw, _dueDate}`), not which faction an NPC
+belongs to. That lives in `characterinfo` and is now exposed:
+
+```c
+/* FactionKey of a character (0 = none). Matches the key as given, then with
+   the save cat-byte stripped. NOT_FOUND when the character is not in the table. */
+int32_t crimson_characterinfo_lookup_faction_key(
+    const CrimsonCharacterInfoHandle *handle, uint32_t character_key,
+    uint32_t *out_faction_key);
+
+/* Characters whose FactionKey equals faction_key (0 counts the faction-less). */
+int32_t crimson_characterinfo_faction_member_count(
+    const CrimsonCharacterInfoHandle *handle, uint32_t faction_key,
+    uint32_t *out_count);
+
+/* faction row -> factiongroup key (0 = none) + factionrelationgroup key. */
+int32_t crimson_faction_info_lookup_group_keys(
+    const CrimsonFactionInfoHandle *handle, uint32_t faction_key,
+    uint16_t *out_group_key, uint16_t *out_relation_group_key);
+
+/* Localized group name: PALOC (group << 32) | 0x214, two-call over buf. */
+int32_t crimson_faction_info_lookup_group_display_name(
+    const CrimsonPalocHandle *paloc, uint16_t faction_group_key,
+    uint8_t *buf, size_t buf_len, size_t *required);
+
+/* faction -> its group's localized name ("Greymanes", "Hernand", ...). */
+int32_t crimson_faction_info_lookup_display_name(
+    const CrimsonFactionInfoHandle *handle, const CrimsonPalocHandle *paloc,
+    uint32_t faction_key, uint8_t *buf, size_t buf_len, size_t *required);
+```
+
+- **Where the character's faction sits**: a `u32` in the fixed head of every
+  `characterinfo` row, byte 149 after the key on 2.04–2.05.01 and byte 151 after
+  `[key][u32 row index]` on 2.06 (2.06 inserted two zero bytes at byte 95).
+  Pinned on all 7,315 rows of five versions: always a `faction` key or 0, the
+  same per character in each. 2,303 characters have one on 2.06;
+  `Faction_Celeste_Hernand` has 66 (every `NHM_Hernand_Soldiers_*`),
+  `Faction_Graymane` 172 (Kliff, Damian, …), `Faction_Bandit` 170,
+  `Faction_Roberts` 2, `Faction_Serkis` 0. With a 2.06 header the characterinfo
+  bridge now reads every row from the header, so the 359 rows with a hashed
+  32-bit key are included too.
+- **Groups**: 128 of 135 factions have a group; the 7 groups all have a name in
+  every language (`faction.paloc`). Several factions share a group, so
+  `..._lookup_display_name` is not unique; keep the internal name
+  (`..._lookup_string_key`) to tell them apart.
+- **`_relationTypeRaw` (u8)**: 0 Neutral, 1 War, 2 Agreement, 3 BloodAlly,
+  4 ByGroup, from the name table the exe keeps right after its
+  `FactionRelationGroupInfo` consistency message. **Only 1 = War is verified in
+  game** (2026-11-27: player ⇄ `Faction_Celeste_Hernand` changed 3 → 1 both
+  ways, and the Hernand guards attacked). 0 is also the default of an absent
+  field; 4 has not been seen in a save. Relations are stored both ways, and
+  `_dueDate` was 0xFFFFFFFF on every one seen.
+- The faction bridge's six name functions keep their names and signatures;
+  `src/c_abi/faction_info.rs` now spells them out instead of using
+  `impl_name_only_bridge!`, because the handle also holds the group keys.
+
 ### Save-handle utilities
 
 - `crimson_save_list_inventory_items` — flat enumeration of every item across
@@ -267,6 +327,7 @@ src/
     ├── gimmick_info.rs      # GimmickInfoKey → name + display label (PALOC, NO hash hop, lo32=0x200)
     ├── character_info.rs    # CharacterKey → name + display (cat-byte strip, NO hash hop, lo32=0x30)
     │                        #   + resolve_portrait: fuzzy match against list_npc_portraits output
+    │                        #   + lookup_faction_key / faction_member_count (FactionKey from the row head)
     ├── dye_color_group_info.rs                # DyeColorGroupInfoKey (u32) → "Her_Color_Group_I" etc.
     ├── part_prefab_dye_texture_pallete_info.rs # PartPrefabDyeTexturePalleteKey (u16) → palette tier (cloth/leather/metal + variants)
     ├── part_prefab_dye_slot_info.rs           # PartPrefabKey (u32) → slot_count + per-slot default materials
@@ -280,6 +341,8 @@ src/
     ├── faction_info.rs                        # FactionKey (u32) → "Faction_Graymane"/"Faction_ThiefDusksong"/... (135 rows in 2.06, name-only;
     │                                           #   rows carry no localizable string, and PALOC byte 0x30 at a FactionKey
     │                                           #   answers with *character* names — CharacterKey 1000000 "Hernandian Guard")
+    │                                           #   + lookup_group_keys, lookup_group_display_name / lookup_display_name
+    │                                           #   (factiongroup name, PALOC lo32 0x214: "Greymanes")
     ├── faction_node_info.rs                   # FactionNodeKey (u32) → "Node_Her_Temporary_Camp" etc. (name only, no PALOC chain)
     ├── faction_spawn_data_info.rs             # FactionSpawnDataKey (u32) → "FactionSpawn_GlenbrightManor_Grace_ReedDevil" etc.
     ├── faction_relation_group_info.rs         # FactionRelationGroupKey (u16-widened-u32) → "Graymane"/"FriendlyCombat"/"HostileCombat"/"NPC_Common"/"Monster_Common"

@@ -40,6 +40,29 @@
 //! miss as `NOT_FOUND` and lets the caller fall back to
 //! `lookup_string_key` for the internal-name surface.
 //!
+//! ## FactionKey (2026-11-27)
+//!
+//! Every row carries the character's `FactionKey` (the `faction` table's key,
+//! 0 for none) as a `u32` at a fixed position in the fixed-width head of the
+//! body, counted from the first byte after the key:
+//!
+//! - 2.04 through 2.05.01: byte 149 ([`FACTION_AT_PRE_2_06`]).
+//! - 2.06: byte 151 of the row after `[key][u32 row index]`
+//!   ([`FACTION_AT_2_06`]). 2.06 inserted two zero bytes at byte 95 of every
+//!   row (7,313 of 7,315 rows are exactly that), which moved it by two.
+//!
+//! Pinned on all 7,315 rows of 2.04, 2.04.08, 2.05, 2.05.01 and 2.06: the value
+//! is a `faction` key or 0 on every row, the same per character across all five
+//! versions, and 2,303 rows are non-zero. Every `NHM_Hernand_Soldiers_*` row is
+//! 1000131 (`Faction_Celeste_Hernand`), Kliff (1), `Kliff_Clone` and Damian (4)
+//! are 1000000 (`Faction_Graymane`), `NHM_Bandit_*` is 1000128
+//! (`Faction_Bandit`). The save does not record an NPC's faction; this table is
+//! the only source.
+//!
+//! On 2.06 the header lists every row, so [`parse_character_info_lossy_with_header`]
+//! reads the rows from it instead of anchor-scanning, which also returns the
+//! 359 rows with a hashed 32-bit key.
+//!
 //! See `docs/save-editor-keys-plan.md` §6 for the full investigation
 //! (verified mappings: `0x07000002 → "Yann"`, `0x06000f4a → "Pierre"`,
 //! `0x0a000001 → "Kliff"`, `0x09000f4d → "Noble"`).
@@ -58,16 +81,41 @@ pub struct CharacterInfoEntry {
     /// Used as the fallback when the PALOC chain misses (the 78% case
     /// where no localized display string exists).
     pub name: String,
+    /// The character's `FactionKey` (a `faction` row key), 0 when it has none
+    /// or the row is too short to hold the field.
+    pub faction_key: u32,
+}
+
+/// Where `FactionKey` sits on 2.04 through 2.05.01: bytes after the row key.
+pub const FACTION_AT_PRE_2_06: usize = 149;
+/// Where `FactionKey` sits on 2.06: bytes after the row's `[key][u32 index]`.
+pub const FACTION_AT_2_06: usize = 151;
+
+fn read_faction(rest: &[u8], at: usize) -> u32 {
+    rest.get(at..at + 4)
+        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .unwrap_or(0)
 }
 
 /// 2.06+: row names live in the `.staticinfoheader`, so the body alone no
-/// longer carries them. Rebuilds the pre-2.06 layout from both and scans that;
-/// a pre-2.06 pair (or a header that is not the 2.06 shape) scans `data` as is.
+/// longer carries them. With a 2.06 header every row comes from it, in header
+/// order (hashed 32-bit keys included); otherwise `data` is anchor-scanned as a
+/// pre-2.06 body.
 pub fn parse_character_info_lossy_with_header(data: &[u8], header: &[u8]) -> Vec<CharacterInfoEntry> {
-    match crate::binary::static_header::to_legacy_layout(data, header) {
-        Some(t) => parse_character_info_lossy(&t.body),
-        None => parse_character_info_lossy(data),
-    }
+    use crate::binary::static_header::{detect_named_header, read_body_row};
+    let Some((_, key_width, rows)) = detect_named_header(header, data.len()) else {
+        return parse_character_info_lossy(data);
+    };
+    rows.iter()
+        .filter_map(|r| {
+            let row = read_body_row(data.get(r.range())?, key_width)?;
+            Some(CharacterInfoEntry {
+                key: r.key as u32,
+                name: r.name.to_owned(),
+                faction_key: read_faction(row.rest, FACTION_AT_2_06),
+            })
+        })
+        .collect()
 }
 
 /// Lossy anchor-scan parse of an in-memory `characterinfo.pabgb` blob.
@@ -85,6 +133,7 @@ pub fn parse_character_info_lossy(data: &[u8]) -> Vec<CharacterInfoEntry> {
         entries.push(CharacterInfoEntry {
             key: head.key,
             name: head.name.to_owned(),
+            faction_key: read_faction(&data[start + head.body_at..], FACTION_AT_PRE_2_06),
         });
         cursor = start + head.body_at;
     }
@@ -161,6 +210,16 @@ mod tests {
     /// display-name verification is the c_abi bridge's job.
     const KNOWN_LO24: &[u32] = &[0x000001, 0x000002, 0x000f4a, 0x000f4d];
 
+    /// (CharacterKey, FactionKey) on 2.06 (unchanged since 2.04).
+    const KNOWN_FACTION: &[(u32, u32)] = &[
+        (1, 1_000_000),         // Kliff → Faction_Graymane
+        (4, 1_000_000),         // Damian
+        (1_001_367, 1_000_000), // Kliff_Clone
+        (53_213, 1_000_131),    // NHM_Hernand_Soldiers_TwoHandSword_53213 → Faction_Celeste_Hernand
+        (50_001, 1_000_128),    // NHM_Bandit_OneHandAxe_50001 → Faction_Bandit
+        (1_000_173, 0),         // MainVehicle: none
+    ];
+
     fn find_characterinfo_bytes() -> Option<Vec<u8>> {
         gamedata_layout::extract_bin(&gamedata_layout::body("characterinfo"))
     }
@@ -201,6 +260,12 @@ mod tests {
         let mut by_key: std::collections::HashMap<u32, &str> = Default::default();
         for e in &entries {
             by_key.entry(e.key).or_insert(e.name.as_str());
+        }
+        // FactionKey, read from the 2.06 rows (see the module docs).
+        let faction: std::collections::HashMap<u32, u32> =
+            entries.iter().map(|e| (e.key, e.faction_key)).collect();
+        for &(key, expected) in KNOWN_FACTION {
+            assert_eq!(faction.get(&key).copied(), Some(expected), "CharacterKey {key} faction");
         }
         for &key in KNOWN_LO24 {
             assert!(

@@ -51,6 +51,8 @@ pub const CHARACTER_DISPLAY_NAME_LO32: u32 = 0x30;
 pub struct CrimsonCharacterInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,
+    /// `CharacterKey → FactionKey` (0 = the row has no faction).
+    faction_by_key: HashMap<u32, u32>,
 }
 
 impl CrimsonCharacterInfoHandle {
@@ -63,13 +65,15 @@ impl CrimsonCharacterInfoHandle {
         };
         let mut by_key: HashMap<u32, String> = HashMap::with_capacity(raw.len());
         let mut entries: Vec<(u32, String)> = Vec::with_capacity(raw.len());
+        let mut faction_by_key: HashMap<u32, u32> = HashMap::with_capacity(raw.len());
         for e in raw {
             if let std::collections::hash_map::Entry::Vacant(v) = by_key.entry(e.key) {
                 v.insert(e.name.clone());
+                faction_by_key.insert(e.key, e.faction_key);
                 entries.push((e.key, e.name));
             }
         }
-        CrimsonCharacterInfoHandle { by_key, entries }
+        CrimsonCharacterInfoHandle { by_key, entries, faction_by_key }
     }
 }
 
@@ -250,6 +254,76 @@ pub unsafe extern "C" fn crimson_characterinfo_lookup_string_key(
             return error::NOT_FOUND;
         };
         write_str_to_buf(name, buf, buf_len, required)
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+// ── Faction ────────────────────────────────────────────────────────────────
+
+/// The `FactionKey` of `character_key`'s row — the `faction` table key the
+/// character belongs to, which the save does not record (see
+/// `src/character_info/mod.rs`). Resolve its name with the `faction_info`
+/// bridge (`crimson_faction_info_lookup_string_key` /
+/// `crimson_faction_info_lookup_display_name`).
+///
+/// The key is matched as given first (rows with a hashed 32-bit key), then with
+/// the save-side cat-byte stripped (`& 0xFFFFFF`), as
+/// [`crimson_characterinfo_lookup_string_key`] does.
+///
+/// Returns `OK` with `*out_faction_key = 0` for a character that has no
+/// faction, `NOT_FOUND` when the character is not in the table (then
+/// `*out_faction_key` is 0), `NULL_ARG` for a null pointer.
+///
+/// # Safety
+/// `handle` must be live; `out_faction_key` must be non-null and writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_characterinfo_lookup_faction_key(
+    handle: *const CrimsonCharacterInfoHandle,
+    character_key: u32,
+    out_faction_key: *mut u32,
+) -> i32 {
+    if handle.is_null() || out_faction_key.is_null() {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_faction_key = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let found = h
+            .faction_by_key
+            .get(&character_key)
+            .or_else(|| h.faction_by_key.get(&(character_key & 0x00FF_FFFF)));
+        match found {
+            Some(&faction) => {
+                unsafe { *out_faction_key = faction };
+                error::OK
+            }
+            None => error::NOT_FOUND,
+        }
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// How many characters belong to `faction_key` (rows whose `FactionKey`
+/// equals it). On 2.06 `Faction_Celeste_Hernand` (1000131) has 66,
+/// `Faction_Roberts` (1000001) 2. `faction_key = 0` counts the characters with
+/// no faction. An unknown faction counts 0 (`OK`).
+///
+/// # Safety
+/// `handle` must be live; `out_count` must be non-null and writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_characterinfo_faction_member_count(
+    handle: *const CrimsonCharacterInfoHandle,
+    faction_key: u32,
+    out_count: *mut u32,
+) -> i32 {
+    if handle.is_null() || out_count.is_null() {
+        return error::NULL_ARG;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let n = h.faction_by_key.values().filter(|&&f| f == faction_key).count();
+        unsafe { *out_count = n as u32 };
+        error::OK
     }))
     .unwrap_or(error::PANIC)
 }
@@ -820,6 +894,42 @@ mod tests {
         let mut count: u32 = 0;
         unsafe { crimson_characterinfo_entry_count(cinfo_h, &mut count) };
         assert!(count > 5_000, "expected >5000 character entries, got {count}");
+
+        // ── FactionKey (2.06, unchanged per character since 2.04) ────
+        let faction_of = |key: u32| {
+            let mut out = u32::MAX;
+            let rc = unsafe { crimson_characterinfo_lookup_faction_key(cinfo_h, key, &mut out) };
+            (rc, out)
+        };
+        for (key, expected) in [
+            (1u32, 1_000_000u32),    // Kliff → Faction_Graymane
+            (0x0a00_0001, 1_000_000), // Kliff with a save cat-byte
+            (4, 1_000_000),          // Damian
+            (1_001_367, 1_000_000),  // Kliff_Clone
+            (53_213, 1_000_131),     // NHM_Hernand_Soldiers_TwoHandSword_53213
+            (50_001, 1_000_128),     // NHM_Bandit_OneHandAxe_50001 → Faction_Bandit
+            (1_000_173, 0),          // MainVehicle: no faction
+            (2_000_248_813, 0),      // NHM_Noble_1, a hashed 32-bit key
+        ] {
+            assert_eq!(faction_of(key), (error::OK, expected), "CharacterKey {key}");
+        }
+        assert_eq!(faction_of(0x00FF_FFFE), (error::NOT_FOUND, 0));
+        let members = |faction: u32| {
+            let mut n = u32::MAX;
+            assert_eq!(
+                unsafe { crimson_characterinfo_faction_member_count(cinfo_h, faction, &mut n) },
+                error::OK
+            );
+            n
+        };
+        assert_eq!(members(1_000_131), 66); // Faction_Celeste_Hernand
+        assert_eq!(members(1_000_001), 2); // Faction_Roberts
+        assert_eq!(members(1_000_002), 0); // Faction_Serkis
+        assert_eq!(members(1_000_000), 172); // Faction_Graymane
+        assert_eq!(
+            unsafe { crimson_characterinfo_lookup_faction_key(cinfo_h, 1, ptr::null_mut()) },
+            error::NULL_ARG
+        );
 
         // ── PALOC handle ────────────────────────────────────────────
         let paloc_bytes = gamedata_layout::paloc_bytes("0020", "eng")
