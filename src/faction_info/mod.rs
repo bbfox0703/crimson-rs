@@ -43,6 +43,17 @@
 //! "Hernandian Guard", `CharacterKey 1000035` is "Dusksong" — because
 //! factions and characters share the 1,000,000+ key range. The internal
 //! name is the only faction-keyed name the game ships.
+//!
+//! **Group names (2026-11-27).** What the game does show is the faction
+//! *group*: every row's `faction_group_key` names a `factiongroup` row, and
+//! its display name is PALOC `(faction_group_key << 32) | 0x214`
+//! ([`FACTION_GROUP_PALOC_LO`]) in `faction.paloc`. On 2.06, 128 of the 135
+//! rows have a group (the other 7 read 0: `Faction_Empty_*`,
+//! `Faction_BountyHunter`, `Faction_CrowBrothers`, `Faction_Ancient_People`,
+//! `Faction_Golems`, `Faction_Hexe_Sanctuary`) and all 7 `factiongroup` rows
+//! have an English name: 16965 "Greymanes", 16960 "Hernand", 16966 "Abyss", ….
+//! `faction_relation_group_key` is a `factionrelationgroup` key on all 135
+//! rows (16963 `Graymane`, 16964 `FriendlyCombat`, 16966 `NPC_Common`, …).
 
 use crate::binary::row_head::read_row_head;
 
@@ -53,7 +64,15 @@ pub struct FactionInfoEntry {
     pub key: u32,
     /// ASCII internal name (e.g. `"Faction_Graymane"`).
     pub name: String,
+    /// `factiongroup` key (e.g. 16965 `FactionGroup_Graymane`), 0 for none.
+    pub group_key: u16,
+    /// `factionrelationgroup` key (e.g. 16963 `Graymane`).
+    pub relation_group_key: u16,
 }
+
+/// PALOC `lo32` of a faction group's display name: the string key is
+/// `(faction_group_key << 32) | FACTION_GROUP_PALOC_LO` (`faction.paloc`).
+pub const FACTION_GROUP_PALOC_LO: u32 = 0x214;
 
 /// Parse `faction.pabgb` using its `.pabgh` index (or a 2.06
 /// `.staticinfobody` with its `.staticinfoheader`).
@@ -77,9 +96,17 @@ pub fn parse_faction_info_lossy(pabgb: &[u8], pabgh: &[u8]) -> Vec<FactionInfoEn
         if head.key != entry.key || !(1..=128).contains(&head.name.len()) {
             continue;
         }
+        // `[u8; 3]` (zero), then `u16 faction_group_key`, `u16 faction_relation_group_key`.
+        let u16_at = |at: usize| {
+            body.get(head.body_at + at..head.body_at + at + 2)
+                .map(|b| u16::from_le_bytes([b[0], b[1]]))
+                .unwrap_or(0)
+        };
         out.push(FactionInfoEntry {
             key: head.key,
             name: head.name.to_owned(),
+            group_key: u16_at(3),
+            relation_group_key: u16_at(5),
         });
     }
     out
@@ -159,6 +186,17 @@ mod tests {
                 "FactionKey {key} mismatch",
             );
         }
+        // (FactionKey, faction_group_key, faction_relation_group_key) on 2.06.
+        for &(key, group, relation) in &[
+            (1_000_000u32, 16_965u16, 16_963u16), // Faction_Graymane: FactionGroup_Graymane, Graymane
+            (1_000_131, 16_960, 16_964),          // Faction_Celeste_Hernand: FactionGroup_Akapen, FriendlyCombat
+            (1_000_063, 16_966, 16_966),          // Faction_Abyss: FactionGroup_Abyss, NPC_Common
+            (1_000_095, 0, 16_965),               // Faction_BountyHunter: no group
+        ] {
+            let e = entries.iter().find(|e| e.key == key).unwrap();
+            assert_eq!((e.group_key, e.relation_group_key), (group, relation), "FactionKey {key}");
+        }
+        assert_eq!(entries.iter().filter(|e| e.group_key != 0).count(), 128);
         for e in &entries {
             assert!(
                 e.name.starts_with("Faction_"),
