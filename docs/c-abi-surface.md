@@ -348,7 +348,7 @@ absorbed by list-header variants (`marker_run_plus_zeros`, `ones_then_count`,
 
 ### Status & remaining work
 
-384 tests pass with `c_abi` on 2.06 (+48 ignored diagnostic probes); the bare-default
+388 tests pass with `c_abi` on 2.06 (+48 ignored diagnostic probes); the bare-default
 build (`cargo check --lib`) is also clean; clippy clean both modes. The Jenkins
 hash-hop transform that drives Mission/Quest/Stage/Knowledge title resolution is
 cracked and pinned. CharacterKey ships at the 22% display-name coverage §6

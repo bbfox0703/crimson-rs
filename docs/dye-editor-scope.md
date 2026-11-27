@@ -304,7 +304,7 @@ Before 2.01 the three bytes were the per-channel flags `active(ch)`.
 - Within a prefab, every channel that shares a dye slot number also
   shares its default material name: 0 conflicts over 5,772 (prefab, number)
   pairs on 2.01, and 0 on 2.06.
-- The save's `_dyeSlotNo` is that number. The 1.10 fixture save
+- The save's `_dyeSlotNo` is that number. The 1.10 fixture save (private repo)
   `broken_save_after_length_change/base_sample` has two dyed items that
   resolve to a prefab. Item 121013 → `cd_phm_00_hand_0011` has one slot,
   `mat_indices` 1/2/0 and mask bits {0,1,2}, and carries three dye
@@ -362,7 +362,7 @@ Pins: `c_abi_part_prefab_dye_slot_numbers_live` (the rule on every live
 slot, four pinned rows, and the legacy getter reading zero on
 `cd_phm_00_lb_00_0054`) and
 `dye_slot_no_is_a_prefab_dye_slot_in_the_1_10_fixture` (the save side;
-skips while git-crypt is locked, path override `CRIMSON_DYE_FIXTURE_SAVE`).
+skips without the private `crimson-rs-private` fixtures; see `src/test_fixtures.rs`).
 Probe: `_probe_dye_save_slot_join` joins every dyed item in the live saves
 (or under `CRIMSON_DYE_JOIN_ROOT`) to its prefab slots.
 

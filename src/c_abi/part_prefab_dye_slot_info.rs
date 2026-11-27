@@ -1422,8 +1422,8 @@ mod tests {
 
     /// (key, slot_idx, mat_indices, slot dye-slot bits, active channels,
     /// prefab dye-slot bits). Verified on live 2.06 (2026-11-27). The first
-    /// two were dyed in-game on 1.10: the `tests/fixtures/saves/1.10/
-    /// broken_save_after_length_change/base_sample` save holds items 121013
+    /// two were dyed in-game on 1.10: the private fixture save `1.10/
+    /// broken_save_after_length_change/base_sample` holds items 121013
     /// (dye entries `_dyeSlotNo` 0, 1, 2) and 131013 (0, 1) on exactly these
     /// prefabs — see `item_part_prefab::tests::dye_slot_no_is_a_prefab_dye_slot_in_the_1_10_fixture`.
     /// The third reads all-zero through the legacy 3-byte getter.

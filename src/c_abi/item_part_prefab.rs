@@ -1101,25 +1101,16 @@ mod tests {
     /// the bit index of the 2.01+ 12-byte mask, not a slot index. Items
     /// 121013 and 131013 were dyed in-game on 1.10; each has one prefab with
     /// one slot, yet three and two dye entries, numbered exactly like the
-    /// prefab's dye slots on live 2.06. Skips when the git-crypt fixture is
-    /// locked (override the path with `CRIMSON_DYE_FIXTURE_SAVE`).
+    /// prefab's dye slots on live 2.06. Skips without the private fixture
+    /// repo (`crate::test_fixtures`).
     #[test]
     fn dye_slot_no_is_a_prefab_dye_slot_in_the_1_10_fixture() {
         use crate::save::{Body, Save};
-        let fixture = std::env::var_os("CRIMSON_DYE_FIXTURE_SAVE")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("tests/fixtures/saves/1.10/broken_save_after_length_change/base_sample/save.save")
-            });
-        let Ok(raw) = std::fs::read(&fixture) else {
-            eprintln!("skipping: fixture missing");
+        let Some(raw) =
+            crate::test_fixtures::save("1.10/broken_save_after_length_change/base_sample/save.save")
+        else {
             return;
         };
-        if raw.get(..4) != Some(b"SAVE") {
-            eprintln!("skipping: fixture is git-crypt locked");
-            return;
-        }
         let Some((h, rows)) = live_join() else {
             eprintln!("skipping: no game install");
             return;
@@ -1156,7 +1147,7 @@ mod tests {
     /// item's `partprefabdyeslotinfo` rows, one block per dyed item, so the
     /// save's `_dyeSlotNo` can be compared against the slot masks. Reads
     /// every `save.save` under `%LOCALAPPDATA%\Pearl Abyss\CD\save`
-    /// (override: `CRIMSON_DYE_JOIN_ROOT`, e.g. `tests/fixtures/saves`).
+    /// (override: `CRIMSON_DYE_JOIN_ROOT`, e.g. the private fixture `saves` folder).
     #[test]
     #[ignore]
     fn _probe_dye_save_slot_join() {
