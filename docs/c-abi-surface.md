@@ -348,7 +348,7 @@ absorbed by list-header variants (`marker_run_plus_zeros`, `ones_then_count`,
 
 ### Status & remaining work
 
-388 tests pass with `c_abi` on 2.06 (+48 ignored diagnostic probes); the bare-default
+393 tests pass with `c_abi` on 2.06 (+48 ignored diagnostic probes); the bare-default
 build (`cargo check --lib`) is also clean; clippy clean both modes. The Jenkins
 hash-hop transform that drives Mission/Quest/Stage/Knowledge title resolution is
 cracked and pinned. CharacterKey ships at the 22% display-name coverage §6
@@ -357,7 +357,10 @@ three dye gamedata bridges (2026-05-16) replace the PyQt5 `dye_slot_counts.json`
 with byte-perfect gamedata-driven slot counts + per-slot material defaults +
 named color-group + palette-tier resolvers — see
 [`dye-editor-scope.md`](dye-editor-scope.md); the `_itemKey → _partPrefabKey`
-linkage is bridged through `crimson_item_part_prefab_*`.
+linkage is bridged through `crimson_item_part_prefab_*`. Since 2026-11-27 it
+goes through the character prefabs (`..._load_*_with_prefab_pamt`: item prefab
+→ `.prefab` in the 0009 group → `.pac` meshes → row key = checksum of the
+lower-case `.pac` path), reaching 909 of 917 dyeable 2.06 items instead of 70.
 
 Remaining work is **optional follow-ons only**:
 (a) **`CharacterAppearanceIndexKey`** (deferred 2026-05-15 — file located,
@@ -376,6 +379,14 @@ Remaining work is **optional follow-ons only**:
     number (the values in `mat_indices`, and the save's `_dyeSlotNo`); see
     `..._lookup_slot_active_channels` / `..._lookup_dye_slot_bits` and
     [`dye-editor-scope.md`](dye-editor-scope.md) "Dye slot numbers (2.01+)".
+(i) ~~dye slots of body-type armor (no `partprefabdyeslotinfo` row)~~ —
+    **resolved 2026-11-27**: the rows exist; they are per `.pac` mesh, and an
+    item reaches them through its `.prefab`. See
+    `crimson_item_part_prefab_load_*_with_prefab_pamt` /
+    `..._lookup_dye_slot_bits` / `..._lookup_channel_dye_slot_bits` /
+    `..._lookup_dye_slot_material` and [`dye-editor-scope.md`](dye-editor-scope.md)
+    "Item → mesh join (2026-11-27)". Still open: the DLC tree
+    (`iteminfo.dlc_01` + `dlc/dlc_01/0009`) is not joined.
 
 ## Rust module structure
 
@@ -472,7 +483,13 @@ src/
     │                                           #   + lookup_related_count/_at for the per-row sibling-reference matrix
     ├── store_info.rs                          # StoreKey (u16-widened-u32) → "Store_Her_General" etc. (292 rows, name-only, no PALOC chain)
     ├── mercenary_info.rs                      # MercenaryKey (u8-widened-u32) → "Mercenary_Main"/"Vehicle_Horse"/... (18 rows, NEW (u8,u32) PABGH variant)
-    ├── item_part_prefab.rs                    # ItemKey → list of PartPrefabKey (3-table join: iteminfo + stringinfo + partprefabdyeslotinfo)
+    ├── item_part_prefab.rs                    # ItemKey → list of PartPrefabKey. 2026-11-27 prefab join
+    │                                           #   (load_*_with_prefab_pamt): item prefab name → .prefab in the
+    │                                           #   character PAMT (0009) → .pac paths → key = checksum(lower(pac));
+    │                                           #   per-variant (tribe_gender_list) storage; lookup_dye_slot_bits /
+    │                                           #   lookup_channel_dye_slot_bits / lookup_dye_slot_material (item-level,
+    │                                           #   optional tribe/gender filter). Original 3-table name join
+    │                                           #   (iteminfo + stringinfo + partprefabdyeslotinfo) kept as load_from_*.
     │                                           #   precomputed at load; lookup_count/_key_at/_prefab_name_at per item +
     │                                           #   resolve_dye_slot_count (v3 convenience wrapper — one-shot
     │                                           #   "how many dye slots does this item have?" chaining both bridges,

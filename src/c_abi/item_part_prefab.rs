@@ -1,58 +1,79 @@
 //! `_itemKey → _partPrefabKey` bridge — combined handle.
 //!
-//! The cross-reference between an item's `ItemKey` and the
-//! `PartPrefabKey` rows in `partprefabdyeslotinfo` lives at a
-//! 3-table join — there's no direct `_partPrefabKey` field in
-//! `iteminfo.pabgb` or any sibling table. The linkage chain:
+//! There is no `_partPrefabKey` field in `iteminfo.pabgb` or any sibling
+//! table. Each `partprefabdyeslotinfo` row describes one **`.pac` mesh**:
+//! its slots are the mesh's sub-meshes in order, the last slot's
+//! `tail_name` is the `.pac` path, and the row key is the Jenkins
+//! [`calculate_checksum`](crate::crypto::checksum::calculate_checksum) of
+//! that path in lower case (1,703 / 1,703 rows on 2.06). An item names
+//! *character prefabs*, and a prefab is a scene file that lists the `.pac`
+//! meshes it is built from. So the join is:
 //!
 //! ```text
 //! ItemKey
-//!   → iteminfo.prefab_data_list[].prefab_names[]   (StringInfoKey, u32)
-//!   → stringinfo.pabgb                             (StringInfoKey → string)
-//!   → "cd_phm_00_hel_00_0354_c"                    (resolved string)
-//!   → partprefabdyeslotinfo.prefab_name            (string == row.prefab_name)
-//!   → row.key                                      (PartPrefabKey, u32)
+//!   → iteminfo.merged_prefab_visual_list[].prefab_names[]  (StringInfoKey)
+//!   → stringinfo.pabgb                  → "cd_m0001_00_so_phm_ub_31067"
+//!   → <name>.prefab (character PAZ group, 0009 on 2.06)
+//!   → its .pac paths                    → ".../cd_m0001_00_so_phm_ub_31066.pac", ...
+//!   → calculate_checksum(lower(path))   = PartPrefabKey (row key)
 //! ```
 //!
-//! Confirmed by the `_probe_partprefab_string_linkage` investigation
-//! (2026-05-16): 100% of dyeable items' prefab_name hashes resolve via
-//! stringinfo; 50/730 land directly in `partprefabdyeslotinfo` (the
-//! remaining hashes resolve to body-type variants whose prefabs live
-//! in non-dye tables — e.g. goblin / dwarf / tribe meshes that share
-//! the human male's dye-slot layout). 0% direct hit between the
-//! StringInfoKey u32 values and partprefab row keys — these are
-//! independent hash spaces.
+//! An item's dye slot numbers are the union of its rows' masks. One prefab
+//! usually yields 2–5 rows (upper body, lower body, shoulder, accessories).
 //!
-//! This bridge precomputes the join at load time so the C# editor can
-//! ask one question — "what part-prefab keys does this item have?" —
-//! without orchestrating three handles. Each lookup is a single
-//! `HashMap` probe.
+//! Two loaders build the join:
+//!
+//! - `crimson_item_part_prefab_load_from_{bytes,file}_with_prefab_pamt`
+//!   (2026-11-27) reads the prefabs from the caller's character PAMT and
+//!   follows the chain above. On 2.06 it resolves 909 of the 917
+//!   `is_dyeable` items.
+//! - `crimson_item_part_prefab_load_from_{bytes,file}` (the original)
+//!   matches the prefab *name* against a row's `prefab_name`, which is the
+//!   mesh's **first sub-mesh** name. It resolves 70 dyeable items on 2.06,
+//!   and five of those to the wrong mesh (sub-mesh names repeat across
+//!   meshes: spear 1001163 lands on a horse-saddle hook). Kept for
+//!   compatibility.
+//!
+//! ## Body variants
+//!
+//! Each `merged_prefab_visual_list` element is one body variant, tagged
+//! with the tribe / genders that wear it (`tribe_gender_list`, e.g.
+//! `player_1`, `human_female`, `bosshuman_male`). On 2.06, 526 dyeable
+//! items have more than one variant with dye rows; 512 of them offer the
+//! same dye slot numbers in every variant. In the other 14 the variants
+//! differ (usually a male mesh offering more numbers than a female or boss
+//! one), and 9 items name a dye slot number with different default
+//! materials in different variants. The save keeps one dye list per item,
+//! so the item-level lookups take an optional tribe / gender filter and
+//! union every matching variant (all variants when the filter is null).
 //!
 //! ## Input requirements
 //!
-//! Three blobs from the game install's 0008 PAMT manifest:
-//! - `iteminfo.pabgb`
-//! - `stringinfo.pabgb`
-//! - `partprefabdyeslotinfo.pabgb` + `.pabgh`
-//!
-//! All three live under `0008/gamedata/binary__/client/bin/` and can be
-//! extracted with the existing [`super::paz`] bridge.
-//!
-//! ## Coverage
-//!
-//! In 1.07: 507 items have `is_dyeable=1`; ~120 of them resolve to at
-//! least one `partprefabdyeslotinfo` row. Items with `is_dyeable=0` are
-//! also surfaced when they happen to reference a partprefab row (rare —
-//! the editor should still filter by `is_dyeable` on its end).
+//! From the gamedata PAZ group (0008): `iteminfo.pabgb`,
+//! `stringinfo.pabgb` and `partprefabdyeslotinfo.pabgb` + `.pabgh`
+//! (extract them with [`super::paz`]). The prefab loaders also take the
+//! path of the PAZ group's `0.pamt` that holds the character `.prefab`
+//! files (0009 on 2.06); prefabs are found there by file name.
 
 use std::collections::HashMap;
 use std::ffi::CStr;
 use std::io;
 use std::os::raw::c_char;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::{Path, PathBuf};
 
 use super::error;
 use crate::binary::BinaryRead;
+use crate::part_prefab_dye_slot_info::PartPrefabDyeSlotInfoEntry;
+
+/// One body variant of an item: one `merged_prefab_visual_list` element
+/// that resolved to at least one `partprefabdyeslotinfo` row.
+struct ItemPrefabVariant {
+    /// `tribe_gender_list`, resolved through stringinfo (`"player_1"`, ...).
+    tribe_genders: Vec<String>,
+    /// Row keys, in prefab / mesh order, deduplicated within the variant.
+    keys: Vec<u32>,
+}
 
 /// Opaque handle exposing precomputed `ItemKey → Vec<PartPrefabKey>`
 /// lookups.
@@ -60,89 +81,276 @@ use crate::binary::BinaryRead;
 pub struct CrimsonItemPartPrefabHandle {
     /// Joined map. Keys are item keys; values are the list of
     /// part-prefab keys resolvable for that item, in
-    /// `iteminfo.prefab_data_list` traversal order. Empty entries are
-    /// dropped from the map.
+    /// `iteminfo.merged_prefab_visual_list` traversal order, deduplicated.
+    /// Empty entries are dropped from the map.
     part_prefab_keys_by_item: HashMap<u32, Vec<u32>>,
-    /// Parallel list of (item_key, resolved prefab_name) per part
-    /// prefab key. Same length as the corresponding value in
-    /// `part_prefab_keys_by_item` — exposes the underlying prefab
-    /// names for debugging / display.
+    /// Each part-prefab key's row `prefab_name` (its first sub-mesh name),
+    /// parallel to `part_prefab_keys_by_item`, for debugging / display.
     prefab_names_by_item: HashMap<u32, Vec<String>>,
+    /// The item's body variants, in list order (same item set as above).
+    variants_by_item: HashMap<u32, Vec<ItemPrefabVariant>>,
+    /// Every `partprefabdyeslotinfo` row by key.
+    rows: HashMap<u32, PartPrefabDyeSlotInfoEntry>,
+}
+
+/// The `PartPrefabKey` of the `partprefabdyeslotinfo` row describing the
+/// mesh at `pac_path`: the Jenkins checksum of the path in lower case.
+pub(crate) fn part_prefab_key_for_pac(pac_path: &str) -> u32 {
+    crate::crypto::checksum::calculate_checksum(pac_path.to_ascii_lowercase().as_bytes())
+}
+
+/// The `.pac` paths a character `.prefab` references, in file order. The
+/// prefab is a reflection-serialized scene; every string in it is
+/// `[u32 len][len bytes]`, and the mesh references are the ones ending in
+/// `.pac`.
+pub(crate) fn prefab_pac_paths(prefab: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while let Some(len_bytes) = prefab.get(i..i + 4) {
+        let len = u32::from_le_bytes(len_bytes.try_into().unwrap()) as usize;
+        if (5..=1024).contains(&len)
+            && let Some(s) = prefab.get(i + 4..i + 4 + len)
+            && s.ends_with(b".pac")
+            && s.iter().all(u8::is_ascii_graphic)
+        {
+            out.push(String::from_utf8_lossy(s).into_owned());
+            i += 4 + len;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// The character `.prefab` files of one PAZ group, by lower-case file stem.
+struct PrefabArchive {
+    group_dir: PathBuf,
+    meta: crate::binary::pamt::PackMeta,
+    /// stem → (directory index, file index); first occurrence wins.
+    by_stem: HashMap<String, (usize, usize)>,
+}
+
+impl PrefabArchive {
+    fn open(pamt_path: &Path) -> io::Result<Self> {
+        let meta = crate::binary::pamt::PackMeta::parse(&std::fs::read(pamt_path)?, None)?;
+        let group_dir = pamt_path
+            .parent()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "PAMT path has no parent"))?
+            .to_path_buf();
+        let mut by_stem = HashMap::new();
+        for (di, d) in meta.directories.iter().enumerate() {
+            for (fi, f) in d.files.iter().enumerate() {
+                let name = f.name.to_ascii_lowercase();
+                if let Some(stem) = name.strip_suffix(".prefab") {
+                    by_stem.entry(stem.to_string()).or_insert((di, fi));
+                }
+            }
+        }
+        Ok(PrefabArchive { group_dir, meta, by_stem })
+    }
+
+    /// The `.pac` paths of prefab `name`, or `None` when the group has no
+    /// such prefab or it cannot be extracted.
+    fn pac_paths(&self, name: &str) -> Option<Vec<String>> {
+        let &(di, fi) = self.by_stem.get(&name.to_ascii_lowercase())?;
+        let d = &self.meta.directories[di];
+        let bytes = crate::binary::paz::extract_file(
+            &self.group_dir,
+            &d.files[fi],
+            &d.path,
+            &self.meta.header.encrypt_info.encrypt_info,
+        )
+        .ok()?;
+        Some(prefab_pac_paths(&bytes))
+    }
 }
 
 impl CrimsonItemPartPrefabHandle {
+    /// The original join: an item prefab name matches a row whose
+    /// `prefab_name` (first sub-mesh name) equals it.
     fn from_bytes(
         iteminfo_pabgb: &[u8],
         stringinfo_pabgb: &[u8],
         partprefab_pabgb: &[u8],
         partprefab_pabgh: &[u8],
     ) -> io::Result<Self> {
-        // Stage 1: load partprefab — gives us
-        // (prefab_name → key) and the set of valid prefab names.
-        let pp = crate::part_prefab_dye_slot_info::parse_part_prefab_dye_slot_info_lossy(
+        let rows = crate::part_prefab_dye_slot_info::parse_part_prefab_dye_slot_info_lossy(
             partprefab_pabgb,
             partprefab_pabgh,
         );
-        let mut pp_key_by_name: HashMap<String, u32> = HashMap::with_capacity(pp.len());
-        for e in &pp {
-            // Keep the first occurrence on a name collision. None
-            // observed in 1.07.
-            pp_key_by_name.entry(e.prefab_name.clone()).or_insert(e.key);
+        let mut key_by_name: HashMap<String, u32> = HashMap::with_capacity(rows.len());
+        for e in &rows {
+            // First occurrence wins on a name collision.
+            key_by_name.entry(e.prefab_name.clone()).or_insert(e.key);
         }
+        Self::build(iteminfo_pabgb, stringinfo_pabgb, rows, |name| {
+            key_by_name.get(name).copied().into_iter().collect()
+        })
+    }
 
-        // Stage 2: load stringinfo — gives us (StringInfoKey → string).
-        // ~30,232 entries in 1.07.
-        let si_entries =
-            crate::string_info::StringInfoData::parse_pabgb(stringinfo_pabgb)?;
-        let mut si_by_hash: HashMap<u32, String> =
-            HashMap::with_capacity(si_entries.len());
+    /// The prefab join: an item prefab name → its `.prefab` in `prefabs`
+    /// → the `.pac` paths it lists → the rows keyed by their checksums.
+    fn from_bytes_with_prefabs(
+        iteminfo_pabgb: &[u8],
+        stringinfo_pabgb: &[u8],
+        partprefab_pabgb: &[u8],
+        partprefab_pabgh: &[u8],
+        prefabs: &PrefabArchive,
+    ) -> io::Result<Self> {
+        let rows = crate::part_prefab_dye_slot_info::parse_part_prefab_dye_slot_info_lossy(
+            partprefab_pabgb,
+            partprefab_pabgh,
+        );
+        let known: std::collections::HashSet<u32> = rows.iter().map(|e| e.key).collect();
+        let mut cache: HashMap<String, Vec<u32>> = HashMap::new();
+        Self::build(iteminfo_pabgb, stringinfo_pabgb, rows, |name| {
+            cache
+                .entry(name.to_string())
+                .or_insert_with(|| {
+                    prefabs
+                        .pac_paths(name)
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|p| part_prefab_key_for_pac(p))
+                        .filter(|k| known.contains(k))
+                        .collect()
+                })
+                .clone()
+        })
+    }
+
+    /// Walk iteminfo and resolve every prefab name of every variant to
+    /// row keys with `resolve`.
+    fn build(
+        iteminfo_pabgb: &[u8],
+        stringinfo_pabgb: &[u8],
+        rows: Vec<PartPrefabDyeSlotInfoEntry>,
+        mut resolve: impl FnMut(&str) -> Vec<u32>,
+    ) -> io::Result<Self> {
+        let si_entries = crate::string_info::StringInfoData::parse_pabgb(stringinfo_pabgb)?;
+        let mut si_by_hash: HashMap<u32, String> = HashMap::with_capacity(si_entries.len());
         for e in &si_entries {
-            // First-wins on duplicates. Round-trip semantics are not
-            // needed here — we only consume the value.
             si_by_hash.entry(e.hash).or_insert_with(|| e.value.clone());
         }
+        let rows: HashMap<u32, PartPrefabDyeSlotInfoEntry> =
+            rows.into_iter().map(|e| (e.key, e)).collect();
 
-        // Stage 3: walk iteminfo. For each item, walk every
-        // `prefab_data_list[].prefab_names[]` hash, resolve through
-        // stringinfo, and look up in partprefab. Accumulate dedup'd
-        // partprefab keys per item.
         let mut keys_by_item: HashMap<u32, Vec<u32>> = HashMap::new();
         let mut names_by_item: HashMap<u32, Vec<String>> = HashMap::new();
+        let mut variants_by_item: HashMap<u32, Vec<ItemPrefabVariant>> = HashMap::new();
         let mut offset = 0usize;
         while offset < iteminfo_pabgb.len() {
             let item = crate::item_info::ItemInfo::read_from(iteminfo_pabgb, &mut offset)?;
-            let mut seen: std::collections::HashSet<u32> = Default::default();
             let mut keys: Vec<u32> = Vec::new();
-            let mut names: Vec<String> = Vec::new();
+            let mut variants: Vec<ItemPrefabVariant> = Vec::new();
             for pd in &item.merged_prefab_visual_list.items {
+                let mut vkeys: Vec<u32> = Vec::new();
                 for sik in &pd.prefab_names.items {
                     let Some(name) = si_by_hash.get(&sik.0) else {
                         continue;
                     };
-                    let Some(&pp_key) = pp_key_by_name.get(name) else {
-                        continue;
-                    };
-                    if seen.insert(pp_key) {
-                        keys.push(pp_key);
-                        names.push(name.clone());
+                    for k in resolve(name) {
+                        if !vkeys.contains(&k) {
+                            vkeys.push(k);
+                        }
                     }
                 }
+                if vkeys.is_empty() {
+                    continue;
+                }
+                for &k in &vkeys {
+                    if !keys.contains(&k) {
+                        keys.push(k);
+                    }
+                }
+                let tribe_genders = pd
+                    .tribe_gender_list
+                    .items
+                    .iter()
+                    .filter_map(|k| si_by_hash.get(&k.0).cloned())
+                    .collect();
+                variants.push(ItemPrefabVariant { tribe_genders, keys: vkeys });
             }
             if !keys.is_empty() {
+                let names = keys.iter().map(|k| rows[k].prefab_name.clone()).collect();
                 keys_by_item.insert(item.key.0, keys);
                 names_by_item.insert(item.key.0, names);
+                variants_by_item.insert(item.key.0, variants);
             }
         }
         Ok(CrimsonItemPartPrefabHandle {
             part_prefab_keys_by_item: keys_by_item,
             prefab_names_by_item: names_by_item,
+            variants_by_item,
+            rows,
         })
+    }
+
+    /// The rows of the item's variants that `tribe_gender` selects (every
+    /// variant when `None`), in variant then mesh order. `None` when the
+    /// item has no rows or no variant lists `tribe_gender`.
+    fn selected_rows(
+        &self,
+        item_key: u32,
+        tribe_gender: Option<&str>,
+    ) -> Option<Vec<&PartPrefabDyeSlotInfoEntry>> {
+        let variants = self.variants_by_item.get(&item_key)?;
+        let mut out: Vec<&PartPrefabDyeSlotInfoEntry> = Vec::new();
+        for v in variants {
+            if tribe_gender.is_some_and(|t| !v.tribe_genders.iter().any(|g| g == t)) {
+                continue;
+            }
+            for k in &v.keys {
+                if let Some(r) = self.rows.get(k)
+                    && !out.iter().any(|o| o.key == r.key)
+                {
+                    out.push(r);
+                }
+            }
+        }
+        (!out.is_empty()).then_some(out)
+    }
+
+    /// Union of the selected rows' dye slot bits (bit `n` = `_dyeSlotNo` `n`).
+    fn dye_slot_bits(&self, item_key: u32, tribe_gender: Option<&str>) -> Option<u32> {
+        let rows = self.selected_rows(item_key, tribe_gender)?;
+        Some(rows.iter().fold(0, |a, r| a | r.dye_slot_bits()))
+    }
+
+    /// Union of the selected rows' channel numbers, dyeable or not.
+    fn channel_dye_slot_bits(&self, item_key: u32, tribe_gender: Option<&str>) -> Option<u32> {
+        let rows = self.selected_rows(item_key, tribe_gender)?;
+        Some(rows.iter().fold(0, |a, r| a | r.channel_dye_slot_bits()))
+    }
+
+    /// Default material of `dye_slot_no` over the selected rows: the first
+    /// non-empty name in variant then mesh order. `Ok(Some(""))` when the
+    /// number is used but unnamed, `Ok(None)` when no selected row uses it,
+    /// `Err(())` when nothing is selected.
+    fn dye_slot_material(
+        &self,
+        item_key: u32,
+        tribe_gender: Option<&str>,
+        dye_slot_no: u8,
+    ) -> Result<Option<&str>, ()> {
+        let rows = self.selected_rows(item_key, tribe_gender).ok_or(())?;
+        let mut used = None;
+        for r in rows {
+            match r.dye_slot_material(dye_slot_no) {
+                Some(m) if !m.is_empty() => return Ok(Some(m)),
+                Some(m) => used = used.or(Some(m)),
+                None => {}
+            }
+        }
+        Ok(used)
     }
 }
 
 // ── Load / free ────────────────────────────────────────────────────────────
 
-/// Parse the three required tables from disk.
+/// Parse the three required tables from disk (the original name join;
+/// prefer [`crimson_item_part_prefab_load_from_file_with_prefab_pamt`],
+/// see the module docs).
 ///
 /// # Safety
 /// All four path arguments must be NUL-terminated UTF-8 strings.
@@ -250,7 +458,146 @@ pub unsafe extern "C" fn crimson_item_part_prefab_load_from_bytes(
     .unwrap_or(error::PANIC)
 }
 
-/// Free a handle returned by either loader.
+/// Open the character PAMT for the prefab loaders. `NOT_FOUND` when it
+/// lists no `.prefab` file (the caller passed another group).
+fn open_prefab_archive(prefab_pamt_path: *const c_char) -> Result<PrefabArchive, i32> {
+    let s = unsafe { CStr::from_ptr(prefab_pamt_path) }
+        .to_str()
+        .map_err(|_| error::INVALID_PATH)?;
+    let archive = PrefabArchive::open(Path::new(s)).map_err(|e| match e.kind() {
+        io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied => error::IO,
+        _ => error::BODY_PARSE,
+    })?;
+    if archive.by_stem.is_empty() {
+        return Err(error::NOT_FOUND);
+    }
+    Ok(archive)
+}
+
+/// Build the join through the character prefabs (the 2026-11-27 join; see
+/// the module docs). Same three tables as
+/// [`crimson_item_part_prefab_load_from_bytes`], plus the path of the PAZ
+/// group `0.pamt` that holds the character `.prefab` files (0009 on 2.06,
+/// `character/bin__/prefab/...`). Prefabs are looked up there by file name;
+/// their `.prefab` files are read from that group's `.paz` chunks.
+///
+/// Returns `IO` when the PAMT cannot be read, `BODY_PARSE` when it or a
+/// table does not parse, `NOT_FOUND` when the PAMT lists no `.prefab` file.
+///
+/// # Safety
+/// As [`crimson_item_part_prefab_load_from_bytes`]; `prefab_pamt_path` must
+/// be a NUL-terminated UTF-8 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_item_part_prefab_load_from_bytes_with_prefab_pamt(
+    iteminfo_pabgb: *const u8,
+    iteminfo_pabgb_len: usize,
+    stringinfo_pabgb: *const u8,
+    stringinfo_pabgb_len: usize,
+    partprefab_pabgb: *const u8,
+    partprefab_pabgb_len: usize,
+    partprefab_pabgh: *const u8,
+    partprefab_pabgh_len: usize,
+    prefab_pamt_path: *const c_char,
+    out_handle: *mut *mut CrimsonItemPartPrefabHandle,
+) -> i32 {
+    if out_handle.is_null() || prefab_pamt_path.is_null() {
+        return error::NULL_ARG;
+    }
+    let pairs = [
+        (iteminfo_pabgb, iteminfo_pabgb_len),
+        (stringinfo_pabgb, stringinfo_pabgb_len),
+        (partprefab_pabgb, partprefab_pabgb_len),
+        (partprefab_pabgh, partprefab_pabgh_len),
+    ];
+    for &(p, n) in &pairs {
+        if p.is_null() && n != 0 {
+            return error::NULL_ARG;
+        }
+    }
+    unsafe { *out_handle = std::ptr::null_mut() };
+    catch_unwind(AssertUnwindSafe(|| {
+        let slice = |p: *const u8, n: usize| -> &[u8] {
+            if n == 0 {
+                &[][..]
+            } else {
+                unsafe { std::slice::from_raw_parts(p, n) }
+            }
+        };
+        let archive = match open_prefab_archive(prefab_pamt_path) {
+            Ok(a) => a,
+            Err(rc) => return rc,
+        };
+        match CrimsonItemPartPrefabHandle::from_bytes_with_prefabs(
+            slice(iteminfo_pabgb, iteminfo_pabgb_len),
+            slice(stringinfo_pabgb, stringinfo_pabgb_len),
+            slice(partprefab_pabgb, partprefab_pabgb_len),
+            slice(partprefab_pabgh, partprefab_pabgh_len),
+            &archive,
+        ) {
+            Ok(h) => {
+                unsafe { *out_handle = Box::into_raw(Box::new(h)) };
+                error::OK
+            }
+            Err(_) => error::BODY_PARSE,
+        }
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// File-path form of
+/// [`crimson_item_part_prefab_load_from_bytes_with_prefab_pamt`].
+///
+/// # Safety
+/// All five path arguments must be NUL-terminated UTF-8 strings.
+/// `out_handle` must be non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_item_part_prefab_load_from_file_with_prefab_pamt(
+    iteminfo_pabgb_path: *const c_char,
+    stringinfo_pabgb_path: *const c_char,
+    partprefab_pabgb_path: *const c_char,
+    partprefab_pabgh_path: *const c_char,
+    prefab_pamt_path: *const c_char,
+    out_handle: *mut *mut CrimsonItemPartPrefabHandle,
+) -> i32 {
+    let paths = [
+        iteminfo_pabgb_path,
+        stringinfo_pabgb_path,
+        partprefab_pabgb_path,
+        partprefab_pabgh_path,
+    ];
+    if paths.iter().any(|p| p.is_null()) || prefab_pamt_path.is_null() || out_handle.is_null() {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_handle = std::ptr::null_mut() };
+    catch_unwind(AssertUnwindSafe(|| {
+        let mut buffers: [Vec<u8>; 4] = Default::default();
+        for (i, p) in paths.iter().enumerate() {
+            let Ok(s) = unsafe { CStr::from_ptr(*p) }.to_str() else {
+                return error::INVALID_PATH;
+            };
+            buffers[i] = match std::fs::read(s) {
+                Ok(b) => b,
+                Err(_) => return error::IO,
+            };
+        }
+        let archive = match open_prefab_archive(prefab_pamt_path) {
+            Ok(a) => a,
+            Err(rc) => return rc,
+        };
+        let [it, si, pp_b, pp_h] = buffers;
+        match CrimsonItemPartPrefabHandle::from_bytes_with_prefabs(&it, &si, &pp_b, &pp_h, &archive)
+        {
+            Ok(h) => {
+                unsafe { *out_handle = Box::into_raw(Box::new(h)) };
+                error::OK
+            }
+            Err(_) => error::BODY_PARSE,
+        }
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Free a handle returned by any loader.
 ///
 /// # Safety
 /// `handle` must be null or a pointer previously returned by one of
@@ -401,6 +748,150 @@ pub unsafe extern "C" fn crimson_item_part_prefab_lookup_prefab_name_at(
     .unwrap_or(error::PANIC)
 }
 
+/// The optional tribe / gender filter of the item-level dye lookups.
+/// `Ok(None)` for a null pointer.
+fn tribe_gender_arg<'a>(tribe_gender: *const c_char) -> Result<Option<&'a str>, i32> {
+    if tribe_gender.is_null() {
+        return Ok(None);
+    }
+    unsafe { CStr::from_ptr(tribe_gender) }
+        .to_str()
+        .map(Some)
+        .map_err(|_| error::INVALID_PATH)
+}
+
+/// The dye slot numbers an item offers: the union of the dye slot bits of
+/// every `partprefabdyeslotinfo` row of its body variants (bit `n` =
+/// `ItemDyeSaveData._dyeSlotNo` `n`, absent = 0). Equals OR-ing
+/// `crimson_part_prefab_dye_slot_info_lookup_dye_slot_bits` over the item's
+/// keys when `tribe_gender` is null.
+///
+/// `tribe_gender` (nullable, NUL-terminated) keeps only the variants whose
+/// `tribe_gender_list` names it, e.g. `"player_1"` or `"human_female"`.
+///
+/// Returns `NOT_FOUND` (and writes 0) when the item has no rows, or no
+/// variant lists `tribe_gender`; `INVALID_PATH` when `tribe_gender` is not
+/// UTF-8.
+///
+/// # Safety
+/// `handle` and `out_bits` must be non-null; `tribe_gender` must be null or
+/// a NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_item_part_prefab_lookup_dye_slot_bits(
+    handle: *const CrimsonItemPartPrefabHandle,
+    item_key: u32,
+    tribe_gender: *const c_char,
+    out_bits: *mut u32,
+) -> i32 {
+    if handle.is_null() || out_bits.is_null() {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_bits = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let tg = match tribe_gender_arg(tribe_gender) {
+            Ok(t) => t,
+            Err(rc) => return rc,
+        };
+        let Some(bits) = h.dye_slot_bits(item_key, tg) else {
+            return error::NOT_FOUND;
+        };
+        unsafe { *out_bits = bits };
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Every dye slot number a material channel of the item's rows carries
+/// (`mat_indices`), whether or not the current mask enables it: a superset
+/// of [`crimson_item_part_prefab_lookup_dye_slot_bits`]. Saves written
+/// before 2.01 hold `_dyeSlotNo` values in this set but outside the 2.06
+/// masks (1.10 fixture: 200914 slot 3, 2111103 slot 2, 103023 slot 1), so
+/// an editor should keep such elements rather than treat them as invalid.
+/// Same arguments and return codes as `lookup_dye_slot_bits`.
+///
+/// # Safety
+/// As [`crimson_item_part_prefab_lookup_dye_slot_bits`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_item_part_prefab_lookup_channel_dye_slot_bits(
+    handle: *const CrimsonItemPartPrefabHandle,
+    item_key: u32,
+    tribe_gender: *const c_char,
+    out_bits: *mut u32,
+) -> i32 {
+    if handle.is_null() || out_bits.is_null() {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_bits = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let tg = match tribe_gender_arg(tribe_gender) {
+            Ok(t) => t,
+            Err(rc) => return rc,
+        };
+        let Some(bits) = h.channel_dye_slot_bits(item_key, tg) else {
+            return error::NOT_FOUND;
+        };
+        unsafe { *out_bits = bits };
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Default material name of dye slot number `dye_slot_no` on an item: the
+/// first non-empty name over its rows, in variant then mesh order. Variants
+/// can disagree (9 items on 2.06); pass `tribe_gender` to pick one. Writes
+/// `""` when the number is used but no channel names a material. Two-call
+/// pattern.
+///
+/// Returns `NOT_FOUND` as [`crimson_item_part_prefab_lookup_dye_slot_bits`],
+/// `OUT_OF_RANGE` when no selected row uses `dye_slot_no`.
+///
+/// # Safety
+/// `handle` and `required` must be non-null; `buf` may be null iff
+/// `buf_len == 0`; `tribe_gender` must be null or a NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_item_part_prefab_lookup_dye_slot_material(
+    handle: *const CrimsonItemPartPrefabHandle,
+    item_key: u32,
+    tribe_gender: *const c_char,
+    dye_slot_no: u8,
+    buf: *mut u8,
+    buf_len: usize,
+    required: *mut usize,
+) -> i32 {
+    if handle.is_null() || required.is_null() {
+        return error::NULL_ARG;
+    }
+    if buf.is_null() && buf_len != 0 {
+        return error::NULL_ARG;
+    }
+    unsafe { *required = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let tg = match tribe_gender_arg(tribe_gender) {
+            Ok(t) => t,
+            Err(rc) => return rc,
+        };
+        let name = match h.dye_slot_material(item_key, tg, dye_slot_no) {
+            Err(()) => return error::NOT_FOUND,
+            Ok(None) => return error::OUT_OF_RANGE,
+            Ok(Some(m)) => m,
+        };
+        let needed = name.len() + 1;
+        unsafe { *required = needed };
+        if buf_len < needed {
+            return error::BUFFER_TOO_SMALL;
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(name.as_ptr(), buf, name.len());
+            *buf.add(name.len()) = 0;
+        }
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
 /// Constants for `out_resolve_source` of
 /// [`crimson_item_part_prefab_resolve_dye_slot_count`].
 ///
@@ -417,6 +908,8 @@ pub mod resolve_dye_slot_count_source {
     /// body-type variant (goblin / dwarf / tribe mesh) that shares
     /// the human male's dye-slot layout but isn't itself listed.
     /// 76% of `is_dyeable=1` items hit this in 1.07 (387/507).
+    /// With a handle from the `_with_prefab_pamt` loaders, 8 of the 917
+    /// 2.06 dyeable items hit this (909 resolve).
     /// Editor should fall back to a curated default (e.g. the
     /// human-male equip-slot prefab's slot count) or display
     /// "unknown" with a warning. `out_slot_count` is 0.
@@ -1232,5 +1725,299 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn prefab_pac_paths_reads_length_prefixed_pac_strings() {
+        let s = |v: &str| {
+            let mut b = (v.len() as u32).to_le_bytes().to_vec();
+            b.extend_from_slice(v.as_bytes());
+            b
+        };
+        let mut blob = b"\x01\x02junk".to_vec();
+        blob.extend(s("Upperbody"));
+        blob.extend(s("character/model/a/b_ub.pac"));
+        blob.push(b'y');
+        blob.extend(s("character/model/a/b_ub.pac_xml"));
+        blob.extend(s("character/model/a/b_lb.pac"));
+        assert_eq!(
+            prefab_pac_paths(&blob),
+            ["character/model/a/b_ub.pac", "character/model/a/b_lb.pac"]
+        );
+        assert!(prefab_pac_paths(&[]).is_empty());
+        assert!(prefab_pac_paths(&[5, 0, 0]).is_empty());
+    }
+
+    /// The live 2.06 tables, the character PAMT next to the gamedata group,
+    /// and the prefab-join handle built through the C ABI.
+    struct LivePrefabJoin {
+        item_b: Vec<u8>,
+        rows: Vec<crate::part_prefab_dye_slot_info::PartPrefabDyeSlotInfoEntry>,
+        h: *mut CrimsonItemPartPrefabHandle,
+    }
+
+    impl Drop for LivePrefabJoin {
+        fn drop(&mut self) {
+            unsafe { crimson_item_part_prefab_free(self.h) };
+        }
+    }
+
+    fn live_prefab_join() -> Option<LivePrefabJoin> {
+        let pamt_path = find_pamt()?;
+        let prefab_pamt = pamt_path.parent()?.parent()?.join("0009").join("0.pamt");
+        if !prefab_pamt.is_file() {
+            return None;
+        }
+        let pamt = CString::new(pamt_path.to_str().unwrap()).unwrap();
+        let x = |n: String| extract_file(pamt.as_c_str(), gamedata_layout::bin_dir(), &n);
+        let item_b = x(gamedata_layout::body("iteminfo"));
+        let si_b = x(gamedata_layout::body("stringinfo"));
+        let pp_b = x(gamedata_layout::body("partprefabdyeslotinfo"));
+        let pp_h = x(gamedata_layout::header("partprefabdyeslotinfo"));
+        let prefab_c = CString::new(prefab_pamt.to_str().unwrap()).unwrap();
+        let mut h: *mut CrimsonItemPartPrefabHandle = ptr::null_mut();
+        let rc = unsafe {
+            crimson_item_part_prefab_load_from_bytes_with_prefab_pamt(
+                item_b.as_ptr(),
+                item_b.len(),
+                si_b.as_ptr(),
+                si_b.len(),
+                pp_b.as_ptr(),
+                pp_b.len(),
+                pp_h.as_ptr(),
+                pp_h.len(),
+                prefab_c.as_ptr(),
+                &mut h,
+            )
+        };
+        assert_eq!(rc, error::OK);
+        let rows = crate::part_prefab_dye_slot_info::parse_part_prefab_dye_slot_info_lossy(&pp_b, &pp_h);
+        Some(LivePrefabJoin { item_b, rows, h })
+    }
+
+    fn keys_of(h: *const CrimsonItemPartPrefabHandle, item: u32) -> Vec<u32> {
+        let mut n = 0u32;
+        if unsafe { crimson_item_part_prefab_lookup_count(h, item, &mut n) } != error::OK {
+            return Vec::new();
+        }
+        (0..n)
+            .map(|i| {
+                let mut k = 0u32;
+                assert_eq!(unsafe { crimson_item_part_prefab_lookup_key_at(h, item, i, &mut k) }, error::OK);
+                k
+            })
+            .collect()
+    }
+
+    fn bits_of(h: *const CrimsonItemPartPrefabHandle, item: u32, tg: Option<&str>) -> (i32, u32) {
+        let tg = tg.map(|t| CString::new(t).unwrap());
+        let mut bits = u32::MAX;
+        let rc = unsafe {
+            crimson_item_part_prefab_lookup_dye_slot_bits(
+                h,
+                item,
+                tg.as_ref().map_or(ptr::null(), |t| t.as_ptr()),
+                &mut bits,
+            )
+        };
+        (rc, bits)
+    }
+
+    fn material_of(h: *const CrimsonItemPartPrefabHandle, item: u32, tg: Option<&str>, n: u8) -> Result<String, i32> {
+        let tg = tg.map(|t| CString::new(t).unwrap());
+        let tgp = tg.as_ref().map_or(ptr::null(), |t| t.as_ptr());
+        let mut req = 0usize;
+        let rc = unsafe {
+            crimson_item_part_prefab_lookup_dye_slot_material(h, item, tgp, n, ptr::null_mut(), 0, &mut req)
+        };
+        if rc != error::BUFFER_TOO_SMALL {
+            return Err(rc);
+        }
+        let mut buf = vec![0u8; req];
+        let rc = unsafe {
+            crimson_item_part_prefab_lookup_dye_slot_material(h, item, tgp, n, buf.as_mut_ptr(), buf.len(), &mut req)
+        };
+        assert_eq!(rc, error::OK);
+        Ok(String::from_utf8(buf[..req - 1].to_vec()).unwrap())
+    }
+
+    /// Every `partprefabdyeslotinfo` row is one `.pac` mesh, keyed by the
+    /// checksum of its path (the last slot's `tail_name`).
+    #[test]
+    fn part_prefab_key_is_the_pac_path_checksum_live() {
+        let Some(j) = live_prefab_join() else {
+            eprintln!("skipping: no game install");
+            return;
+        };
+        assert!(j.rows.len() > 1000);
+        for r in &j.rows {
+            let pac = &r.slots.last().expect("row has slots").tail_name;
+            assert!(pac.ends_with(".pac"), "{:08x}: last tail {pac:?}", r.key);
+            assert_eq!(part_prefab_key_for_pac(pac), r.key, "{pac}");
+        }
+        assert_eq!(
+            part_prefab_key_for_pac("character/model/1_pc/1_phm/armor/9_upperbody/cd_phm_00_ub_00_0374.pac"),
+            0xe3634591
+        );
+    }
+
+    /// The prefab join on live 2.06: body-type armor resolves through its
+    /// `.prefab`'s meshes, the slot numbers dyed in game on 2.06 (111147 in
+    /// save slot102: `_dyeSlotNo` 0, 1, 7) are among them, and the join
+    /// covers nearly every dyeable item.
+    #[test]
+    fn c_abi_item_part_prefab_with_prefab_pamt_live() {
+        let Some(j) = live_prefab_join() else {
+            eprintln!("skipping: no game install");
+            return;
+        };
+        let h = j.h;
+
+        // 111147 Demeniss Honor Armor: prefab cd_m0001_00_so_phm_ub_31067
+        // → ub / lb / lb_belt / sho _31066 meshes.
+        assert_eq!(keys_of(h, 111147), [0xf407029b, 0x4170373c, 0x86db33f9, 0xf736011d]);
+        let (rc, bits) = bits_of(h, 111147, None);
+        assert_eq!(rc, error::OK);
+        assert_eq!(bits & 0b1000_0011, 0b1000_0011, "slot102 dyed numbers 0, 1, 7");
+        assert_eq!(bits, 0b1111_1111);
+        assert_eq!(bits_of(h, 111147, Some("player_1")), (error::OK, 0b1111_1111));
+        assert_eq!(bits_of(h, 111147, Some("human_female")).0, error::NOT_FOUND);
+        // 9102 Hernand ceremonial guard armor: cd_phm_00_ub_00_0374.
+        assert_eq!(keys_of(h, 9102), [0xe3634591, 0xed21cd67, 0x30ffb974, 0x86db33f9, 0xbd4d4886]);
+        assert_eq!(bits_of(h, 9102, None), (error::OK, 0b0010_1100_1101));
+        // The name join sent this spear to a horse-saddle hook mesh.
+        assert_eq!(
+            keys_of(h, 1001163),
+            [part_prefab_key_for_pac("character/model/1_pc/1_phm/weapon/2_twohandweapon/cd_phm_02_spear_0029.pac")]
+        );
+
+        // Variants that differ: 133172's male mesh offers 0..4, the female 0..2.
+        assert_eq!(bits_of(h, 133172, None), (error::OK, 0b11111));
+        assert_eq!(bits_of(h, 133172, Some("player_1")), (error::OK, 0b11111));
+        assert_eq!(bits_of(h, 133172, Some("human_female")), (error::OK, 0b111));
+        assert_eq!(material_of(h, 133172, Some("player_1"), 0).as_deref(), Ok("cloth"));
+        assert_eq!(material_of(h, 133172, Some("human_female"), 0).as_deref(), Ok("leather"));
+        assert_eq!(material_of(h, 133172, None, 0).as_deref(), Ok("cloth"));
+        assert_eq!(material_of(h, 111147, None, 11), Err(error::OUT_OF_RANGE));
+        assert_eq!(material_of(h, u32::MAX, None, 0), Err(error::NOT_FOUND));
+        assert_eq!(bits_of(h, u32::MAX, None), (error::NOT_FOUND, 0));
+
+        // Coverage: is_dyeable items with at least one row (909 / 917 on 2.06).
+        let (mut dyeable, mut resolved) = (0u32, 0u32);
+        let mut off = 0;
+        while off < j.item_b.len() {
+            let it = crate::item_info::ItemInfo::read_from(&j.item_b, &mut off).unwrap();
+            if it.is_dyeable != 0 {
+                dyeable += 1;
+                resolved += u32::from(bits_of(h, it.key.0, None).0 == error::OK);
+            }
+        }
+        assert!(dyeable >= 900, "dyeable {dyeable}");
+        assert!(resolved * 100 >= dyeable * 98, "resolved {resolved} / {dyeable}");
+    }
+
+    #[test]
+    fn c_abi_item_part_prefab_with_prefab_pamt_null_args() {
+        let mut h: *mut CrimsonItemPartPrefabHandle = ptr::null_mut();
+        let p = CString::new("x").unwrap();
+        unsafe {
+            assert_eq!(
+                crimson_item_part_prefab_load_from_bytes_with_prefab_pamt(
+                    ptr::null(), 0, ptr::null(), 0, ptr::null(), 0, ptr::null(), 0, ptr::null(), &mut h
+                ),
+                error::NULL_ARG
+            );
+            assert_eq!(
+                crimson_item_part_prefab_load_from_bytes_with_prefab_pamt(
+                    ptr::null(), 1, ptr::null(), 0, ptr::null(), 0, ptr::null(), 0, p.as_ptr(), &mut h
+                ),
+                error::NULL_ARG
+            );
+            assert_eq!(
+                crimson_item_part_prefab_load_from_bytes_with_prefab_pamt(
+                    ptr::null(), 0, ptr::null(), 0, ptr::null(), 0, ptr::null(), 0, p.as_ptr(), &mut h
+                ),
+                error::IO
+            );
+            assert!(h.is_null());
+            assert_eq!(
+                crimson_item_part_prefab_load_from_file_with_prefab_pamt(
+                    p.as_ptr(), p.as_ptr(), p.as_ptr(), p.as_ptr(), ptr::null(), &mut h
+                ),
+                error::NULL_ARG
+            );
+            assert_eq!(
+                crimson_item_part_prefab_load_from_file_with_prefab_pamt(
+                    p.as_ptr(), p.as_ptr(), p.as_ptr(), p.as_ptr(), p.as_ptr(), &mut h
+                ),
+                error::IO
+            );
+            let mut bits = 0u32;
+            let mut req = 0usize;
+            assert_eq!(
+                crimson_item_part_prefab_lookup_dye_slot_bits(ptr::null(), 1, ptr::null(), &mut bits),
+                error::NULL_ARG
+            );
+            assert_eq!(
+                crimson_item_part_prefab_lookup_channel_dye_slot_bits(ptr::null(), 1, ptr::null(), &mut bits),
+                error::NULL_ARG
+            );
+            assert_eq!(
+                crimson_item_part_prefab_lookup_dye_slot_material(
+                    ptr::null(), 1, ptr::null(), 0, ptr::null_mut(), 0, &mut req
+                ),
+                error::NULL_ARG
+            );
+        }
+    }
+
+    /// The 1.10 fixtures hold dyed body-type armor the name join could not
+    /// resolve (200914, 1000313, 2111103, 103023). Through the prefab join
+    /// every `_dyeSlotNo` they carry is one of the item's channel numbers on
+    /// live 2.06; three of them are numbers whose 2.06 mask bit is clear.
+    /// Skips without the private fixtures or an install.
+    #[test]
+    fn dye_slot_no_is_an_item_dye_slot_via_prefabs_in_the_1_10_fixture() {
+        use crate::save::{Body, Save};
+        let Some(raw) =
+            crate::test_fixtures::save("1.10/broken_save_after_length_change/base_sample/save.save")
+        else {
+            return;
+        };
+        let Some(j) = live_prefab_join() else {
+            eprintln!("skipping: no game install");
+            return;
+        };
+        let save = Save::parse(&raw).unwrap();
+        let body = Body::parse(&save.body).unwrap();
+        let blocks = body.decode_blocks(&save.body);
+        let mut lists = Vec::new();
+        for b in &blocks {
+            dye_lists(b, &mut lists);
+        }
+        let mut used_by_item = HashMap::new();
+        for (item, elements) in lists {
+            let used = elements
+                .iter()
+                .map(|e| save_scalar(e, "_dyeSlotNo").unwrap_or(0))
+                .fold(0u32, |a, n| a | (1 << n));
+            let (rc, offered) = bits_of(j.h, item, None);
+            assert_eq!(rc, error::OK, "item {item} does not resolve");
+            let mut channels = 0u32;
+            assert_eq!(
+                unsafe { crimson_item_part_prefab_lookup_channel_dye_slot_bits(j.h, item, ptr::null(), &mut channels) },
+                error::OK
+            );
+            assert_eq!(offered & !channels, 0, "item {item}: a mask bit with no channel");
+            assert_eq!(used & !channels, 0, "item {item}: used {used:b}, channels {channels:b}");
+            used_by_item.insert(item, used & !offered);
+        }
+        // The numbers 1.10 wrote that the 2.06 masks no longer enable.
+        let mut outside: Vec<(u32, u32)> = used_by_item.into_iter().collect();
+        outside.sort_unstable();
+        assert_eq!(
+            outside,
+            [(103023, 1 << 1), (121013, 0), (131013, 0), (200914, 1 << 3), (1000313, 0), (2111103, 1 << 2)]
+        );
     }
 }

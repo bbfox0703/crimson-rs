@@ -190,6 +190,20 @@ impl PartPrefabDyeSlotInfoEntry {
         })
     }
 
+    /// Every dye slot number a material channel of the prefab carries
+    /// (`mat_indices` entries other than [`NO_DYE_SLOT`]), dyeable or not:
+    /// a superset of [`Self::dye_slot_bits`]. Saves written before 2.01 hold
+    /// `_dyeSlotNo` values whose mask bit 2.06 no longer sets (1.10 item
+    /// 200914 has slot 3 on a channel `[4, 3, 3]` that only enables 4);
+    /// they are still channel numbers.
+    pub fn channel_dye_slot_bits(&self) -> u32 {
+        self.slots
+            .iter()
+            .flat_map(|s| s.mat_indices)
+            .filter(|&n| n != NO_DYE_SLOT && n < 32)
+            .fold(0, |a, n| a | (1 << n))
+    }
+
     /// Default material of dye slot number `dye_slot_no`: the first
     /// non-empty primary-layer material name over every channel whose
     /// `mat_indices` entry is `dye_slot_no`. `Some("")` when channels use
