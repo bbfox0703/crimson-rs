@@ -43,7 +43,7 @@
 //! key reads `Knowledge_Grey_DyeColor_1` (1001287) etc. So a color is unlocked
 //! by a knowledge entry. Head and trailer are unchanged, and on all 10 rows the
 //! trailer marker sits right after `color_count` 22-byte records, which is how
-//! [`parse_palette_after_key`] finds the records' extent. A different
+//! [`parse_row_after_key`] finds the records' extent. A different
 //! condition would compile to a different length, so the parser does not
 //! assume one size: it locates the trailer (marker + the row key), walks the
 //! records between one by one, reading each condition as `00` (none) or `01` +
@@ -102,7 +102,48 @@
 //! parser uses `skill_info::parse_pabgh` since the layout is identical
 //! (`u16 count + (u32 key, u32 offset)*`).
 
+//! ## Which knowledge unlocks each color, and the theme's name (2.06)
+//!
+//! Each 2.06 color record's condition is `CheckKnowledge(<KnowledgeKey>)`
+//! ([`PaletteCondition::Knowledge`]). On all 10 rows the layout is the same:
+//! positions 0–8 (the gray ramp) need the row's own `Knowledge_Grey_DyeColor_<n>`
+//! (Her 1, Dem I 2, Dem II 3, Dem III 4, Kwe 5, Del 6, Cal 7, Por 8, Tom 9,
+//! Bar 10), and positions 9–108 come in five blocks of 20, each needing
+//! `Knowledge_<Theme>_DyeColor_<1..5>` (`Dem` rows add the `_I` / `_II` /
+//! `_III` group). So the 1,090 records name 60 knowledge rows in all: the 50
+//! theme colors and the 10 grays. No `Knowledge_Collection_Prop_Dyewater_*`
+//! row is referenced.
+//!
+//! The row head after the key is `u8 0` and a `StringInfoKey` of the theme's
+//! map icon (`cd_icon_map_quest_sub_icon_01`; the three Dem rows share one),
+//! not a condition. The trailer is a localizable string: `23`, `u32 0x231`,
+//! the row key, and a `CString` holding `(row key << 32) | 0x231` in decimal,
+//! the PALOC key of the theme's display name ("Hernandian Dye", "Demenissian
+//! Dye" on all three Dem rows, "Pailunese Dye" for `Kwe`)
+//! ([`DyeColorGroupInfoEntry::display_name_paloc_key`]).
+//!
+//! **Not established**: what makes a theme appear at a dyer. The theme
+//! knowledge rows `Knowledge_<Theme>_DyeColor` (2147483445..454, titled with
+//! the dyer's name) are not referenced by this table; `conditioninfo` keeps a
+//! `CheckKnowledge(Knowledge_<Theme>_DyeColor)` row for each, but a byte scan
+//! cannot show which table uses those (their small keys collide with other
+//! `u32` values everywhere).
+
 use crate::binary::row_head::read_row_head;
+
+/// The unlock condition of one palette color.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaletteCondition {
+    /// No condition (`00`): always available.
+    None,
+    /// 2.06: an inlined `CheckKnowledge(<KnowledgeKey>)`.
+    Knowledge(u32),
+    /// Through 2.05.01: a `ConditionInfoKey` (the condition row itself is not
+    /// read here).
+    ConditionInfoKey(u32),
+    /// A condition this parser does not decode.
+    Unknown,
+}
 
 /// One parsed dye color group row.
 #[derive(Debug, Clone)]
@@ -121,6 +162,11 @@ pub struct DyeColorGroupInfoEntry {
     /// (positions 0-8 grayscale + 9-108 ten chromatic rows × ten
     /// columns) and how the editor should render this as a picker.
     pub palette: Vec<[u8; 4]>,
+    /// The unlock condition of each palette position, parallel to `palette`.
+    pub conditions: Vec<PaletteCondition>,
+    /// The PALOC key (decimal) of the theme's display name, from the row's
+    /// trailer: `(key << 32) | 0x231` on every 2.06 row.
+    pub display_name_paloc_key: Option<String>,
 }
 
 /// Parse `dyecolorgroupinfo.pabgb` using its `.pabgh` index.
@@ -162,12 +208,14 @@ pub fn parse_dye_color_group_info_lossy(
         // Bytes per record: [B, G, R, A, tail0..tail3]; we keep only the
         // logical RGBA (post-swap) so palette comparisons against the
         // save's u8 _dyeColorR/G/B/A are direct.
-        let palette = parse_palette_after_key(body, head.body_at).unwrap_or_default();
+        let row = parse_row_after_key(body, head.body_at).unwrap_or_default();
 
         out.push(DyeColorGroupInfoEntry {
             key: head.key,
             name: head.name.to_owned(),
-            palette,
+            palette: row.palette,
+            conditions: row.conditions,
+            display_name_paloc_key: row.display_name_paloc_key,
         });
     }
     out
@@ -219,7 +267,20 @@ pub(crate) fn extract_pair_for_tests() -> Option<(Vec<u8>, Vec<u8>)> {
 /// too short or `color_count` is unreasonable — both are treated as
 /// anchor noise (row stays in the entry list but with an empty
 /// palette, mirroring the parser's "lossy" contract).
+#[cfg(test)]
 fn parse_palette_after_key(body: &[u8], after_key_off: usize) -> Option<Vec<[u8; 4]>> {
+    parse_row_after_key(body, after_key_off).map(|r| r.palette)
+}
+
+/// What [`parse_row_after_key`] reads after the row key.
+#[derive(Debug, Default)]
+struct RowBody {
+    palette: Vec<[u8; 4]>,
+    conditions: Vec<PaletteCondition>,
+    display_name_paloc_key: Option<String>,
+}
+
+fn parse_row_after_key(body: &[u8], after_key_off: usize) -> Option<RowBody> {
     // `u8 flag + 4-byte row hash`.
     let count_off = after_key_off + 5;
     if count_off + 4 > body.len() {
@@ -245,9 +306,27 @@ fn parse_palette_after_key(body: &[u8], after_key_off: usize) -> Option<Vec<[u8;
             .get(data_off..)?
             .windows(needle.len())
             .position(|w| w == needle.as_slice())?;
-    let starts = record_starts(body, data_off, trailer, color_count)?;
+    let (starts, walked) = record_starts(body, data_off, trailer, color_count)?;
     // Stored order: [B, G, R, A, ...]. Swap to logical (R, G, B, A).
-    Some(starts.iter().map(|&o| [body[o + 2], body[o + 1], body[o], body[o + 3]]).collect())
+    let palette = starts.iter().map(|&o| [body[o + 2], body[o + 1], body[o], body[o + 3]]).collect();
+    let stride = if walked || starts.len() < 2 { 0 } else { starts[1] - starts[0] };
+    let u32_at = |o: usize| body.get(o..o + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    let conditions = starts
+        .iter()
+        .map(|&o| match (walked, body.get(o + 4)) {
+            (true, Some(0)) => PaletteCondition::None,
+            (true, Some(1)) => u32_at(o + 9).map_or(PaletteCondition::Unknown, PaletteCondition::Knowledge),
+            (false, _) if stride == 8 => u32_at(o + 4).map_or(PaletteCondition::Unknown, PaletteCondition::ConditionInfoKey),
+            _ => PaletteCondition::Unknown,
+        })
+        .collect();
+    // Trailer: marker (`23` + `u32 0x231`), the row key, then a CString.
+    let name_at = trailer + needle.len();
+    let display_name_paloc_key = u32_at(name_at).and_then(|len| {
+        let s = body.get(name_at + 4..name_at + 4 + len as usize)?;
+        (!s.is_empty() && s.iter().all(u8::is_ascii_digit)).then(|| String::from_utf8_lossy(s).into_owned())
+    });
+    Some(RowBody { palette, conditions, display_name_paloc_key })
 }
 
 /// First bytes of a dye-color trailer: `23 31 02 00 00`, then the row key.
@@ -256,11 +335,12 @@ const TRAILER_MARKER: [u8; 5] = [0x23, 0x31, 0x02, 0x00, 0x00];
 /// The start of each of the `count` color records in `body[from..to]`: a
 /// record-by-record walk over `BGRA` + an inline condition (2.06) first, then
 /// equal sizes (the 8-byte records through 2.05.01, or any one size). `None`
-/// when neither fits.
-fn record_starts(body: &[u8], from: usize, to: usize, count: usize) -> Option<Vec<usize>> {
+/// when neither fits. The flag says whether the walk (inline conditions)
+/// placed them.
+fn record_starts(body: &[u8], from: usize, to: usize, count: usize) -> Option<(Vec<usize>, bool)> {
     let span = to.checked_sub(from)?;
     if count == 0 {
-        return (span == 0).then(Vec::new);
+        return (span == 0).then(|| (Vec::new(), false));
     }
     let walk = || {
         let mut starts = Vec::with_capacity(count);
@@ -271,9 +351,9 @@ fn record_starts(body: &[u8], from: usize, to: usize, count: usize) -> Option<Ve
         }
         (at == to).then_some(starts)
     };
-    walk().or_else(|| {
+    walk().map(|s| (s, true)).or_else(|| {
         (span % count == 0 && span / count >= 4)
-            .then(|| (0..count).map(|i| from + i * (span / count)).collect())
+            .then(|| ((0..count).map(|i| from + i * (span / count)).collect(), false))
     })
 }
 
@@ -338,6 +418,22 @@ mod record_tests {
         assert_eq!(
             parse_palette_after_key(&b, k).unwrap(),
             [[1, 2, 3, 255], [7, 8, 9, 255], [4, 5, 6, 255]]
+        );
+    }
+
+    #[test]
+    fn reads_conditions_and_name_key() {
+        // 2.06: a gated color, an ungated one.
+        let (b, k) = row(&[knowledge([3, 2, 1, 255], 1_001_287), vec![9, 8, 7, 255, 0]]);
+        let r = parse_row_after_key(&b, k).unwrap();
+        assert_eq!(r.conditions, [PaletteCondition::Knowledge(1_001_287), PaletteCondition::None]);
+        assert_eq!(r.display_name_paloc_key.as_deref(), Some("42"));
+        // Pre-2.06: 8-byte records carry a ConditionInfoKey.
+        let (b, k) = row(&[vec![3, 2, 1, 255, 0xef, 0x63, 0x0f, 0], vec![6, 5, 4, 255, 0xf5, 0x63, 0x0f, 0]]);
+        let r = parse_row_after_key(&b, k).unwrap();
+        assert_eq!(
+            r.conditions,
+            [PaletteCondition::ConditionInfoKey(0x000f_63ef), PaletteCondition::ConditionInfoKey(0x000f_63f5)]
         );
     }
 

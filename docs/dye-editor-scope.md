@@ -569,6 +569,24 @@ use the two-call buffer pattern.
 | `crimson_dye_color_group_info_palette_size(handle, color_group_key, *out_count)` | Palette position count for the theme (109 in 1.07). |
 | `crimson_dye_color_group_info_palette_at(handle, key, idx, *out_r, *out_g, *out_b, *out_a)` | Logical-RGBA at a palette position — ready to write into `_dyeColorR/G/B/A`. See §"Addendum (2026-05-17)" for the picker UX. |
 | `crimson_dye_color_group_info_position_for_rgb(handle, key, r, g, b, *out_position)` | Reverse lookup — find the palette cell a currently-applied dye came from. |
+| `crimson_dye_color_group_info_palette_knowledge_at(handle, key, position, *out_knowledge_key)` | 2.06: the `KnowledgeKey` that unlocks that color (its inlined `CheckKnowledge`). `NOT_FOUND` for no condition or an unknown group, `OUT_OF_RANGE` past the palette, `UNSUPPORTED_VERSION` for a pre-2.06 `ConditionInfoKey` record. |
+| `crimson_dye_color_group_info_lookup_display_name(handle, paloc, key, buf, buf_len, *required)` | The theme's localized name ("Hernandian Dye" / 埃爾南德染劑), PALOC `(key << 32) \| 0x231` from the row trailer. |
+
+**Known colors (2.06, 2026-11-27).** A color is known when its unlock
+knowledge is in the save's `KnowledgeSaveData._list`. Every row has the same
+layout: positions 0–8 (the gray ramp) need that row's
+`Knowledge_Grey_DyeColor_<n>` (Her 1, Dem I 2, Dem II 3, Dem III 4, Kwe 5,
+Del 6, Cal 7, Por 8, Tom 9, Bar 10), and positions 9–108 come in five blocks
+of 20 needing `Knowledge_<Theme>_DyeColor_<1..5>` (`Her_Color_Group_I`:
+1000297..1000301). The 1,090 records reference exactly these 60 keys; no
+`Knowledge_Collection_Prop_Dyewater_*` key (the diary's "dye recipes" page)
+appears, so the diary's 7/50 is a separate count. The row head is `u8 0` plus
+the `StringInfoKey` of the theme's map icon, not a condition. What makes a
+theme show up at a dyer is **not established**: `Knowledge_<Theme>_DyeColor`
+(2147483445..454) is not referenced by this table; `conditioninfo` keeps a
+`CheckKnowledge(Knowledge_<Theme>_DyeColor)` row per theme, and a byte scan
+cannot show who uses them. Display names: all three `Dem` rows read
+"Demenissian Dye", and `Kwe` is "Pailunese Dye".
 
 ### `part_prefab_dye_texture_pallete_info`
 

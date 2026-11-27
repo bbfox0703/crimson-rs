@@ -18,7 +18,8 @@ use std::os::raw::c_char;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use super::error;
-use crate::dye_color_group_info::parse_dye_color_group_info_lossy;
+use super::paloc::CrimsonPalocHandle;
+use crate::dye_color_group_info::{PaletteCondition, parse_dye_color_group_info_lossy};
 
 /// Opaque handle exposing `(DyeColorGroupInfoKey, internal_name)`
 /// lookups + the 109-position **logical-RGBA palette** for each
@@ -36,6 +37,10 @@ pub struct CrimsonDyeColorGroupInfoHandle {
     /// count so a future patch with a different palette size still
     /// resolves.
     palettes: HashMap<u32, Vec<[u8; 4]>>,
+    /// Each palette position's unlock condition, parallel to `palettes`.
+    conditions: HashMap<u32, Vec<PaletteCondition>>,
+    /// PALOC key (decimal) of each row's display name.
+    display_name_keys: HashMap<u32, String>,
 }
 
 impl CrimsonDyeColorGroupInfoHandle {
@@ -44,14 +49,20 @@ impl CrimsonDyeColorGroupInfoHandle {
         let mut by_key: HashMap<u32, String> = HashMap::with_capacity(raw.len());
         let mut entries: Vec<(u32, String)> = Vec::with_capacity(raw.len());
         let mut palettes: HashMap<u32, Vec<[u8; 4]>> = HashMap::with_capacity(raw.len());
+        let mut conditions = HashMap::with_capacity(raw.len());
+        let mut display_name_keys = HashMap::with_capacity(raw.len());
         for e in raw {
             if let std::collections::hash_map::Entry::Vacant(v) = by_key.entry(e.key) {
                 v.insert(e.name.clone());
                 entries.push((e.key, e.name));
                 palettes.insert(e.key, e.palette);
+                conditions.insert(e.key, e.conditions);
+                if let Some(k) = e.display_name_paloc_key {
+                    display_name_keys.insert(e.key, k);
+                }
             }
         }
-        CrimsonDyeColorGroupInfoHandle { by_key, entries, palettes }
+        CrimsonDyeColorGroupInfoHandle { by_key, entries, palettes, conditions, display_name_keys }
     }
 }
 
@@ -369,6 +380,95 @@ pub unsafe extern "C" fn crimson_dye_color_group_info_position_for_rgb(
             }
         }
         error::NOT_FOUND
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// The `KnowledgeKey` that unlocks palette position `position` of
+/// `color_group_key`: the key of the color record's inlined
+/// `CheckKnowledge(<knowledge>)` (2.06). A color is known when that key is in
+/// the save's `KnowledgeSaveData._list`.
+///
+/// On 2.06 positions 0–8 need the row's `Knowledge_Grey_DyeColor_<n>` and
+/// positions 9–108 come in five blocks of 20 needing
+/// `Knowledge_<Theme>_DyeColor_<1..5>` (see `crate::dye_color_group_info`).
+///
+/// Returns:
+/// - `OK` with the key;
+/// - `NOT_FOUND` for an unknown group, or a color with no condition (`00`);
+/// - `OUT_OF_RANGE` for a position past the palette;
+/// - `UNSUPPORTED_VERSION` for a pre-2.06 record, whose condition is a
+///   `ConditionInfoKey` this bridge does not resolve, or a condition it does
+///   not decode.
+///
+/// # Safety
+/// `handle` and `out_knowledge_key` must be non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_dye_color_group_info_palette_knowledge_at(
+    handle: *const CrimsonDyeColorGroupInfoHandle,
+    color_group_key: u32,
+    position: u32,
+    out_knowledge_key: *mut u32,
+) -> i32 {
+    if handle.is_null() || out_knowledge_key.is_null() {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_knowledge_key = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let Some(conditions) = h.conditions.get(&color_group_key) else {
+            return error::NOT_FOUND;
+        };
+        match conditions.get(position as usize) {
+            None => error::OUT_OF_RANGE,
+            Some(PaletteCondition::Knowledge(k)) => {
+                unsafe { *out_knowledge_key = *k };
+                error::OK
+            }
+            Some(PaletteCondition::None) => error::NOT_FOUND,
+            Some(PaletteCondition::ConditionInfoKey(_) | PaletteCondition::Unknown) => {
+                error::UNSUPPORTED_VERSION
+            }
+        }
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// The theme's localized display name ("Hernandian Dye", "埃爾南德染劑"),
+/// from the row's trailer: PALOC `(color_group_key << 32) | 0x231`. The
+/// language is the PALOC handle's. The three `Dem` rows all read
+/// "Demenissian Dye", so keep the internal name to tell them apart.
+/// Two-call pattern.
+///
+/// # Safety
+/// `handle`, `paloc` and `required` must be non-null; `buf` may be null iff
+/// `buf_len == 0`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_dye_color_group_info_lookup_display_name(
+    handle: *const CrimsonDyeColorGroupInfoHandle,
+    paloc: *const CrimsonPalocHandle,
+    color_group_key: u32,
+    buf: *mut u8,
+    buf_len: usize,
+    required: *mut usize,
+) -> i32 {
+    if handle.is_null() || paloc.is_null() || required.is_null() {
+        return error::NULL_ARG;
+    }
+    if buf.is_null() && buf_len != 0 {
+        return error::NULL_ARG;
+    }
+    unsafe { *required = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let p = unsafe { &*paloc };
+        let Some(key) = h.display_name_keys.get(&color_group_key) else {
+            return error::NOT_FOUND;
+        };
+        let Some(name) = p.lookup_str(key) else {
+            return error::NOT_FOUND;
+        };
+        write_str_to_buf(name, buf, buf_len, required)
     }))
     .unwrap_or(error::PANIC)
 }
@@ -720,6 +820,89 @@ mod tests {
         );
 
         unsafe { crimson_dye_color_group_info_free(h) };
+    }
+
+    /// 2.06: which knowledge unlocks each color, and the theme names.
+    /// `Her_Color_Group_I`: positions 0–8 need `Knowledge_Grey_DyeColor_1`
+    /// (1001287), then five blocks of 20 need `Knowledge_Her_DyeColor_1..5`
+    /// (1000297..=1000301).
+    #[test]
+    fn c_abi_dye_color_group_info_palette_knowledge_live() {
+        use crate::c_abi::paloc::{crimson_paloc_free, crimson_paloc_load_from_bytes};
+        let Some((pabgb, pabgh)) = crate::dye_color_group_info::extract_pair_for_tests() else {
+            eprintln!("skipping: no game install");
+            return;
+        };
+        let mut h: *mut CrimsonDyeColorGroupInfoHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_dye_color_group_info_load_from_bytes(pabgb.as_ptr(), pabgb.len(), pabgh.as_ptr(), pabgh.len(), &mut h) },
+            error::OK
+        );
+        const HER: u32 = 0xc882_11f5;
+        let knowledge = |group: u32, pos: u32| -> Result<u32, i32> {
+            let mut k = 0u32;
+            match unsafe { crimson_dye_color_group_info_palette_knowledge_at(h, group, pos, &mut k) } {
+                error::OK => Ok(k),
+                rc => Err(rc),
+            }
+        };
+        if knowledge(HER, 0) == Err(error::UNSUPPORTED_VERSION) {
+            eprintln!("skipping: pre-2.06 palette (ConditionInfoKey records)");
+            unsafe { crimson_dye_color_group_info_free(h) };
+            return;
+        }
+        for pos in 0..9 {
+            assert_eq!(knowledge(HER, pos), Ok(1_001_287), "Her position {pos}");
+        }
+        for (block, key) in (1_000_297u32..=1_000_301).enumerate() {
+            for pos in 9 + 20 * block as u32..29 + 20 * block as u32 {
+                assert_eq!(knowledge(HER, pos), Ok(key), "Her position {pos}");
+            }
+        }
+        assert_eq!(knowledge(HER, 109), Err(error::OUT_OF_RANGE));
+        assert_eq!(knowledge(0xdead_beef, 0), Err(error::NOT_FOUND));
+
+        // Every row: 109 colors, 6 distinct keys, 60 across the table.
+        let h_ref = unsafe { &*h };
+        let mut all = std::collections::HashSet::new();
+        for (key, name) in &h_ref.entries {
+            let keys: std::collections::HashSet<u32> = (0..109).map(|p| knowledge(*key, p).expect(name)).collect();
+            assert_eq!(keys.len(), 6, "{name}");
+            all.extend(keys);
+        }
+        assert_eq!(all.len(), 6 * h_ref.entries.len(), "rows share no knowledge");
+
+        // Display names, PALOC (key << 32) | 0x231.
+        let Some(pal) = gamedata_layout::paloc_bytes("0020", "eng") else {
+            unsafe { crimson_dye_color_group_info_free(h) };
+            return;
+        };
+        let mut ph: *mut CrimsonPalocHandle = ptr::null_mut();
+        assert_eq!(unsafe { crimson_paloc_load_from_bytes(pal.as_ptr(), pal.len(), &mut ph) }, error::OK);
+        let name = |group: u32| -> Option<String> {
+            let mut req = 0usize;
+            if unsafe { crimson_dye_color_group_info_lookup_display_name(h, ph, group, ptr::null_mut(), 0, &mut req) }
+                != error::BUFFER_TOO_SMALL
+            {
+                return None;
+            }
+            let mut buf = vec![0u8; req];
+            assert_eq!(
+                unsafe { crimson_dye_color_group_info_lookup_display_name(h, ph, group, buf.as_mut_ptr(), buf.len(), &mut req) },
+                error::OK
+            );
+            Some(String::from_utf8(buf[..req - 1].to_vec()).unwrap())
+        };
+        assert_eq!(name(HER).as_deref(), Some("Hernandian Dye"));
+        assert_eq!(name(0x0018_35e0).as_deref(), Some("Pailunese Dye"), "Kwe_Color_Group_I");
+        assert_eq!(name(0xdc27_4476).as_deref(), Some("Demenissian Dye"), "Dem_Color_Group_I");
+        for (key, n) in &h_ref.entries {
+            assert!(name(*key).is_some(), "{n} has no display name");
+        }
+        unsafe {
+            crimson_paloc_free(ph);
+            crimson_dye_color_group_info_free(h);
+        }
     }
 
     #[test]
