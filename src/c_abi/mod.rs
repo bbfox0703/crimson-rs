@@ -73,6 +73,22 @@ pub mod string_info;
 pub mod sub_level_info;
 pub mod trigger_region_info;
 
+// ── 2.06 row names (shared by the body-only table bridges) ──────────────────
+
+/// 2.06 moved every static-info row's name out of the `.staticinfobody` into
+/// the `.staticinfoheader`, so the body-only bridges' file loaders read it from
+/// next to the body. The header file next to a body file (`x.staticinfobody` → `x.staticinfoheader`,
+/// `x.pabgb` → `x.pabgh`), read if present.
+pub(crate) fn sibling_header(body_path: &str) -> Option<Vec<u8>> {
+    let p = std::path::Path::new(body_path);
+    let ext = match p.extension()?.to_str()? {
+        "staticinfobody" => "staticinfoheader",
+        "pabgb" => "pabgh",
+        _ => return None,
+    };
+    std::fs::read(p.with_extension(ext)).ok()
+}
+
 /// Stable error codes returned by every fallible C entry point.
 ///
 /// Reserved space: `[-99, -1]`. New error categories add a new negative

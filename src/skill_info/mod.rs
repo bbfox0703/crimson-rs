@@ -62,8 +62,13 @@ pub struct SkillData {
     pub entries: Vec<SkillEntry>,
     pub format: SkillFormat,
     /// On-disk PABGH order — entries are stored in this same order.
-    /// Kept for `write` to reproduce the exact byte layout.
+    /// Kept for `write` to reproduce the exact byte layout. On a 2.06 table
+    /// this is the index of the table rebuilt in the pre-2.06 layout.
     pub index_order: Vec<SkillIndexEntry>,
+    /// 2.06+: each row's index, in `index_order` order. `Some` means the
+    /// table came in the 2.06 layout (names in the header, `[key][u32 row
+    /// index]` opening every row) and `write` produces that layout again.
+    pub row_indices: Option<Vec<u32>>,
 }
 
 /// Result of [`probe_entry_failures`].
@@ -88,6 +93,8 @@ pub struct EntryFailureReport {
 /// probing impossible at all (bad PABGH, no format detected).
 #[cfg(test)]
 pub fn probe_entry_failures(pabgh: &[u8], pabgb: &[u8]) -> io::Result<EntryFailureReport> {
+    let (pabgb, pabgh) = crate::binary::static_header::legacy_pair(pabgb, pabgh);
+    let (pabgb, pabgh): (&[u8], &[u8]) = (&pabgb, &pabgh);
     let index = parse_pabgh(pabgh)?;
     let ranges = entry_ranges(&index, pabgb.len());
     let format = detect_format(pabgb, &index, &ranges)?;
@@ -107,8 +114,24 @@ pub fn probe_entry_failures(pabgh: &[u8], pabgb: &[u8]) -> io::Result<EntryFailu
 }
 
 impl SkillData {
-    /// Parse both files, returning entries in PABGH on-disk order.
+    /// Parse both files, returning entries in PABGH on-disk order. A 2.06
+    /// pair (names in the header) is rebuilt in the pre-2.06 layout first and
+    /// its row indices kept, so `write` returns the 2.06 layout.
     pub fn parse(pabgh: &[u8], pabgb: &[u8]) -> io::Result<Self> {
+        use crate::binary::static_header::{row_indices, to_legacy_layout};
+        if let Some(t) = to_legacy_layout(pabgb, pabgh) {
+            let rows = row_indices(pabgb, pabgh).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "skill: unreadable 2.06 row index")
+            })?;
+            let mut data = Self::parse_legacy(&t.header, &t.body)?;
+            data.row_indices = Some(rows);
+            return Ok(data);
+        }
+        Self::parse_legacy(pabgh, pabgb)
+    }
+
+    /// Parse a pair in the pre-2.06 layout (`[u32 len][name][key]` rows).
+    fn parse_legacy(pabgh: &[u8], pabgb: &[u8]) -> io::Result<Self> {
         let index = parse_pabgh(pabgh)?;
         let ranges = entry_ranges(&index, pabgb.len());
 
@@ -140,6 +163,7 @@ impl SkillData {
             entries,
             format,
             index_order: index,
+            row_indices: None,
         })
     }
 
@@ -172,6 +196,17 @@ impl SkillData {
             });
         }
         let pabgh = write_pabgh(&new_index)?;
+        if let Some(rows) = &self.row_indices {
+            let (body, header) =
+                crate::binary::static_header::from_legacy_layout(&pabgb, &pabgh, 2, 4, rows)
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "skill: cannot rebuild the 2.06 layout (row_indices length or a row head)",
+                        )
+                    })?;
+            return Ok((header, body));
+        }
         Ok((pabgh, pabgb))
     }
 }

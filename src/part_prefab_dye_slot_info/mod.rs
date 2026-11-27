@@ -303,6 +303,9 @@ pub fn parse_part_prefab_dye_slot_info_lossy(
     pabgb: &[u8],
     pabgh: &[u8],
 ) -> Vec<PartPrefabDyeSlotInfoEntry> {
+    // 2.06 moved row names into the header; rebuild the pre-2.06 layout.
+    let (pabgb, pabgh) = crate::binary::static_header::legacy_pair(pabgb, pabgh);
+    let (pabgb, pabgh): (&[u8], &[u8]) = (&pabgb, &pabgh);
     let Ok(index) = crate::skill_info::parse_pabgh(pabgh) else {
         return Vec::new();
     };
@@ -403,9 +406,11 @@ mod tests {
         );
         // Every indexed row must walk the layout exactly; the lossy parser
         // drops any that doesn't (2.04 ships 1,704).
+        // 2.06 headers carry names and sizes; count rows on the rebuilt index.
+        let (_, legacy_header) = crate::binary::static_header::legacy_pair(&pabgb, &pabgh);
         assert_eq!(
             entries.len(),
-            crate::skill_info::parse_pabgh(&pabgh).unwrap().len(),
+            crate::skill_info::parse_pabgh(&legacy_header).unwrap().len(),
             "a partprefabdyeslotinfo row failed to walk"
         );
 

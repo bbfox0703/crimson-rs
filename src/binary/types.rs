@@ -92,6 +92,40 @@ impl<'a> BinaryReadTracked<'a> for CString<'a> {
     }
 }
 
+// ── HeaderName ──────────────────────────────────────────────────────────────
+
+/// A row name that 2.06 moved out of the row into the table's
+/// `.staticinfoheader` (see `binary::static_header`). It occupies no bytes in
+/// the row: reading leaves it empty and writing emits nothing. Parsers that have
+/// the header fill `data` in afterwards.
+#[derive(Debug, PartialEq, Default, Clone, Copy)]
+pub struct HeaderName<'a> {
+    pub data: &'a str,
+}
+
+impl<'a> BinaryRead<'a> for HeaderName<'a> {
+    fn read_from(_data: &'a [u8], _offset: &mut usize) -> io::Result<Self> {
+        Ok(HeaderName::default())
+    }
+}
+
+impl BinaryWrite for HeaderName<'_> {
+    fn write_to(&self, _w: &mut dyn Write) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> BinaryReadTracked<'a> for HeaderName<'a> {
+    fn read_tracked(
+        _data: &'a [u8],
+        _offset: &mut usize,
+        _path: &mut String,
+        _ranges: &mut Vec<FieldRange>,
+    ) -> io::Result<Self> {
+        Ok(HeaderName::default())
+    }
+}
+
 // ── CArray ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, PartialEq)]

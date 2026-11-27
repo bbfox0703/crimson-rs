@@ -71,6 +71,9 @@ pub struct StoreInfoEntry {
 /// treated as anchor noise rather than panics so a future patch with a
 /// new row shape doesn't break the build.
 pub fn parse_store_info_lossy(pabgb: &[u8], pabgh: &[u8]) -> Vec<StoreInfoEntry> {
+    // 2.06 moved row names into the header; rebuild the pre-2.06 layout.
+    let (pabgb, pabgh) = crate::binary::static_header::legacy_pair(pabgb, pabgh);
+    let (pabgb, pabgh): (&[u8], &[u8]) = (&pabgb, &pabgh);
     if pabgh.len() < 2 {
         return Vec::new();
     }

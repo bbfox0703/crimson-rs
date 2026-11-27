@@ -273,6 +273,7 @@ Parse `skill.pabgb` + `skill.pabgh` into structured entries. Returns:
 - `entries: list[dict]` — one per skill, in on-disk PABGH order (which is offset-sorted in vanilla files). Each entry has `key`, `name`, `name_bytes`, `is_blocked`, `pad_01`, `buff_level_list` (nested list-of-lists of buff dicts; `None` when raw fallback is used), `buff_raw_fallback` (`bytes | None`), and `post_buff` (~25 fields).
 - `format: str` — `"with_field_58"` (1.04+) or `"no_field_58"` (1.03), auto-detected.
 - `index_order: list[dict]` — on-disk PABGH order, kept for byte-identical roundtrip.
+- `row_indices: list[int] | None` — since 2.06 every body row opens `[key][u32 row index]`; this holds the row index (u32) of each `index_order` row, in the same order. `None` on a table from before 2.06.
 
 ```python
 pabgh = crimson_rs.extract_file_from_paz(
@@ -300,7 +301,7 @@ The `BuffData` subclass tail size depends on `type_id` (0..119) and is **not sta
 
 ### `serialize_skillinfo(data: dict) -> tuple[bytes, bytes]`
 
-Inverse of `parse_skillinfo_from_bytes`. Pass the parsed dict (optionally with edits) to get back `(pabgh_bytes, pabgb_bytes)` that roundtrips byte-identically when nothing is changed.
+Inverse of `parse_skillinfo_from_bytes`. Pass the parsed dict (optionally with edits) to get back `(pabgh_bytes, pabgb_bytes)` that roundtrips byte-identically when nothing is changed. When `row_indices` is a list it writes the 2.06 layout (named header, `[key][row index]` body rows); when it is `None` or missing, the pre-2.06 one.
 
 ```python
 new_pabgh, new_pabgb = crimson_rs.serialize_skillinfo(skills)
@@ -348,16 +349,19 @@ Returns `None` for an entry when the `string_key` is not present in `vanilla_byt
 
 ---
 
-### `parse_iteminfo_from_file(path: str) -> list[dict]`
+### `parse_iteminfo_from_file(path: str, header_path: str | None = None) -> list[dict]`
 
-Parse all items from a binary file.
+Parse all items from a binary file. Since 2.06 an item's `string_key` lives in the table's `.staticinfoheader`, not in the body row: pass the header to get the names (the parser then also checks every row's key and length against it). Without it `string_key` is `""`; every other field parses the same.
 
 ```python
-items = crimson_rs.parse_iteminfo_from_file("iteminfo_decompressed.pabgb")
+items = crimson_rs.parse_iteminfo_from_file(
+    "iteminfo_decompressed.pabgb", header_path="iteminfo_decompressed.pabgh"
+)
 ```
 
 **Parameters:**
-- `path` - Path to the decompressed iteminfo binary file.
+- `path` - Path to the decompressed iteminfo binary file (`iteminfo.staticinfobody` / `.pabgb`).
+- `header_path` - Optional path to the table's header (`iteminfo.staticinfoheader` / `.pabgh`), 2.06 shape.
 
 **Returns:** List of item dicts. Each dict has the fields documented in [ItemInfo](#iteminfo).
 
@@ -365,17 +369,18 @@ items = crimson_rs.parse_iteminfo_from_file("iteminfo_decompressed.pabgb")
 
 ---
 
-### `parse_iteminfo_from_bytes(data: bytes) -> list[dict]`
+### `parse_iteminfo_from_bytes(data: bytes, header: bytes | None = None) -> list[dict]`
 
-Parse all items from raw bytes.
+Parse all items from raw bytes. As with `parse_iteminfo_from_file`, pass the table's `.staticinfoheader` to get `string_key` on 2.06; without it `string_key` is `""`.
 
 ```python
-with open("iteminfo_decompressed.pabgb", "rb") as f:
-    items = crimson_rs.parse_iteminfo_from_bytes(f.read())
+with open("iteminfo_decompressed.pabgb", "rb") as f, open("iteminfo_decompressed.pabgh", "rb") as h:
+    items = crimson_rs.parse_iteminfo_from_bytes(f.read(), h.read())
 ```
 
 **Parameters:**
-- `data` - Raw binary data.
+- `data` - Raw binary data (the table body).
+- `header` - Optional raw header bytes (2.06 shape).
 
 **Returns:** List of item dicts.
 
@@ -445,7 +450,8 @@ Each item is a dict with 105 fields. All fields are required for serialization.
 | Field | Type | Description |
 |---|---|---|
 | `key` | `int` | Unique item ID (u32) |
-| `string_key` | `str` | String identifier (e.g. `"Pyeonjeon_Arrow"`) |
+| `row_index` | `int` | The row's position in the base table (u32), written right after `key` since 2.06 |
+| `string_key` | `str` | String identifier (e.g. `"Pyeonjeon_Arrow"`). Since 2.06 read from the `.staticinfoheader`; `""` when the parser is not given one |
 | `is_blocked` | `int` | Blocked flag (u8) |
 | `max_stack_count` | `int` | Maximum stack size (u64) |
 | `item_name` | [LocalizableString](#localizablestring) | Localized item name |
@@ -603,6 +609,15 @@ Each item is a dict with 105 fields. All fields are required for serialization.
 | `usable_alert` | `int` | (u8) |
 | `discard_offset_y` | `float` | (f32) |
 | `respawn_time_seconds` | `int` | (i64). |
+
+### 2.06 schema delta
+
+2.06 moved every static-info row's name into the table header. The `.staticinfoheader` is now `count + ([key][u32 name len][name][u32 offset][u32 size])*`, and each body row opens `[key][u32 row index]` followed by the rest of the 2.05.01 row. The iteminfo fields themselves did not change. What changes for a caller of this API:
+
+- **`string_key` needs the header**: pass `header` / `header_path` to `parse_iteminfo_from_bytes` / `_from_file`; without it `string_key` is `""`.
+- **New**: `row_index` (u32) on every item, right after `key`.
+- **Unchanged**: every other field, `inventory_info_list` (twelve slots) included.
+- **Skill**: `parse_skillinfo_from_bytes` returns `row_indices`, and `serialize_skillinfo` reads it back to write the 2.06 layout.
 
 ### 2.04 schema delta
 

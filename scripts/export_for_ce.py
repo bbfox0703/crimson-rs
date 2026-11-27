@@ -165,8 +165,11 @@ def _parse_row(raw: bytes, off: int, end: int, key: int) -> tuple[dict, str]:
         status = "ok" if consumed == len(chunk) else f"leftover:{len(chunk) - consumed}"
     else:
         err = res.get("error_span", {})
-        rec = {"key": key, "string_key": _read_string_key(raw, off)}
+        rec = {"key": key, "string_key": HEADER_NAMES.get(key) or _read_string_key(raw, off)}
         status = f"fail:{err.get('path', '?')}"
+    # 2.06+: the row has no name; it is in the header.
+    if not rec.get("string_key") and key in HEADER_NAMES:
+        rec["string_key"] = HEADER_NAMES[key]
     return rec, status
 
 
@@ -339,9 +342,38 @@ class ItemRow(NamedTuple):
     source: str   # "base" or the DLC folder name ("dlc_01")
 
 
-def _read_header_rows(hdr: bytes) -> list[tuple[int, int]]:
-    """``(key, body offset)`` pairs, in order, from an iteminfo
-    static-info header: u16 count (u32 on some tables) + (u32 key, u32 offset)*."""
+# Row names by item key, from the 2.06 headers (the base table's name wins).
+# Since 2.06 the rows themselves carry no name, so `_parse_row` fills
+# `string_key` from here.
+HEADER_NAMES: dict[int, str] = {}
+# The raw headers, by table stem, for `out/<stem>.staticinfoheader`.
+HEADERS: dict[str, bytes] = {}
+
+
+def _read_header_rows(hdr: bytes, base: bool = False) -> list[tuple[int, int]]:
+    """``(key, body offset)`` pairs, in order, from an iteminfo static-info
+    header. 2.06: u16 count + (u32 key, u32 name len, name, u32 offset,
+    u32 size)*, names collected into ``HEADER_NAMES``. Through 2.05.01:
+    u16 count (u32 on some tables) + (u32 key, u32 offset)*."""
+    n = struct.unpack_from("<H", hdr)[0] if len(hdr) >= 2 else 0
+    at, rows, names = 2, [], {}
+    try:
+        for _ in range(n):
+            key, slen = struct.unpack_from("<II", hdr, at)
+            name = hdr[at + 8 : at + 8 + slen].decode("utf-8")
+            off, _size = struct.unpack_from("<II", hdr, at + 8 + slen)
+            at += 16 + slen
+            rows.append((key, off))
+            names[key] = name
+    except (struct.error, UnicodeDecodeError):
+        at = -1
+    if at == len(hdr):
+        if base:
+            HEADER_NAMES.update(names)
+        else:
+            for k, v in names.items():
+                HEADER_NAMES.setdefault(k, v)
+        return rows
     for cnt_fmt, start in (("<H", 2), ("<I", 4)):
         if len(hdr) < start:
             continue
@@ -356,7 +388,8 @@ def _load_iteminfo_table(root: str, stem: str) -> tuple[bytes, list[tuple[int, i
     layout = resolve_bin_layout(root)
     body = bytes(crimson_rs.extract_file(root, GAMEDATA_GROUP, layout.dir, layout.body(stem)))
     hdr = bytes(crimson_rs.extract_file(root, GAMEDATA_GROUP, layout.dir, layout.header(stem)))
-    return body, _read_header_rows(hdr)
+    HEADERS[stem] = hdr
+    return body, _read_header_rows(hdr, base=(stem == "iteminfo"))
 
 
 def discover_dlc_roots(game_dir: str) -> list[tuple[str, str]]:
@@ -425,6 +458,7 @@ def export_iteminfo_header(
     print("Step 3: iteminfo (header order: base rows, then DLC-only rows)")
     base_body, base_rows = _load_iteminfo_table(game_dir, "iteminfo")
     (out_dir / "iteminfo.pabgb").write_bytes(base_body)
+    (out_dir / "iteminfo.staticinfoheader").write_bytes(HEADERS["iteminfo"])
     print(f"  base    : {len(base_rows):,} rows -> index 0..{len(base_rows) - 1:,}"
           f"  ({len(base_body):,}B -> iteminfo.pabgb)")
 
@@ -569,8 +603,9 @@ def export_paloc(
                 item_names[sid >> 32] = e["string_value"]
         if failed == len(fnames):
             continue
-        if strict and not item_names:
-            raise DlcUnavailable(f"{lang}: no item names in the {tag.lstrip('.')} paloc")
+        # Through 2.05.01 a DLC's item names lived in its own PALOC; 2.06 moved
+        # them into the base game's (all 1,311 dlc_01 items, every language),
+        # so a DLC PALOC without item names is no longer an error.
         out[lang] = item_names
         summary.append((lang, group, len(fnames), n_entries))
 
@@ -751,9 +786,10 @@ def main() -> None:
                 print("  none installed -> base items only")
 
         paloc = export_paloc(game_dir, out_dir)
-        # DLC item names live in each DLC's own PALOC files; every language
-        # the base ships must be there, or the DLC is dropped like above.
-        # Base names win on keys both name (identical on 2.05).
+        # Through 2.05.01 DLC item names lived in each DLC's own PALOC files;
+        # every language the base ships must be there, or the DLC is dropped
+        # like above. From 2.06 the base PALOC carries them and the DLC's is
+        # nearly empty. Base names win on keys both name (identical on 2.05).
         dlc_names: list[dict[str, dict[int, str]]] = []
         try:
             for t in dlc_tables:

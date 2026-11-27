@@ -34,6 +34,45 @@ Plus a PAZ-layer `crimson_paz_list_npc_portraits` enumerator and a high-level
 `crimson_characterinfo_resolve_portrait` matcher that chains CharacterKey →
 PALOC display name → fuzzy match → NPC head-shot DDS path.
 
+### 2.06 row names (`_load_from_bytes_with_header`)
+
+Crimson Desert 2.06 moved every static-info row's name out of the
+`.staticinfobody` into the `.staticinfoheader`: the header is now
+`count + ([key][u32 name len][name][u32 offset][u32 size])*`, and each body row
+opens `[key][u32 row index]` followed by the rest of the 2.05.01 row. A bridge
+that only took the body can no longer see the names, so nine bridges gained an
+additive loader with the same shape:
+
+```c
+int32_t crimson_<table>_load_from_bytes_with_header(
+    const uint8_t *data, size_t data_len,      /* .staticinfobody / .pabgb */
+    const uint8_t *header, size_t header_len,  /* .staticinfoheader / .pabgh */
+    Crimson<Table>Handle **out_handle);
+```
+
+- `crimson_missioninfo_`, `crimson_characterinfo_`, `crimson_knowledgeinfo_`,
+  `crimson_stageinfo_`, `crimson_gimmickinfo_`, `crimson_questinfo_`,
+  `crimson_questgaugeinfo_`, `crimson_sublevelinfo_load_from_bytes_with_header`
+  — **required from 2.06**: the old body-only `*_load_from_bytes` finds no rows
+  on a 2.06 body. On an older install the header is not needed and is ignored.
+- `crimson_iteminfo_load_from_bytes_with_header` — without the header iteminfo
+  still parses every row, but `string_key` comes back empty on 2.06. Here the
+  header must be the 2.06 shape: an older install's index returns `BODY_PARSE`,
+  so load those with `crimson_iteminfo_load_from_bytes`.
+- The `*_load_from_file(path)` loaders of all nine read the sibling header
+  automatically if it is present (`x.staticinfobody` → `x.staticinfoheader`,
+  `x.pabgb` → `x.pabgh`; `sibling_header` in `src/c_abi/mod.rs`).
+- Bridges that already took the body and the header (`pabgb`, `pabgh`) — the
+  name-only catalog bridges, the faction / dye / store / mercenary /
+  global-game-event bridges, and the stageinfo / questinfo
+  `_load_from_*_with_pabgh` loaders — did not change: they rebuild the
+  pre-2.06 layout internally (`src/binary/static_header.rs`).
+
+**Downstream:** the C# editor (CrimsonAtomtic) must switch its nine
+body-only `*_load_from_bytes` calls to the `_with_header` variants above, passing
+the table's `.staticinfoheader`, or those bridges come up empty (and item names
+blank) on 2.06.
+
 ### Save-handle utilities
 
 - `crimson_save_list_inventory_items` — flat enumeration of every item across
@@ -107,7 +146,7 @@ absorbed by list-header variants (`marker_run_plus_zeros`, `ones_then_count`,
   compares the install's `(major, minor)` against this and the minor bridge.
   Backs onto `crate::binary::paver::PARSER_TARGET_GAMEDATA_MAJOR`.
 - `crimson_parser_target_gamedata_minor() -> u16` — the gamedata `minor` this
-  build's parsers target (currently **4**, i.e. 2.04). **Single source of
+  build's parsers target (currently **6**, i.e. 2.06). **Single source of
   truth**: the value lives in `crate::binary::paver::PARSER_TARGET_GAMEDATA_MINOR`,
   so a new patch is one Rust bump and every consumer follows — no more lock-step
   `ParserTargetMinor` edits on the C# side (promoting this killed the 5th such
@@ -122,16 +161,17 @@ absorbed by list-header variants (`marker_run_plus_zeros`, `ones_then_count`,
   *within* the target major — read them alongside
   `crimson_parser_target_gamedata_major()`.
 - `crimson_parser_min_gamedata_patch() -> u16` — the lowest gamedata `patch`
-  this build reads on the target `(major, minor)` (currently **1**, i.e.
-  2.05.01). Added when 2.04.08 changed the iteminfo layout without moving the
+  this build reads on the target `(major, minor)` (currently **0**: any 2.06
+  patch). Added when 2.04.08 changed the iteminfo layout without moving the
   minor, so `(major, minor)` alone would accept a 2.04.03 install that no longer
-  parses. 2.05.01 did the same inside minor 5, so 2.05.00 is now refused. Full gate: `major == target_major && minor ∈ compatible_minors &&
+  parses. 2.05.01 did the same inside minor 5 (floor 1); 2.06 moved the minor, so
+  the floor reset to 0. Full gate: `major == target_major && minor ∈ compatible_minors &&
   (minor != target_minor || patch >= min_patch)`. `0` means any patch. Backs onto
   `crate::binary::paver::PARSER_MIN_GAMEDATA_PATCH`.
 
 ### Status & remaining work
 
-334 tests pass with `c_abi` (+45 ignored diagnostic probes); the bare-default
+377 tests pass with `c_abi` on 2.06 (+47 ignored diagnostic probes); the bare-default
 build (`cargo check --lib`) is also clean; clippy clean both modes. The Jenkins
 hash-hop transform that drives Mission/Quest/Stage/Knowledge title resolution is
 cracked and pinned. CharacterKey ships at the 22% display-name coverage §6
@@ -175,6 +215,8 @@ src/
 │   │                        #   ships (2.01 renamed the gamedata dir + every
 │   │                        #   extension); newest-first with fallback
 │   ├── paver.rs             # meta/0.paver version-stamp reader
+│   ├── static_header.rs     # 2.06 named .staticinfoheader + [key][row index] body rows;
+│   │                        #   rebuilds the pre-2.06 layout for the table parsers
 │   └── trie.rs              # Trie buffer read + build (radix-compressed)
 ├── crypto/
 │   ├── checksum.rs          # Jenkins hashlittle2 (init = 0xDEBA1DCD)

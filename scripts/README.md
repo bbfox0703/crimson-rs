@@ -71,9 +71,13 @@ Every diagnostic script accepts `--game-dir <path>` to point at the Crimson Dese
 ```powershell
 # 1. Run the exporter. The order comes from the iteminfo headers (base, then DLC-only rows).
 python scripts\export_for_ce.py
-# 2. Optional cross-check: re-dump the key array from the running game (CE: My-Cheat-Tables/Crimson Desert/CrimsonDesert.CT,
-#    "Dump in-game item key array") and pass both segments; the run reports whether they agree.
-python scripts\export_for_ce.py --keys path\to\keys.txt --dlc-keys path\to\keys-dlc.txt
+# 2. Optional cross-check: re-dump the key array from the running game (CE: the standalone
+#    My-Cheat-Tables/Crimson Desert/Dump in-game item key array.CEA next to CrimsonDesert.CT) and pass it;
+#    the run reports whether it agrees. Since 2.06 the dump is the whole base + DLC array in one keys.txt,
+#    so --dlc-keys is not needed.
+python scripts\export_for_ce.py --keys path\to\keys.txt
+#    Through 2.05.01 the dumper was an entry in CrimsonDesert.CT and wrote two segments:
+#    python scripts\export_for_ce.py --keys path\to\keys.txt --dlc-keys path\to\keys-dlc.txt
 # 3. Update the CE table itself: dropdowns, item defines, the item data table.
 python scripts\update_ce_table.py --ct "D:\Github\My-Cheat-Tables\Crimson Desert\CrimsonDesert.CT"
 #    If the parser can't read the new patch yet (items.jsonl has keys only), take max stack and

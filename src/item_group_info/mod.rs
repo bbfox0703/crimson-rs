@@ -23,6 +23,9 @@ pub fn parse_item_group_info_lossy(
     pabgb: &[u8],
     pabgh: &[u8],
 ) -> Vec<ItemGroupInfoEntry> {
+    // 2.06 moved row names into the header; rebuild the pre-2.06 layout.
+    let (pabgb, pabgh) = crate::binary::static_header::legacy_pair(pabgb, pabgh);
+    let (pabgb, pabgh): (&[u8], &[u8]) = (&pabgb, &pabgh);
     if pabgh.len() < 2 {
         return Vec::new();
     }
@@ -108,8 +111,8 @@ mod tests {
         let entries = parse_item_group_info_lossy(&pabgb, &pabgh);
         assert_eq!(
             entries.len(),
-            1680,
-            "expected 1680 rows in 2.04 (1602 in 2.03, 1600 in 2.01-2.02, 1597 in 1.18-2.00, 1596 in 1.17, 1597 in 1.16, 1550 in 1.13-1.15, 1541 in 1.12, 1521 in 1.10/1.11)"
+            1682,
+            "expected 1682 rows in 2.06 (1680 in 2.04-2.05.01, 1602 in 2.03, 1600 in 2.01-2.02, 1597 in 1.18-2.00, 1596 in 1.17, 1597 in 1.16, 1550 in 1.13-1.15, 1541 in 1.12, 1521 in 1.10/1.11)"
         );
         let by_key: std::collections::HashMap<u32, &str> =
             entries.iter().map(|e| (e.key, e.name.as_str())).collect();

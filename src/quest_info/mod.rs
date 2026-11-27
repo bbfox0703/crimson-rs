@@ -42,6 +42,9 @@ pub struct QuestInfoEntry {
 /// and `StartGame`), returning the in-game-authoritative 1,019 entries
 /// instead of the anchor-scan's 1,018.
 pub fn parse_quest_info_via_pabgh(pabgh: &[u8], pabgb: &[u8]) -> Vec<QuestInfoEntry> {
+    // 2.06 moved row names into the header; rebuild the pre-2.06 layout.
+    let (pabgb, pabgh) = crate::binary::static_header::legacy_pair(pabgb, pabgh);
+    let (pabgb, pabgh): (&[u8], &[u8]) = (&pabgb, &pabgh);
     if pabgh.len() < 4 {
         return Vec::new();
     }
@@ -76,6 +79,16 @@ pub fn parse_quest_info_via_pabgh(pabgh: &[u8], pabgb: &[u8]) -> Vec<QuestInfoEn
         });
     }
     entries
+}
+
+/// 2.06+: row names live in the `.staticinfoheader`, so the body alone no
+/// longer carries them. Rebuilds the pre-2.06 layout from both and scans that;
+/// a pre-2.06 pair (or a header that is not the 2.06 shape) scans `data` as is.
+pub fn parse_quest_info_lossy_with_header(data: &[u8], header: &[u8]) -> Vec<QuestInfoEntry> {
+    match crate::binary::static_header::to_legacy_layout(data, header) {
+        Some(t) => parse_quest_info_lossy(&t.body),
+        None => parse_quest_info_lossy(data),
+    }
 }
 
 /// Lossy anchor-scan parse of an in-memory `questinfo.pabgb` blob.
@@ -143,7 +156,6 @@ mod tests {
 
     use crate::binary::gamedata_layout;
     use super::*;
-    use std::path::PathBuf;
 
     const KNOWN: &[(u32, &str)] = &[
         (1_000_619, "Quest_Node_Her_RootFort_Normal"),
@@ -154,30 +166,13 @@ mod tests {
     ];
 
     fn find_questinfo_bytes() -> Option<Vec<u8>> {
-        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
-            });
-        let pamt_path = game_root.join("0008").join("0.pamt");
-        if !pamt_path.is_file() {
-            return None;
-        }
-        let pamt_data = std::fs::read(&pamt_path).ok()?;
-        let pamt = crate::binary::pamt::PackMeta::parse(&pamt_data, None).ok()?;
-        let dir = pamt
-            .directories
-            .iter()
-            .find(|d| d.path == gamedata_layout::bin_dir())?;
-        let file = dir.files.iter().find(|f| f.name == gamedata_layout::body("questinfo"))?;
-        let group_dir = game_root.join("0008");
-        crate::binary::paz::extract_file(
-            &group_dir,
-            file,
-            gamedata_layout::bin_dir(),
-            &pamt.header.encrypt_info.encrypt_info,
-        )
-        .ok()
+        gamedata_layout::extract_bin(&gamedata_layout::body("questinfo"))
+    }
+
+    /// 2.06+: the row names live here. Empty when absent (an older install
+    /// needs none, and `parse_quest_info_lossy_with_header` then scans the body alone).
+    fn find_questinfo_header() -> Vec<u8> {
+        gamedata_layout::extract_bin(&gamedata_layout::header("questinfo")).unwrap_or_default()
     }
 
     #[test]
@@ -186,7 +181,7 @@ mod tests {
             eprintln!("skipping quest_info_lossy_live: no game install");
             return;
         };
-        let entries = parse_quest_info_lossy(&data);
+        let entries = parse_quest_info_lossy_with_header(&data, &find_questinfo_header());
         println!("parsed {} questinfo entries from {} bytes", entries.len(), data.len());
         assert!(
             entries.len() > 200,

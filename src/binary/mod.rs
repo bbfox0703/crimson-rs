@@ -8,6 +8,7 @@ pub(crate) mod paver;
 pub(crate) mod paz;
 mod primitives;
 pub(crate) mod row_head;
+pub(crate) mod static_header;
 pub(crate) mod trie;
 mod types;
 

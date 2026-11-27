@@ -54,8 +54,13 @@ pub struct CrimsonCharacterInfoHandle {
 }
 
 impl CrimsonCharacterInfoHandle {
-    fn from_bytes(data: &[u8]) -> Self {
-        let raw = parse_character_info_lossy(data);
+    /// Build from the body, plus (2.06+) the `.staticinfoheader` that holds
+    /// the row names. Without a header only a pre-2.06 body yields rows.
+    fn from_bytes(data: &[u8], header: Option<&[u8]>) -> Self {
+        let raw = match header {
+            Some(h) => crate::character_info::parse_character_info_lossy_with_header(data, h),
+            None => parse_character_info_lossy(data),
+        };
         let mut by_key: HashMap<u32, String> = HashMap::with_capacity(raw.len());
         let mut entries: Vec<(u32, String)> = Vec::with_capacity(raw.len());
         for e in raw {
@@ -93,7 +98,9 @@ pub unsafe extern "C" fn crimson_characterinfo_load_from_file(
             Ok(b) => b,
             Err(_) => return error::IO,
         };
-        let handle = CrimsonCharacterInfoHandle::from_bytes(&bytes);
+        // 2.06+: row names live in the `.staticinfoheader` next to the body.
+        let header = super::sibling_header(path_str);
+        let handle = CrimsonCharacterInfoHandle::from_bytes(&bytes, header.as_deref());
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -124,7 +131,48 @@ pub unsafe extern "C" fn crimson_characterinfo_load_from_bytes(
         } else {
             unsafe { std::slice::from_raw_parts(data, data_len) }
         };
-        let handle = CrimsonCharacterInfoHandle::from_bytes(slice);
+        let handle = CrimsonCharacterInfoHandle::from_bytes(slice, None);
+        unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Parse in-memory `characterinfo` bytes together with the table's
+/// `.staticinfoheader`. Required from 2.06, where row names moved out of the
+/// body into the header: `crimson_characterinfo_load_from_bytes` on a 2.06 body finds
+/// no rows. On an older install the header is not needed and is ignored.
+///
+/// # Safety
+/// `data` / `header` must point to `data_len` / `header_len` readable bytes
+/// (each may be null iff its length is 0). `out_handle` must be non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_characterinfo_load_from_bytes_with_header(
+    data: *const u8,
+    data_len: usize,
+    header: *const u8,
+    header_len: usize,
+    out_handle: *mut *mut CrimsonCharacterInfoHandle,
+) -> i32 {
+    if out_handle.is_null() {
+        return error::NULL_ARG;
+    }
+    if (data.is_null() && data_len != 0) || (header.is_null() && header_len != 0) {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_handle = std::ptr::null_mut() };
+    catch_unwind(AssertUnwindSafe(|| {
+        let slice = if data_len == 0 {
+            &[][..]
+        } else {
+            unsafe { std::slice::from_raw_parts(data, data_len) }
+        };
+        let header = if header_len == 0 {
+            &[][..]
+        } else {
+            unsafe { std::slice::from_raw_parts(header, header_len) }
+        };
+        let handle = CrimsonCharacterInfoHandle::from_bytes(slice, Some(header));
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -761,11 +809,10 @@ mod tests {
             gamedata_layout::bin_dir(),
             &gamedata_layout::body("characterinfo"),
         );
+        let cinfo_bytes_header = extract_file(pamt_0008.as_c_str(), gamedata_layout::bin_dir(), &gamedata_layout::header("characterinfo"));
         let mut cinfo_h: *mut CrimsonCharacterInfoHandle = ptr::null_mut();
         let rc = unsafe {
-            crimson_characterinfo_load_from_bytes(
-                cinfo_bytes.as_ptr(),
-                cinfo_bytes.len(),
+            crimson_characterinfo_load_from_bytes_with_header(cinfo_bytes.as_ptr(), cinfo_bytes.len(), cinfo_bytes_header.as_ptr(), cinfo_bytes_header.len(),
                 &mut cinfo_h,
             )
         };

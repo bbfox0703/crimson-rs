@@ -39,6 +39,16 @@ pub struct SubLevelInfoEntry {
     pub name: String,
 }
 
+/// 2.06+: row names live in the `.staticinfoheader`, so the body alone no
+/// longer carries them. Rebuilds the pre-2.06 layout from both and scans that;
+/// a pre-2.06 pair (or a header that is not the 2.06 shape) scans `data` as is.
+pub fn parse_sub_level_info_lossy_with_header(data: &[u8], header: &[u8]) -> Vec<SubLevelInfoEntry> {
+    match crate::binary::static_header::to_legacy_layout(data, header) {
+        Some(t) => parse_sub_level_info_lossy(&t.body),
+        None => parse_sub_level_info_lossy(data),
+    }
+}
+
 /// Lossy anchor-scan parse of an in-memory `sublevelinfo.pabgb` blob.
 ///
 /// Validation rules:
@@ -114,7 +124,6 @@ mod tests {
 
     use crate::binary::gamedata_layout;
     use super::*;
-    use std::path::PathBuf;
 
     /// (SubLevelKey, expected internal_name) — verified against
     /// `CrimsonAtomtic/out/analyze/handoff/keycases_unresolved.jsonl`.
@@ -146,33 +155,13 @@ mod tests {
     ];
 
     fn find_sublevelinfo_bytes() -> Option<Vec<u8>> {
-        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
-            });
-        let pamt_path = game_root.join("0008").join("0.pamt");
-        if !pamt_path.is_file() {
-            return None;
-        }
-        let pamt_data = std::fs::read(&pamt_path).ok()?;
-        let pamt = crate::binary::pamt::PackMeta::parse(&pamt_data, None).ok()?;
-        let dir = pamt
-            .directories
-            .iter()
-            .find(|d| d.path == gamedata_layout::bin_dir())?;
-        let file = dir
-            .files
-            .iter()
-            .find(|f| f.name == gamedata_layout::body("sublevelinfo"))?;
-        let group_dir = game_root.join("0008");
-        crate::binary::paz::extract_file(
-            &group_dir,
-            file,
-            gamedata_layout::bin_dir(),
-            &pamt.header.encrypt_info.encrypt_info,
-        )
-        .ok()
+        gamedata_layout::extract_bin(&gamedata_layout::body("sublevelinfo"))
+    }
+
+    /// 2.06+: the row names live here. Empty when absent (an older install
+    /// needs none, and `parse_sub_level_info_lossy_with_header` then scans the body alone).
+    fn find_sublevelinfo_header() -> Vec<u8> {
+        gamedata_layout::extract_bin(&gamedata_layout::header("sublevelinfo")).unwrap_or_default()
     }
 
     #[test]
@@ -181,7 +170,7 @@ mod tests {
             eprintln!("skipping sub_level_info_lossy_live: no game install");
             return;
         };
-        let entries = parse_sub_level_info_lossy(&data);
+        let entries = parse_sub_level_info_lossy_with_header(&data, &find_sublevelinfo_header());
         println!(
             "parsed {} sublevelinfo entries from {} bytes",
             entries.len(),

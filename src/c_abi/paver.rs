@@ -372,10 +372,13 @@ mod tests {
             minor, PARSER_TARGET_GAMEDATA_MINOR,
             "live game install minor should match PARSER_TARGET_GAMEDATA_MINOR in this test environment",
         );
-        // 2.05.01 moved the iteminfo layout inside minor 5, so a 2.05.00
-        // install fails here.
+        // A patch-level layout move (2.04.08, 2.05.01) raises the floor, and
+        // an install below it fails here. The floor is 0 right after a minor
+        // bump (2.06), which makes this check trivially true until it moves.
+        #[allow(clippy::absurd_extreme_comparisons)]
+        let at_or_above_floor = patch >= PARSER_MIN_GAMEDATA_PATCH;
         assert!(
-            patch >= PARSER_MIN_GAMEDATA_PATCH,
+            at_or_above_floor,
             "live game install patch {patch} is below PARSER_MIN_GAMEDATA_PATCH {PARSER_MIN_GAMEDATA_PATCH}",
         );
     }

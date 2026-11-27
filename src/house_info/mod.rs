@@ -27,6 +27,9 @@ pub struct HouseInfoEntry {
 
 /// Parse `houseinfo.pabgb` using its `(u16 key, u32 offset)*` PABGH.
 pub fn parse_house_info_lossy(pabgb: &[u8], pabgh: &[u8]) -> Vec<HouseInfoEntry> {
+    // 2.06 moved row names into the header; rebuild the pre-2.06 layout.
+    let (pabgb, pabgh) = crate::binary::static_header::legacy_pair(pabgb, pabgh);
+    let (pabgb, pabgh): (&[u8], &[u8]) = (&pabgb, &pabgh);
     if pabgh.len() < 2 {
         return Vec::new();
     }

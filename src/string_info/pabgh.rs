@@ -44,18 +44,39 @@ pub struct StringIndexEntry {
 pub struct StringInfoIndex {
     pub entries: Vec<StringIndexEntry>,
     pub count_width: CountWidth,
+    /// 2.06+: the header lists `[hash][u32 name len = 0][offset][size]` per row
+    /// (names moved into every table header; stringinfo rows have none).
+    /// Written back by [`super::StringInfoData::write_pabgh`], which knows the sizes.
+    pub named: bool,
 }
 
 /// Parse the on-disk index. The returned entries are in file order.
 pub fn parse_pabgh(data: &[u8]) -> io::Result<StringInfoIndex> {
-    // Try u16 count first (1.06 fits comfortably).
+    // 2.06: count + (hash, name len, name, offset, size). Every stringinfo row
+    // has an empty name.
+    for (width, count_width) in [(2, CountWidth::U16), (4, CountWidth::U32)] {
+        if let Some(rows) = crate::binary::static_header::parse_named_header(data, width, 4) {
+            if let Some(r) = rows.iter().find(|r| !r.name.is_empty()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("PABGH: stringinfo row 0x{:08X} has a name ({:?})", r.key, r.name),
+                ));
+            }
+            let entries = rows
+                .iter()
+                .map(|r| StringIndexEntry { hash: r.key as u32, offset: r.offset })
+                .collect();
+            return Ok(StringInfoIndex { entries, count_width, named: true });
+        }
+    }
+    // Through 2.05.01: count + (hash, offset). Try u16 count first.
     if data.len() >= 2 {
         let mut offset = 0usize;
         let count16 = u16::read_from(data, &mut offset)? as usize;
         let needed = 2 + count16 * 8;
         if needed == data.len() {
             let entries = read_entries(data, offset, count16)?;
-            return Ok(StringInfoIndex { entries, count_width: CountWidth::U16 });
+            return Ok(StringInfoIndex { entries, count_width: CountWidth::U16, named: false });
         }
     }
     // Fall back to u32 count.
@@ -65,7 +86,7 @@ pub fn parse_pabgh(data: &[u8]) -> io::Result<StringInfoIndex> {
         let needed = 4 + count32 * 8;
         if needed == data.len() {
             let entries = read_entries(data, offset, count32)?;
-            return Ok(StringInfoIndex { entries, count_width: CountWidth::U32 });
+            return Ok(StringInfoIndex { entries, count_width: CountWidth::U32, named: false });
         }
     }
 
@@ -91,6 +112,12 @@ fn read_entries(data: &[u8], mut offset: usize, count: usize) -> io::Result<Vec<
 /// Serialise an index back to bytes. Preserves the input order and the
 /// original count-prefix width for byte-identical round-trip.
 pub fn write_pabgh(index: &StringInfoIndex) -> io::Result<Vec<u8>> {
+    if index.named {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "PABGH: a 2.06 index carries row sizes; write it with StringInfoData::write_pabgh",
+        ));
+    }
     let prefix_len = match index.count_width {
         CountWidth::U16 => 2,
         CountWidth::U32 => 4,
@@ -141,7 +168,7 @@ mod tests {
                 StringIndexEntry { hash: 0x2ad9f89e, offset: 0 },
                 StringIndexEntry { hash: 0x04f6d06d, offset: 22 },
             ],
-            count_width: CountWidth::U16,
+            count_width: CountWidth::U16, named: false,
         };
         let bytes = write_pabgh(&index).unwrap();
         assert_eq!(bytes.len(), 2 + 2 * 8);
@@ -157,7 +184,7 @@ mod tests {
                 StringIndexEntry { hash: 1, offset: 0 },
                 StringIndexEntry { hash: 2, offset: 22 },
             ],
-            count_width: CountWidth::U32,
+            count_width: CountWidth::U32, named: false,
         };
         let bytes = write_pabgh(&index).unwrap();
         assert_eq!(bytes.len(), 4 + 2 * 8);

@@ -2,11 +2,13 @@
 
 Reads (never writes) the CrimsonDesert.exe process with ReadProcessMemory:
 
-    key array  : 24-byte elements `u32 key, u32 row offset, u64 object, u64 0`,
-                 base header rows then DLC-only rows (see scripts/CLAUDE.md,
+    key array  : base header rows then DLC-only rows (see scripts/CLAUDE.md,
                  "keys.txt structure"); `--array` is its address, e.g. from the
-                 CE key dumper or the data AOB `98 08 00 00 ...`.
-    object     : one runtime item object per element (0x280 apart on 2.05.01).
+                 CE key dumper or the data AOB `98 08 00 00 ...`. The element
+                 grew with patches: 24 B on 2.05 / 2.05.01 (object pointer at
+                 +0x08), 48 B on 2.06 (object pointer at +0x20); `--stride` and
+                 `--object-at` select the layout (default: 2.06).
+    object     : one runtime item object per element (0x280 apart).
 
 For every item it compares the array key with `items.jsonl` (CE order), then
 scans each object for offsets whose value equals a known iteminfo field on
@@ -15,7 +17,8 @@ scans each object for offsets whose value equals a known iteminfo field on
 patch to see whether the offsets recorded in scripts/CLAUDE.md still hold.
 
 Usage (the game must be running; run export_for_ce.py first):
-    python -I scripts/probe_runtime_items.py --array 0x5CE76C90000 [--items out/items.jsonl]
+    python -I scripts/probe_runtime_items.py --array 0x2A962770000 [--items out/items.jsonl]
+        [--stride 48 --object-at 0x20]     (2.05.01: --stride 24 --object-at 0x08)
 """
 
 from __future__ import annotations
@@ -28,7 +31,6 @@ import struct
 import subprocess
 import sys
 
-STRIDE = 24
 OBJ_READ = 0x300
 
 PROCESS_VM_READ = 0x0010
@@ -66,6 +68,9 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--array", required=True, help="key array address (hex)")
     ap.add_argument("--items", default="out/items.jsonl")
+    ap.add_argument("--stride", type=int, default=48, help="key array element size (2.06: 48)")
+    ap.add_argument("--object-at", default="0x20",
+                    help="offset of the object pointer in an element (2.06: 0x20)")
     args = ap.parse_args()
 
     items = [json.loads(line) for line in open(args.items, encoding="utf-8")]
@@ -74,15 +79,16 @@ def main() -> None:
     n = len(items)
     pid, rd = open_game()
     base = int(args.array, 16)
-    arr = rd(base, n * STRIDE)
-    if arr is None or len(arr) < n * STRIDE:
+    stride, obj_at = args.stride, int(args.object_at, 0)
+    arr = rd(base, n * stride)
+    if arr is None or len(arr) < n * stride:
         sys.exit("could not read the key array at that address")
 
     ptrs, bad = [], 0
     for i, it in enumerate(items):
-        key, _off, ptr, _zero = struct.unpack_from("<IIQQ", arr, i * STRIDE)
+        key = struct.unpack_from("<I", arr, i * stride)[0]
         bad += key != it["key"]
-        ptrs.append(ptr)
+        ptrs.append(struct.unpack_from("<Q", arr, i * stride + obj_at)[0])
     print(f"pid {pid}: {n} elements, {bad} keys out of CE order")
     deltas = {ptrs[i + 1] - ptrs[i] for i in range(min(n - 1, 64))}
     print("object spacing (first 64):", sorted(hex(d) for d in deltas))

@@ -225,6 +225,9 @@ pub fn parse_part_prefab_dye_texture_pallete_info_lossy(
     pabgb: &[u8],
     pabgh: &[u8],
 ) -> Vec<PartPrefabDyeTexturePalleteEntry> {
+    // 2.06 moved row names into the header; rebuild the pre-2.06 layout.
+    let (pabgb, pabgh) = crate::binary::static_header::legacy_pair(pabgb, pabgh);
+    let (pabgb, pabgh): (&[u8], &[u8]) = (&pabgb, &pabgh);
     let Some(index) = parse_palette_pabgh(pabgh) else {
         return Vec::new();
     };

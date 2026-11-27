@@ -34,8 +34,13 @@ pub struct CrimsonStageInfoHandle {
 }
 
 impl CrimsonStageInfoHandle {
-    fn from_bytes(data: &[u8]) -> Self {
-        Self::build(parse_stage_info_lossy(data).into_iter().map(|e| (e.key, e.name)))
+    /// Build from the body, plus (2.06+) the `.staticinfoheader` that holds
+    /// the row names. Without a header only a pre-2.06 body yields rows.
+    fn from_bytes(data: &[u8], header: Option<&[u8]>) -> Self {
+        Self::build(match header {
+            Some(h) => crate::stage_info::parse_stage_info_lossy_with_header(data, h),
+            None => parse_stage_info_lossy(data),
+        }.into_iter().map(|e| (e.key, e.name)))
     }
 
     fn from_pabgh_and_pabgb(pabgh: &[u8], pabgb: &[u8]) -> Self {
@@ -93,7 +98,9 @@ pub unsafe extern "C" fn crimson_stageinfo_load_from_file(
             Ok(b) => b,
             Err(_) => return error::IO,
         };
-        let handle = CrimsonStageInfoHandle::from_bytes(&bytes);
+        // 2.06+: row names live in the `.staticinfoheader` next to the body.
+        let header = super::sibling_header(path_str);
+        let handle = CrimsonStageInfoHandle::from_bytes(&bytes, header.as_deref());
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -129,7 +136,48 @@ pub unsafe extern "C" fn crimson_stageinfo_load_from_bytes(
         } else {
             unsafe { std::slice::from_raw_parts(data, data_len) }
         };
-        let handle = CrimsonStageInfoHandle::from_bytes(slice);
+        let handle = CrimsonStageInfoHandle::from_bytes(slice, None);
+        unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Parse in-memory `stageinfo` bytes together with the table's
+/// `.staticinfoheader`. Required from 2.06, where row names moved out of the
+/// body into the header: `crimson_stageinfo_load_from_bytes` on a 2.06 body finds
+/// no rows. On an older install the header is not needed and is ignored.
+///
+/// # Safety
+/// `data` / `header` must point to `data_len` / `header_len` readable bytes
+/// (each may be null iff its length is 0). `out_handle` must be non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_stageinfo_load_from_bytes_with_header(
+    data: *const u8,
+    data_len: usize,
+    header: *const u8,
+    header_len: usize,
+    out_handle: *mut *mut CrimsonStageInfoHandle,
+) -> i32 {
+    if out_handle.is_null() {
+        return error::NULL_ARG;
+    }
+    if (data.is_null() && data_len != 0) || (header.is_null() && header_len != 0) {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_handle = std::ptr::null_mut() };
+    catch_unwind(AssertUnwindSafe(|| {
+        let slice = if data_len == 0 {
+            &[][..]
+        } else {
+            unsafe { std::slice::from_raw_parts(data, data_len) }
+        };
+        let header = if header_len == 0 {
+            &[][..]
+        } else {
+            unsafe { std::slice::from_raw_parts(header, header_len) }
+        };
+        let handle = CrimsonStageInfoHandle::from_bytes(slice, Some(header));
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -496,12 +544,11 @@ mod tests {
             gamedata_layout::bin_dir(),
             &gamedata_layout::body("stageinfo"),
         );
+        let stage_bytes_header = extract_file(pamt.as_c_str(), gamedata_layout::bin_dir(), &gamedata_layout::header("stageinfo"));
 
         let mut sh: *mut CrimsonStageInfoHandle = ptr::null_mut();
         let rc = unsafe {
-            crimson_stageinfo_load_from_bytes(
-                stage_bytes.as_ptr(),
-                stage_bytes.len(),
+            crimson_stageinfo_load_from_bytes_with_header(stage_bytes.as_ptr(), stage_bytes.len(), stage_bytes_header.as_ptr(), stage_bytes_header.len(),
                 &mut sh,
             )
         };
@@ -615,6 +662,7 @@ mod tests {
             gamedata_layout::bin_dir(),
             &gamedata_layout::body("stageinfo"),
         );
+        let stage_pabgb_header = extract_file(pamt.as_c_str(), gamedata_layout::bin_dir(), &gamedata_layout::header("stageinfo"));
         let stage_pabgh = extract_file(
             pamt.as_c_str(),
             gamedata_layout::bin_dir(),
@@ -625,9 +673,7 @@ mod tests {
         let mut anchor_h: *mut CrimsonStageInfoHandle = ptr::null_mut();
         assert_eq!(
             unsafe {
-                crimson_stageinfo_load_from_bytes(
-                    stage_pabgb.as_ptr(),
-                    stage_pabgb.len(),
+                crimson_stageinfo_load_from_bytes_with_header(stage_pabgb.as_ptr(), stage_pabgb.len(), stage_pabgb_header.as_ptr(), stage_pabgb_header.len(),
                     &mut anchor_h,
                 )
             },

@@ -23,6 +23,9 @@ pub fn parse_royal_supply_info_lossy(
     pabgb: &[u8],
     pabgh: &[u8],
 ) -> Vec<RoyalSupplyInfoEntry> {
+    // 2.06 moved row names into the header; rebuild the pre-2.06 layout.
+    let (pabgb, pabgh) = crate::binary::static_header::legacy_pair(pabgb, pabgh);
+    let (pabgb, pabgh): (&[u8], &[u8]) = (&pabgb, &pabgh);
     if pabgh.len() < 2 {
         return Vec::new();
     }
