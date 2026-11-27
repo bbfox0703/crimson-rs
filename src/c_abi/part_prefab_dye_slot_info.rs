@@ -13,6 +13,11 @@
 //!   for advanced UI / debugging. The mask is **12 bytes on 2.01+**, so
 //!   `lookup_slot_mask` is a partial read there; `lookup_slot_mask_full`
 //!   returns the whole field via the sized-buffer pattern.
+//! - `lookup_slot_active_channels` / `lookup_slot_dye_slot_bits` /
+//!   `lookup_dye_slot_bits` / `lookup_dye_slot_material` /
+//!   `lookup_slot_extra_layer_dye_slot_bits` — the 2.01+ mask decoded:
+//!   one flag per dye slot number (the `mat_indices` values, and the
+//!   save's `_dyeSlotNo`).
 //! - `lookup_slot_tail_name` — next sub-prefab name (or, for the
 //!   LAST slot in a row, the full `.pac` asset path).
 //! - `lookup_slot_extra_layer_count` / `..._extra_layer_material` /
@@ -347,14 +352,15 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_mat_indic
 
 /// Read the first 3 mask bytes into `out_mask[0..3]`.
 ///
-/// **Partial since 2.01.** The on-disk mask is 12 bytes there, re-encoded
-/// as four groups of three, and a slot's active group is often not the
-/// first — this returns all zeros for those. The pre-2.01 three-byte
-/// values do not survive anywhere in the new field, so there is no way to
-/// keep the old meaning; kept at 3 bytes because widening it would
-/// overrun every existing caller's buffer. **Use
-/// [`crimson_part_prefab_dye_slot_info_lookup_slot_mask_full`] instead**
-/// unless you specifically need the legacy 3-byte shape.
+/// **Wrong meaning since 2.01.** Before 2.01 the mask was one flag per
+/// material channel. From 2.01 it is 12 bytes, one flag per dye slot
+/// number, so these first 3 bytes are the flags of dye slots 0, 1 and 2,
+/// not of the slot's three channels. The old per-channel meaning is
+/// [`crimson_part_prefab_dye_slot_info_lookup_slot_active_channels`], which
+/// takes the same 3-byte out-param. The whole field is
+/// [`crimson_part_prefab_dye_slot_info_lookup_slot_mask_full`] or, as bits,
+/// [`crimson_part_prefab_dye_slot_info_lookup_slot_dye_slot_bits`]. Kept
+/// unchanged so existing callers don't break.
 ///
 /// # Safety
 /// `handle` and `out_mask` must be non-null; `out_mask` must point to
@@ -389,8 +395,7 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_mask(
 /// 1.07-2.00), sized-buffer style.
 ///
 /// Prefer this over [`crimson_part_prefab_dye_slot_info_lookup_slot_mask`],
-/// which only ever copies the first 3 bytes and so reads all-zero on the
-/// 2.01+ slots whose active group is not the first.
+/// which only ever copies the first 3 bytes.
 ///
 /// Two-call: pass `buf_len = 0` to learn the width via `*required`, then
 /// call again with a buffer that big. `BUFFER_TOO_SMALL` (with `*required`
@@ -398,8 +403,8 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_mask(
 /// future patch widens it again, which is why this takes a length instead
 /// of a fixed-size out-param.
 ///
-/// The 12 bytes read as four groups of three; a slot uses one, two, three
-/// or no group, never all four. See
+/// Byte `n` is the flag of dye slot number `n` (the values in
+/// `mat_indices` and the save's `_dyeSlotNo`). See
 /// [`crate::part_prefab_dye_slot_info::PartPrefabDyeSlot::mask`].
 ///
 /// # Safety
@@ -426,6 +431,187 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_mask_full
             return error::OUT_OF_RANGE;
         };
         write_bytes_to_buf(&slot.mask, buf, buf_len, required)
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+// ── Dye slot numbers (2.01+) ───────────────────────────────────────────────
+//
+// Each `mat_indices` byte is the dye slot number (0..12, 0xFF = unused) of
+// one material channel, and the 12-byte mask has one flag per dye slot
+// number. The save's `ItemDyeSaveData._dyeSlotNo` stores the same numbers.
+// See `crate::part_prefab_dye_slot_info::PartPrefabDyeSlot::mask`.
+
+/// Which of `slot_idx`'s three material channels are dyeable, one byte
+/// (0 or 1) per channel into `out_flags[0..3]`: channel `ch` is active when
+/// `mat_indices[ch] != 0xFF` and `mask[mat_indices[ch]] != 0`.
+///
+/// This is what [`crimson_part_prefab_dye_slot_info_lookup_slot_mask`]
+/// returned before 2.01, with the same out-param shape. The channel's dye
+/// slot number, the value to write into `_dyeSlotNo`, is
+/// `mat_indices[ch]` ([`crimson_part_prefab_dye_slot_info_lookup_slot_mat_indices`]).
+///
+/// # Safety
+/// `handle` and `out_flags` must be non-null; `out_flags` must point to
+/// 3 writable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_active_channels(
+    handle: *const CrimsonPartPrefabDyeSlotInfoHandle,
+    prefab_key: u32,
+    slot_idx: u32,
+    out_flags: *mut u8,
+) -> i32 {
+    if handle.is_null() || out_flags.is_null() {
+        return error::NULL_ARG;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let Some(row) = h.by_key.get(&prefab_key) else {
+            return error::NOT_FOUND;
+        };
+        let Some(slot) = row.slots.get(slot_idx as usize) else {
+            return error::OUT_OF_RANGE;
+        };
+        let flags = slot.active_channels();
+        unsafe {
+            std::ptr::copy_nonoverlapping(flags.as_ptr(), out_flags, 3);
+        }
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// `slot_idx`'s mask as bits: bit `n` of `*out_bits` is set when dye slot
+/// number `n` is dyeable on this slot. Every set bit is one of the slot's
+/// `mat_indices`.
+///
+/// # Safety
+/// `handle` and `out_bits` must be non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_dye_slot_bits(
+    handle: *const CrimsonPartPrefabDyeSlotInfoHandle,
+    prefab_key: u32,
+    slot_idx: u32,
+    out_bits: *mut u32,
+) -> i32 {
+    if handle.is_null() || out_bits.is_null() {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_bits = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let Some(row) = h.by_key.get(&prefab_key) else {
+            return error::NOT_FOUND;
+        };
+        let Some(slot) = row.slots.get(slot_idx as usize) else {
+            return error::OUT_OF_RANGE;
+        };
+        unsafe { *out_bits = slot.dye_slot_bits() };
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// The prefab's dye slots: bit `n` of `*out_bits` is set when any slot or
+/// extra layer of the prefab enables dye slot number `n`. These are the
+/// `_dyeSlotNo` values the dye editor offers for the item, one
+/// `ItemDyeSaveData` element per number; the popcount is the number of dye
+/// slots. Not the same as
+/// [`crimson_part_prefab_dye_slot_info_lookup_slot_count`], which counts
+/// sub-meshes.
+///
+/// # Safety
+/// `handle` and `out_bits` must be non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_dye_slot_bits(
+    handle: *const CrimsonPartPrefabDyeSlotInfoHandle,
+    prefab_key: u32,
+    out_bits: *mut u32,
+) -> i32 {
+    if handle.is_null() || out_bits.is_null() {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_bits = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let Some(row) = h.by_key.get(&prefab_key) else {
+            return error::NOT_FOUND;
+        };
+        unsafe { *out_bits = row.dye_slot_bits() };
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Default material name (`"cloth"` / `"leather"` / `"metal"` / …) of dye
+/// slot number `dye_slot_no` on the prefab: the name of any primary-layer
+/// channel whose `mat_indices` entry is `dye_slot_no`. Empty string when
+/// those channels carry no name. `OUT_OF_RANGE` when no channel of the
+/// prefab uses that number.
+///
+/// # Safety
+/// `handle` and `required` must be non-null; `buf` may be null iff
+/// `buf_len == 0`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_dye_slot_material(
+    handle: *const CrimsonPartPrefabDyeSlotInfoHandle,
+    prefab_key: u32,
+    dye_slot_no: u32,
+    buf: *mut u8,
+    buf_len: usize,
+    required: *mut usize,
+) -> i32 {
+    if handle.is_null() || required.is_null() || (buf.is_null() && buf_len != 0) {
+        return error::NULL_ARG;
+    }
+    unsafe { *required = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let Some(row) = h.by_key.get(&prefab_key) else {
+            return error::NOT_FOUND;
+        };
+        let Some(name) = u8::try_from(dye_slot_no)
+            .ok()
+            .and_then(|n| row.dye_slot_material(n))
+        else {
+            return error::OUT_OF_RANGE;
+        };
+        write_str_to_buf(name, buf, buf_len, required)
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Extra layer `layer_idx`'s mask on `slot_idx` as bits, indexed by dye slot
+/// number like [`crimson_part_prefab_dye_slot_info_lookup_slot_dye_slot_bits`]
+/// (the layer's channels use the slot's `mat_indices`).
+///
+/// # Safety
+/// `handle` and `out_bits` must be non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_dye_slot_bits(
+    handle: *const CrimsonPartPrefabDyeSlotInfoHandle,
+    prefab_key: u32,
+    slot_idx: u32,
+    layer_idx: u32,
+    out_bits: *mut u32,
+) -> i32 {
+    if handle.is_null() || out_bits.is_null() {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_bits = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let Some(row) = h.by_key.get(&prefab_key) else {
+            return error::NOT_FOUND;
+        };
+        let Some(slot) = row.slots.get(slot_idx as usize) else {
+            return error::OUT_OF_RANGE;
+        };
+        let Some(layer) = slot.extra_layers.get(layer_idx as usize) else {
+            return error::OUT_OF_RANGE;
+        };
+        unsafe { *out_bits = layer.dye_slot_bits() };
+        error::OK
     }))
     .unwrap_or(error::PANIC)
 }
@@ -1232,6 +1418,182 @@ mod tests {
             },
             error::NULL_ARG,
         );
+    }
+
+    /// (key, slot_idx, mat_indices, slot dye-slot bits, active channels,
+    /// prefab dye-slot bits). Verified on live 2.06 (2026-11-27). The first
+    /// two were dyed in-game on 1.10: the private fixture save `1.10/
+    /// broken_save_after_length_change/base_sample` holds items 121013
+    /// (dye entries `_dyeSlotNo` 0, 1, 2) and 131013 (0, 1) on exactly these
+    /// prefabs — see `item_part_prefab::tests::dye_slot_no_is_a_prefab_dye_slot_in_the_1_10_fixture`.
+    /// The third reads all-zero through the legacy 3-byte getter.
+    /// (key, slot_idx, mat_indices, slot bits, active channels, prefab bits).
+    type DyeSlotPin = (u32, u32, [u8; 3], u32, [u8; 3], u32);
+    const DYE_SLOT_PINS: &[DyeSlotPin] = &[
+        // cd_phm_00_hand_0011, one slot, three dye slots.
+        (0x8dfa1dd5, 0, [1, 2, 0], 0b111, [1, 1, 1], 0b111),
+        // cd_phm_00_foot_0005, channel 2 unused.
+        (0x5cfb1da4, 0, [0, 1, 0xFF], 0b11, [1, 1, 0], 0b11),
+        // cd_phm_00_lb_00_0054: dye slots 3 and 11, so mask[0..3] is zero.
+        (0xc7bbaada, 0, [11, 11, 3], (1 << 3) | (1 << 11), [1, 1, 1], (1 << 3) | (1 << 11)),
+        // cd_phm_00_lb_acc_0008_03, slot 1 of 2.
+        (0x54bbd875, 1, [0xFF, 4, 9], (1 << 4) | (1 << 9), [0, 1, 1], 1 | (1 << 4) | (1 << 9)),
+    ];
+
+    /// The 2.01 mask is one flag per dye slot number: pins the rule on every
+    /// live slot and on the rows above.
+    #[test]
+    fn c_abi_part_prefab_dye_slot_numbers_live() {
+        let Some((pabgb, pabgh)) = extract_pair() else {
+            eprintln!("skipping c_abi_part_prefab_dye_slot_numbers_live: no game install");
+            return;
+        };
+        let mut h: *mut CrimsonPartPrefabDyeSlotInfoHandle = ptr::null_mut();
+        let rc = unsafe {
+            crimson_part_prefab_dye_slot_info_load_from_bytes(
+                pabgb.as_ptr(),
+                pabgb.len(),
+                pabgh.as_ptr(),
+                pabgh.len(),
+                &mut h,
+            )
+        };
+        assert_eq!(rc, error::OK);
+        let handle = unsafe { &*h };
+
+        // Every set mask bit is one of the slot's dye slot numbers (no
+        // exception on 2.01 or 2.06), extra layers included.
+        let (mut slots, mut legacy_zero, mut active_any, mut conflicts) = (0, 0, 0, 0);
+        for e in &handle.entries {
+            let mut name_of: HashMap<u8, &str> = HashMap::new();
+            for s in &e.slots {
+                slots += 1;
+                let used = s
+                    .mat_indices
+                    .iter()
+                    .filter(|&&n| n != 0xFF)
+                    .fold(0u32, |a, &n| a | (1 << n));
+                assert!(
+                    s.mat_indices.iter().all(|&n| n < 12 || n == 0xFF),
+                    "0x{:08x}: dye slot number out of range {:?}",
+                    e.key,
+                    s.mat_indices
+                );
+                assert_eq!(
+                    s.dye_slot_bits() & !used,
+                    0,
+                    "0x{:08x} {}: mask bit outside mat_indices {:?}",
+                    e.key,
+                    e.prefab_name,
+                    s.mat_indices
+                );
+                for l in &s.extra_layers {
+                    assert_eq!(l.dye_slot_bits() & !used, 0, "0x{:08x}: extra layer bit", e.key);
+                }
+                let active = s.active_channels();
+                if s.mask[..3].iter().all(|&b| b == 0) && s.dye_slot_bits() != 0 {
+                    legacy_zero += 1;
+                }
+                if active.iter().any(|&b| b != 0) {
+                    active_any += 1;
+                }
+                // Active channels and the mask agree in both directions.
+                let from_active = (0..3)
+                    .filter(|&ch| active[ch] != 0)
+                    .fold(0u32, |a, ch| a | (1 << s.mat_indices[ch]));
+                assert_eq!(from_active, s.dye_slot_bits(), "0x{:08x}", e.key);
+                for (ch, &n) in s.mat_indices.iter().enumerate() {
+                    let m = s.default_materials[ch].as_str();
+                    if n == 0xFF || m.is_empty() {
+                        continue;
+                    }
+                    if *name_of.entry(n).or_insert(m) != m {
+                        conflicts += 1;
+                    }
+                }
+            }
+        }
+        println!(
+            "{slots} slots: {active_any} with an active channel, {legacy_zero} that the \
+             legacy 3-byte getter reads as zero; {conflicts} dye-slot material conflicts"
+        );
+        // One material name per (prefab, dye slot number): 0 on 2.01 and 2.06.
+        assert_eq!(conflicts, 0, "a dye slot number carries two material names");
+
+        for &(key, slot_idx, mi, slot_bits, active, row_bits) in DYE_SLOT_PINS {
+            let mut got_mi = [0u8; 3];
+            assert_eq!(
+                unsafe {
+                    crimson_part_prefab_dye_slot_info_lookup_slot_mat_indices(h, key, slot_idx, got_mi.as_mut_ptr())
+                },
+                error::OK
+            );
+            assert_eq!(got_mi, mi, "0x{key:08x} slot {slot_idx} mat_indices");
+            let mut bits = 0u32;
+            assert_eq!(
+                unsafe { crimson_part_prefab_dye_slot_info_lookup_slot_dye_slot_bits(h, key, slot_idx, &mut bits) },
+                error::OK
+            );
+            assert_eq!(bits, slot_bits, "0x{key:08x} slot {slot_idx} dye-slot bits");
+            let mut flags = [9u8; 3];
+            assert_eq!(
+                unsafe {
+                    crimson_part_prefab_dye_slot_info_lookup_slot_active_channels(h, key, slot_idx, flags.as_mut_ptr())
+                },
+                error::OK
+            );
+            assert_eq!(flags, active, "0x{key:08x} slot {slot_idx} active channels");
+            assert_eq!(
+                unsafe { crimson_part_prefab_dye_slot_info_lookup_dye_slot_bits(h, key, &mut bits) },
+                error::OK
+            );
+            assert_eq!(bits, row_bits, "0x{key:08x} prefab dye-slot bits");
+        }
+
+        // The legacy getter reads zero where the active channels don't.
+        let mut legacy = [9u8; 3];
+        assert_eq!(
+            unsafe { crimson_part_prefab_dye_slot_info_lookup_slot_mask(h, 0xc7bbaada, 0, legacy.as_mut_ptr()) },
+            error::OK
+        );
+        assert_eq!(legacy, [0, 0, 0]);
+
+        // Material per dye slot number, and the error for an unused number.
+        let material = |key: u32, n: u32| -> Result<String, i32> {
+            let mut need = 0usize;
+            let rc = unsafe {
+                crimson_part_prefab_dye_slot_info_lookup_dye_slot_material(h, key, n, ptr::null_mut(), 0, &mut need)
+            };
+            if rc != error::BUFFER_TOO_SMALL {
+                return Err(rc);
+            }
+            let mut buf = vec![0u8; need];
+            let rc = unsafe {
+                crimson_part_prefab_dye_slot_info_lookup_dye_slot_material(h, key, n, buf.as_mut_ptr(), buf.len(), &mut need)
+            };
+            assert_eq!(rc, error::OK);
+            Ok(String::from_utf8(buf[..need - 1].to_vec()).unwrap())
+        };
+        assert_eq!(material(0x54bbd875, 0).as_deref(), Ok("metal"));
+        assert_eq!(material(0x54bbd875, 4).as_deref(), Ok("leather"));
+        assert_eq!(material(0x54bbd875, 9).as_deref(), Ok("cloth"));
+        assert_eq!(material(0x54bbd875, 5), Err(error::OUT_OF_RANGE));
+        assert_eq!(material(0x54bbd875, 300), Err(error::OUT_OF_RANGE));
+        assert_eq!(material(0x12345678, 0), Err(error::NOT_FOUND));
+
+        // Out-of-range slot / layer.
+        let mut bits = 0u32;
+        assert_eq!(
+            unsafe { crimson_part_prefab_dye_slot_info_lookup_slot_dye_slot_bits(h, 0x8dfa1dd5, 9, &mut bits) },
+            error::OUT_OF_RANGE
+        );
+        assert_eq!(
+            unsafe {
+                crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_dye_slot_bits(h, 0x8dfa1dd5, 0, 0, &mut bits)
+            },
+            error::OUT_OF_RANGE
+        );
+        unsafe { crimson_part_prefab_dye_slot_info_free(h) };
     }
 
     #[test]
