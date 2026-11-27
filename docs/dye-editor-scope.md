@@ -442,8 +442,47 @@ resolved 70. The eight that don't use meshes with no dye row:
 - `fs_phm_00_hel_0002_d`, `cd_phm_07_hel_0030_c` and the cloak
   `cd_phm_00_cloak_00_0447_t`.
 
-No dyeable item has a prefab missing from 0009. The DLC tree's
-`iteminfo.dlc_01` and `dlc/dlc_01/0009` are not joined yet.
+No dyeable item has a prefab missing from 0009.
+
+**DLC (optional, 2026-11-27).**
+`crimson_item_part_prefab_merge_dlc_from_bytes` merges an installed DLC
+into a loaded handle. It takes three inputs:
+- `iteminfo.dlc_01.staticinfobody` and `stringinfo.dlc_01.staticinfobody`,
+  both from `<install>/dlc/dlc_01/0008`;
+- the DLC's character PAMT, `<install>/dlc/dlc_01/0009/0.pamt`.
+
+What the DLC tree holds on 2.06:
+- No dye rows of its own: `partprefabdyeslotinfo.dlc_01` is a 2-byte
+  empty header. 100 of the DLC's 331 meshes already have rows in the
+  base table.
+- 432 prefabs (430 under `character/bin__/prefab`). None share a name
+  with a base prefab.
+- `stringinfo.dlc_01`, which repeats the base strings (no conflict among
+  33,855 shared hashes) and adds 3,280.
+- The 6,907 items both iteminfo tables carry join identically from
+  either.
+
+What the merge does:
+- It tries DLC prefabs first, then base ones. 11 DLC items wear base
+  prefabs.
+- It adds the items the handle has no rows for: 89 on 2.06, including
+  82 of the 85 DLC-only dyeable items.
+- An item the handle already resolves keeps its base join.
+- `crimson_item_part_prefab_lookup_source` reports 0 for base items and
+  `n` for the `n`-th merged DLC.
+- The 3 DLC-only dyeable items that don't resolve use meshes with no dye
+  row: `cd_phm_00_hel_00_0499_dd`, `cd_phm_00_ub_00_0378` and
+  `cd_phm_00_foot_00_0504`.
+
+**Without the DLC nothing changes.** Steam installs `dlc/dlc_01` only for
+owners.
+- Load the base join as before and skip the merge. Every lookup answers
+  from the base items.
+- A failed merge leaves the handle as it was (missing PAMT → `IO`,
+  unparsable table → `BODY_PARSE`). The join is built in full before
+  anything is committed.
+- `c_abi_item_part_prefab_without_dlc_is_unchanged_live` pins this, and
+  it needs only the base install.
 
 **C ABI (additive).**
 
@@ -454,6 +493,8 @@ No dyeable item has a prefab missing from 0009. The DLC tree's
 | `crimson_item_part_prefab_lookup_dye_slot_bits(h, item_key, tribe_gender, *out_bits)` | Union of the dye slot bits of the item's rows: the `_dyeSlotNo` values to offer. `tribe_gender` is nullable (`"player_1"`, ...). `NOT_FOUND` if no rows or no variant lists `tribe_gender`. |
 | `crimson_item_part_prefab_lookup_channel_dye_slot_bits(h, item_key, tribe_gender, *out_bits)` | Union of every channel number (`mat_indices`), dyeable or not. A superset of the above: numbers a save may carry from an older patch. |
 | `crimson_item_part_prefab_lookup_dye_slot_material(h, item_key, tribe_gender, dye_slot_no, buf, len, *required)` | Default material of a number over the selected rows (first non-empty, variant then mesh order). `""` if unnamed, `OUT_OF_RANGE` if unused. |
+| `crimson_item_part_prefab_merge_dlc_from_bytes(h, iteminfo_dlc, len, stringinfo_dlc, len, dlc_prefab_pamt_path /*nullable*/, *out_added)` | Optional DLC merge (above). Atomic: an error changes nothing. |
+| `crimson_item_part_prefab_lookup_source(h, item_key, *out_source)` | 0 = base, `n` = the `n`-th merged DLC; `NOT_FOUND` if the item has no rows. |
 
 The existing `lookup_count` / `lookup_key_at` / `lookup_prefab_name_at` /
 `resolve_dye_slot_count` work on either handle. On a prefab-join handle
@@ -474,12 +515,23 @@ Rust: `PartPrefabDyeSlotInfoEntry::channel_dye_slot_bits`.
   row.
 - `dye_slot_no_is_an_item_dye_slot_via_prefabs_in_the_1_10_fixture`: the
   1.10 save side, including the three out-of-mask numbers.
+- `c_abi_item_part_prefab_merge_dlc_live` (skips without the DLC):
+  - 89 added; 82 / 85 DLC-only dyeable items resolve, all with source 1;
+  - the base answers do not move;
+  - DLC item 1004390 → rows `38aac90e b4808dc8`, bits `0b11111`;
+  - without the DLC PAMT only 11 items are added.
+- `c_abi_item_part_prefab_without_dlc_is_unchanged_live`: a failed or
+  skipped merge changes nothing.
 
 C# editor recipe:
 
 ```csharp
 // Load once: the three gamedata tables + the character PAMT.
 crimson_item_part_prefab_load_from_bytes_with_prefab_pamt(..., Path.Combine(gameRoot, "0009", "0.pamt"), out var h);
+// Optional: only when <game>/dlc/dlc_01 exists (DLC owners).
+var dlcPamt = Path.Combine(gameRoot, "dlc", "dlc_01", "0009", "0.pamt");
+if (File.Exists(dlcPamt))
+    crimson_item_part_prefab_merge_dlc_from_bytes(h, iteminfoDlc, ..., stringinfoDlc, ..., dlcPamt, out uint added);
 crimson_item_part_prefab_lookup_dye_slot_bits(h, itemKey, null, out uint offer);          // rows to show
 crimson_item_part_prefab_lookup_channel_dye_slot_bits(h, itemKey, null, out uint valid);  // keep these elements
 for (int n = 0; n < 32; n++) if ((offer & (1u << n)) != 0) {

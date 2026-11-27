@@ -47,6 +47,16 @@
 //! so the item-level lookups take an optional tribe / gender filter and
 //! union every matching variant (all variants when the filter is null).
 //!
+//! ## DLC (optional)
+//!
+//! `crimson_item_part_prefab_merge_dlc_from_bytes` adds an installed DLC's
+//! items (`iteminfo.dlc_01` + `stringinfo.dlc_01` from `dlc/dlc_01/0008`,
+//! prefabs from `dlc/dlc_01/0009`). The DLC ships no dye rows of its own:
+//! `partprefabdyeslotinfo.dlc_01` is empty and the base table already
+//! holds the DLC meshes' rows. On 2.06 the merge adds 89 items, 82 of the
+//! 85 DLC-only dyeable ones among them. Skipping it (no DLC) changes
+//! nothing, and a failed merge leaves the handle untouched.
+//!
 //! ## Input requirements
 //!
 //! From the gamedata PAZ group (0008): `iteminfo.pabgb`,
@@ -91,6 +101,16 @@ pub struct CrimsonItemPartPrefabHandle {
     variants_by_item: HashMap<u32, Vec<ItemPrefabVariant>>,
     /// Every `partprefabdyeslotinfo` row by key.
     rows: HashMap<u32, PartPrefabDyeSlotInfoEntry>,
+    /// stringinfo (base, then each merged DLC's new hashes), kept so a DLC
+    /// item can name a base prefab.
+    strings: HashMap<u32, String>,
+    /// How prefab names resolve; a merge reuses it.
+    resolver: Resolver,
+    /// Items a DLC merge added → that DLC's number (1 = first merge).
+    /// Absent = base table.
+    source_by_item: HashMap<u32, u32>,
+    /// Number of successful DLC merges.
+    dlc_count: u32,
 }
 
 /// The `PartPrefabKey` of the `partprefabdyeslotinfo` row describing the
@@ -165,6 +185,91 @@ impl PrefabArchive {
     }
 }
 
+/// How a handle turns an item prefab name into row keys.
+enum Resolver {
+    /// The original join: prefab name == a row's `prefab_name`.
+    Names(HashMap<String, u32>),
+    /// The prefab join, over these archives in order (a merged DLC's first).
+    Prefabs(Vec<PrefabArchive>),
+}
+
+impl Resolver {
+    fn keys(&self, name: &str, rows: &HashMap<u32, PartPrefabDyeSlotInfoEntry>) -> Vec<u32> {
+        match self {
+            Resolver::Names(by_name) => by_name.get(name).copied().into_iter().collect(),
+            Resolver::Prefabs(archives) => archives
+                .iter()
+                .find_map(|a| a.pac_paths(name))
+                .map(|paths| pac_keys(&paths, rows))
+                .unwrap_or_default(),
+        }
+    }
+}
+
+/// The row keys of `.pac` paths that have a row, in path order.
+fn pac_keys(paths: &[String], rows: &HashMap<u32, PartPrefabDyeSlotInfoEntry>) -> Vec<u32> {
+    paths
+        .iter()
+        .map(|p| part_prefab_key_for_pac(p))
+        .filter(|k| rows.contains_key(k))
+        .collect()
+}
+
+/// Add a stringinfo body's entries to `strings`; an existing hash keeps
+/// its value (`stringinfo.dlc_01` agrees with the base on all 33,855
+/// shared hashes on 2.06).
+fn add_strings(strings: &mut HashMap<u32, String>, stringinfo_pabgb: &[u8]) -> io::Result<()> {
+    for e in crate::string_info::StringInfoData::parse_pabgb(stringinfo_pabgb)? {
+        strings.entry(e.hash).or_insert(e.value);
+    }
+    Ok(())
+}
+
+/// Walk an iteminfo body and resolve every prefab name of every variant to
+/// row keys with `resolve` (called once per distinct name). Returns the
+/// items with at least one row, in table order.
+fn join_items(
+    iteminfo_pabgb: &[u8],
+    strings: &HashMap<u32, String>,
+    mut resolve: impl FnMut(&str) -> Vec<u32>,
+) -> io::Result<Vec<(u32, Vec<ItemPrefabVariant>)>> {
+    let mut cache: HashMap<&str, Vec<u32>> = HashMap::new();
+    let mut out = Vec::new();
+    let mut offset = 0usize;
+    while offset < iteminfo_pabgb.len() {
+        let item = crate::item_info::ItemInfo::read_from(iteminfo_pabgb, &mut offset)?;
+        let mut variants: Vec<ItemPrefabVariant> = Vec::new();
+        for pd in &item.merged_prefab_visual_list.items {
+            let mut keys: Vec<u32> = Vec::new();
+            for sik in &pd.prefab_names.items {
+                let Some(name) = strings.get(&sik.0) else {
+                    continue;
+                };
+                let resolved = cache.entry(name.as_str()).or_insert_with(|| resolve(name));
+                for &k in resolved.iter() {
+                    if !keys.contains(&k) {
+                        keys.push(k);
+                    }
+                }
+            }
+            if keys.is_empty() {
+                continue;
+            }
+            let tribe_genders = pd
+                .tribe_gender_list
+                .items
+                .iter()
+                .filter_map(|k| strings.get(&k.0).cloned())
+                .collect();
+            variants.push(ItemPrefabVariant { tribe_genders, keys });
+        }
+        if !variants.is_empty() {
+            out.push((item.key.0, variants));
+        }
+    }
+    Ok(out)
+}
+
 impl CrimsonItemPartPrefabHandle {
     /// The original join: an item prefab name matches a row whose
     /// `prefab_name` (first sub-mesh name) equals it.
@@ -183,9 +288,7 @@ impl CrimsonItemPartPrefabHandle {
             // First occurrence wins on a name collision.
             key_by_name.entry(e.prefab_name.clone()).or_insert(e.key);
         }
-        Self::build(iteminfo_pabgb, stringinfo_pabgb, rows, |name| {
-            key_by_name.get(name).copied().into_iter().collect()
-        })
+        Self::build(iteminfo_pabgb, stringinfo_pabgb, rows, Resolver::Names(key_by_name))
     }
 
     /// The prefab join: an item prefab name → its `.prefab` in `prefabs`
@@ -195,95 +298,100 @@ impl CrimsonItemPartPrefabHandle {
         stringinfo_pabgb: &[u8],
         partprefab_pabgb: &[u8],
         partprefab_pabgh: &[u8],
-        prefabs: &PrefabArchive,
+        prefabs: PrefabArchive,
     ) -> io::Result<Self> {
         let rows = crate::part_prefab_dye_slot_info::parse_part_prefab_dye_slot_info_lossy(
             partprefab_pabgb,
             partprefab_pabgh,
         );
-        let known: std::collections::HashSet<u32> = rows.iter().map(|e| e.key).collect();
-        let mut cache: HashMap<String, Vec<u32>> = HashMap::new();
-        Self::build(iteminfo_pabgb, stringinfo_pabgb, rows, |name| {
-            cache
-                .entry(name.to_string())
-                .or_insert_with(|| {
-                    prefabs
-                        .pac_paths(name)
-                        .unwrap_or_default()
-                        .iter()
-                        .map(|p| part_prefab_key_for_pac(p))
-                        .filter(|k| known.contains(k))
-                        .collect()
-                })
-                .clone()
-        })
+        Self::build(iteminfo_pabgb, stringinfo_pabgb, rows, Resolver::Prefabs(vec![prefabs]))
     }
 
-    /// Walk iteminfo and resolve every prefab name of every variant to
-    /// row keys with `resolve`.
     fn build(
         iteminfo_pabgb: &[u8],
         stringinfo_pabgb: &[u8],
         rows: Vec<PartPrefabDyeSlotInfoEntry>,
-        mut resolve: impl FnMut(&str) -> Vec<u32>,
+        resolver: Resolver,
     ) -> io::Result<Self> {
-        let si_entries = crate::string_info::StringInfoData::parse_pabgb(stringinfo_pabgb)?;
-        let mut si_by_hash: HashMap<u32, String> = HashMap::with_capacity(si_entries.len());
-        for e in &si_entries {
-            si_by_hash.entry(e.hash).or_insert_with(|| e.value.clone());
-        }
+        let mut strings: HashMap<u32, String> = HashMap::new();
+        add_strings(&mut strings, stringinfo_pabgb)?;
         let rows: HashMap<u32, PartPrefabDyeSlotInfoEntry> =
             rows.into_iter().map(|e| (e.key, e)).collect();
+        let items = join_items(iteminfo_pabgb, &strings, |name| resolver.keys(name, &rows))?;
+        let mut h = CrimsonItemPartPrefabHandle {
+            part_prefab_keys_by_item: HashMap::new(),
+            prefab_names_by_item: HashMap::new(),
+            variants_by_item: HashMap::new(),
+            rows,
+            strings,
+            resolver,
+            source_by_item: HashMap::new(),
+            dlc_count: 0,
+        };
+        for (key, variants) in items {
+            h.insert_item(key, variants);
+        }
+        Ok(h)
+    }
 
-        let mut keys_by_item: HashMap<u32, Vec<u32>> = HashMap::new();
-        let mut names_by_item: HashMap<u32, Vec<String>> = HashMap::new();
-        let mut variants_by_item: HashMap<u32, Vec<ItemPrefabVariant>> = HashMap::new();
-        let mut offset = 0usize;
-        while offset < iteminfo_pabgb.len() {
-            let item = crate::item_info::ItemInfo::read_from(iteminfo_pabgb, &mut offset)?;
-            let mut keys: Vec<u32> = Vec::new();
-            let mut variants: Vec<ItemPrefabVariant> = Vec::new();
-            for pd in &item.merged_prefab_visual_list.items {
-                let mut vkeys: Vec<u32> = Vec::new();
-                for sik in &pd.prefab_names.items {
-                    let Some(name) = si_by_hash.get(&sik.0) else {
-                        continue;
-                    };
-                    for k in resolve(name) {
-                        if !vkeys.contains(&k) {
-                            vkeys.push(k);
-                        }
-                    }
+    /// Record an item's variants (non-empty) and its deduplicated keys.
+    fn insert_item(&mut self, item_key: u32, variants: Vec<ItemPrefabVariant>) {
+        let mut keys: Vec<u32> = Vec::new();
+        for v in &variants {
+            for &k in &v.keys {
+                if !keys.contains(&k) {
+                    keys.push(k);
                 }
-                if vkeys.is_empty() {
-                    continue;
-                }
-                for &k in &vkeys {
-                    if !keys.contains(&k) {
-                        keys.push(k);
-                    }
-                }
-                let tribe_genders = pd
-                    .tribe_gender_list
-                    .items
-                    .iter()
-                    .filter_map(|k| si_by_hash.get(&k.0).cloned())
-                    .collect();
-                variants.push(ItemPrefabVariant { tribe_genders, keys: vkeys });
-            }
-            if !keys.is_empty() {
-                let names = keys.iter().map(|k| rows[k].prefab_name.clone()).collect();
-                keys_by_item.insert(item.key.0, keys);
-                names_by_item.insert(item.key.0, names);
-                variants_by_item.insert(item.key.0, variants);
             }
         }
-        Ok(CrimsonItemPartPrefabHandle {
-            part_prefab_keys_by_item: keys_by_item,
-            prefab_names_by_item: names_by_item,
-            variants_by_item,
-            rows,
-        })
+        let names = keys.iter().map(|k| self.rows[k].prefab_name.clone()).collect();
+        self.part_prefab_keys_by_item.insert(item_key, keys);
+        self.prefab_names_by_item.insert(item_key, names);
+        self.variants_by_item.insert(item_key, variants);
+    }
+
+    /// Merge a DLC's `iteminfo` + `stringinfo` and, for a prefab-join
+    /// handle, its character prefabs. Everything is parsed and joined
+    /// before the handle changes, so an error leaves it as it was. Adds the
+    /// items the handle has no rows for and returns how many; an item the
+    /// handle already resolves keeps its base join.
+    fn merge_dlc(
+        &mut self,
+        iteminfo_pabgb: &[u8],
+        stringinfo_pabgb: &[u8],
+        prefabs: Option<PrefabArchive>,
+    ) -> io::Result<u32> {
+        let mut strings = self.strings.clone();
+        add_strings(&mut strings, stringinfo_pabgb)?;
+        let items = {
+            let (rows, resolver) = (&self.rows, &self.resolver);
+            let dlc = prefabs.as_ref().filter(|_| matches!(resolver, Resolver::Prefabs(_)));
+            join_items(iteminfo_pabgb, &strings, |name| {
+                match dlc.and_then(|d| d.pac_paths(name)) {
+                    Some(paths) => pac_keys(&paths, rows),
+                    None => resolver.keys(name, rows),
+                }
+            })?
+        };
+        // Commit.
+        self.dlc_count += 1;
+        let source = self.dlc_count;
+        let mut added = 0u32;
+        for (key, variants) in items {
+            // On 2.06 the 6,907 shared items join identically from either
+            // table, so keeping the base join changes no answer.
+            if self.variants_by_item.contains_key(&key) {
+                continue;
+            }
+            self.insert_item(key, variants);
+            self.source_by_item.insert(key, source);
+            added += 1;
+        }
+        self.strings = strings;
+        if let (Resolver::Prefabs(archives), Some(p)) = (&mut self.resolver, prefabs) {
+            archives.insert(0, p);
+        }
+        Ok(added)
     }
 
     /// The rows of the item's variants that `tribe_gender` selects (every
@@ -532,7 +640,7 @@ pub unsafe extern "C" fn crimson_item_part_prefab_load_from_bytes_with_prefab_pa
             slice(stringinfo_pabgb, stringinfo_pabgb_len),
             slice(partprefab_pabgb, partprefab_pabgb_len),
             slice(partprefab_pabgh, partprefab_pabgh_len),
-            &archive,
+            archive,
         ) {
             Ok(h) => {
                 unsafe { *out_handle = Box::into_raw(Box::new(h)) };
@@ -585,7 +693,7 @@ pub unsafe extern "C" fn crimson_item_part_prefab_load_from_file_with_prefab_pam
             Err(rc) => return rc,
         };
         let [it, si, pp_b, pp_h] = buffers;
-        match CrimsonItemPartPrefabHandle::from_bytes_with_prefabs(&it, &si, &pp_b, &pp_h, &archive)
+        match CrimsonItemPartPrefabHandle::from_bytes_with_prefabs(&it, &si, &pp_b, &pp_h, archive)
         {
             Ok(h) => {
                 unsafe { *out_handle = Box::into_raw(Box::new(h)) };
@@ -593,6 +701,103 @@ pub unsafe extern "C" fn crimson_item_part_prefab_load_from_file_with_prefab_pam
             }
             Err(_) => error::BODY_PARSE,
         }
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Merge an installed DLC into a loaded handle: its `iteminfo` and
+/// `stringinfo` bodies (`iteminfo.dlc_01.staticinfobody`,
+/// `stringinfo.dlc_01.staticinfobody` from `<install>/dlc/<name>/0008`) and,
+/// for a handle from a `_with_prefab_pamt` loader, the DLC's character
+/// PAMT (`<install>/dlc/<name>/0009/0.pamt`). DLC prefabs are tried first,
+/// then the base ones, so a DLC item can wear a base prefab. The dye rows
+/// stay the base table's (`partprefabdyeslotinfo.dlc_01` is empty on 2.06;
+/// the base table already holds the DLC meshes' rows).
+///
+/// Adds the items the handle has no rows for; an item it already resolves
+/// keeps its base join (the 6,907 items both tables carry join identically
+/// on 2.06). `*out_added` = items added (82 on 2.06).
+///
+/// **Optional.** Without the DLC installed (Steam installs `dlc/dlc_01` only
+/// for owners) skip this call: every function works on the base items. An
+/// error leaves the handle unchanged, so a failed merge never breaks the
+/// base answers. `dlc_prefab_pamt_path` may be null (no DLC prefabs; a
+/// name-join handle ignores it). Call once per DLC, in folder order. Not
+/// thread-safe against concurrent lookups on the same handle.
+///
+/// Returns `IO` / `BODY_PARSE` / `NOT_FOUND` for the PAMT as the
+/// `_with_prefab_pamt` loaders, `BODY_PARSE` for a table that does not
+/// parse.
+///
+/// # Safety
+/// `handle` and `out_added` must be non-null; each `*_pabgb` must point to
+/// `*_len` readable bytes (null iff the length is 0); `dlc_prefab_pamt_path`
+/// must be null or a NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_item_part_prefab_merge_dlc_from_bytes(
+    handle: *mut CrimsonItemPartPrefabHandle,
+    iteminfo_pabgb: *const u8,
+    iteminfo_pabgb_len: usize,
+    stringinfo_pabgb: *const u8,
+    stringinfo_pabgb_len: usize,
+    dlc_prefab_pamt_path: *const c_char,
+    out_added: *mut u32,
+) -> i32 {
+    if handle.is_null() || out_added.is_null() {
+        return error::NULL_ARG;
+    }
+    if (iteminfo_pabgb.is_null() && iteminfo_pabgb_len != 0)
+        || (stringinfo_pabgb.is_null() && stringinfo_pabgb_len != 0)
+    {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_added = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &mut *handle };
+        let it = unsafe { super::slice_from_raw_or_empty(iteminfo_pabgb, iteminfo_pabgb_len) };
+        let si = unsafe { super::slice_from_raw_or_empty(stringinfo_pabgb, stringinfo_pabgb_len) };
+        let archive = if dlc_prefab_pamt_path.is_null() {
+            None
+        } else {
+            match open_prefab_archive(dlc_prefab_pamt_path) {
+                Ok(a) => Some(a),
+                Err(rc) => return rc,
+            }
+        };
+        match h.merge_dlc(it, si, archive) {
+            Ok(added) => {
+                unsafe { *out_added = added };
+                error::OK
+            }
+            Err(_) => error::BODY_PARSE,
+        }
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Where an item's join came from: 0 = the base table, `n` = the `n`-th
+/// [`crimson_item_part_prefab_merge_dlc_from_bytes`]. Lets a list hide DLC
+/// items. `NOT_FOUND` (and 0) when the item has no rows.
+///
+/// # Safety
+/// `handle` and `out_source` must be non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_item_part_prefab_lookup_source(
+    handle: *const CrimsonItemPartPrefabHandle,
+    item_key: u32,
+    out_source: *mut u32,
+) -> i32 {
+    if handle.is_null() || out_source.is_null() {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_source = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        if !h.variants_by_item.contains_key(&item_key) {
+            return error::NOT_FOUND;
+        }
+        unsafe { *out_source = h.source_by_item.get(&item_key).copied().unwrap_or(0) };
+        error::OK
     }))
     .unwrap_or(error::PANIC)
 }
@@ -2019,5 +2224,173 @@ mod tests {
             outside,
             [(103023, 1 << 1), (121013, 0), (131013, 0), (200914, 1 << 3), (1000313, 0), (2111103, 1 << 2)]
         );
+    }
+
+    /// Everything the base join answers for a few items, to compare before
+    /// and after a merge.
+    /// (item, keys, (rc, dye slot bits), resolved item count).
+    type Answer = (u32, Vec<u32>, (i32, u32), u32);
+
+    fn base_answers(h: *const CrimsonItemPartPrefabHandle) -> Vec<Answer> {
+        let mut count = 0u32;
+        assert_eq!(unsafe { crimson_item_part_prefab_resolved_item_count(h, &mut count) }, error::OK);
+        [111147u32, 9102, 133172, 1001163]
+            .iter()
+            .map(|&i| (i, keys_of(h, i), bits_of(h, i, None), count))
+            .collect()
+    }
+
+    fn source_of(h: *const CrimsonItemPartPrefabHandle, item: u32) -> (i32, u32) {
+        let mut s = u32::MAX;
+        let rc = unsafe { crimson_item_part_prefab_lookup_source(h, item, &mut s) };
+        (rc, s)
+    }
+
+    /// Without the DLC the handle answers from the base items, and a merge
+    /// that fails (missing PAMT, unparsable table) leaves every answer as it
+    /// was. Needs only the base install.
+    #[test]
+    fn c_abi_item_part_prefab_without_dlc_is_unchanged_live() {
+        let Some(j) = live_prefab_join() else {
+            eprintln!("skipping: no game install");
+            return;
+        };
+        let before = base_answers(j.h);
+        assert_eq!(source_of(j.h, 111147), (error::OK, 0));
+        let missing = CString::new(r"Z:\no\such\dlc\0009\0.pamt").unwrap();
+        let mut added = u32::MAX;
+        let rc = unsafe {
+            crimson_item_part_prefab_merge_dlc_from_bytes(j.h, ptr::null(), 0, ptr::null(), 0, missing.as_ptr(), &mut added)
+        };
+        assert_eq!((rc, added), (error::IO, 0));
+        let junk = [0xFFu8; 64];
+        let rc = unsafe {
+            crimson_item_part_prefab_merge_dlc_from_bytes(j.h, junk.as_ptr(), junk.len(), ptr::null(), 0, ptr::null(), &mut added)
+        };
+        assert_eq!((rc, added), (error::BODY_PARSE, 0));
+        assert_eq!(base_answers(j.h), before);
+        assert_eq!(source_of(j.h, 111147), (error::OK, 0));
+        assert_eq!(unsafe { &*j.h }.dlc_count, 0, "a failed merge must not count");
+    }
+
+    /// The `dlc_01` merge: DLC-only dyeable items resolve through the DLC
+    /// prefabs (and base prefabs), the base answers do not move, and
+    /// `lookup_source` tells them apart. Skips without the DLC.
+    #[test]
+    fn c_abi_item_part_prefab_merge_dlc_live() {
+        let Some(j) = live_prefab_join() else {
+            eprintln!("skipping: no game install");
+            return;
+        };
+        let root = find_pamt().unwrap().parent().unwrap().parent().unwrap().to_path_buf();
+        let dlc_pamt = root.join("dlc").join("dlc_01").join("0009").join("0.pamt");
+        let (Some(it_d), Some(si_d), true) = (
+            gamedata_layout::extract_dlc_bin("dlc_01", &gamedata_layout::body("iteminfo.dlc_01")),
+            gamedata_layout::extract_dlc_bin("dlc_01", &gamedata_layout::body("stringinfo.dlc_01")),
+            dlc_pamt.is_file(),
+        ) else {
+            eprintln!("skipping: dlc_01 not installed");
+            return;
+        };
+        let before = base_answers(j.h);
+        let dlc_c = CString::new(dlc_pamt.to_str().unwrap()).unwrap();
+        let mut added = 0u32;
+        let rc = unsafe {
+            crimson_item_part_prefab_merge_dlc_from_bytes(
+                j.h,
+                it_d.as_ptr(),
+                it_d.len(),
+                si_d.as_ptr(),
+                si_d.len(),
+                dlc_c.as_ptr(),
+                &mut added,
+            )
+        };
+        assert_eq!(rc, error::OK);
+        // 82 DLC-only dyeable items + 7 non-dyeable ones that reference rows.
+        assert_eq!(added, 89);
+
+        // Base answers unchanged except the resolved-item count.
+        let after = base_answers(j.h);
+        for (b, a) in before.iter().zip(&after) {
+            assert_eq!((b.0, &b.1, b.2), (a.0, &a.1, a.2));
+            assert_eq!(a.3, b.3 + added);
+        }
+        assert_eq!(source_of(j.h, 111147), (error::OK, 0));
+
+        // DLC-only dyeable items: which resolve, and from where.
+        let base_keys = j_item_keys(&j);
+        let (mut dlc_dyeable, mut resolved) = (0u32, 0u32);
+        let mut off = 0;
+        while off < it_d.len() {
+            let it = crate::item_info::ItemInfo::read_from(&it_d, &mut off).unwrap();
+            if base_keys.contains(&it.key.0) || it.is_dyeable == 0 {
+                continue;
+            }
+            dlc_dyeable += 1;
+            if bits_of(j.h, it.key.0, None).0 == error::OK {
+                resolved += 1;
+                assert_eq!(source_of(j.h, it.key.0), (error::OK, 1));
+            }
+        }
+        assert_eq!((dlc_dyeable, resolved), (85, 82));
+        // A DLC-only item: 1004390.
+        assert_eq!(keys_of(j.h, 1004390), [0x38aac90e, 0xb4808dc8]);
+        assert_eq!(bits_of(j.h, 1004390, None), (error::OK, 0b11111));
+
+        // Without the DLC's character PAMT only the 11 DLC items that wear
+        // base prefabs resolve; 1004390 wears a DLC prefab.
+        let j2 = live_prefab_join().unwrap();
+        let rc = unsafe {
+            crimson_item_part_prefab_merge_dlc_from_bytes(
+                j2.h, it_d.as_ptr(), it_d.len(), si_d.as_ptr(), si_d.len(), ptr::null(), &mut added,
+            )
+        };
+        assert_eq!(rc, error::OK);
+        assert_eq!(added, 11);
+        assert_eq!(bits_of(j2.h, 1004390, None).0, error::NOT_FOUND);
+    }
+
+    fn j_item_keys(j: &LivePrefabJoin) -> std::collections::HashSet<u32> {
+        let mut s = std::collections::HashSet::new();
+        let mut off = 0;
+        while off < j.item_b.len() {
+            s.insert(crate::item_info::ItemInfo::read_from(&j.item_b, &mut off).unwrap().key.0);
+        }
+        s
+    }
+
+    #[test]
+    fn c_abi_item_part_prefab_merge_dlc_null_args() {
+        let mut h: *mut CrimsonItemPartPrefabHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_item_part_prefab_load_from_bytes(ptr::null(), 0, ptr::null(), 0, ptr::null(), 0, ptr::null(), 0, &mut h) },
+            error::OK
+        );
+        let mut added = 0u32;
+        let mut src = 0u32;
+        unsafe {
+            assert_eq!(
+                crimson_item_part_prefab_merge_dlc_from_bytes(ptr::null_mut(), ptr::null(), 0, ptr::null(), 0, ptr::null(), &mut added),
+                error::NULL_ARG
+            );
+            assert_eq!(
+                crimson_item_part_prefab_merge_dlc_from_bytes(h, ptr::null(), 1, ptr::null(), 0, ptr::null(), &mut added),
+                error::NULL_ARG
+            );
+            assert_eq!(
+                crimson_item_part_prefab_merge_dlc_from_bytes(h, ptr::null(), 0, ptr::null(), 0, ptr::null(), ptr::null_mut()),
+                error::NULL_ARG
+            );
+            // Empty tables merge nothing.
+            assert_eq!(
+                crimson_item_part_prefab_merge_dlc_from_bytes(h, ptr::null(), 0, ptr::null(), 0, ptr::null(), &mut added),
+                error::OK
+            );
+            assert_eq!(added, 0);
+            assert_eq!(crimson_item_part_prefab_lookup_source(ptr::null(), 1, &mut src), error::NULL_ARG);
+            assert_eq!(crimson_item_part_prefab_lookup_source(h, 1, &mut src), error::NOT_FOUND);
+            crimson_item_part_prefab_free(h);
+        }
     }
 }
