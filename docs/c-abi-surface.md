@@ -132,6 +132,33 @@ int32_t crimson_faction_info_lookup_display_name(
   overrides the relation group). 0 is also the default of an absent
   field; 4 has not been seen in a save. Relations are stored both ways, and
   `_dueDate` was 0xFFFFFFFF on every one seen.
+- **Group defaults (2026-11-27)**: a faction pair without an explicit
+  record falls back to the relation between the two factions' relation groups
+  (`FactionElementSaveData._relationGroupKey`):
+
+  ```c
+  /* FactionRelationType between two relation groups (order does not matter):
+     1 War or 3 BloodAlly. NOT_FOUND for an unknown group and for a group with
+     itself (the table defines no same-group relation). */
+  int32_t crimson_factionrelationgroup_lookup_relation(
+      const CrimsonFactionRelationGroupInfoHandle *handle,
+      uint32_t group_a, uint32_t group_b, uint32_t *out_relation_type);
+  ```
+
+  Each `factionrelationgroup` row is `_isBlocked` and `_relationGroupList`:
+  four count-prefixed `u16` group lists, one per FactionRelationType (Neutral,
+  War, Agreement, BloodAlly; names from the exe's reflection data). Neutral and
+  Agreement are empty on every row. The matrix is symmetric, as the exe's
+  consistency message requires, and covers all 10 pairs of the 5 groups:
+  Graymane (the player) is at War with HostileCombat and Monster_Common and
+  BloodAlly with FriendlyCombat and NPC_Common; FriendlyCombat is at War with
+  HostileCombat and Monster_Common; HostileCombat is BloodAlly with NPC_Common
+  and at War with Monster_Common; NPC_Common is at War with Monster_Common. That
+  matches the game (Monster_Common and HostileCombat attack the player) and the
+  explicit player ⇄ `Faction_Celeste_Hernand` record that was already 3. The
+  table is unchanged since 1.03.01, has 5 rows on 2.06 and no `dlc_01` copy.
+  `..._lookup_related_count` / `_at` keep their meaning: every group a row
+  lists, War first, then BloodAlly.
 - The faction bridge's six name functions keep their names and signatures;
   `src/c_abi/faction_info.rs` now spells them out instead of using
   `impl_name_only_bridge!`, because the handle also holds the group keys.
@@ -435,7 +462,7 @@ src/
     │                                           #   (factiongroup name, PALOC lo32 0x214: "Greymanes")
     ├── faction_node_info.rs                   # FactionNodeKey (u32) → "Node_Her_Temporary_Camp", + KnowledgeKey → place name
     ├── faction_spawn_data_info.rs             # FactionSpawnDataKey (u32) → "FactionSpawn_GlenbrightManor_Grace_ReedDevil" etc.
-    ├── faction_relation_group_info.rs         # FactionRelationGroupKey (u16-widened-u32) → "Graymane"/"FriendlyCombat"/"HostileCombat"/"NPC_Common"/"Monster_Common"
+    ├── faction_relation_group_info.rs         # FactionRelationGroupKey (u16-widened-u32) → "Graymane"/"FriendlyCombat"/"HostileCombat"/"NPC_Common"/"Monster_Common", + group-to-group FactionRelationType
     │                                           #   + lookup_related_count/_at for the per-row sibling-reference matrix
     ├── store_info.rs                          # StoreKey (u16-widened-u32) → "Store_Her_General" etc. (292 rows, name-only, no PALOC chain)
     ├── mercenary_info.rs                      # MercenaryKey (u8-widened-u32) → "Mercenary_Main"/"Vehicle_Horse"/... (18 rows, NEW (u8,u32) PABGH variant)
