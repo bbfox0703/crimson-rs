@@ -7,6 +7,33 @@
 //! `Node_Her_Temporary_Camp`, `Node_Her_HernandCastle`, ... Roughly
 //! 1,158 rows in 1.07.
 //!
+//! ## The player-facing name: a KnowledgeKey (2026-11-27)
+//!
+//! Every row names a `knowledgeinfo` row — the node's map / discovery entry
+//! (`Knowledge_Node_Her_HernandCastle`; 1,014 of 1,120 are `"Knowledge_" +` the
+//! node name, the rest differ) — and that knowledge's title is the place name
+//! the game shows: PALOC `(hashlittle2(knowledge name) << 32) | 0x490`, as the
+//! `knowledge_info` bridge resolves it. `Node_Her_HernandCastle` → "Hernand
+//! Castle", `Node_Her_GreymaneCamp` → "Howling Hill", `Node_Her_GlenbrightFarm`
+//! → "Glenbright Farm"; all 1,120 nodes have a title in all 15 languages.
+//!
+//! The key is a `u32` at a fixed place after the row key: byte 11 on 2.04
+//! through 2.05.01 ([`KNOWLEDGE_AT_PRE_2_06`]) and byte 8 of the row after
+//! `[key][u32 row index]` on 2.06 ([`KNOWLEDGE_AT_2_06`]): 2.06 narrowed the
+//! leading `u32 1/2/3` (node kind) to a `u16` and dropped a zero byte, so
+//! `01 00 00 00 00 78 00` became `01 00 78 00`. Pinned on all 1,120 rows of 2.04,
+//! 2.04.08, 2.05, 2.05.01 and 2.06: always a knowledge key, the same per node.
+//!
+//! **No owning faction or region field was found.** Faction keys do turn up in
+//! rows, but the `faction` and `factionnode` key ranges overlap (the sibling-node
+//! list of `Node_Her_HernandCastle` reads as `Faction_Grace`,
+//! `Faction_RegleGoblin`, … when matched against the wrong table), and the rest
+//! sit inside inlined conditions (`CheckFactionKey(...)`). The node's knowledge
+//! belongs to one `KnowledgeGroup_Topography_<Region>_<Area>` group for 576 of
+//! the 1,120 nodes (Hernand, Demeniss, Delesyian, CrimsonDesert, Kweiden) and
+//! to none for the rest, so that is not a complete region either. The name
+//! prefix (`Node_Her_`, `Node_Dem_`, …) is a convention, not a field.
+//!
 //! Schema (verified against the live 1.07 install via the
 //! `_probe_faction_pabgh_shapes` ignored probe in
 //! [`src/c_abi/character_info.rs`](../c_abi/character_info.rs)):
@@ -42,7 +69,16 @@ pub struct FactionNodeInfoEntry {
     pub key: u32,
     /// ASCII internal name (e.g. `"Node_Her_Temporary_Camp"`).
     pub name: String,
+    /// `KnowledgeKey` whose title is the node's player-facing name; 0 when the
+    /// row is too short to hold it.
+    pub knowledge_key: u32,
 }
+
+/// Where the node's `KnowledgeKey` sits on 2.04 through 2.05.01: bytes after
+/// the row key.
+pub const KNOWLEDGE_AT_PRE_2_06: usize = 11;
+/// Where it sits on 2.06: bytes after the row's `[key][u32 row index]`.
+pub const KNOWLEDGE_AT_2_06: usize = 8;
 
 /// Parse `factionnode.pabgb` using its `.pabgh` index.
 ///
@@ -55,6 +91,13 @@ pub fn parse_faction_node_info_lossy(
     pabgh: &[u8],
 ) -> Vec<FactionNodeInfoEntry> {
     // 2.06 moved row names into the header; rebuild the pre-2.06 layout.
+    // Which one came in decides where the KnowledgeKey sits.
+    let knowledge_at =
+        if crate::binary::static_header::detect_named_header(pabgh, pabgb.len()).is_some() {
+            KNOWLEDGE_AT_2_06
+        } else {
+            KNOWLEDGE_AT_PRE_2_06
+        };
     let (pabgb, pabgh) = crate::binary::static_header::legacy_pair(pabgb, pabgh);
     let (pabgb, pabgh): (&[u8], &[u8]) = (&pabgb, &pabgh);
     let Ok(index) = crate::skill_info::parse_pabgh(pabgh) else {
@@ -70,9 +113,15 @@ pub fn parse_faction_node_info_lossy(
         if head.key != entry.key || !(1..=128).contains(&head.name.len()) {
             continue;
         }
+        let at = head.body_at + knowledge_at;
+        let knowledge_key = body
+            .get(at..at + 4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .unwrap_or(0);
         out.push(FactionNodeInfoEntry {
             key: head.key,
             name: head.name.to_owned(),
+            knowledge_key,
         });
     }
     out

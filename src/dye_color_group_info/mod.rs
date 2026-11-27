@@ -31,14 +31,25 @@
 //!
 //! ## 2.06: 22-byte color records
 //!
-//! 2.06 grew every color record from 8 to 22 bytes: the BGRA quad stays first,
-//! and the 4-byte tail became 18 bytes: `01 01 03 24 00`, a `u32` key, `01`,
-//! seven zero bytes and `01`. The key takes six values per row (it was one
-//! per-row value before, e.g. 1008623 on `Her_Color_Group_I`; now 1001287,
-//! 1000297, …), so it most likely gates which colors are unlocked. Its meaning
-//! is not established. Head and trailer are unchanged, and on all 10 rows the
+//! The 4-byte tail of a color record is the condition that unlocks the
+//! color. Through 2.05.01 it was a `ConditionInfoKey`, e.g. 1008623 =
+//! `CheckKnowledge(Knowledge_Grey_DyeColor_1)`; each row uses six (the
+//! `Grey_DyeColor_<n>` one plus five of its own). 2.06 inlined every such
+//! anonymous condition (see "Inlined conditions (2.06)" in `scripts/CLAUDE.md`):
+//! the tail is now `01` + the condition's compiled bytecode,
+//! `01 03 24 00 <u32 KnowledgeKey> 01 00 00 00 00 00 00 00 01` (18 bytes,
+//! records 8 → 22), and the condition rows left `conditioninfo`. All 1,090
+//! records (10 rows × 109) equal `01` + the 2.05.01 condition's bytecode, and the
+//! key reads `Knowledge_Grey_DyeColor_1` (1001287) etc. So a color is unlocked
+//! by a knowledge entry. Head and trailer are unchanged, and on all 10 rows the
 //! trailer marker sits right after `color_count` 22-byte records, which is how
-//! [`parse_palette_after_key`] tells the two sizes apart.
+//! [`parse_palette_after_key`] finds the records' extent. A different
+//! condition would compile to a different length, so the parser does not
+//! assume one size: it locates the trailer (marker + the row key), walks the
+//! records between one by one, reading each condition as `00` (none) or `01` +
+//! a `CheckKnowledge` bytecode, and only when that fails splits them into equal
+//! sizes (the 8-byte records through 2.05.01). A row that fits neither gets an
+//! empty palette rather than a misread one.
 //!
 //! ## Byte order — **BGRA, not RGBA** (verified 2026-05-17)
 //!
@@ -224,20 +235,120 @@ fn parse_palette_after_key(body: &[u8], after_key_off: usize) -> Option<Vec<[u8;
         return None;
     }
     let data_off = count_off + 4;
-    // 8-byte records through 2.05.01, 22 from 2.06: take the size after which
-    // the trailer marker follows the last record.
-    const TRAILER_MARKER: [u8; 5] = [0x23, 0x31, 0x02, 0x00, 0x00];
-    let stride = [22usize, 8].into_iter().find(|&s| {
-        let end = data_off + s * color_count;
-        body.get(end..end + 5) == Some(&TRAILER_MARKER[..])
-    })?;
-    let mut palette = Vec::with_capacity(color_count);
-    for i in 0..color_count {
-        let off = data_off + stride * i;
-        // Stored order: [B, G, R, A, ...]. Swap to logical (R, G, B, A).
-        palette.push([body[off + 2], body[off + 1], body[off], body[off + 3]]);
+    // The trailer opens with a constant marker and the row key again; the
+    // records fill everything between `data_off` and it.
+    let key = body.get(after_key_off.checked_sub(4)?..after_key_off)?;
+    let mut needle = TRAILER_MARKER.to_vec();
+    needle.extend_from_slice(key);
+    let trailer = data_off
+        + body
+            .get(data_off..)?
+            .windows(needle.len())
+            .position(|w| w == needle.as_slice())?;
+    let starts = record_starts(body, data_off, trailer, color_count)?;
+    // Stored order: [B, G, R, A, ...]. Swap to logical (R, G, B, A).
+    Some(starts.iter().map(|&o| [body[o + 2], body[o + 1], body[o], body[o + 3]]).collect())
+}
+
+/// First bytes of a dye-color trailer: `23 31 02 00 00`, then the row key.
+const TRAILER_MARKER: [u8; 5] = [0x23, 0x31, 0x02, 0x00, 0x00];
+
+/// The start of each of the `count` color records in `body[from..to]`: a
+/// record-by-record walk over `BGRA` + an inline condition (2.06) first, then
+/// equal sizes (the 8-byte records through 2.05.01, or any one size). `None`
+/// when neither fits.
+fn record_starts(body: &[u8], from: usize, to: usize, count: usize) -> Option<Vec<usize>> {
+    let span = to.checked_sub(from)?;
+    if count == 0 {
+        return (span == 0).then(Vec::new);
     }
-    Some(palette)
+    let walk = || {
+        let mut starts = Vec::with_capacity(count);
+        let mut at = from;
+        for _ in 0..count {
+            starts.push(at);
+            at += 4 + inline_condition_len(body.get(at + 4..to)?)?;
+        }
+        (at == to).then_some(starts)
+    };
+    walk().or_else(|| {
+        (span % count == 0 && span / count >= 4)
+            .then(|| (0..count).map(|i| from + i * (span / count)).collect())
+    })
+}
+
+/// Length of a 2.06 inline condition at the start of `b`: `00` (none) or `01`
+/// followed by the 17-byte `CheckKnowledge` bytecode
+/// `01 03 24 00 <u32 KnowledgeKey> 01 00 00 00 00 00 00 00 01`, the only form
+/// the dye table uses. Other bytecode is not decoded (`None`).
+fn inline_condition_len(b: &[u8]) -> Option<usize> {
+    const TAIL: [u8; 9] = [1, 0, 0, 0, 0, 0, 0, 0, 1];
+    match b.first()? {
+        0 => Some(1),
+        1 if b.get(1..5) == Some(&[1, 3, 0x24, 0][..]) && b.get(9..18) == Some(&TAIL[..]) => Some(18),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod record_tests {
+    use super::*;
+
+    /// A row in the shape the parser reads: name len 0, key, flag, hash, count,
+    /// records, trailer.
+    fn row(records: &[Vec<u8>]) -> (Vec<u8>, usize) {
+        let key = 0xc882_11f5u32.to_le_bytes();
+        let mut b = 0u32.to_le_bytes().to_vec();
+        b.extend_from_slice(&key);
+        let after_key = b.len();
+        b.push(0);
+        b.extend_from_slice(&[0x0e, 0x62, 0x0e, 0x6d]);
+        b.extend_from_slice(&(records.len() as u32).to_le_bytes());
+        for r in records {
+            b.extend_from_slice(r);
+        }
+        b.extend_from_slice(&TRAILER_MARKER);
+        b.extend_from_slice(&key);
+        b.extend_from_slice(&[2, 0, 0, 0, b'4', b'2']);
+        (b, after_key)
+    }
+
+    fn knowledge(bgra: [u8; 4], key: u32) -> Vec<u8> {
+        let mut r = bgra.to_vec();
+        r.extend_from_slice(&[1, 1, 3, 0x24, 0]);
+        r.extend_from_slice(&key.to_le_bytes());
+        r.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0, 0, 1]);
+        r
+    }
+
+    #[test]
+    fn reads_uniform_and_mixed_records() {
+        // 2.06: every record 22 bytes.
+        let (b, k) = row(&[knowledge([3, 2, 1, 255], 1_001_287), knowledge([6, 5, 4, 255], 1_000_294)]);
+        assert_eq!(parse_palette_after_key(&b, k).unwrap(), [[1, 2, 3, 255], [4, 5, 6, 255]]);
+        // Pre-2.06: 8-byte records (BGRA + u32 ConditionInfoKey).
+        let (b, k) = row(&[vec![3, 2, 1, 255, 0xef, 0x63, 0x0f, 0], vec![6, 5, 4, 255, 0xf5, 0x63, 0x0f, 0]]);
+        assert_eq!(parse_palette_after_key(&b, k).unwrap(), [[1, 2, 3, 255], [4, 5, 6, 255]]);
+        // Mixed sizes: a color without a condition (`00`) next to two gated ones.
+        let (b, k) = row(&[
+            knowledge([3, 2, 1, 255], 1),
+            vec![9, 8, 7, 255, 0],
+            knowledge([6, 5, 4, 255], 2),
+        ]);
+        assert_eq!(
+            parse_palette_after_key(&b, k).unwrap(),
+            [[1, 2, 3, 255], [7, 8, 9, 255], [4, 5, 6, 255]]
+        );
+    }
+
+    #[test]
+    fn refuses_a_condition_it_cannot_walk() {
+        let mut other = knowledge([6, 5, 4, 255], 2);
+        other[6] = 0x27; // a different function: not walked
+        other.push(0); // and a size that no longer splits evenly
+        let (b, k) = row(&[knowledge([3, 2, 1, 255], 1), other, vec![9, 8, 7, 255, 0]]);
+        assert_eq!(parse_palette_after_key(&b, k), None);
+    }
 }
 
 #[cfg(test)]

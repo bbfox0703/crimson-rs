@@ -105,7 +105,10 @@ fn scan_next_anchor(data: &[u8], from: usize) -> Option<usize> {
                 && (key >> 24) < 0x80
                 && bytes[0].is_ascii_alphabetic()
                 && bytes.contains(&b'_')
-                && bytes.iter().all(|&b| is_row_name_byte(b))
+                // One name has an apostrophe (`Knowledge_King's_Tomb_Cave`, the
+                // knowledge naming `Node_Her_Region_Cave_0080`); the shared rule
+                // rejects it, so it is allowed here.
+                && bytes.iter().all(|&b| is_row_name_byte(b) || b == b'\'')
                 && std::str::from_utf8(bytes).is_ok()
             {
                 return Some(o);
@@ -139,6 +142,8 @@ mod tests {
         (0x7fff_fd9f, "Knowledge_Recipe_Jerky"),
         (0x7fff_fda0, "Knowledge_Recipe_Jerky_Pieces"),
         (0x7fff_fdae, "Knowledge_Colette"),
+        // The one name with an apostrophe (2.05.01, 2.06).
+        (1_000_535, "Knowledge_King's_Tomb_Cave"),
     ];
 
     fn find_knowledge_bytes() -> Option<Vec<u8>> {
