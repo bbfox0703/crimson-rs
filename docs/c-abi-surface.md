@@ -201,7 +201,7 @@ int32_t crimson_factionnode_lookup_display_name(
 `<install>/dlc/dlc_01/` carries its own copy of many tables, with rows the base
 table lacks. It is Steam depot 5001841 (DLC app 5001840, 29,654,458,571 bytes,
 exactly the folder's size), so **Steam installs it only for owners**: an install
-without the DLC has no `dlc/dlc_01` folder. Four bridges can merge it:
+without the DLC has no `dlc/dlc_01` folder. Five bridges can merge it:
 
 ```c
 /* Add the DLC table's rows whose key the handle lacks; *out_added = how many.
@@ -213,6 +213,11 @@ int32_t crimson_factionnode_merge_dlc_from_bytes(CrimsonFactionNodeInfoHandle *h
 int32_t crimson_knowledgeinfo_merge_dlc_from_bytes(...);   /* same shape */
 int32_t crimson_faction_info_merge_dlc_from_bytes(...);
 int32_t crimson_characterinfo_merge_dlc_from_bytes(...);
+/* The item → dye-row join takes iteminfo + stringinfo + the DLC character
+   PAMT instead (see dye-editor-scope.md "Item → mesh join"): */
+int32_t crimson_item_part_prefab_merge_dlc_from_bytes(CrimsonItemPartPrefabHandle *handle,
+    const uint8_t *iteminfo, size_t iteminfo_len, const uint8_t *stringinfo, size_t stringinfo_len,
+    const char *dlc_prefab_pamt_path /* nullable */, uint32_t *out_added);
 
 /* 0 = base table, n = the n-th merged DLC. OUT_OF_RANGE past the end. */
 int32_t crimson_factionnode_entry_source(const CrimsonFactionNodeInfoHandle *handle,
@@ -348,7 +353,7 @@ absorbed by list-header variants (`marker_run_plus_zeros`, `ones_then_count`,
 
 ### Status & remaining work
 
-393 tests pass with `c_abi` on 2.06 (+48 ignored diagnostic probes); the bare-default
+396 tests pass with `c_abi` on 2.06 (+48 ignored diagnostic probes); the bare-default
 build (`cargo check --lib`) is also clean; clippy clean both modes. The Jenkins
 hash-hop transform that drives Mission/Quest/Stage/Knowledge title resolution is
 cracked and pinned. CharacterKey ships at the 22% display-name coverage §6
@@ -385,8 +390,9 @@ Remaining work is **optional follow-ons only**:
     `crimson_item_part_prefab_load_*_with_prefab_pamt` /
     `..._lookup_dye_slot_bits` / `..._lookup_channel_dye_slot_bits` /
     `..._lookup_dye_slot_material` and [`dye-editor-scope.md`](dye-editor-scope.md)
-    "Item → mesh join (2026-11-27)". Still open: the DLC tree
-    (`iteminfo.dlc_01` + `dlc/dlc_01/0009`) is not joined.
+    "Item → mesh join (2026-11-27)". The DLC tree joins through the optional
+    `crimson_item_part_prefab_merge_dlc_from_bytes` (82 of 85 DLC-only dyeable
+    items on 2.06).
 
 ## Rust module structure
 
@@ -490,6 +496,8 @@ src/
     │                                           #   lookup_channel_dye_slot_bits / lookup_dye_slot_material (item-level,
     │                                           #   optional tribe/gender filter). Original 3-table name join
     │                                           #   (iteminfo + stringinfo + partprefabdyeslotinfo) kept as load_from_*.
+    │                                           #   Optional, atomic merge_dlc_from_bytes (dlc iteminfo + stringinfo +
+    │                                           #   dlc 0009 PAMT) + lookup_source (0 base / n-th DLC).
     │                                           #   precomputed at load; lookup_count/_key_at/_prefab_name_at per item +
     │                                           #   resolve_dye_slot_count (v3 convenience wrapper — one-shot
     │                                           #   "how many dye slots does this item have?" chaining both bridges,
