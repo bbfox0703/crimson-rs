@@ -1,16 +1,12 @@
 //! `factionnode.pabgb` bridge — C ABI surface.
 //!
 //! Resolves save-side `FactionNodeKey (u32)` to the row's internal
-//! name (e.g. `"Node_Her_Temporary_Camp"`). Mirrors
-//! [`super::sub_level_info`] / [`super::quest_gauge_info`] in shape —
-//! **no `lookup_display_name` function** because the exhaustive PALOC
-//! probe (`_probe_faction_paloc_chains` in
-//! [`super::character_info`]) returned only coincidental collisions
-//! at every namespace tested. FactionNode rows are internal-only
-//! location IDs; the localized place name a player sees is resolved
-//! through a different gamedata path (regioninfo / stageinfo with the
-//! shipped `crimson_stageinfo_*` bridge handles much of that
-//! independently).
+//! name (e.g. `"Node_Her_Temporary_Camp"`) and, since 2026-11-27, to the
+//! place name the game shows. That name is not keyed by the node (the
+//! exhaustive PALOC probe `_probe_faction_paloc_chains` found nothing at any
+//! namespace): every row names a `knowledgeinfo` row, and that knowledge's
+//! title is the place name ("Hernand Castle", "Howling Hill"). See
+//! `src/faction_node_info/mod.rs`; no owning-faction or region field was found.
 //!
 //! Standard `[u32 name_len][name][u32 key][body]` row layout indexed by
 //! a `u16 count + (u32 key, u32 offset)*` PABGH — re-uses
@@ -23,6 +19,8 @@ use std::os::raw::c_char;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use super::error;
+use super::knowledge_info::CrimsonKnowledgeInfoHandle;
+use super::paloc::CrimsonPalocHandle;
 use crate::faction_node_info::parse_faction_node_info_lossy;
 
 /// Opaque handle exposing `(FactionNodeKey, internal_name)` lookups
@@ -31,6 +29,8 @@ use crate::faction_node_info::parse_faction_node_info_lossy;
 pub struct CrimsonFactionNodeInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,
+    /// `FactionNodeKey → KnowledgeKey` (the knowledge naming the place).
+    knowledge_by_key: HashMap<u32, u32>,
 }
 
 impl CrimsonFactionNodeInfoHandle {
@@ -38,13 +38,15 @@ impl CrimsonFactionNodeInfoHandle {
         let raw = parse_faction_node_info_lossy(pabgb, pabgh);
         let mut by_key: HashMap<u32, String> = HashMap::with_capacity(raw.len());
         let mut entries: Vec<(u32, String)> = Vec::with_capacity(raw.len());
+        let mut knowledge_by_key: HashMap<u32, u32> = HashMap::with_capacity(raw.len());
         for e in raw {
             if let std::collections::hash_map::Entry::Vacant(v) = by_key.entry(e.key) {
                 v.insert(e.name.clone());
+                knowledge_by_key.insert(e.key, e.knowledge_key);
                 entries.push((e.key, e.name));
             }
         }
-        CrimsonFactionNodeInfoHandle { by_key, entries }
+        CrimsonFactionNodeInfoHandle { by_key, entries, knowledge_by_key }
     }
 }
 
@@ -245,6 +247,88 @@ pub unsafe extern "C" fn crimson_factionnode_get_entry(
     .unwrap_or(error::PANIC)
 }
 
+/// The `KnowledgeKey` naming a node: the knowledge row whose title is the
+/// place name the game shows (`Node_Her_HernandCastle` 1000044 → 1000016
+/// `Knowledge_Node_Her_HernandCastle`).
+///
+/// Returns `NOT_FOUND` for an unknown node and for a row too short to hold
+/// the key.
+///
+/// # Safety
+/// `handle` and `out_knowledge_key` must be non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_factionnode_lookup_knowledge_key(
+    handle: *const CrimsonFactionNodeInfoHandle,
+    node_key: u32,
+    out_knowledge_key: *mut u32,
+) -> i32 {
+    if handle.is_null() || out_knowledge_key.is_null() {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_knowledge_key = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        match h.knowledge_by_key.get(&node_key) {
+            Some(&k) if k != 0 => {
+                unsafe { *out_knowledge_key = k };
+                error::OK
+            }
+            _ => error::NOT_FOUND,
+        }
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// The node's localized place name: `FactionNodeKey → KnowledgeKey →`
+/// knowledge name `→ PALOC (hashlittle2(name) << 32) | 0x490`, the knowledge
+/// title (`crimson_knowledgeinfo_lookup_display_name` at `0x490`). The
+/// language is the PALOC handle's: every node has a title in all 15 shipped
+/// languages. Two-call pattern.
+///
+/// `knowledge` must be loaded from the same install (on 2.06 with its header,
+/// `crimson_knowledgeinfo_load_from_bytes_with_header`). Returns `NOT_FOUND`
+/// when the node, its knowledge row or the PALOC entry is missing.
+///
+/// # Safety
+/// `handle`, `knowledge`, `paloc` and `required` must be non-null; `buf` may
+/// be null iff `buf_len == 0`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_factionnode_lookup_display_name(
+    handle: *const CrimsonFactionNodeInfoHandle,
+    knowledge: *const CrimsonKnowledgeInfoHandle,
+    paloc: *const CrimsonPalocHandle,
+    node_key: u32,
+    buf: *mut u8,
+    buf_len: usize,
+    required: *mut usize,
+) -> i32 {
+    if handle.is_null() || knowledge.is_null() || paloc.is_null() || required.is_null() {
+        return error::NULL_ARG;
+    }
+    if buf.is_null() && buf_len != 0 {
+        return error::NULL_ARG;
+    }
+    unsafe { *required = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let kh = unsafe { &*knowledge };
+        let ph = unsafe { &*paloc };
+        let Some(&knowledge_key) = h.knowledge_by_key.get(&node_key) else {
+            return error::NOT_FOUND;
+        };
+        let Some(name) = kh.name(knowledge_key) else {
+            return error::NOT_FOUND;
+        };
+        let hi32 = u64::from(crate::crypto::checksum::calculate_checksum(name.as_bytes()));
+        let decimal = format!("{}", (hi32 << 32) | 0x490);
+        let Some(display) = ph.lookup_str(&decimal) else {
+            return error::NOT_FOUND;
+        };
+        write_str_to_buf(display, buf, buf_len, required)
+    }))
+    .unwrap_or(error::PANIC)
+}
+
 fn write_str_to_buf(
     src: &str,
     buf: *mut u8,
@@ -401,6 +485,78 @@ mod tests {
         );
 
         unsafe { crimson_factionnode_free(sh) };
+    }
+
+    /// `FactionNodeKey → KnowledgeKey → English place name`, on every row.
+    #[test]
+    fn c_abi_factionnode_display_name_live() {
+        use crate::c_abi::knowledge_info::{
+            crimson_knowledgeinfo_free, crimson_knowledgeinfo_load_from_bytes_with_header,
+        };
+        use crate::c_abi::paloc::{crimson_paloc_free, crimson_paloc_load_from_bytes};
+        let Some(pamt_path) = find_pamt() else {
+            eprintln!("skipping c_abi_factionnode_display_name_live: no game install");
+            return;
+        };
+        let Some(paloc_bytes) = gamedata_layout::paloc_bytes("0020", "eng") else {
+            eprintln!("skipping c_abi_factionnode_display_name_live: no eng paloc");
+            return;
+        };
+        let pamt = CString::new(pamt_path.to_str().unwrap()).unwrap();
+        let get = |name: &str| extract_file(pamt.as_c_str(), gamedata_layout::bin_dir(), name);
+        let (nb, nh) = (get(&gamedata_layout::body("factionnode")), get(&gamedata_layout::header("factionnode")));
+        let (kb, kh_bytes) = (get(&gamedata_layout::body("knowledgeinfo")), get(&gamedata_layout::header("knowledgeinfo")));
+
+        let mut sh: *mut CrimsonFactionNodeInfoHandle = ptr::null_mut();
+        let mut kh: *mut CrimsonKnowledgeInfoHandle = ptr::null_mut();
+        let mut ph: *mut CrimsonPalocHandle = ptr::null_mut();
+        unsafe {
+            assert_eq!(crimson_factionnode_load_from_bytes(nb.as_ptr(), nb.len(), nh.as_ptr(), nh.len(), &mut sh), error::OK);
+            assert_eq!(
+                crimson_knowledgeinfo_load_from_bytes_with_header(kb.as_ptr(), kb.len(), kh_bytes.as_ptr(), kh_bytes.len(), &mut kh),
+                error::OK
+            );
+            assert_eq!(crimson_paloc_load_from_bytes(paloc_bytes.as_ptr(), paloc_bytes.len(), &mut ph), error::OK);
+        }
+
+        const PLACES: &[(u32, u32, &str)] = &[
+            (1000044, 1000016, "Hernand Castle"),
+            (1000003, 1001809, "Howling Hill"),
+            (1000311, 1000350, "Glenbright Farm"),
+        ];
+        for &(node, knowledge, place) in PLACES {
+            let mut k = 0u32;
+            assert_eq!(unsafe { crimson_factionnode_lookup_knowledge_key(sh, node, &mut k) }, error::OK);
+            assert_eq!(k, knowledge, "node {node}");
+            let mut req = 0usize;
+            let rc = unsafe { crimson_factionnode_lookup_display_name(sh, kh, ph, node, ptr::null_mut(), 0, &mut req) };
+            let got = read_string_result(rc, req, |b, n, r| unsafe {
+                crimson_factionnode_lookup_display_name(sh, kh, ph, node, b, n, r)
+            });
+            assert_eq!(got, place, "node {node}");
+        }
+
+        // Every node has a knowledge key and an English title.
+        let h = unsafe { &*sh };
+        let missing: Vec<u32> = h
+            .entries
+            .iter()
+            .map(|&(key, _)| key)
+            .filter(|&key| {
+                let mut req = 0usize;
+                let rc = unsafe { crimson_factionnode_lookup_display_name(sh, kh, ph, key, ptr::null_mut(), 0, &mut req) };
+                rc != error::BUFFER_TOO_SMALL
+            })
+            .collect();
+        assert!(missing.is_empty(), "{} nodes without a place name, e.g. {:?}", missing.len(), &missing[..missing.len().min(5)]);
+
+        let mut k = 0u32;
+        assert_eq!(unsafe { crimson_factionnode_lookup_knowledge_key(sh, u32::MAX, &mut k) }, error::NOT_FOUND);
+        unsafe {
+            crimson_paloc_free(ph);
+            crimson_knowledgeinfo_free(kh);
+            crimson_factionnode_free(sh);
+        }
     }
 
     #[test]

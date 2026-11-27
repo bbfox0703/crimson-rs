@@ -59,6 +59,23 @@
 //! (`Faction_Bandit`). The save does not record an NPC's faction; this table is
 //! the only source.
 //!
+//! ## Other 2.06 changes in the row (not parsed here)
+//!
+//! - The two zero bytes moving `FactionKey`: inserted somewhere in bytes
+//!   87–91 after the key, an all-zero run on every row, so the byte diff cannot
+//!   place them exactly (bytes 85–86 match both versions; `Riding_Big_pirateship_1`,
+//!   the one row with a non-zero `u32` at 91, shows it moved too).
+//! - **Inlined conditions.** A count-prefixed list whose 13-byte elements were
+//!   `[u32 ConditionInfoKey A][u32 ConditionInfoKey B][u8 op][u32 hash]` now
+//!   stores each anonymous condition in place as `01` + its compiled bytecode
+//!   (`NGW_Citizen_13083`: `0x0F4293 CheckFactionKey(Faction_Graymane) && …` →
+//!   `01 01 01 03 27 01 40 42 0f 00 …`). Named conditions (`BattleState`,
+//!   `Faction_FlagOn`, …) are still referenced by key. This is the patch-wide
+//!   change described under "Inlined conditions (2.06)" in `scripts/CLAUDE.md`;
+//!   it adds 39–301 bytes to 2,500+ rows (+1.43 MB in all).
+//! - 971 rows lost four zero bytes later in the row (860 of them have no other
+//!   change; Kliff's sit just before `31 00 00 00 80 96 98 00`). Not explained.
+//!
 //! On 2.06 the header lists every row, so [`parse_character_info_lossy_with_header`]
 //! reads the rows from it instead of anchor-scanning, which also returns the
 //! 359 rows with a hashed 32-bit key.

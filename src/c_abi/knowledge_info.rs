@@ -45,6 +45,12 @@ pub struct CrimsonKnowledgeInfoHandle {
 }
 
 impl CrimsonKnowledgeInfoHandle {
+    /// The internal name of a knowledge row, for bridges that chain through
+    /// knowledge (factionnode place names).
+    pub(crate) fn name(&self, knowledge_key: u32) -> Option<&str> {
+        self.by_key.get(&knowledge_key).map(String::as_str)
+    }
+
     /// Build from the body, plus (2.06+) the `.staticinfoheader` that holds
     /// the row names. Without a header only a pre-2.06 body yields rows.
     fn from_bytes(data: &[u8], header: Option<&[u8]>) -> Self {

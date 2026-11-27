@@ -124,14 +124,50 @@ int32_t crimson_faction_info_lookup_display_name(
   (`..._lookup_string_key`) to tell them apart.
 - **`_relationTypeRaw` (u8)**: 0 Neutral, 1 War, 2 Agreement, 3 BloodAlly,
   4 ByGroup, from the name table the exe keeps right after its
-  `FactionRelationGroupInfo` consistency message. **Only 1 = War is verified in
-  game** (2026-11-27: player ⇄ `Faction_Celeste_Hernand` changed 3 → 1 both
-  ways, and the Hernand guards attacked). 0 is also the default of an absent
+  `FactionRelationGroupInfo` consistency message. **1 = War and 3 = BloodAlly
+  are verified in game** (2026-11-27: player ⇄ `Faction_Celeste_Hernand`
+  changed 3 → 1 both ways, and the Hernand guards attacked; a new two-way 3
+  between the player and `Faction_Bandit`, which had no record and falls under
+  `Monster_Common`, stopped the bandits attacking, so an explicit relation
+  overrides the relation group). 0 is also the default of an absent
   field; 4 has not been seen in a save. Relations are stored both ways, and
   `_dueDate` was 0xFFFFFFFF on every one seen.
 - The faction bridge's six name functions keep their names and signatures;
   `src/c_abi/faction_info.rs` now spells them out instead of using
   `impl_name_only_bridge!`, because the handle also holds the group keys.
+
+### Faction nodes: place names (2026-11-27)
+
+A `FactionNodeKey` (a stronghold, camp, village, cave, …) has no PALOC entry of
+its own. Every factionnode row names a `knowledgeinfo` row, and that
+knowledge's title is the place name the game shows:
+
+```c
+/* FactionNodeKey -> KnowledgeKey (Node_Her_HernandCastle 1000044 -> 1000016). */
+int32_t crimson_factionnode_lookup_knowledge_key(
+    const CrimsonFactionNodeInfoHandle *handle, uint32_t node_key,
+    uint32_t *out_knowledge_key);
+
+/* Localized place name: knowledge title, PALOC (hashlittle2(name) << 32) | 0x490.
+   The language is the PALOC handle's. Two-call over buf. */
+int32_t crimson_factionnode_lookup_display_name(
+    const CrimsonFactionNodeInfoHandle *handle,
+    const CrimsonKnowledgeInfoHandle *knowledge, const CrimsonPalocHandle *paloc,
+    uint32_t node_key, uint8_t *buf, size_t buf_len, size_t *required);
+```
+
+- **Where the key sits**: a `u32` at byte 11 after the row key on 2.04–2.05.01
+  and byte 8 after `[key][u32 row index]` on 2.06. Pinned on all 1,120 rows of
+  five versions. 1000044 → "Hernand Castle", 1000003 `Node_Her_GreymaneCamp` →
+  "Howling Hill", 1000311 → "Glenbright Farm". Every node has a title in all 15
+  shipped languages; load the knowledge handle with its 2.06 header.
+- The knowledgeinfo scanner now accepts an apostrophe in a row name. One row
+  has one, `Knowledge_King's_Tomb_Cave` (1000535, the knowledge naming
+  `Node_Her_Region_Cave_0080`), and the bridge used to miss it.
+- **No owning faction or region field was found** in a factionnode row; see
+  `src/faction_node_info/mod.rs` for what was ruled out. 576 of the nodes'
+  knowledge rows sit in a `KnowledgeGroup_Topography_<Region>_<Area>` group,
+  the rest in none.
 
 ### Save-handle utilities
 
@@ -343,7 +379,7 @@ src/
     │                                           #   answers with *character* names — CharacterKey 1000000 "Hernandian Guard")
     │                                           #   + lookup_group_keys, lookup_group_display_name / lookup_display_name
     │                                           #   (factiongroup name, PALOC lo32 0x214: "Greymanes")
-    ├── faction_node_info.rs                   # FactionNodeKey (u32) → "Node_Her_Temporary_Camp" etc. (name only, no PALOC chain)
+    ├── faction_node_info.rs                   # FactionNodeKey (u32) → "Node_Her_Temporary_Camp", + KnowledgeKey → place name
     ├── faction_spawn_data_info.rs             # FactionSpawnDataKey (u32) → "FactionSpawn_GlenbrightManor_Grace_ReedDevil" etc.
     ├── faction_relation_group_info.rs         # FactionRelationGroupKey (u16-widened-u32) → "Graymane"/"FriendlyCombat"/"HostileCombat"/"NPC_Common"/"Monster_Common"
     │                                           #   + lookup_related_count/_at for the per-row sibling-reference matrix

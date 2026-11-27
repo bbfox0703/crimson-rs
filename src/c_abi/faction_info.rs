@@ -23,7 +23,7 @@
 //! | 0 | Neutral | exe table; also what an absent field defaults to |
 //! | 1 | War | **verified in game, 2026-11-27**: player ⇄ `Faction_Celeste_Hernand` set 3 → 1 both ways made the Hernand guards attack |
 //! | 2 | Agreement | exe table only |
-//! | 3 | BloodAlly | exe table only |
+//! | 3 | BloodAlly | **verified in game, 2026-11-27**: a new two-way BloodAlly record between the player and `Faction_Bandit` (no explicit record before; relation group `Monster_Common`) stopped the bandits attacking, so an explicit relation overrides the relation group |
 //! | 4 | ByGroup | exe table only; not seen in a save |
 //!
 //! Relations are stored both ways, and `_dueDate` reads 0xFFFFFFFF on every
