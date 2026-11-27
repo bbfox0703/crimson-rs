@@ -73,13 +73,16 @@ pub const PARSER_TARGET_GAMEDATA_MAJOR: u16 = 2;
 /// `crimson_parser_target_gamedata_minor()` C ABI instead of duplicating the
 /// number; before that bridge existed this had to be hand-bumped in lock-step
 /// on the C# side every patch (8 → 9 → … → 16 → 17 → 18 → 2.00's 0 → 2.01's 1
-/// → 2.02's 2 → 2.03's 3 → 2.04's 4 → 2.05's 5).
-pub const PARSER_TARGET_GAMEDATA_MINOR: u16 = 5;
+/// → 2.02's 2 → 2.03's 3 → 2.04's 4 → 2.05's 5 → 2.06's 6).
+pub const PARSER_TARGET_GAMEDATA_MINOR: u16 = 6;
 
 /// Every gamedata `minor` this build's parsers can load without mis-decoding.
 ///
 /// Always includes [`PARSER_TARGET_GAMEDATA_MINOR`]. Kept a single-element
-/// allow-list tracking just the target. 2.05 named the two dye tables' rows,
+/// allow-list tracking just the target. 2.06 moved every static-info row's name
+/// into the table's `.staticinfoheader` and gave each row an index; the table
+/// parsers read either layout, but iteminfo's own row and the dye palette record
+/// changed, so minor 5 is out. 2.05 named the two dye tables' rows,
 /// which the parsers now accept either way, so minor 4 would still read; it
 /// stays out because the patch floor below applies to the target minor only,
 /// and listing 4 would let 2.04.03 through. The last *structural* change
@@ -111,11 +114,11 @@ pub const COMPATIBLE_GAMEDATA_MINORS: &[u16] = &[PARSER_TARGET_GAMEDATA_MINOR];
 /// 2.04.08 and still no longer parses. `(major, minor)` alone would let that
 /// install through. A full gate is `major == MAJOR && minor ∈
 /// COMPATIBLE_GAMEDATA_MINORS && (minor != MINOR || patch >= this)`.
-/// Reset it to `0` when the target minor moves, as it was for 2.05. It is `1`
-/// since 2.05.01, which added a byte to every iteminfo row and to every
-/// `PageData` element, so 2.05.00 no longer parses. Consumers read it through
-/// `crimson_parser_min_gamedata_patch()`.
-pub const PARSER_MIN_GAMEDATA_PATCH: u16 = 1;
+/// Reset it to `0` when the target minor moves, as it was for 2.05 and again
+/// for 2.06. It was `1` for 2.05.01, which added a byte to every iteminfo row
+/// and to every `PageData` element, so 2.05.00 no longer parsed. Consumers read
+/// it through `crimson_parser_min_gamedata_patch()`.
+pub const PARSER_MIN_GAMEDATA_PATCH: u16 = 0;
 
 /// Parsed version stamp from `meta/0.paver`.
 ///

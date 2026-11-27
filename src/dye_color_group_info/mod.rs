@@ -20,7 +20,7 @@
 //!     u8 flag,                  // always 0
 //!     u8 row_hash[4],           // per-row hash value
 //!     u32 color_count,          // always 109
-//!     u8 color_data[8 * color_count],  // palette (BGRA + 4-byte tail per record, see below)
+//!     u8 color_data[8 * color_count],  // palette (BGRA + 4-byte tail per record; 22-byte records from 2.06)
 //!     // trailer:
 //!     u8 trailer_marker[5],     // 23 31 02 00 00 — constant across rows
 //!     u32 key_copy,             // = key
@@ -28,6 +28,17 @@
 //!     u8 numeric_id[numeric_id_len],  // ASCII decimal digits (u64 hash serialized as text)
 //! }
 //! ```
+//!
+//! ## 2.06: 22-byte color records
+//!
+//! 2.06 grew every color record from 8 to 22 bytes: the BGRA quad stays first,
+//! and the 4-byte tail became 18 bytes: `01 01 03 24 00`, a `u32` key, `01`,
+//! seven zero bytes and `01`. The key takes six values per row (it was one
+//! per-row value before, e.g. 1008623 on `Her_Color_Group_I`; now 1001287,
+//! 1000297, …), so it most likely gates which colors are unlocked. Its meaning
+//! is not established. Head and trailer are unchanged, and on all 10 rows the
+//! trailer marker sits right after `color_count` 22-byte records, which is how
+//! [`parse_palette_after_key`] tells the two sizes apart.
 //!
 //! ## Byte order — **BGRA, not RGBA** (verified 2026-05-17)
 //!
@@ -112,6 +123,9 @@ pub fn parse_dye_color_group_info_lossy(
     pabgb: &[u8],
     pabgh: &[u8],
 ) -> Vec<DyeColorGroupInfoEntry> {
+    // 2.06 moved row names into the header; rebuild the pre-2.06 layout.
+    let (pabgb, pabgh) = crate::binary::static_header::legacy_pair(pabgb, pabgh);
+    let (pabgb, pabgh): (&[u8], &[u8]) = (&pabgb, &pabgh);
     let Ok(index) = crate::skill_info::parse_pabgh(pabgh) else {
         return Vec::new();
     };
@@ -210,12 +224,16 @@ fn parse_palette_after_key(body: &[u8], after_key_off: usize) -> Option<Vec<[u8;
         return None;
     }
     let data_off = count_off + 4;
-    if data_off + 8 * color_count > body.len() {
-        return None;
-    }
+    // 8-byte records through 2.05.01, 22 from 2.06: take the size after which
+    // the trailer marker follows the last record.
+    const TRAILER_MARKER: [u8; 5] = [0x23, 0x31, 0x02, 0x00, 0x00];
+    let stride = [22usize, 8].into_iter().find(|&s| {
+        let end = data_off + s * color_count;
+        body.get(end..end + 5) == Some(&TRAILER_MARKER[..])
+    })?;
     let mut palette = Vec::with_capacity(color_count);
     for i in 0..color_count {
-        let off = data_off + 8 * i;
+        let off = data_off + stride * i;
         // Stored order: [B, G, R, A, ...]. Swap to logical (R, G, B, A).
         palette.push([body[off + 2], body[off + 1], body[off], body[off + 3]]);
     }

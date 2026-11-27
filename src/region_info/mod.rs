@@ -20,6 +20,9 @@ pub fn parse_region_info_lossy(
     pabgb: &[u8],
     pabgh: &[u8],
 ) -> Vec<RegionInfoEntry> {
+    // 2.06 moved row names into the header; rebuild the pre-2.06 layout.
+    let (pabgb, pabgh) = crate::binary::static_header::legacy_pair(pabgb, pabgh);
+    let (pabgb, pabgh): (&[u8], &[u8]) = (&pabgb, &pabgh);
     if pabgh.len() < 2 {
         return Vec::new();
     }
@@ -103,7 +106,7 @@ mod tests {
             return;
         };
         let entries = parse_region_info_lossy(&pabgb, &pabgh);
-        assert_eq!(entries.len(), 1013, "expected 1013 rows in 2.05 (1012 in 2.04, 1007 in 1.10-2.03, 1006 in 1.08/1.09)");
+        assert_eq!(entries.len(), 1014, "expected 1014 rows in 2.06 (1013 in 2.05, 1012 in 2.04, 1007 in 1.10-2.03, 1006 in 1.08/1.09)");
         let by_key: std::collections::HashMap<u32, &str> =
             entries.iter().map(|e| (e.key, e.name.as_str())).collect();
         for &(k, expected) in KNOWN {

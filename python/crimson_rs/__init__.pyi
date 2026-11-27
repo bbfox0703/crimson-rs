@@ -361,13 +361,18 @@ class PatternDescriptionData(TypedDict):
 class ItemInfo(TypedDict):
     """A single item parsed from the iteminfo binary file."""
 
-    # Identity. On disk since 2.04 a row opens with ``string_key`` then ``key``,
-    # and fields come in file order, not this order: see the "ItemInfo (2.04)"
-    # header in ``src/item_info/item.rs``.
+    # Identity. On disk since 2.06 a row opens with ``key`` then ``row_index``
+    # and ``string_key`` lives in the table's ``.staticinfoheader`` (2.04 and
+    # 2.05 opened the row with ``string_key`` then ``key``). Fields come in file
+    # order, not this order: see the "ItemInfo (2.04)" header in
+    # ``src/item_info/item.rs``.
     key: int
     """Unique item ID. ItemKey (u32)."""
+    row_index: int
+    """The row's position in the base table (u32). Written after ``key`` since 2.06."""
     string_key: str
-    """String identifier, e.g. ``"Pyeonjeon_Arrow"``."""
+    """String identifier, e.g. ``"Pyeonjeon_Arrow"``. Since 2.06 read from the
+    header; ``""`` when the parser is not given one."""
     is_blocked: int
     """u8"""
     max_stack_count: int
@@ -632,11 +637,17 @@ class UnkPreRespawnData(TypedDict):
 # ── Module Functions ────────────────────────────────────────────────────────
 
 
-def parse_iteminfo_from_file(path: str) -> list[ItemInfo]:
+def parse_iteminfo_from_file(path: str, header_path: str | None = None) -> list[ItemInfo]:
     """Parse all items from a binary file.
+
+    Since 2.06 an item's ``string_key`` lives in the table's
+    ``.staticinfoheader``; pass it to get the names (and a check that every
+    row's key and length match it). Without it ``string_key`` is ``""``.
 
     Args:
         path: Path to the decompressed iteminfo binary file.
+        header_path: Optional path to the table's ``.staticinfoheader`` /
+            ``.pabgh`` (2.06 shape).
 
     Returns:
         List of item dicts with full type info.
@@ -648,11 +659,15 @@ def parse_iteminfo_from_file(path: str) -> list[ItemInfo]:
     ...
 
 
-def parse_iteminfo_from_bytes(data: bytes) -> list[ItemInfo]:
+def parse_iteminfo_from_bytes(data: bytes, header: bytes | None = None) -> list[ItemInfo]:
     """Parse all items from raw bytes.
 
+    See ``parse_iteminfo_from_file``: pass the table's ``.staticinfoheader``
+    to get ``string_key`` on 2.06; without it ``string_key`` is ``""``.
+
     Args:
-        data: Raw binary data.
+        data: Raw binary data (the table body).
+        header: Optional raw ``.staticinfoheader`` bytes (2.06 shape).
 
     Returns:
         List of item dicts.
@@ -1325,6 +1340,9 @@ class SkillData(TypedDict):
     """``"with_field_58"`` (1.04+) or ``"no_field_58"`` (1.03)."""
     index_order: list[SkillIndexEntry]
     """On-disk PABGH order, preserved for byte-identical roundtrip."""
+    row_indices: list[int] | None
+    """2.06+: the row index (u32) that opens each ``index_order`` row's body,
+    in the same order. ``None`` on a table from before 2.06."""
 
 
 def parse_skillinfo_from_bytes(skill_pabgb: bytes, skill_pabgh: bytes) -> SkillData:
@@ -1340,7 +1358,7 @@ def parse_skillinfo_from_bytes(skill_pabgb: bytes, skill_pabgh: bytes) -> SkillD
         skill_pabgh: Decompressed ``skill.pabgh`` bytes (the index).
 
     Returns:
-        Dict with ``entries``, ``format``, ``index_order``.
+        Dict with ``entries``, ``format``, ``index_order``, ``row_indices``.
 
     Raises:
         ValueError: On parse errors (truncated input, malformed index, ...).
@@ -1354,6 +1372,8 @@ def serialize_skillinfo(data: SkillData) -> tuple[bytes, bytes]:
     Pass the dict returned by ``parse_skillinfo_from_bytes`` (optionally
     with edits) — the on-disk PABGH order is taken from ``index_order``
     so the result roundtrips byte-identically when no fields are changed.
+    When ``row_indices`` is a list the 2.06 layout is written (named header,
+    ``[key][row index]`` body rows); when it is ``None``, the pre-2.06 one.
 
     Returns:
         Tuple of ``(pabgh_bytes, pabgb_bytes)``.

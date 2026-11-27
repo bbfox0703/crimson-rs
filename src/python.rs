@@ -40,15 +40,49 @@ fn wr_item(w: &mut Vec<u8>, obj: &Bound<'_, PyAny>) -> PyResult<()> {
 
 // ── Module functions ───────────────────────────────────────────────────────
 
+/// Parse an iteminfo body. Since 2.06 a row's `string_key` lives in the
+/// table's `.staticinfoheader`; pass that header to get the names (and a check
+/// that every row's key and length match it). Without it `string_key` is "".
 #[pyfunction]
-pub fn parse_iteminfo_from_file(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
+#[pyo3(signature = (path, header_path=None))]
+pub fn parse_iteminfo_from_file(
+    py: Python<'_>,
+    path: &str,
+    header_path: Option<&str>,
+) -> PyResult<Py<PyAny>> {
     let data = std::fs::read(path).map_err(|e| PyIOError::new_err(e.to_string()))?;
-    parse_iteminfo_from_bytes_inner(py, &data)
+    match header_path {
+        Some(h) => {
+            let header = std::fs::read(h).map_err(|e| PyIOError::new_err(e.to_string()))?;
+            parse_iteminfo_with_header_inner(py, &data, &header)
+        }
+        None => parse_iteminfo_from_bytes_inner(py, &data),
+    }
 }
 
+/// See `parse_iteminfo_from_file`.
 #[pyfunction]
-pub fn parse_iteminfo_from_bytes(py: Python<'_>, data: &[u8]) -> PyResult<Py<PyAny>> {
-    parse_iteminfo_from_bytes_inner(py, data)
+#[pyo3(signature = (data, header=None))]
+pub fn parse_iteminfo_from_bytes(
+    py: Python<'_>,
+    data: &[u8],
+    header: Option<&[u8]>,
+) -> PyResult<Py<PyAny>> {
+    match header {
+        Some(h) => parse_iteminfo_with_header_inner(py, data, h),
+        None => parse_iteminfo_from_bytes_inner(py, data),
+    }
+}
+
+fn parse_iteminfo_with_header_inner(
+    py: Python<'_>,
+    data: &[u8],
+    header: &[u8],
+) -> PyResult<Py<PyAny>> {
+    let items = crate::item_info::parse_iteminfo_with_header(data, header)
+        .map_err(|e| PyValueError::new_err(format!("parse error: {e}")))?;
+    let out = items.iter().map(|it| to_py_item(py, it)).collect::<PyResult<Vec<_>>>()?;
+    Ok(PyList::new(py, out)?.into_any().unbind())
 }
 
 pub fn parse_iteminfo_from_bytes_inner(py: Python<'_>, data: &[u8]) -> PyResult<Py<PyAny>> {
@@ -65,26 +99,23 @@ pub fn parse_iteminfo_from_bytes_inner(py: Python<'_>, data: &[u8]) -> PyResult<
 
 /// Try to find the next plausible item start at or after `from_offset`.
 ///
-/// An item begins with `u32 key` then `u32 len` then `len` bytes of an ASCII
-/// `string_key`. We scan byte-by-byte for a position where these three checks
-/// hold:
-///   - `key` is a 32-bit value with the high byte zero (game item keys are
+/// Since 2.06 an item row begins with `u32 key` then `u32 row index` then
+/// `is_blocked: u8`. We scan byte-by-byte for a position where:
+///   - `key` is non-zero with the high byte zero (game item keys are
 ///     comfortably below 2^24);
-///   - `len` is between 2 and 64 (string keys are short identifiers);
-///   - the next `len` bytes are printable ASCII followed by a NUL byte.
+///   - the row index is below 100,000;
+///   - the next byte (`is_blocked`) is 0.
 fn scan_next_item_start(data: &[u8], from_offset: usize) -> Option<usize> {
-    use crate::binary::row_head::{is_row_name_byte, read_row_head};
+    use crate::binary::static_header::read_body_row;
 
-    // `[u32 len][name][u32 key][is_blocked: u8 = 0]`: the row shape since 2.04.
+    // `[u32 key][u32 row index][is_blocked: u8 = 0]`: the row shape since 2.06
+    // (the name moved to the header). A weaker anchor than the named head it
+    // replaced, so the row index is held to a plausible table size.
     (from_offset..data.len()).find(|&o| {
-        let Some(head) = read_row_head(&data[o..], 4) else {
+        let Some(row) = read_body_row(&data[o..], 4) else {
             return false;
         };
-        (2..=128).contains(&head.name.len())
-            && head.name.bytes().all(is_row_name_byte)
-            && head.key != 0
-            && (head.key >> 24) == 0
-            && data.get(o + head.body_at) == Some(&0)
+        row.key != 0 && (row.key >> 24) == 0 && row.index < 100_000 && row.rest.first() == Some(&0)
     })
 }
 
@@ -1434,6 +1465,8 @@ pub fn parse_skillinfo_from_bytes(
     result.set_item("entries", entries)?;
     result.set_item("format", skill_format_to_str(parsed.format))?;
     result.set_item("index_order", index_order)?;
+    // 2.06+: the row index of each `index_order` row (None before 2.06).
+    result.set_item("row_indices", parsed.row_indices.clone())?;
     Ok(result.into_any().unbind())
 }
 
@@ -1461,10 +1494,15 @@ pub fn serialize_skillinfo(
             offset: get(d, "offset")?,
         });
     }
+    let row_indices: Option<Vec<u32>> = match data.get_item("row_indices")? {
+        Some(v) if !v.is_none() => Some(v.extract()?),
+        _ => None,
+    };
     let sd = SkillData {
         entries,
         format,
         index_order,
+        row_indices,
     };
     let (pabgh, pabgb) = sd.write().map_err(|e| PyIOError::new_err(e.to_string()))?;
     let tup = pyo3::types::PyTuple::new(

@@ -2,7 +2,9 @@ use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
-use crate::binary::{CArray, CFlaggedArray, COptional, CString, LocalizableString, OptLocalizableString};
+use crate::binary::{
+    CArray, CFlaggedArray, COptional, CString, HeaderName, LocalizableString, OptLocalizableString,
+};
 
 // ── Traits ────────────────────────────────────────────────────────────────────
 
@@ -214,6 +216,21 @@ impl WritePyValue for CString<'_> {
         let s: String = obj.extract()?;
         w.extend_from_slice(&(s.len() as u32).to_le_bytes());
         w.extend_from_slice(s.as_bytes());
+        Ok(())
+    }
+}
+
+// ── HeaderName ────────────────────────────────────────────────────────────────
+
+impl ToPyValue for HeaderName<'_> {
+    fn to_py_value(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        Ok(self.data.into_pyobject(py)?.into_any().unbind())
+    }
+}
+
+impl WritePyValue for HeaderName<'_> {
+    /// The name lives in the table's header since 2.06, so the row gets no bytes.
+    fn write_from_py(_w: &mut Vec<u8>, _obj: &Bound<'_, PyAny>) -> PyResult<()> {
         Ok(())
     }
 }

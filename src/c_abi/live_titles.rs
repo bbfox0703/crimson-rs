@@ -35,7 +35,7 @@ impl LiveTitles {
     fn load_present() -> Option<Self> {
         let body = |stem: &str| gamedata_layout::extract_bin(&gamedata_layout::body(stem));
         let header = |stem: &str| gamedata_layout::extract_bin(&gamedata_layout::header(stem));
-        let missions = crate::mission_info::parse_mission_info_lossy(&body("missioninfo")?)
+        let missions = crate::mission_info::parse_mission_info_lossy_with_header(&body("missioninfo")?, &header("missioninfo")?)
             .into_iter()
             .map(|e| (e.key, e.name))
             .collect();

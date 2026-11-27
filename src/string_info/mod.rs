@@ -14,6 +14,12 @@
 //! [u32 reserved_zero] [u32 hash] [u8 reserved_flag] [u32 slen] [N bytes utf-8]
 //! ```
 //!
+//! 2.06 moved every row name into the `.staticinfoheader`, which now lists
+//! `[hash][u32 0][offset][size]` per row, and gave each row its index after
+//! the key: `[u32 hash] [u32 row index] [u8 reserved_flag] [u32 slen] [N bytes]`.
+//! [`RowLayout`] records which of the two a table uses; `reserved_zero` holds
+//! the row index on a 2.06 table.
+//!
 //! `reserved_zero` is the row's empty name: 2.04 moved the key after the
 //! name in every static-info table, which on a nameless row puts the zero
 //! length first (it swapped with `hash`, nothing else moved). `reserved_zero`
@@ -61,8 +67,8 @@ pub use pabgh::{CountWidth, StringIndexEntry, StringInfoIndex, parse_pabgh, writ
 #[derive(Debug, Clone)]
 pub struct StringInfoEntry {
     pub hash: u32,
-    /// Reserved 4-byte field before the hash, the row's empty name length.
-    /// Always 0 — kept for round-trip.
+    /// 2.04–2.05.01: the 4 bytes before the hash, the row's empty name length
+    /// (always 0). 2.06+: the 4 bytes after the hash, the row's index.
     pub reserved_zero: u32,
     /// Reserved 1-byte field after the hash. Always 0 — kept for
     /// round-trip.
@@ -103,6 +109,29 @@ pub struct StringInfoData {
     /// tripping the pabgh side then requires the caller to supply the
     /// original index.
     pub index_order: Option<StringInfoIndex>,
+    /// Row shape: `[0][hash]…` through 2.05.01, `[hash][index]…` from 2.06.
+    pub layout: RowLayout,
+}
+
+/// Where the hash sits in a stringinfo row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RowLayout {
+    /// 2.04–2.05.01: `[u32 0][u32 hash][u8][u32 slen][bytes]`.
+    #[default]
+    Legacy,
+    /// 2.06+: `[u32 hash][u32 row index][u8][u32 slen][bytes]`.
+    V206,
+}
+
+impl RowLayout {
+    /// A body's layout, from its first row: the legacy row opens with the
+    /// zero name length, the 2.06 row with a (non-zero) hash.
+    pub fn detect(pabgb: &[u8]) -> Self {
+        match pabgb.get(..4) {
+            Some(b) if b != [0, 0, 0, 0] => RowLayout::V206,
+            _ => RowLayout::Legacy,
+        }
+    }
 }
 
 impl StringInfoData {
@@ -111,11 +140,12 @@ impl StringInfoData {
     /// parsing — only for verifying offsets match and for byte-identical
     /// round-trip of the pabgh side.
     pub fn parse_pabgb(pabgb: &[u8]) -> io::Result<Vec<StringInfoEntry>> {
+        let layout = RowLayout::detect(pabgb);
         let mut offset = 0usize;
         let mut entries = Vec::new();
         while offset < pabgb.len() {
             let entry_start = offset;
-            let entry = read_entry(pabgb, &mut offset).map_err(|e| {
+            let entry = read_entry(pabgb, &mut offset, layout).map_err(|e| {
                 io::Error::new(
                     e.kind(),
                     format!("stringinfo.pabgb entry at offset 0x{entry_start:X}: {e}"),
@@ -141,6 +171,7 @@ impl StringInfoData {
     /// order (which is also pabgb file order — verified at parse time).
     pub fn parse_pair(pabgb: &[u8], pabgh: &[u8]) -> io::Result<Self> {
         let index = parse_pabgh(pabgh)?;
+        let layout = if index.named { RowLayout::V206 } else { RowLayout::Legacy };
 
         // Walk pabgb sequentially, recording (offset_at_start, hash) for
         // every entry. Compare against the index in pabgh on-disk order.
@@ -149,7 +180,7 @@ impl StringInfoData {
         let mut starts: Vec<u32> = Vec::with_capacity(index.entries.len());
         while offset < pabgb.len() {
             let entry_start = offset;
-            let entry = read_entry(pabgb, &mut offset).map_err(|e| {
+            let entry = read_entry(pabgb, &mut offset, layout).map_err(|e| {
                 io::Error::new(
                     e.kind(),
                     format!("stringinfo.pabgb entry at offset 0x{entry_start:X}: {e}"),
@@ -203,7 +234,7 @@ impl StringInfoData {
                 ));
             }
         }
-        Ok(StringInfoData { entries, index_order: Some(index) })
+        Ok(StringInfoData { entries, index_order: Some(index), layout })
     }
 
     /// Serialise the pabgb body back to bytes. Linear walk of `entries`;
@@ -211,7 +242,7 @@ impl StringInfoData {
     pub fn write_pabgb(&self) -> io::Result<Vec<u8>> {
         let mut buf = Vec::new();
         for entry in &self.entries {
-            write_entry(entry, &mut buf)?;
+            write_entry(entry, &mut buf, self.layout)?;
         }
         Ok(buf)
     }
@@ -221,6 +252,13 @@ impl StringInfoData {
     /// walking the entries. The auto-derived path always emits a `u16`
     /// count prefix (matches every observed game build).
     pub fn write_pabgh(&self) -> io::Result<Vec<u8>> {
+        let named = match &self.index_order {
+            Some(idx) => idx.named,
+            None => self.layout == RowLayout::V206,
+        };
+        if named {
+            return self.write_named_pabgh();
+        }
         let index = match &self.index_order {
             Some(idx) => idx.clone(),
             None => {
@@ -236,10 +274,40 @@ impl StringInfoData {
                         )
                     })?;
                 }
-                StringInfoIndex { entries, count_width: CountWidth::U16 }
+                StringInfoIndex { entries, count_width: CountWidth::U16, named: false }
             }
         };
         write_pabgh(&index)
+    }
+
+    /// The 2.06 index: count, then `[hash][u32 0][offset][size]` per entry in
+    /// `entries` order. The count width comes from the parsed index (u16 when
+    /// there is none).
+    fn write_named_pabgh(&self) -> io::Result<Vec<u8>> {
+        let width = match self.index_order.as_ref().map(|i| i.count_width) {
+            Some(CountWidth::U32) => 4,
+            _ => 2,
+        };
+        let count = self.entries.len() as u64;
+        if width == 2 && count > u64::from(u16::MAX) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("PABGH: {count} entries do not fit in a u16 count"),
+            ));
+        }
+        let mut buf = count.to_le_bytes()[..width].to_vec();
+        let mut offset = 0u32;
+        for e in &self.entries {
+            let size = entry_size(e)?;
+            e.hash.write_to(&mut buf)?;
+            0u32.write_to(&mut buf)?;
+            offset.write_to(&mut buf)?;
+            size.write_to(&mut buf)?;
+            offset = offset.checked_add(size).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "stringinfo: pabgb size overflows u32")
+            })?;
+        }
+        Ok(buf)
     }
 
     /// Map hashes to their resolved string values. Drops the reserved
@@ -252,9 +320,17 @@ impl StringInfoData {
 
 // ── Per-entry codec ──────────────────────────────────────────────────────
 
-fn read_entry(data: &[u8], offset: &mut usize) -> io::Result<StringInfoEntry> {
-    let reserved_zero = u32::read_from(data, offset)?;
-    let hash = u32::read_from(data, offset)?;
+fn read_entry(data: &[u8], offset: &mut usize, layout: RowLayout) -> io::Result<StringInfoEntry> {
+    let (reserved_zero, hash) = match layout {
+        RowLayout::Legacy => {
+            let zero = u32::read_from(data, offset)?;
+            (zero, u32::read_from(data, offset)?)
+        }
+        RowLayout::V206 => {
+            let hash = u32::read_from(data, offset)?;
+            (u32::read_from(data, offset)?, hash)
+        }
+    };
     let reserved_flag = u8::read_from(data, offset)?;
     let slen = u32::read_from(data, offset)? as usize;
     if *offset + slen > data.len() {
@@ -286,9 +362,17 @@ fn read_entry(data: &[u8], offset: &mut usize) -> io::Result<StringInfoEntry> {
     })
 }
 
-fn write_entry(entry: &StringInfoEntry, w: &mut Vec<u8>) -> io::Result<()> {
-    entry.reserved_zero.write_to(w)?;
-    entry.hash.write_to(w)?;
+fn write_entry(entry: &StringInfoEntry, w: &mut Vec<u8>, layout: RowLayout) -> io::Result<()> {
+    match layout {
+        RowLayout::Legacy => {
+            entry.reserved_zero.write_to(w)?;
+            entry.hash.write_to(w)?;
+        }
+        RowLayout::V206 => {
+            entry.hash.write_to(w)?;
+            entry.reserved_zero.write_to(w)?;
+        }
+    }
     entry.reserved_flag.write_to(w)?;
     let bytes = entry.value_bytes();
     let slen = u32::try_from(bytes.len()).map_err(|_| {
@@ -318,7 +402,7 @@ fn entry_size(entry: &StringInfoEntry) -> io::Result<u32> {
             ),
         )
     })?;
-    // 4 (reserved_zero) + 4 (hash) + 1 (reserved_flag) + 4 (slen) + slen
+    // 4 (reserved_zero / row index) + 4 (hash) + 1 (reserved_flag) + 4 (slen) + slen
     Ok(13u32 + slen)
 }
 
@@ -345,7 +429,7 @@ mod tests {
         ];
         let data = StringInfoData {
             entries: entries.clone(),
-            index_order: None,
+            index_order: None, layout: RowLayout::Legacy,
         };
         let pabgb_bytes = data.write_pabgb().unwrap();
 
@@ -374,13 +458,13 @@ mod tests {
         }
         let index = StringInfoIndex {
             entries: index_entries,
-            count_width: CountWidth::U16,
+            count_width: CountWidth::U16, named: false,
         };
         // Synthesize bytes through write_*, then re-parse.
         let pabgb_bytes = {
             let data = StringInfoData {
                 entries: entries.clone(),
-                index_order: Some(index.clone()),
+                index_order: Some(index.clone()), layout: RowLayout::Legacy,
             };
             data.write_pabgb().unwrap()
         };
@@ -404,7 +488,7 @@ mod tests {
         entries[0].value = "alpha_v2".to_owned();
         let data2 = StringInfoData {
             entries: entries.clone(),
-            index_order: None,
+            index_order: None, layout: RowLayout::Legacy,
         };
         let pabgb2 = data2.write_pabgb().unwrap();
         let pabgh2 = data2.write_pabgh().unwrap();
@@ -430,12 +514,13 @@ mod tests {
         let entry = make_entry(1, "x");
         let data = StringInfoData {
             entries: vec![entry],
-            index_order: None,
+            index_order: None, layout: RowLayout::Legacy,
         };
         let pabgb = data.write_pabgb().unwrap();
         let bad_index = StringInfoIndex {
             entries: vec![StringIndexEntry { hash: 2, offset: 0 }],
             count_width: CountWidth::U16,
+            named: false,
         };
         let pabgh = write_pabgh(&bad_index).unwrap();
         let err = StringInfoData::parse_pair(&pabgb, &pabgh).unwrap_err();
@@ -481,11 +566,13 @@ mod tests {
             return;
         };
         let parsed = StringInfoData::parse_pair(&pabgb, &pabgh).unwrap();
+        assert_eq!(parsed.layout, RowLayout::V206, "2.06 rows open with the hash");
+        assert!(parsed.entries.iter().enumerate().all(|(i, e)| e.reserved_zero as usize == i));
 
         assert_eq!(
             parsed.entries.len(),
-            33_910,
-            "expected 33,910 rows in 2.05 (33,890 in 2.04.08, 33,888 in 2.04.03, 31,812 in 2.03)"
+            33_855,
+            "expected 33,855 rows in 2.06 (33,910 in 2.05, 33,890 in 2.04.08, 33,888 in 2.04.03, 31,812 in 2.03)"
         );
 
         // Byte-identical round-trip.

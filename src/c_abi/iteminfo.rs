@@ -313,6 +313,19 @@ pub struct CrimsonItemInfoHandle {
 
 impl CrimsonItemInfoHandle {
     fn from_bytes(data: &[u8]) -> io::Result<Self> {
+        Self::from_parts(data, None)
+    }
+
+    /// Build the handle. 2.06 keeps every row's `string_key` in the table's
+    /// `.staticinfoheader`; given that header the rows come from it (names
+    /// filled in, each row checked against its header length), otherwise the
+    /// body is walked front to back and `string_key` stays empty on 2.06.
+    fn from_parts(data: &[u8], header: Option<&[u8]>) -> io::Result<Self> {
+        let header_items = match header {
+            Some(h) if !h.is_empty() => Some(crate::item_info::parse_iteminfo_with_header(data, h)?),
+            _ => None,
+        };
+        let mut header_items = header_items.map(|v| v.into_iter());
         // Walk the input the same way `test_full_roundtrip` in lib.rs
         // does. Each `ItemInfo::read_from` advances `offset`; we keep
         // going until the buffer is consumed.
@@ -328,8 +341,18 @@ impl CrimsonItemInfoHandle {
         let mut canonical_gems_set: std::collections::BTreeSet<u32> =
             std::collections::BTreeSet::new();
         let mut summary_by_key: HashMap<u32, CrimsonItemInfoSummary> = HashMap::new();
-        while offset < data.len() {
-            let item = ItemInfo::read_from(data, &mut offset)?;
+        loop {
+            let item = match header_items.as_mut() {
+                Some(it) => match it.next() {
+                    Some(item) => {
+                        offset = data.len();
+                        item
+                    }
+                    None => break,
+                },
+                None if offset < data.len() => ItemInfo::read_from(data, &mut offset)?,
+                None => break,
+            };
             entries.push((item.key.0, item.string_key.data.to_owned()));
             max_stack_by_key.insert(item.key.0, item.max_stack_count);
             // Build the one-shot static-metadata snapshot before we
@@ -511,7 +534,9 @@ pub unsafe extern "C" fn crimson_iteminfo_load_from_file(
             Ok(b) => b,
             Err(_) => return error::IO,
         };
-        let handle = match CrimsonItemInfoHandle::from_bytes(&bytes) {
+        // 2.06+: item names live in the `.staticinfoheader` next to the body.
+        let header = super::sibling_header(path_str);
+        let handle = match CrimsonItemInfoHandle::from_parts(&bytes, header.as_deref()) {
             Ok(h) => h,
             Err(_) => return error::BODY_PARSE,
         };
@@ -547,6 +572,51 @@ pub unsafe extern "C" fn crimson_iteminfo_load_from_bytes(
             unsafe { std::slice::from_raw_parts(data, data_len) }
         };
         let handle = match CrimsonItemInfoHandle::from_bytes(slice) {
+            Ok(h) => h,
+            Err(_) => return error::BODY_PARSE,
+        };
+        unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Parse in-memory iteminfo bytes together with the table's
+/// `.staticinfoheader`. From 2.06 the header carries every item's
+/// `string_key`: without it [`crimson_iteminfo_load_from_bytes`] still parses
+/// every row, but the names come back empty. The header must be the 2.06 shape
+/// (an older install's index returns `BODY_PARSE`; load those without it).
+///
+/// # Safety
+/// `data` / `header` must point to `data_len` / `header_len` readable bytes
+/// (each may be null iff its length is 0). `out_handle` must be non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_iteminfo_load_from_bytes_with_header(
+    data: *const u8,
+    data_len: usize,
+    header: *const u8,
+    header_len: usize,
+    out_handle: *mut *mut CrimsonItemInfoHandle,
+) -> i32 {
+    if out_handle.is_null() {
+        return error::NULL_ARG;
+    }
+    if (data.is_null() && data_len != 0) || (header.is_null() && header_len != 0) {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_handle = std::ptr::null_mut() };
+    catch_unwind(AssertUnwindSafe(|| {
+        let slice = if data_len == 0 {
+            &[][..]
+        } else {
+            unsafe { std::slice::from_raw_parts(data, data_len) }
+        };
+        let header = if header_len == 0 {
+            &[][..]
+        } else {
+            unsafe { std::slice::from_raw_parts(header, header_len) }
+        };
+        let handle = match CrimsonItemInfoHandle::from_parts(slice, Some(header)) {
             Ok(h) => h,
             Err(_) => return error::BODY_PARSE,
         };
@@ -1261,8 +1331,17 @@ mod tests {
 
     /// Pull iteminfo.pabgb via the standard PAZ path, returns its bytes.
     fn extract_iteminfo_bytes(pamt: &CStr) -> Vec<u8> {
+        extract_bin_file(pamt, &gamedata_layout::body("iteminfo"))
+    }
+
+    /// The 2.06 `.staticinfoheader`, which carries the item names.
+    fn extract_iteminfo_header(pamt: &CStr) -> Vec<u8> {
+        extract_bin_file(pamt, &gamedata_layout::header("iteminfo"))
+    }
+
+    fn extract_bin_file(pamt: &CStr, file: &str) -> Vec<u8> {
         let dir = CString::new(gamedata_layout::bin_dir()).unwrap();
-        let name = CString::new(gamedata_layout::body("iteminfo")).unwrap();
+        let name = CString::new(file).unwrap();
         let mut needed: usize = 0;
         let rc = unsafe {
             crimson_paz_extract_file(
@@ -1303,10 +1382,11 @@ mod tests {
         };
         let pamt = CString::new(pamt_path.to_str().unwrap()).unwrap();
         let bytes = extract_iteminfo_bytes(pamt.as_c_str());
+        let header = extract_iteminfo_header(pamt.as_c_str());
 
         let mut handle: *mut CrimsonItemInfoHandle = ptr::null_mut();
         assert_eq!(
-            unsafe { crimson_iteminfo_load_from_bytes(bytes.as_ptr(), bytes.len(), &mut handle) },
+            unsafe { crimson_iteminfo_load_from_bytes_with_header(bytes.as_ptr(), bytes.len(), header.as_ptr(), header.len(), &mut handle) },
             error::OK
         );
         assert!(!handle.is_null());

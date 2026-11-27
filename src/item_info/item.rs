@@ -3,6 +3,27 @@ use super::structs::*;
 use crate::binary::*;
 use crate::py_binary_struct;
 
+// ── ItemInfo (2.06) ─────────────────────────────────────────────────────────
+//
+// Crimson Desert 2.06 (`meta/0.paver` 2/6/0, build 0xe1bd9840, `dlc_01`
+// revision 11, Steam build 26949954) changed the row head of every static-info
+// table, not this table's fields. The name moved out of the row into the
+// `.staticinfoheader`, which now lists `[key][u32 len][name][u32 offset][u32
+// size]` per row (see `binary::static_header`). The row now opens
+// `[key][u32 row index]` instead of `[u32 len][name][key]`. Everything after the
+// key is byte-for-byte the 2.05.01 layout: all 7,068 base and 8,218
+// `iteminfo.dlc_01` rows, rebuilt into the 2.05.01 head, parse with no byte left
+// over. `string_key` therefore stays on the struct as a `HeaderName`, which takes
+// no bytes in the row and is filled in from the header by
+// `parse_iteminfo_with_header`.
+//
+// The base row index equals the row's position. The DLC table's does not. Its
+// meaning is open; see the 2.06 row in `scripts/CLAUDE.md`. Content: one base
+// item removed (1005744, at row 3,340) and one added (1007080, at row 6,076), so
+// CE item IDs 3,340–6,075 move down by one; IDs 3,771–3,797 and 6,941–7,015 were
+// also reordered, and every other ID kept its value. `iteminfo.dlc_01` grew from 1,555 to 8,218
+// rows: it now repeats 6,907 base items, against 244 before.
+
 // ── ItemInfo (2.05.01) ──────────────────────────────────────────────────────
 //
 // Crimson Desert 2.05.01 (`meta/0.paver` 2/5/1, build 0x4ef4be86, `dlc_01`
@@ -500,8 +521,11 @@ use crate::py_binary_struct;
 
 py_binary_struct! {
     pub struct ItemInfo<'a> {
-        pub string_key: CString<'a>,
+        // 2.06: the name lives in the `.staticinfoheader`; no bytes here.
+        pub string_key: HeaderName<'a>,
         pub key: ItemKey,
+        // 2.06: the row's index (its position in the base table).
+        pub row_index: u32,
         pub is_blocked: u8,
         pub max_endurance: u16,
         pub max_stack_count: u64,
@@ -658,6 +682,43 @@ py_binary_struct! {
     }
 }
 
+/// Parse a 2.06 iteminfo table: the rows its `.staticinfoheader` lists, in
+/// order, each with `string_key` filled in from the header. Fails on a header
+/// that is not the 2.06 shape, a row whose key disagrees with the header, or a
+/// row the parser does not consume exactly.
+pub fn parse_iteminfo_with_header<'a>(
+    body: &'a [u8],
+    header: &'a [u8],
+) -> std::io::Result<Vec<ItemInfo<'a>>> {
+    use std::io::{Error, ErrorKind};
+    let rows = crate::binary::static_header::parse_named_header(header, 2, 4)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidData, "not a 2.06 iteminfo header"))?;
+    let mut out = Vec::with_capacity(rows.len());
+    for (i, r) in rows.iter().enumerate() {
+        let row = body.get(r.range()).ok_or_else(|| {
+            Error::new(ErrorKind::UnexpectedEof, format!("row {i} ({}) runs past the body", r.name))
+        })?;
+        let mut off = 0;
+        let mut item = ItemInfo::read_from(row, &mut off)
+            .map_err(|e| Error::new(e.kind(), format!("row {i} ({}): {e}", r.name)))?;
+        if off != row.len() {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!("row {i} ({}): {} of {} bytes read", r.name, off, row.len()),
+            ));
+        }
+        if u64::from(item.key.0) != r.key {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!("row {i}: key {} in the row, {} in the header", item.key.0, r.key),
+            ));
+        }
+        item.string_key = HeaderName { data: r.name };
+        out.push(item);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -684,6 +745,21 @@ mod tests {
         let mut offset = 0;
         let item = ItemInfo::read_from(&data, &mut offset).unwrap();
         assert_eq!(item.key, ItemKey(2200));
-        assert_eq!(item.string_key.data, "Pyeonjeon_Arrow");
+        assert_eq!(item.row_index, 0);
+        // 2.06: the name comes from the header, not the row.
+        assert_eq!(item.string_key.data, "");
+    }
+
+    #[test]
+    fn test_parse_with_header() {
+        let header_path = concat!(env!("CARGO_MANIFEST_DIR"), r"\out\iteminfo.staticinfoheader");
+        let (Some(data), Ok(header)) = (try_load_binary(), std::fs::read(header_path)) else {
+            eprintln!("skipping: out/iteminfo.pabgb or out/iteminfo.staticinfoheader not found");
+            return;
+        };
+        let items = parse_iteminfo_with_header(&data, &header).unwrap();
+        assert_eq!(items[0].key, ItemKey(2200));
+        assert_eq!(items[0].string_key.data, "Pyeonjeon_Arrow");
+        assert!(items.iter().enumerate().all(|(i, it)| it.row_index as usize == i));
     }
 }

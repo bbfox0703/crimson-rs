@@ -54,6 +54,9 @@ pub fn parse_faction_node_info_lossy(
     pabgb: &[u8],
     pabgh: &[u8],
 ) -> Vec<FactionNodeInfoEntry> {
+    // 2.06 moved row names into the header; rebuild the pre-2.06 layout.
+    let (pabgb, pabgh) = crate::binary::static_header::legacy_pair(pabgb, pabgh);
+    let (pabgb, pabgh): (&[u8], &[u8]) = (&pabgb, &pabgh);
     let Ok(index) = crate::skill_info::parse_pabgh(pabgh) else {
         return Vec::new();
     };
