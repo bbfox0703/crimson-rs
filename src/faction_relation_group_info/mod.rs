@@ -24,33 +24,53 @@
 //! For 5 entries: 2 + 5 × 6 = 32 bytes (matches the live file's
 //! 32-byte `.pabgh`).
 //!
-//! **PABGB row layout** (verified byte-exact across all 5 rows in 1.07;
-//! 2.04 moved `key` after the name, and nothing else on these 5 rows):
+//! **PABGB row layout** (all 5 rows; 2.04 moved `key` after the name, 2.06
+//! moved the name into the header; the content has not changed since
+//! 1.03.01):
 //!
 //! ```text
 //! Row {
 //!     u32 name_len,
 //!     u8  name[name_len],   // ASCII identifier
 //!     u16 key,              // matches PABGH key
-//!     u8  pad1[5],          // = 00 00 00 00 00
-//!     u32 list1_count,
-//!     u16 list1[list1_count],   // u16 references back into this same table
-//!     u8  pad2[4],          // = 00 00 00 00 — separator between the two lists
-//!     u32 list2_count,
-//!     u16 list2[list2_count],   // second u16-key list
+//!     u8  is_blocked,       // 0 on every row
+//!     // _relationGroupList: one list per FactionRelationType, in order
+//!     [u32 count, u16 group_key[count]] × 4   // Neutral, War, Agreement, BloodAlly
 //! }
 //! ```
 //!
-//! `list1` and `list2` are sibling-group references — the relation
-//! semantics for each row are stored as lists of *other* row keys.
-//! E.g. `Graymane`'s lists point at `HostileCombat` (0x4245),
-//! `Monster_Common` (0x4247) and `FriendlyCombat` (0x4244),
-//! `NPC_Common` (0x4246).
+//! ## The relation lists (2026-11-27)
 //!
-//! The bridge only consumes `(key, name)` for the standard
-//! `lookup_string_key` surface; the embedded reference lists are
-//! exposed via [`FactionRelationGroupEntry::related`] for callers that
-//! want to render the relation matrix in a UI.
+//! The exe's reflection data names the row's fields `_key`,
+//! `_relationGroupList`, `_staticInfoIndex` and `_isBlocked`; the body is
+//! `_isBlocked` and then four count-prefixed lists, one per
+//! `FactionRelationType` (0 Neutral, 1 War, 2 Agreement, 3 BloodAlly — the
+//! name table after the exe's `FactionRelationGroupInfo(%#)…상호 같은 Relation
+//! 이어야 합니다` consistency message, which requires the two directions to
+//! agree). The bytes earlier read as "5 pad bytes" and "a 4-byte separator"
+//! are `_isBlocked` plus the empty Neutral list, and the empty Agreement list.
+//!
+//! | group | War (1) | BloodAlly (3) |
+//! |---|---|---|
+//! | `Graymane` (player) | HostileCombat, Monster_Common | FriendlyCombat, NPC_Common |
+//! | `FriendlyCombat` | HostileCombat, Monster_Common | Graymane, NPC_Common |
+//! | `HostileCombat` | Graymane, FriendlyCombat, Monster_Common | NPC_Common |
+//! | `NPC_Common` | Monster_Common | Graymane, FriendlyCombat, HostileCombat |
+//! | `Monster_Common` | Graymane, FriendlyCombat, HostileCombat, NPC_Common | — |
+//!
+//! Neutral and Agreement are empty on every row. The matrix is symmetric, and
+//! each of the 10 pairs of distinct groups is in exactly one list, so between
+//! two different groups the relation is always War or BloodAlly. A group's
+//! relation to itself is not listed. This matches the game: Monster_Common
+//! (`Faction_Bandit`) and HostileCombat attack the player, NPC_Common and
+//! FriendlyCombat do not, and the save's explicit player ⇄
+//! `Faction_Celeste_Hernand` record was already 3 (BloodAlly). An explicit
+//! faction relation overrides the group default (verified in game with a
+//! BloodAlly record for `Faction_Bandit`).
+//!
+//! [`FactionRelationGroupEntry::relation_lists`] holds the four lists;
+//! [`FactionRelationGroupEntry::related`] is their concatenation (War, then
+//! BloodAlly), as the bridge exposed it before.
 //!
 //! **PALOC chain**: none — the `_probe_faction_paloc_chains` pass
 //! returned only coincidental collisions at `lo32 = 0x80` (UI tooltip
@@ -68,12 +88,19 @@ pub struct FactionRelationGroupEntry {
     pub key: u32,
     /// ASCII internal name (e.g. `"Graymane"`, `"HostileCombat"`).
     pub name: String,
-    /// Sibling-row references this group relates to (union of the two
-    /// embedded u16 lists in the on-disk body — surface them as a
-    /// single flat list since the partition between "list1" and
-    /// "list2" is not yet RE'd to a known semantic split).
+    /// Every group this one lists, the four relation lists concatenated in
+    /// `FactionRelationType` order (in practice War, then BloodAlly).
     pub related: Vec<u32>,
+    /// `_relationGroupList`: the groups this one has each relation with,
+    /// indexed by `FactionRelationType` (0 Neutral, 1 War, 2 Agreement,
+    /// 3 BloodAlly).
+    pub relation_lists: [Vec<u32>; RELATION_LIST_COUNT],
 }
+
+/// Lists per row: one per `FactionRelationType` from Neutral (0) through
+/// BloodAlly (3). `ByGroup` (4) has none: it is what a faction relation says
+/// when it defers to this table.
+pub const RELATION_LIST_COUNT: usize = 4;
 
 /// Parse `factionrelationgroup.pabgb` using its custom-shape `.pabgh`
 /// index (`u16 count + (u16 key, u32 offset)*`).
@@ -126,16 +153,13 @@ pub fn parse_faction_relation_group_info_lossy(
         if head.key != u32::from(*key16) || !(1..=128).contains(&head.name.len()) {
             continue;
         }
-        // Parse the two embedded reference lists. Layout per row:
-        //   [u32 list1_count][list1: list1_count × u16]
-        //   [u8 pad2[4]]
-        //   [u32 list2_count][list2: list2_count × u16]
-        // Tolerate truncation — a row with no lists, or a body byte
-        // that fails the layout check, still surfaces the (key, name)
-        // pair with whatever `related` was parsed so far.
-        let mut related: Vec<u32> = Vec::new();
-        let mut cursor = head.body_at + 5; // skip the 5 pad bytes after `key`
-        for list_idx in 0..2 {
+        // `_isBlocked`, then one `[u32 count][u16 × count]` list per
+        // FactionRelationType. Tolerate truncation — a row whose lists do
+        // not parse still surfaces the (key, name) pair with whatever was
+        // read so far.
+        let mut relation_lists: [Vec<u32>; RELATION_LIST_COUNT] = Default::default();
+        let mut cursor = head.body_at + 1; // skip `_isBlocked`
+        for list in relation_lists.iter_mut() {
             if cursor + 4 > body.len() {
                 break;
             }
@@ -151,19 +175,15 @@ pub fn parse_faction_relation_group_info_lossy(
             }
             for i in 0..n {
                 let off = cursor + i * 2;
-                let r = u16::from_le_bytes([body[off], body[off + 1]]);
-                related.push(u32::from(r));
+                list.push(u32::from(u16::from_le_bytes([body[off], body[off + 1]])));
             }
             cursor += n * 2;
-            // 4-byte separator between list1 and list2; nothing after list2.
-            if list_idx == 0 {
-                cursor += 4;
-            }
         }
         out.push(FactionRelationGroupEntry {
             key: u32::from(*key16),
             name: head.name.to_owned(),
-            related,
+            related: relation_lists.concat(),
+            relation_lists,
         });
     }
     out
@@ -270,5 +290,31 @@ mod tests {
                 );
             }
         }
+
+        // The relation matrix: symmetric, every pair of distinct groups in
+        // exactly one list, Neutral and Agreement empty.
+        let relation = |a: u32, b: u32| -> Option<usize> {
+            by_key[&a].relation_lists.iter().position(|l| l.contains(&b))
+        };
+        for a in by_key.keys() {
+            let e = by_key[a];
+            assert!(e.relation_lists[0].is_empty() && e.relation_lists[2].is_empty(), "{}", e.name);
+            for b in by_key.keys() {
+                if a == b {
+                    assert_eq!(relation(*a, *b), None, "{} lists itself", e.name);
+                } else {
+                    let r = relation(*a, *b);
+                    assert!(r.is_some(), "0x{a:04x} -> 0x{b:04x} unlisted");
+                    assert_eq!(r, relation(*b, *a), "0x{a:04x} <-> 0x{b:04x} not symmetric");
+                }
+            }
+        }
+        const WAR: Option<usize> = Some(1);
+        const BLOOD_ALLY: Option<usize> = Some(3);
+        assert_eq!(relation(0x4243, 0x4247), WAR, "Graymane vs Monster_Common");
+        assert_eq!(relation(0x4243, 0x4245), WAR, "Graymane vs HostileCombat");
+        assert_eq!(relation(0x4243, 0x4246), BLOOD_ALLY, "Graymane vs NPC_Common");
+        assert_eq!(relation(0x4243, 0x4244), BLOOD_ALLY, "Graymane vs FriendlyCombat");
+        assert_eq!(relation(0x4245, 0x4246), BLOOD_ALLY, "HostileCombat vs NPC_Common");
     }
 }

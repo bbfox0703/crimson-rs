@@ -87,7 +87,7 @@ The maintainer works on two Windows PCs. These rules used to live in one machine
 - **Live-game RE:** reading the running game's memory read-only (`ReadProcessMemory`) is fine. That is how the 2.05 item key array was found. Never write to the process.
 - **Tell version binaries apart by hash, never by size.** `iteminfo.pabgb` was 5,938,891 B in 1.13.01, 1.14 and 1.15 alike.
 - **A per-version archive missing on one PC is not lost.** The archives are split across the two machines, so ask before concluding one is gone, and don't "correct" docs that name an archive this machine lacks.
-- **When the other PC has done a patch:** `git pull`, then `maturin develop --release` before any parse (the stale-`.pyd` trap under Development). Run `scripts/setup-fork-guards.ps1` once on each clone.
+- **When the other PC has done a patch:** `git pull`, then `maturin develop --release` before any parse (the stale-`.pyd` trap under Development). Run `scripts/setup-fork-guards.ps1` once on each clone, and clone `bbfox0703/crimson-rs-private` next to it once (the save fixtures; see Reference Files).
 - **Line endings:** `core.autocrlf=true`. `sed -i` over a CRLF file silently rewrites it LF, so edit with the Edit tool or a script that keeps the file's line endings. Compare key snapshots by content (`tr -d '\r'`), never by hash.
 - **Long test runs:** `cargo test … | grep` prints nothing if the process dies (the `TailSizeCache` balloon). Redirect to a file and tail it.
 - **A tripped heuristic pin is not automatically a drift.** Check that every row parsed (row count equals the header count), that the `KNOWN` pins pass and that the value distribution looks sane before touching a parser. A byte-identical round-trip doesn't prove the field boundaries either.
@@ -99,6 +99,7 @@ The maintainer works on two Windows PCs. These rules used to live in one machine
 # Reference Files
 - `D:\SteamLibrary\steamapps\common\Crimson Desert` — Game installation folder (hardcoded in tests; tests skip cleanly when not present; override with the `CRIMSON_GAME_ROOT` env var).
 - `out/baselines/1.05/items.jsonl` — Per-version reference data (gitignored — keep local).
+- `D:\Github\crimson-rs-private\saves\` — Real save files the tests use as fixtures (1.09, 1.10 and the 1.10 length-change repro sets), in the **private** `bbfox0703/crimson-rs-private` repo, cloned next to this one on each PC (override with `CRIMSON_FIXTURES_DIR`; resolver in `src/test_fixtures.rs`). Fixture tests skip without it, and CI never has it. Until 2026-11-27 they sat in `tests/fixtures/saves/` under git-crypt; commits before that still hold the encrypted blobs (and `tools/git-crypt.exe` stays for them). `*.save` is gitignored here: never commit a save to this public repo.
 
 # Module map
 `src/` is organized as: `binary/` (PAMT/PAPGT/PAZ/PALOC/trie/paver container formats + the test-only `gamedata_layout` archive-path resolver), `crypto/` (Jenkins checksum + ChaCha20), `item_info/` + `skill_info/` + `string_info/` + `character_info/` (byte-roundtrip parsers), `save/` (save header + crypto + body), and `c_abi/` (the feature-gated extern "C" surface). The full annotated per-file map is in [`docs/c-abi-surface.md`](docs/c-abi-surface.md).

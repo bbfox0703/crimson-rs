@@ -17,6 +17,8 @@
 mod binary;
 #[cfg(feature = "c_abi")]
 mod character_info;
+#[cfg(test)]
+mod test_fixtures;
 #[cfg(feature = "c_abi")]
 mod craft_tool_group_info;
 #[cfg(feature = "c_abi")]
@@ -835,11 +837,11 @@ mod tests {
             }
         }
 
-        // Live saves plus the checked-in fixtures (1.09, 1.10 and the 1.10
-        // length-change set), so the rule is also held on older patches and
-        // wherever the fixtures are decryptable but no game is installed.
+        // Live saves plus the fixture saves in crimson-rs-private (1.09, 1.10
+        // and the 1.10 length-change set), so the rule is also held on older
+        // patches and wherever the fixtures are present but no game is
+        // installed.
         let mut saves = collect_all_saves();
-        let fixtures = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/saves");
         for rel in [
             "1.09/save.save",
             "1.10/save.save",
@@ -847,12 +849,8 @@ mod tests {
             "1.10/broken_save_after_length_change/add_2_sugar_in_game/save.save",
             "1.10/broken_save_after_length_change/use_editor_add_sugar/save.save",
         ] {
-            let p = fixtures.join(rel);
-            // git-crypt-locked clones check fixtures out as encrypted blobs.
-            if let Ok(data) = std::fs::read(&p)
-                && data.get(..4) == Some(b"SAVE")
-            {
-                saves.push((p, data));
+            if let Some(data) = crate::test_fixtures::save(rel) {
+                saves.push((crate::test_fixtures::saves_dir().join(rel), data));
             }
         }
         if saves.is_empty() {
@@ -1299,20 +1297,12 @@ mod tests {
     #[test]
     fn test_faction_revive_quest_no_trailer_relocates() {
         use crate::save::{Body, FieldKind, FieldValue, Save, encode_top_level_block};
-        use std::path::PathBuf;
 
-        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
-            "tests/fixtures/saves/1.10/broken_save_after_length_change/base_sample/save.save",
-        );
-        let Ok(data) = std::fs::read(&p) else {
-            eprintln!("skipping: {} not present", p.display());
+        let Some(data) =
+            crate::test_fixtures::save("1.10/broken_save_after_length_change/base_sample/save.save")
+        else {
             return;
         };
-        // git-crypt-locked clones check the file out as its encrypted blob.
-        if data.get(..4) != Some(b"SAVE") {
-            eprintln!("skipping: base_sample is git-crypt locked (no key)");
-            return;
-        }
 
         let save = Save::parse(&data).unwrap();
         let body = Body::parse(&save.body).unwrap();
@@ -1397,19 +1387,12 @@ mod tests {
     #[test]
     fn test_faction_node_offset_relocates_through_trailing_pad() {
         use crate::save::{Body, Save, encode_top_level_block};
-        use std::path::PathBuf;
 
-        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
-            "tests/fixtures/saves/1.10/sealed-artifact-challenge/engine-natural/before/save.save",
-        );
-        let Ok(data) = std::fs::read(&p) else {
-            eprintln!("skipping: {} not present", p.display());
+        let Some(data) =
+            crate::test_fixtures::save("1.10/sealed-artifact-challenge/engine-natural/before/save.save")
+        else {
             return;
         };
-        if data.get(..4) != Some(b"SAVE") {
-            eprintln!("skipping: fixture is git-crypt locked (no key)");
-            return;
-        }
 
         let save = Save::parse(&data).unwrap();
         let body = Body::parse(&save.body).unwrap();

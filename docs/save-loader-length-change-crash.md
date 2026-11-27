@@ -7,7 +7,7 @@
 bug (not a game loader bug): on a length-changing edit the encoder failed to
 relocate two absolute `payload_offset`s, leaving dangling pointers that crash the
 game's loader (the WER-dump `memcpy` overflow is the *downstream symptom*). The
-controlled "add sugar" set (`tests/fixtures/saves/1.10/broken_save_after_length_change/`)
+controlled "add sugar" set (`saves/1.10/broken_save_after_length_change/` in the private `crimson-rs-private` repo; `tests/fixtures/saves/` here until 2026-11-27)
 pinned it; repro save **C** (offsets hand-relocated `+241`) **loads in-game —
 confirmed by the user**. Fixed by the `prefix_00xx0100_notrailer` dynamic-array
 variant in `src/save/body/decoder.rs`; regression test
@@ -214,7 +214,7 @@ noise — ignore them).
 These checks all passed and were read as "not a crimson-rs bug" — but a **no-op**
 round-trip does not move any block, so it never exercises the relocation of
 `payload_offset`s buried in `trailing_pad`. That blind spot is exactly the
-2026-06-09 bug. Checked against the repro saves (`tests/fixtures/saves/1.10/sealed-artifact-challenge/`):
+2026-06-09 bug. Checked against the repro saves (`crimson-rs-private/saves/1.10/sealed-artifact-challenge/`):
 
 - **Encoder fidelity** — a no-op decode→encode of the game's own save diffs
   **0 bytes** (after the `Bool(u8)` round-trip fix, commit history `fix(save):

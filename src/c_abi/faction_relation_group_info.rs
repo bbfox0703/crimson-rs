@@ -13,12 +13,14 @@
 //! [`super::quest_gauge_info`] in shape — no `lookup_display_name`.
 //!
 //! Beyond the standard `lookup_string_key`, this bridge exposes
-//! [`crimson_factionrelationgroup_lookup_related_count`] +
-//! [`crimson_factionrelationgroup_lookup_related_at`] so callers can
-//! walk each group's two embedded sibling-reference lists (the
-//! per-row relation matrix the editor renders for the "this group
-//! relates to ..." UI). See `src/faction_relation_group_info/mod.rs`
-//! for the body schema.
+//! [`crimson_factionrelationgroup_lookup_relation`] — the
+//! `FactionRelationType` between two groups, which is what a faction pair
+//! without an explicit relation record falls back to — and
+//! [`crimson_factionrelationgroup_lookup_related_count`] /
+//! [`crimson_factionrelationgroup_lookup_related_at`], which walk every group
+//! a row lists (War first, then BloodAlly). See
+//! `src/faction_relation_group_info/mod.rs` for the body schema and the
+//! matrix.
 
 use std::collections::HashMap;
 use std::ffi::CStr;
@@ -41,6 +43,8 @@ pub struct CrimsonFactionRelationGroupInfoHandle {
 struct RowData {
     name: String,
     related: Vec<u32>,
+    /// Indexed by `FactionRelationType` (0 Neutral … 3 BloodAlly).
+    relation_lists: [Vec<u32>; crate::faction_relation_group_info::RELATION_LIST_COUNT],
 }
 
 impl CrimsonFactionRelationGroupInfoHandle {
@@ -52,6 +56,7 @@ impl CrimsonFactionRelationGroupInfoHandle {
             let row = RowData {
                 name: e.name,
                 related: e.related,
+                relation_lists: e.relation_lists,
             };
             if let std::collections::hash_map::Entry::Vacant(v) = by_key.entry(e.key) {
                 v.insert(row.clone());
@@ -222,9 +227,48 @@ pub unsafe extern "C" fn crimson_factionrelationgroup_lookup_string_key(
     .unwrap_or(error::PANIC)
 }
 
-/// Total number of sibling-row references attached to a given row.
-/// (For 1.07 this is the union of the two on-disk `list1` + `list2`
-/// counts; e.g. `Graymane` returns 4.)
+/// The `FactionRelationType` between two relation groups: 1 War or
+/// 3 BloodAlly for every pair of distinct groups on 2.06 (0 Neutral and
+/// 2 Agreement are never listed). This is the default a faction pair falls
+/// back to when the save has no explicit relation record for it; an explicit
+/// record overrides it.
+///
+/// Read from `group_a`'s row (the table is symmetric, so the order does not
+/// matter). Returns `NOT_FOUND` when `group_a` is not in the table or does not
+/// list `group_b` — which includes a group with itself: the table defines no
+/// same-group relation, and none is assumed here.
+///
+/// # Safety
+/// `handle` and `out_relation_type` must be non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_factionrelationgroup_lookup_relation(
+    handle: *const CrimsonFactionRelationGroupInfoHandle,
+    group_a: u32,
+    group_b: u32,
+    out_relation_type: *mut u32,
+) -> i32 {
+    if handle.is_null() || out_relation_type.is_null() {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_relation_type = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let Some(row) = h.by_key.get(&group_a) else {
+            return error::NOT_FOUND;
+        };
+        match row.relation_lists.iter().position(|l| l.contains(&group_b)) {
+            Some(t) => {
+                unsafe { *out_relation_type = t as u32 };
+                error::OK
+            }
+            None => error::NOT_FOUND,
+        }
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Total number of groups a row lists, across all its relation lists
+/// (War, then BloodAlly); `Graymane` returns 4.
 ///
 /// Returns `NOT_FOUND` if `faction_relation_group_key` isn't in the
 /// table.
@@ -539,6 +583,43 @@ mod tests {
                 )
             },
             error::OUT_OF_RANGE,
+        );
+
+        // Group-to-group relation (FactionRelationType): 1 War, 3 BloodAlly.
+        const GRAYMANE: u32 = 0x4243;
+        const FRIENDLY_COMBAT: u32 = 0x4244;
+        const HOSTILE_COMBAT: u32 = 0x4245;
+        const NPC_COMMON: u32 = 0x4246;
+        const MONSTER_COMMON: u32 = 0x4247;
+        let relation = |a: u32, b: u32| -> Option<u32> {
+            let mut t = 99u32;
+            match unsafe { crimson_factionrelationgroup_lookup_relation(sh, a, b, &mut t) } {
+                error::OK => Some(t),
+                rc => {
+                    assert_eq!(rc, error::NOT_FOUND);
+                    assert_eq!(t, 0);
+                    None
+                }
+            }
+        };
+        for (a, b, want) in [
+            (GRAYMANE, MONSTER_COMMON, 1),
+            (GRAYMANE, HOSTILE_COMBAT, 1),
+            (GRAYMANE, NPC_COMMON, 3),
+            (GRAYMANE, FRIENDLY_COMBAT, 3),
+            (FRIENDLY_COMBAT, HOSTILE_COMBAT, 1),
+            (HOSTILE_COMBAT, MONSTER_COMMON, 1),
+            (HOSTILE_COMBAT, NPC_COMMON, 3),
+            (NPC_COMMON, MONSTER_COMMON, 1),
+        ] {
+            assert_eq!(relation(a, b), Some(want), "0x{a:04x} -> 0x{b:04x}");
+            assert_eq!(relation(b, a), Some(want), "0x{b:04x} -> 0x{a:04x}");
+        }
+        assert_eq!(relation(GRAYMANE, GRAYMANE), None, "no same-group relation");
+        assert_eq!(relation(0x9999, GRAYMANE), None);
+        assert_eq!(
+            unsafe { crimson_factionrelationgroup_lookup_relation(sh, GRAYMANE, NPC_COMMON, ptr::null_mut()) },
+            error::NULL_ARG,
         );
 
         unsafe { crimson_factionrelationgroup_free(sh) };
