@@ -1034,4 +1034,212 @@ mod tests {
         assert_eq!(c, 0);
         unsafe { crimson_item_part_prefab_free(sh) };
     }
+
+    /// One `_itemDyeDataList` in a decoded save: the owning item's key and
+    /// its `ItemDyeSaveData` elements.
+    type DyeList<'a> = (u32, &'a [crate::save::ObjectBlock]);
+
+    fn save_scalar(b: &crate::save::ObjectBlock, n: &str) -> Option<i64> {
+        use crate::save::{FieldValue, ScalarValue};
+        b.fields.iter().find(|f| f.name == n && f.present).and_then(|f| match &f.value {
+            FieldValue::Scalar(ScalarValue::U8(v)) => Some(i64::from(*v)),
+            FieldValue::Scalar(ScalarValue::I8(v)) => Some(i64::from(*v)),
+            FieldValue::Scalar(ScalarValue::U16(v)) => Some(i64::from(*v)),
+            FieldValue::Scalar(ScalarValue::U32(v)) => Some(i64::from(*v)),
+            FieldValue::Scalar(ScalarValue::Bool(v)) => Some(i64::from(*v)),
+            _ => None,
+        })
+    }
+
+    /// Every `_itemDyeDataList` under `b`, whatever container holds the item.
+    fn dye_lists<'a>(b: &'a crate::save::ObjectBlock, out: &mut Vec<DyeList<'a>>) {
+        use crate::save::FieldValue;
+        for f in &b.fields {
+            if f.name == "_itemDyeDataList"
+                && f.present
+                && let FieldValue::ObjectList { elements, .. } = &f.value
+            {
+                let key = save_scalar(b, "_itemKey").unwrap_or(-1) as u32;
+                out.push((key, elements));
+            }
+        }
+        for f in &b.fields {
+            match &f.value {
+                FieldValue::ObjectList { elements, .. } => {
+                    for e in elements {
+                        dye_lists(e, out);
+                    }
+                }
+                FieldValue::Locator { child: Some(c), .. } => dye_lists(c, out),
+                _ => {}
+            }
+        }
+    }
+
+    /// The live join handle plus the slot rows by key, or `None` without an
+    /// install.
+    fn live_join() -> Option<(
+        CrimsonItemPartPrefabHandle,
+        HashMap<u32, crate::part_prefab_dye_slot_info::PartPrefabDyeSlotInfoEntry>,
+    )> {
+        let pamt_path = find_pamt()?;
+        let pamt = CString::new(pamt_path.to_str().unwrap()).unwrap();
+        let x = |n: String| extract_file(pamt.as_c_str(), gamedata_layout::bin_dir(), &n);
+        let item_b = x(gamedata_layout::body("iteminfo"));
+        let si_b = x(gamedata_layout::body("stringinfo"));
+        let pp_b = x(gamedata_layout::body("partprefabdyeslotinfo"));
+        let pp_h = x(gamedata_layout::header("partprefabdyeslotinfo"));
+        let h = CrimsonItemPartPrefabHandle::from_bytes(&item_b, &si_b, &pp_b, &pp_h).unwrap();
+        let rows = crate::part_prefab_dye_slot_info::parse_part_prefab_dye_slot_info_lossy(&pp_b, &pp_h)
+            .into_iter()
+            .map(|e| (e.key, e))
+            .collect();
+        Some((h, rows))
+    }
+
+    /// The save's `_dyeSlotNo` is a dye slot number of the item's prefab —
+    /// the bit index of the 2.01+ 12-byte mask, not a slot index. Items
+    /// 121013 and 131013 were dyed in-game on 1.10; each has one prefab with
+    /// one slot, yet three and two dye entries, numbered exactly like the
+    /// prefab's dye slots on live 2.06. Skips when the git-crypt fixture is
+    /// locked (override the path with `CRIMSON_DYE_FIXTURE_SAVE`).
+    #[test]
+    fn dye_slot_no_is_a_prefab_dye_slot_in_the_1_10_fixture() {
+        use crate::save::{Body, Save};
+        let fixture = std::env::var_os("CRIMSON_DYE_FIXTURE_SAVE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures/saves/1.10/broken_save_after_length_change/base_sample/save.save")
+            });
+        let Ok(raw) = std::fs::read(&fixture) else {
+            eprintln!("skipping: fixture missing");
+            return;
+        };
+        if raw.get(..4) != Some(b"SAVE") {
+            eprintln!("skipping: fixture is git-crypt locked");
+            return;
+        }
+        let Some((h, rows)) = live_join() else {
+            eprintln!("skipping: no game install");
+            return;
+        };
+        let save = Save::parse(&raw).unwrap();
+        let body = Body::parse(&save.body).unwrap();
+        let blocks = body.decode_blocks(&save.body);
+        let mut lists = Vec::new();
+        for b in &blocks {
+            dye_lists(b, &mut lists);
+        }
+        let mut resolved = HashMap::new();
+        for (item, elements) in lists {
+            let Some(keys) = h.part_prefab_keys_by_item.get(&item) else {
+                continue;
+            };
+            // Absent `_dyeSlotNo` is slot 0.
+            let used = elements
+                .iter()
+                .map(|e| save_scalar(e, "_dyeSlotNo").unwrap_or(0))
+                .fold(0u32, |a, n| a | (1 << n));
+            let offered = keys.iter().filter_map(|k| rows.get(k)).fold(0, |a, r| a | r.dye_slot_bits());
+            assert_eq!(used & !offered, 0, "item {item}: _dyeSlotNo outside the prefab's dye slots");
+            resolved.insert(item, (keys.clone(), used));
+        }
+        assert_eq!(resolved.get(&121013), Some(&(vec![0x8dfa1dd5], 0b111)));
+        assert_eq!(resolved.get(&131013), Some(&(vec![0x5cfb1da4], 0b11)));
+        assert_eq!(rows[&0x8dfa1dd5].slot_count(), 1);
+        assert_eq!(rows[&0x8dfa1dd5].dye_slot_bits(), 0b111);
+        assert_eq!(rows[&0x5cfb1da4].dye_slot_bits(), 0b11);
+    }
+
+    /// Joins every `_itemDyeDataList` element in the live saves to the
+    /// item's `partprefabdyeslotinfo` rows, one block per dyed item, so the
+    /// save's `_dyeSlotNo` can be compared against the slot masks. Reads
+    /// every `save.save` under `%LOCALAPPDATA%\Pearl Abyss\CD\save`
+    /// (override: `CRIMSON_DYE_JOIN_ROOT`, e.g. `tests/fixtures/saves`).
+    #[test]
+    #[ignore]
+    fn _probe_dye_save_slot_join() {
+        use crate::save::{Body, Save};
+        let Some((h, rows)) = live_join() else {
+            eprintln!("skipping: no game install");
+            return;
+        };
+        let root = std::env::var_os("CRIMSON_DYE_JOIN_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default())
+                    .join("Pearl Abyss")
+                    .join("CD")
+                    .join("save")
+            });
+        let mut paths = Vec::new();
+        let mut stack = vec![root];
+        while let Some(d) = stack.pop() {
+            let Ok(rd) = std::fs::read_dir(&d) else { continue };
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.file_name().is_some_and(|n| n == "save.save") {
+                    paths.push(p);
+                }
+            }
+        }
+        paths.sort();
+        for p in paths {
+            let Ok(raw) = std::fs::read(&p) else { continue };
+            let (Ok(save), true) = (Save::parse(&raw), raw.get(..4) == Some(b"SAVE")) else {
+                println!("SAVE {} unreadable", p.display());
+                continue;
+            };
+            let Ok(body) = Body::parse(&save.body) else {
+                continue;
+            };
+            let blocks = body.decode_blocks(&save.body);
+            let mut lists = Vec::new();
+            for b in &blocks {
+                dye_lists(b, &mut lists);
+            }
+            println!("SAVE {} dyed_items={}", p.display(), lists.len());
+            for (key, elements) in lists {
+                println!("ITEM {key}");
+                for e in elements {
+                    let s = |n| save_scalar(e, n);
+                    println!(
+                        "  DYE no={:?} rgba={:?},{:?},{:?},{:?} grime={:?} grp={:?} pal={:?} nosym={:?}",
+                        s("_dyeSlotNo"),
+                        s("_dyeColorR"),
+                        s("_dyeColorG"),
+                        s("_dyeColorB"),
+                        s("_dyeColorA"),
+                        s("_grimeOpacity"),
+                        s("_dyeColorGroupInfoKey").map(|v| format!("{v:x}")),
+                        s("_texturePalleteKey"),
+                        s("_disableSymbol"),
+                    );
+                }
+                let keys = h.part_prefab_keys_by_item.get(&key).into_iter().flatten();
+                let names = h.prefab_names_by_item.get(&key).into_iter().flatten();
+                for (pk, name) in keys.zip(names) {
+                    let Some(r) = rows.get(pk) else { continue };
+                    println!(
+                        "  PREFAB {pk:08x} {name} slots={} dye_slot_bits={:012b}",
+                        r.slots.len(),
+                        r.dye_slot_bits()
+                    );
+                    for (i, s) in r.slots.iter().enumerate() {
+                        let m: String = s.mask.iter().map(|b| char::from(b'0' + b)).collect();
+                        println!(
+                            "    SLOT {i} mi={:?} mats={:?} mask={m} active={:?} extra={}",
+                            s.mat_indices,
+                            s.default_materials,
+                            s.active_channels(),
+                            s.extra_layers.len()
+                        );
+                    }
+                }
+            }
+        }
+    }
 }

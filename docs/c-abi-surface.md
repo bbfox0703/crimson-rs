@@ -348,7 +348,7 @@ absorbed by list-header variants (`marker_run_plus_zeros`, `ones_then_count`,
 
 ### Status & remaining work
 
-379 tests pass with `c_abi` on 2.06 (+47 ignored diagnostic probes); the bare-default
+384 tests pass with `c_abi` on 2.06 (+48 ignored diagnostic probes); the bare-default
 build (`cargo check --lib`) is also clean; clippy clean both modes. The Jenkins
 hash-hop transform that drives Mission/Quest/Stage/Knowledge title resolution is
 cracked and pinned. CharacterKey ships at the 22% display-name coverage §6
@@ -371,10 +371,11 @@ Remaining work is **optional follow-ons only**:
 (f) PALOC chain probe for StoreKey / MercenaryKey if a downstream editor wants
     localized display names;
 (g) RE'ing storeinfo's per-row body (price/item lists);
-(h) RE'ing **which** of 2.01's four 3-byte mask groups a dye slot uses — the
-    bytes are exposed (`..._lookup_slot_mask_full`) but the group selector's
-    meaning is not yet known (see [`dye-editor-scope.md`](dye-editor-scope.md)
-    "Cross-version drift (2.01)").
+(h) ~~which of 2.01's "four 3-byte mask groups" a dye slot uses~~ — **resolved
+    2026-11-27**: there are no groups. The 12-byte mask has one flag per dye slot
+    number (the values in `mat_indices`, and the save's `_dyeSlotNo`); see
+    `..._lookup_slot_active_channels` / `..._lookup_dye_slot_bits` and
+    [`dye-editor-scope.md`](dye-editor-scope.md) "Dye slot numbers (2.01+)".
 
 ## Rust module structure
 
@@ -455,6 +456,11 @@ src/
     │                                           #   ..._extra_layer_mask are partial reads there and
     │                                           #   ..._mask_full / ..._extra_layer_mask_full return the whole
     │                                           #   field via the sized-buffer pattern
+    │                                           #   2026-11-27: the 12 bytes are one flag per dye slot number
+    │                                           #   (mat_indices values = save _dyeSlotNo); lookup_slot_active_channels
+    │                                           #   (the pre-2.01 per-channel meaning, 3-byte out), lookup_slot_dye_slot_bits,
+    │                                           #   lookup_slot_extra_layer_dye_slot_bits, lookup_dye_slot_bits (prefab
+    │                                           #   union = the item's _dyeSlotNo set), lookup_dye_slot_material
     ├── faction_info.rs                        # FactionKey (u32) → "Faction_Graymane"/"Faction_ThiefDusksong"/... (135 rows in 2.06, name-only;
     │                                           #   rows carry no localizable string, and PALOC byte 0x30 at a FactionKey
     │                                           #   answers with *character* names — CharacterKey 1000000 "Hernandian Guard")

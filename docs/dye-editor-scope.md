@@ -150,9 +150,10 @@ Row {
     Slot slot[slot_count],
 }
 Slot {
-    u8 mat_indices[3],        // material indices for this slot
+    u8 mat_indices[3],        // dye slot number per material channel (0..12, 0xFF = unused)
     CString material_a / b / c, // 3 default material names (often empty)
-    u8 mask[12],              // active/visible flags; 3 bytes before 2.01
+    u8 mask[12],              // one flag per dye slot number; before 2.01, 3 bytes,
+                              //   one per channel (see "Dye slot numbers (2.01+)")
     // 1.12 ONLY: u8 + u32 inserted here, observed uniformly (0xFF, 0)
     //   across all 3,893 live slots (semantics not yet RE'd). Absent
     //   in 1.07-1.11. See "Cross-version drift (1.12)" below.
@@ -237,17 +238,11 @@ two versions; the 7 that differ do so only by ordinary content (3 changed
 `slot_count`, 4 changed a material name or `mat_indices`). That fixes the
 width deterministically — no distribution argument needed.
 
-**The contents were re-encoded, not extended.** In 5,572 of 6,555
-comparable slot pairs the 2.00 three-byte mask does not appear as a
-contiguous window anywhere inside the 2.01 twelve. There is no "original
-three" — do not treat any sub-slice as the pre-2.01 field.
-
-The 12 read as **four groups of three**. Per slot exactly one group is
-non-zero on 4,276 of 6,585 live slots, two on 1,254, three on 72, none on
-983 — never four. Summed across all 12 bytes the mask equals the slot's
-non-empty-material-name count on **62.2%** of slots, versus 39.4% for
-`mask[0..3]` alone, so the channel-active information lives across the
-whole field. Which group a slot uses is not yet RE'd.
+**The contents were re-keyed, not extended.** No sub-slice of the 2.01
+twelve is the 2.00 three. The 12 are one flag per **dye slot number**; see
+"Dye slot numbers (2.01+)" below. (This section first read them as "four
+groups of three". That reading is wrong: it is the numbers 0..11 split in
+threes.)
 
 [`SLOT_LAYOUTS`](../src/part_prefab_dye_slot_info/mod.rs) now lists three
 per-slot layouts (`(new_schema, mask_len)` = `(true, 12)`, `(true, 3)`,
@@ -256,12 +251,13 @@ per-slot layouts (`(new_schema, mask_len)` = `(true, 12)`, `(true, 3)`,
 reports 0/1,626 against a 2.01 install — that is the historical script
 working as written.
 
-**What the C# editor should call now.** The original
+**The full-width getters.** The original
 `..._lookup_slot_mask` / `..._lookup_slot_extra_layer_mask` bridges copy 3
-bytes, which on 2.01+ is a *partial* read: for every slot whose active
-group is not the first they hand back all zeros. Widening them in place
-would overrun existing callers' buffers, so the full field is exposed
-through two new sized-buffer entry points instead:
+bytes, which on 2.01+ are the flags of dye slots 0, 1 and 2, not of the
+slot's three channels. Widening them in place would overrun existing
+callers' buffers, so the full field is exposed through two sized-buffer
+entry points (and, since 2026-11-27, the decoded getters in "Dye slot
+numbers (2.01+)"):
 
 - `crimson_part_prefab_dye_slot_info_lookup_slot_mask_full`
 - `crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_mask_full`
@@ -275,8 +271,112 @@ full field.
 
 How much this matters, measured through the release dll over all 1,626
 prefabs / 6,585 slots on live 2.01: **2,196 slots (33.3%) read all-zero
-through the 3-byte getter while the full field is non-zero.** That is the
-share of the dye UI the editor renders blank today.
+through the 3-byte getter while the full field is non-zero** (2,304 of
+6,955 on 2.06). That is the share of the dye UI the editor rendered blank.
+
+#### Dye slot numbers (2.01+)
+
+RE'd 2026-11-27 against the kept 2.00 / 2.01 binaries, live 2.06 and the
+1.10 fixture saves.
+
+**What the bytes mean.** Each `mat_indices` byte is the **dye slot
+number** (0..12) of one of the slot's three material channels; `0xFF`
+means the channel has none. The numbers are prefab-wide: channels on
+different slots (sub-meshes) that share a number take the same colour.
+The 12-byte mask has one flag per dye slot number:
+
+```text
+active(ch)  = mat_indices[ch] != 0xFF && mask[mat_indices[ch]] != 0
+mask_2_01[mat_indices[ch]] |= mask_2_00[ch]      // how 2.01 re-keyed 2.00
+```
+
+Before 2.01 the three bytes were the per-channel flags `active(ch)`.
+
+**Evidence.**
+
+- Every set mask bit is one of the slot's own `mat_indices`, with no
+  exception: 6,585 slots on 2.01 and 6,955 on 2.06, extra layers included.
+- Re-keying the 2.00 three bytes with the second line reproduces 6,228 of
+  the 6,552 slots whose `mat_indices` did not change from 2.00 to 2.01.
+  Of the other 324, 317 only gained bits (more channels dyeable; 179 rows
+  in all), and 7 lost one. All 18 extra layers present in both versions
+  re-key exactly, using the owning slot's `mat_indices`.
+- Within a prefab, every channel that shares a dye slot number also
+  shares its default material name: 0 conflicts over 5,772 (prefab, number)
+  pairs on 2.01, and 0 on 2.06.
+- The save's `_dyeSlotNo` is that number. The 1.10 fixture save
+  `broken_save_after_length_change/base_sample` has two dyed items that
+  resolve to a prefab. Item 121013 → `cd_phm_00_hand_0011` has one slot,
+  `mat_indices` 1/2/0 and mask bits {0,1,2}, and carries three dye
+  elements with `_dyeSlotNo` 0, 1, 2. Item 131013 → `cd_phm_00_foot_0005`
+  has `mat_indices` 0/1/0xFF and bits {0,1}, and carries `_dyeSlotNo` 0, 1.
+  A slot index can't explain either: each prefab has one slot. Other dyed
+  items in those saves use non-contiguous numbers (2111103: 0, 1, 2, 4, 5,
+  6), as expected of a sparse set of dye slot numbers.
+- The old "groups" counts are this rule seen in threes. On 2.06 a slot's
+  mask touches no number on 1,023 slots, numbers in one third of 0..11 on
+  4,519, in two thirds on 1,332 and in three on 81. Numbers 0..2 are
+  simply the most common.
+
+**Answers to the original questions.**
+
+1. *Which group applies?* None. There are no groups. Every set byte
+   applies, to the channels whose `mat_indices` entry equals its index.
+   The rule covers 100% of live 2.06 slots (no orphan bits).
+2. *Several groups non-zero?* That is a slot whose channels use dye slot
+   numbers from different thirds of 0..11, e.g. `mat_indices` 0/0/4 on
+   `cd_phm_00_lb_acc_0008_03` (bits 0 and 4). It is not several layers.
+   Second layers are the separate 1.13 `extra_layers`.
+3. *Save side.* Write one `ItemDyeSaveData` element per dye slot number
+   the item offers, with `_dyeSlotNo` = that number (an absent field
+   reads 0). Its colour applies to every channel, on every slot of the
+   prefab, whose `mat_indices` entry is that number. The numbers an item
+   offers are the union of its prefab's masks (`..._lookup_dye_slot_bits`).
+   `..._lookup_slot_count` counts sub-meshes, not dye slots, and so does
+   `crimson_item_part_prefab_resolve_dye_slot_count`. The dye slot count
+   is the popcount of the union.
+
+**Not confirmed.** Only two dyed items in the saves on this PC resolve to
+a prefab, both in the 1.10 fixtures. The other dyed items there (200914,
+1000313, 2111103, 103023) are body-type variants with no
+`partprefabdyeslotinfo` row (see v3 below). The live saves hold one dyed
+item, 9102, which also resolves to no prefab. So no save written by a
+2.01+ build confirms the save side; it rests on the 1.10 dyes matching
+those prefabs' numbering on 2.06.
+
+**C ABI (additive, 2026-11-27).**
+
+| Function | Purpose |
+|---|---|
+| `crimson_part_prefab_dye_slot_info_lookup_slot_active_channels(handle, prefab_key, slot_idx, out_flags[3])` | Per-channel active flags (0/1), the pre-2.01 meaning of the 3-byte mask, same out-param shape. Replaces the old `lookup_slot_mask` use. |
+| `crimson_part_prefab_dye_slot_info_lookup_slot_dye_slot_bits(handle, prefab_key, slot_idx, *out_bits)` | The slot's mask as a `u32` bitset (bit `n` = dye slot `n`). |
+| `crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_dye_slot_bits(handle, prefab_key, slot_idx, layer_idx, *out_bits)` | Same for a 1.13 extra layer. |
+| `crimson_part_prefab_dye_slot_info_lookup_dye_slot_bits(handle, prefab_key, *out_bits)` | Union over the prefab's slots and extra layers: the `_dyeSlotNo` values to offer. |
+| `crimson_part_prefab_dye_slot_info_lookup_dye_slot_material(handle, prefab_key, dye_slot_no, buf, buf_len, *required)` | Default material name of a dye slot number (`""` if unnamed; `OUT_OF_RANGE` if no channel uses it). |
+
+Rust: `PartPrefabDyeSlot::{active_channels, dye_slot_bits, channel_dye_slot}`,
+`DyeExtraLayer::dye_slot_bits`,
+`PartPrefabDyeSlotInfoEntry::{dye_slot_bits, dye_slot_material}`, `NO_DYE_SLOT`.
+
+Pins: `c_abi_part_prefab_dye_slot_numbers_live` (the rule on every live
+slot, four pinned rows, and the legacy getter reading zero on
+`cd_phm_00_lb_00_0054`) and
+`dye_slot_no_is_a_prefab_dye_slot_in_the_1_10_fixture` (the save side;
+skips while git-crypt is locked, path override `CRIMSON_DYE_FIXTURE_SAVE`).
+Probe: `_probe_dye_save_slot_join` joins every dyed item in the live saves
+(or under `CRIMSON_DYE_JOIN_ROOT`) to its prefab slots.
+
+C# editor recipe:
+
+```csharp
+// Dye slots the item offers, one UI row each.
+crimson_part_prefab_dye_slot_info_lookup_dye_slot_bits(h, prefabKey, out uint bits);
+for (int n = 0; n < 32; n++) {
+    if ((bits & (1u << n)) == 0) continue;
+    // Label: material of dye slot n ("leather", "metal", ...).
+    // Save: the ItemDyeSaveData element whose _dyeSlotNo == n (absent = 0).
+}
+```
 
 ---
 
@@ -324,9 +424,10 @@ use the two-call buffer pattern.
 | `crimson_part_prefab_dye_slot_info_lookup_slot_default_material(handle, prefab_key, slot_idx, mat_idx, buf, ...)` | Per-slot default material (`mat_idx ∈ {0,1,2}`). |
 | `crimson_part_prefab_dye_slot_info_lookup_slot_tail_name(handle, prefab_key, slot_idx, buf, ...)` | Next-prefab / `.pac` path. |
 | `crimson_part_prefab_dye_slot_info_lookup_slot_mat_indices(handle, prefab_key, slot_idx, out_indices[3])` | Raw 3-byte indices. |
-| `crimson_part_prefab_dye_slot_info_lookup_slot_mask(handle, prefab_key, slot_idx, out_mask[3])` | First 3 mask bytes — the legacy shape. **Partial on 2.01+**, where the on-disk mask is 12 re-encoded bytes and a slot's active group is often not the first, so this returns all zeros for those. Kept at 3 bytes because widening it in place would overrun every existing caller's buffer. |
+| `crimson_part_prefab_dye_slot_info_lookup_slot_mask(handle, prefab_key, slot_idx, out_mask[3])` | First 3 mask bytes — the legacy shape. **Wrong meaning on 2.01+**: these are the flags of dye slots 0..2, not of the slot's channels. Use `..._lookup_slot_active_channels` (same shape) for the per-channel flags. Kept unchanged because widening it in place would overrun every existing caller's buffer. |
 | `crimson_part_prefab_dye_slot_info_lookup_slot_mask_full(handle, prefab_key, slot_idx, buf, buf_len, *required)` | **The whole mask** (12 bytes on 2.01+, 3 on 1.07-2.00), sized-buffer style: call with `buf_len = 0` to learn the width, then again with the buffer. Returns `BUFFER_TOO_SMALL` rather than truncating if the field is wider than the buffer, so a future widening surfaces instead of silently degrading. Prefer this over the 3-byte getter. |
 | `crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_mask_full(handle, prefab_key, slot_idx, layer_idx, buf, buf_len, *required)` | Same, for a 1.13 extra dye layer's mask. |
+| `..._lookup_slot_active_channels` / `..._lookup_slot_dye_slot_bits` / `..._lookup_slot_extra_layer_dye_slot_bits` / `..._lookup_dye_slot_bits` / `..._lookup_dye_slot_material` | Decoded dye slot numbers (2026-11-27); see "Dye slot numbers (2.01+)". |
 | `crimson_part_prefab_dye_slot_info_get_entry_key(handle, idx, *out_key)` | Enumerate keys. |
 
 All bridges return `NULL_ARG` / `NOT_FOUND` / `OUT_OF_RANGE` /

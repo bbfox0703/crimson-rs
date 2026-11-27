@@ -23,11 +23,13 @@
 //!     u32 slot_count,           // 1..N (N reaches 36 in 1.12 for vehicle meshes)
 //!     CString row_prefab_name,  // e.g. "cd_phm_00_lb_00_0054"
 //!     Slot[slot_count] {
-//!         u8 mat_indices[3],         // material indices for this slot
+//!         u8 mat_indices[3],         // dye slot number per material channel
+//!                                    //   (0..12, 0xFF = unused)
 //!         CString material_a,        // 3 material names (often empty)
 //!         CString material_b,
 //!         CString material_c,
-//!         u8 mask[12],               // active/visible flags; 3 before 2.01
+//!         u8 mask[12],               // one flag per dye slot number; before
+//!                                    //   2.01, 3 bytes, one per channel
 //!         u8 marker,                 // 0xFF, not stored
 //!         u32 extra_layer_count,     // see `PartPrefabDyeSlot::extra_layers`
 //!         ExtraLayer[extra_layer_count],
@@ -61,16 +63,26 @@
 //! (3 changed `slot_count`, 4 changed a material name or `mat_indices`).
 //! Nothing else in the record moved.
 //!
-//! **The contents were re-encoded, not extended.** In 5,572 of 6,555
-//! comparable slot pairs the 2.00 three-byte mask does not appear as a
-//! contiguous window anywhere inside the 2.01 twelve, so there is no
-//! "original three" to point at — do not treat any sub-slice as the
-//! pre-2.01 field. The 12 read as **four groups of three**: a slot has
-//! one group non-zero (4,276 of 6,585), two (1,254), three (72), or none
-//! (983), never four. Summed over all 12 bytes the mask matches the
-//! slot's non-empty-material-name count on 62.2% of slots, versus 39.4%
-//! for `mask[0..3]` alone — the channel-active information lives across
-//! the whole field, not in its first three bytes.
+//! **The contents were re-keyed, not extended.** Before 2.01 the three
+//! mask bytes were one flag per material channel. From 2.01 the twelve are
+//! one flag per **dye slot number**, the value each channel carries in
+//! `mat_indices` (0..12, `0xFF` for an unused channel):
+//!
+//! ```text
+//! mask_2_01[mat_indices[ch]] |= mask_2_00[ch]     for ch in 0..3
+//! active(ch) = mat_indices[ch] != 0xFF && mask[mat_indices[ch]] != 0
+//! ```
+//!
+//! The first line reproduces 6,228 of the 6,552 slots that kept their
+//! `mat_indices` from 2.00 to 2.01; 317 of the other 324 only gained bits
+//! (more channels dyeable), 7 lost one. Every set bit on live 2.01 and
+//! 2.06 is one of the slot's `mat_indices`. The dye slot numbers are what
+//! the save's `ItemDyeSaveData._dyeSlotNo` stores: in the 1.10 fixture
+//! save, `cd_phm_00_hand_0011` (one slot, `mat_indices` 1/2/0) carries
+//! three dye entries numbered 0, 1 and 2. The earlier "four groups of three"
+//! reading was the numbers 0..11 split in threes; there are no groups. See
+//! [`PartPrefabDyeSlot::active_channels`] and
+//! [`PartPrefabDyeSlotInfoEntry::dye_slot_bits`].
 //!
 //! For the v1 dye editor we only consume `(key, prefab_name, slot_count)`.
 //! The per-slot material list (a v2 task) lets us also render the
@@ -85,24 +97,29 @@ use crate::binary::row_head::read_row_head;
 /// indices apply to this slot + the prefab the slot anchors to).
 #[derive(Debug, Clone)]
 pub struct PartPrefabDyeSlot {
-    /// Three material indices controlling which palette material this
-    /// slot consumes. Semantics are best-guess — the in-game shader
-    /// indexes a 3-element material array, and these bytes select
-    /// which of the 11 `partprefabdyetexturepalleteinfo` rows feeds
-    /// each shader channel.
+    /// Dye slot number (0..12) of each of the slot's three material
+    /// channels; `0xFF` ([`NO_DYE_SLOT`]) when the channel is unused. The
+    /// numbers are prefab-wide: channels of different slots that share a
+    /// number take the same colour, and within a row they share one
+    /// default material name. They index [`Self::mask`] and are the values
+    /// of the save's `ItemDyeSaveData._dyeSlotNo`.
     pub mat_indices: [u8; 3],
     /// Three default-material names for this slot (often all empty,
     /// often `"cloth"/"leather"/"metal"` depending on the prefab).
     /// Maps 1:1 with `mat_indices`.
     pub default_materials: [String; 3],
-    /// Material-channel active/visible flags, one byte each, every value
-    /// 0 or 1. **2.01 widened this from 3 bytes to 12 and re-encoded it**
-    /// (see "Cross-version layout drift"): the 12 read as four groups of
-    /// three, of which a slot uses one (4,276 of 6,585 live slots), two
-    /// (1,254), three (72) or none (983) — never all four. The pre-2.01
-    /// three bytes do **not** survive as a sub-slice, so `mask[0..3]` is
-    /// not "the old mask" and reads all-zero on every slot whose active
-    /// group is not the first.
+    /// Dye-slot flags, one byte (0 or 1) per **dye slot number** 0..12:
+    /// `mask[n] == 1` when dye slot `n` is dyeable on this slot. Each
+    /// `mat_indices` entry is the dye slot number of a material channel
+    /// (0xFF = no channel), so channel `ch` is active when
+    /// `mask[mat_indices[ch]] == 1` ([`Self::active_channels`]). These
+    /// numbers are the save's `_dyeSlotNo`.
+    ///
+    /// Before 2.01 the field was 3 bytes, one per material channel. 2.01
+    /// re-keyed it by dye slot number: `mask[mat_indices[ch]] |= old[ch]`
+    /// reproduces 6,228 of the 6,552 comparable 2.01 slots exactly, and
+    /// 317 of the other 324 only gained bits. There are no "four groups of
+    /// three"; that reading was a coincidence of the numbers 0..11.
     pub mask: [u8; 12],
     /// For non-final slots: the next sub-prefab internal name. For
     /// the LAST slot in a row: the full `.pac` asset path for the
@@ -129,8 +146,10 @@ pub struct DyeExtraLayer {
     /// `"leather"` layer paired with the primary `"cloth"` layer on the
     /// new dyeable cloaks).
     pub default_materials: [String; 3],
-    /// Mask bytes for the extra layer (same semantics and the same 2.01
-    /// 3 → 12 widening + re-encode as the primary slot `mask`).
+    /// Mask bytes for the extra layer, indexed by dye slot number like the
+    /// primary slot `mask` (the layer's channels use the owning slot's
+    /// `mat_indices`; the 2.01 re-encode reproduces all 18 extra layers
+    /// common to 2.00 and 2.01 that way).
     pub mask: [u8; 12],
     /// Trailing flag byte (0/1 observed; exact meaning not yet RE'd).
     pub flag: u8,
@@ -156,6 +175,91 @@ impl PartPrefabDyeSlotInfoEntry {
     /// Convenience accessor — equivalent to `self.slots.len() as u32`.
     pub fn slot_count(&self) -> u32 {
         self.slots.len() as u32
+    }
+
+    /// The prefab's dye slots: bit `n` is set when any slot (or extra
+    /// layer) enables dye slot number `n`. These bits are the values the
+    /// save's `ItemDyeSaveData._dyeSlotNo` takes for this prefab. This is
+    /// not [`Self::slot_count`], which counts sub-meshes: a one-slot prefab
+    /// can expose three dye slots.
+    pub fn dye_slot_bits(&self) -> u32 {
+        self.slots.iter().fold(0, |acc, s| {
+            s.extra_layers
+                .iter()
+                .fold(acc | s.dye_slot_bits(), |a, l| a | l.dye_slot_bits())
+        })
+    }
+
+    /// Default material of dye slot number `dye_slot_no`: the first
+    /// non-empty primary-layer material name over every channel whose
+    /// `mat_indices` entry is `dye_slot_no`. `Some("")` when channels use
+    /// the number but none of them names a material; `None` when no channel
+    /// uses it. Within a row every channel that shares a number shares its
+    /// material name (no exception on live 2.01 or 2.06), so "first" does
+    /// not pick between candidates.
+    pub fn dye_slot_material(&self, dye_slot_no: u8) -> Option<&str> {
+        let mut used = false;
+        for s in &self.slots {
+            for (ch, &n) in s.mat_indices.iter().enumerate() {
+                if n == dye_slot_no && n != NO_DYE_SLOT {
+                    used = true;
+                    let m = s.default_materials[ch].as_str();
+                    if !m.is_empty() {
+                        return Some(m);
+                    }
+                }
+            }
+        }
+        used.then_some("")
+    }
+}
+
+/// `mat_indices` value for a material channel that has no dye slot.
+pub const NO_DYE_SLOT: u8 = 0xFF;
+
+/// Bit `n` set when `mask[n]` is non-zero.
+fn mask_bits(mask: &[u8; 12]) -> u32 {
+    mask.iter()
+        .enumerate()
+        .filter(|(_, b)| **b != 0)
+        .fold(0, |acc, (n, _)| acc | (1 << n))
+}
+
+impl PartPrefabDyeSlot {
+    /// Dye slot number of material channel `ch` (0..3), or `None` when the
+    /// channel is unused (`mat_indices[ch] == 0xFF`) or `ch` is out of
+    /// range.
+    pub fn channel_dye_slot(&self, ch: usize) -> Option<u8> {
+        self.mat_indices.get(ch).copied().filter(|&n| n != NO_DYE_SLOT)
+    }
+
+    /// The 12-byte mask as bits: bit `n` set when dye slot number `n` is
+    /// dyeable on this slot. Every set bit is one of the slot's
+    /// `mat_indices` (no exception on live 2.01 or 2.06).
+    pub fn dye_slot_bits(&self) -> u32 {
+        mask_bits(&self.mask)
+    }
+
+    /// Per-channel active flags, one byte (0 or 1) per material channel:
+    /// channel `ch` is dyeable when it has a dye slot number `n` and
+    /// `mask[n]` is set. This is what the 3-byte mask meant before 2.01.
+    /// Two channels that share a number share the flag.
+    pub fn active_channels(&self) -> [u8; 3] {
+        std::array::from_fn(|ch| {
+            u8::from(
+                self.channel_dye_slot(ch)
+                    .is_some_and(|n| self.mask.get(usize::from(n)).is_some_and(|b| *b != 0)),
+            )
+        })
+    }
+}
+
+impl DyeExtraLayer {
+    /// The extra layer's mask as bits, indexed by dye slot number like
+    /// [`PartPrefabDyeSlot::dye_slot_bits`]. The layer's channels use the
+    /// owning slot's `mat_indices`.
+    pub fn dye_slot_bits(&self) -> u32 {
+        mask_bits(&self.mask)
     }
 }
 
