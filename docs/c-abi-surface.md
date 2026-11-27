@@ -12,10 +12,10 @@ regression-baseline ground truth).
 
 ## Save Editor key-resolver bridges
 
-**Thirty-four bridges shipped** (as of 2026-05-17): SkillKey, MissionKey,
+**Thirty-five bridges shipped** (as of 2026-11-27): SkillKey, MissionKey,
 QuestKey, StageKey, KnowledgeKey, QuestGaugeKey, SubLevelKey, GimmickInfoKey,
 **CharacterKey**, **DyeColorGroupInfoKey**, **PartPrefabDyeTexturePalleteKey**,
-**PartPrefabKey (dye-slot)**, **FactionNodeKey**, **FactionSpawnDataKey**,
+**PartPrefabKey (dye-slot)**, **FactionKey**, **FactionNodeKey**, **FactionSpawnDataKey**,
 **FactionRelationGroupKey**, **StoreKey**, **MercenaryKey**, **ItemKey → list
 of PartPrefabKey** (combined iteminfo+stringinfo+partprefab join), **HouseKey**,
 **RoyalSupplyKey**, **CraftToolKey** + **CraftToolGroupKey**, **TriggerRegionKey**,
@@ -171,7 +171,7 @@ absorbed by list-header variants (`marker_run_plus_zeros`, `ones_then_count`,
 
 ### Status & remaining work
 
-377 tests pass with `c_abi` on 2.06 (+47 ignored diagnostic probes); the bare-default
+379 tests pass with `c_abi` on 2.06 (+47 ignored diagnostic probes); the bare-default
 build (`cargo check --lib`) is also clean; clippy clean both modes. The Jenkins
 hash-hop transform that drives Mission/Quest/Stage/Knowledge title resolution is
 cracked and pinned. CharacterKey ships at the 22% display-name coverage §6
@@ -277,6 +277,9 @@ src/
     │                                           #   ..._extra_layer_mask are partial reads there and
     │                                           #   ..._mask_full / ..._extra_layer_mask_full return the whole
     │                                           #   field via the sized-buffer pattern
+    ├── faction_info.rs                        # FactionKey (u32) → "Faction_Graymane"/"Faction_ThiefDusksong"/... (135 rows in 2.06, name-only;
+    │                                           #   rows carry no localizable string, and PALOC byte 0x30 at a FactionKey
+    │                                           #   answers with *character* names — CharacterKey 1000000 "Hernandian Guard")
     ├── faction_node_info.rs                   # FactionNodeKey (u32) → "Node_Her_Temporary_Camp" etc. (name only, no PALOC chain)
     ├── faction_spawn_data_info.rs             # FactionSpawnDataKey (u32) → "FactionSpawn_GlenbrightManor_Grace_ReedDevil" etc.
     ├── faction_relation_group_info.rs         # FactionRelationGroupKey (u16-widened-u32) → "Graymane"/"FriendlyCombat"/"HostileCombat"/"NPC_Common"/"Monster_Common"
