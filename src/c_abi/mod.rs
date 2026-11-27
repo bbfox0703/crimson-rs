@@ -35,6 +35,7 @@ pub mod craft_tool_group_info;
 pub mod craft_tool_info;
 pub mod dye_color_group_info;
 pub mod element_template;
+pub mod faction_info;
 pub mod faction_node_info;
 pub mod faction_relation_group_info;
 pub mod faction_spawn_data_info;
