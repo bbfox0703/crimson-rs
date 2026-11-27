@@ -260,6 +260,90 @@ pub(crate) fn write_bytes_to_buf(
     error::OK
 }
 
+/// Where each entry of a DLC-aware bridge handle came from: 0 = the base
+/// table it was loaded from, `n` = the `n`-th DLC table merged in with
+/// `*_merge_dlc_from_bytes`. Parallel to the handle's `entries`.
+#[derive(Debug, Default)]
+pub(crate) struct EntrySources {
+    per_entry: Vec<u8>,
+    merges: u8,
+}
+
+impl EntrySources {
+    /// The source number for the next merge (1 for the first DLC).
+    pub(crate) fn next_merge(&mut self) -> u8 {
+        self.merges = self.merges.saturating_add(1);
+        self.merges
+    }
+
+    pub(crate) fn push(&mut self, source: u8) {
+        self.per_entry.push(source);
+    }
+}
+
+/// Shared body of every `*_merge_dlc_from_bytes`: argument checks, slices
+/// and the panic guard. `merge` adds the rows whose key the handle lacks and
+/// returns how many it added.
+///
+/// # Safety
+/// `handle` must be a live handle of type `H` or null; `body` / `header`
+/// must point to `*_len` readable bytes (null iff the length is 0);
+/// `out_added` must be writable or null.
+pub(crate) unsafe fn merge_dlc_ffi<H>(
+    handle: *mut H,
+    body: *const u8,
+    body_len: usize,
+    header: *const u8,
+    header_len: usize,
+    out_added: *mut u32,
+    merge: impl FnOnce(&mut H, &[u8], &[u8]) -> u32,
+) -> i32 {
+    if handle.is_null() || out_added.is_null() {
+        return error::NULL_ARG;
+    }
+    if (body.is_null() && body_len != 0) || (header.is_null() && header_len != 0) {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_added = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &mut *handle };
+        let body = unsafe { slice_from_raw_or_empty(body, body_len) };
+        let header = unsafe { slice_from_raw_or_empty(header, header_len) };
+        let added = merge(h, body, header);
+        unsafe { *out_added = added };
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Shared body of every `*_entry_source`.
+///
+/// # Safety
+/// `handle` must be a live handle of type `H` or null; `out_source` must be
+/// writable or null.
+pub(crate) unsafe fn entry_source_ffi<H>(
+    handle: *const H,
+    idx: u32,
+    out_source: *mut u32,
+    sources: fn(&H) -> &EntrySources,
+) -> i32 {
+    if handle.is_null() || out_source.is_null() {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_source = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        match sources(h).per_entry.get(idx as usize) {
+            Some(&s) => {
+                unsafe { *out_source = u32::from(s) };
+                error::OK
+            }
+            None => error::OUT_OF_RANGE,
+        }
+    }))
+    .unwrap_or(error::PANIC)
+}
+
 /// Macro for the "name-only key resolver" bridge family — issues the
 /// standard handle struct + six `extern "C"` functions (load_from_file,
 /// load_from_bytes, free, entry_count, lookup_string_key, get_entry).

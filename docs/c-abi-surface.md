@@ -169,6 +169,60 @@ int32_t crimson_factionnode_lookup_display_name(
   knowledge rows sit in a `KnowledgeGroup_Topography_<Region>_<Area>` group,
   the rest in none.
 
+### DLC tables: optional merge (2026-11-27)
+
+`<install>/dlc/dlc_01/` carries its own copy of many tables, with rows the base
+table lacks. It is Steam depot 5001841 (DLC app 5001840, 29,654,458,571 bytes,
+exactly the folder's size), so **Steam installs it only for owners**: an install
+without the DLC has no `dlc/dlc_01` folder. Four bridges can merge it:
+
+```c
+/* Add the DLC table's rows whose key the handle lacks; *out_added = how many.
+   header may be empty (null, 0) only for knowledge / characterinfo on a
+   pre-2.06 body. */
+int32_t crimson_factionnode_merge_dlc_from_bytes(CrimsonFactionNodeInfoHandle *handle,
+    const uint8_t *body, size_t body_len, const uint8_t *header, size_t header_len,
+    uint32_t *out_added);
+int32_t crimson_knowledgeinfo_merge_dlc_from_bytes(...);   /* same shape */
+int32_t crimson_faction_info_merge_dlc_from_bytes(...);
+int32_t crimson_characterinfo_merge_dlc_from_bytes(...);
+
+/* 0 = base table, n = the n-th merged DLC. OUT_OF_RANGE past the end. */
+int32_t crimson_factionnode_entry_source(const CrimsonFactionNodeInfoHandle *handle,
+    uint32_t idx, uint32_t *out_source);
+/* + crimson_knowledgeinfo_ / crimson_faction_info_ / crimson_characterinfo_entry_source */
+```
+
+- **Without the DLC nothing changes.** Load the base table as before and skip
+  the merge; every function answers from the base rows, and a DLC-only key is
+  `NOT_FOUND` as it always was. The merge is never automatic.
+- **Where the files are**: extract `<table>.dlc_01.staticinfobody` +
+  `.staticinfoheader` with `crimson_paz_extract_file` from
+  `<install>/dlc/dlc_01/0008/0.pamt`, directory `gamedata/binarystaticinfo__/bin`
+  (the base tables' directory). Call the merge once per DLC folder, in folder
+  order. The handle's rows are the base rows in table order, then each DLC's new
+  rows; existing entry indices do not move.
+- **Shared keys keep the base row.** On 2.06 the rows `dlc_01` shares with the
+  base table agree on every field these bridges expose (name, knowledge key,
+  faction group keys, character FactionKey), so which copy wins does not change
+  an answer. Many shared rows differ elsewhere (4,426 of 7,308 characterinfo
+  rows), and for iteminfo the game reads the DLC row; if a future field differs,
+  revisit this.
+- **What `dlc_01` adds on 2.06**: 142 faction nodes (`Node_Ocean_IliyaIsland` →
+  "Iliya Island", `Node_Crim_Dungeon_1`, …; 139 of them name a DLC knowledge
+  row, so merge knowledge too before `crimson_factionnode_lookup_display_name`),
+  795 knowledge rows, 11 factions (`Faction_Satyros`, `Faction_Ocean_Island`,
+  `Faction_Void_Knight`, …; 7 in `FactionGroup_Ocean`, whose name "Great Ocean"
+  is in the base PALOC like every DLC name since 2.06) and 287 characters (e.g.
+  9 `Faction_Satyros` members). `factionrelationgroup` has no DLC copy.
+- **`entry_source`** lets a list (every faction, every node) hide DLC rows.
+  Lookups by key do not need it: a save only holds DLC keys if the DLC was
+  played.
+- The six faction contribution (`貢獻度`) items, `Contribution_Graymane` …
+  `Contribution_Tashkalpan`, are all base items; `iteminfo.dlc_01` repeats them
+  and adds no contribution item.
+- Not merged: the other bridges, which still read the base table only.
+
 ### Save-handle utilities
 
 - `crimson_save_list_inventory_items` — flat enumeration of every item across

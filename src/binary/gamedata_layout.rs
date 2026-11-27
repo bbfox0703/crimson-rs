@@ -89,7 +89,18 @@ pub(crate) fn header(stem: &str) -> String {
 /// group `0008` of the live install. `None` when the install or the file is
 /// absent.
 pub(crate) fn extract_bin(name: &str) -> Option<Vec<u8>> {
-    let group_dir = game_root().join("0008");
+    extract_bin_from(&game_root(), name)
+}
+
+/// [`extract_bin`] from an installed DLC's tree (`<install>/dlc/<dlc>/0008`),
+/// e.g. `extract_dlc_bin("dlc_01", &body("faction.dlc_01"))`. `None` when the
+/// DLC is not installed (Steam installs `dlc_01` only for owners).
+pub(crate) fn extract_dlc_bin(dlc: &str, name: &str) -> Option<Vec<u8>> {
+    extract_bin_from(&game_root().join("dlc").join(dlc), name)
+}
+
+fn extract_bin_from(root: &std::path::Path, name: &str) -> Option<Vec<u8>> {
+    let group_dir = root.join("0008");
     let pamt_bytes = std::fs::read(group_dir.join("0.pamt")).ok()?;
     let pamt = crate::binary::pamt::PackMeta::parse(&pamt_bytes, None).ok()?;
     let dir = pamt.directories.iter().find(|d| d.path == bin_dir())?;
