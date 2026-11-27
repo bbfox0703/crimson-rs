@@ -36,7 +36,7 @@ use std::os::raw::c_char;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use super::paloc::CrimsonPalocHandle;
-use super::{error, write_str_to_buf};
+use super::{EntrySources, error, write_str_to_buf};
 use crate::faction_info::{FACTION_GROUP_PALOC_LO, parse_faction_info_lossy};
 
 /// Opaque handle over a parsed `faction` table.
@@ -46,22 +46,35 @@ pub struct CrimsonFactionInfoHandle {
     entries: Vec<(u32, String)>,
     /// `FactionKey → (faction_group_key, faction_relation_group_key)`.
     groups: HashMap<u32, (u16, u16)>,
+    /// Base table or which merged DLC, per entry.
+    sources: EntrySources,
 }
 
 impl CrimsonFactionInfoHandle {
     fn from_bytes(pabgb: &[u8], pabgh: &[u8]) -> Self {
-        let raw = parse_faction_info_lossy(pabgb, pabgh);
-        let mut by_key = HashMap::with_capacity(raw.len());
-        let mut entries = Vec::with_capacity(raw.len());
-        let mut groups = HashMap::with_capacity(raw.len());
-        for e in raw {
-            if let std::collections::hash_map::Entry::Vacant(v) = by_key.entry(e.key) {
+        let mut h = CrimsonFactionInfoHandle {
+            by_key: HashMap::new(),
+            entries: Vec::new(),
+            groups: HashMap::new(),
+            sources: EntrySources::default(),
+        };
+        h.absorb(pabgb, pabgh, 0);
+        h
+    }
+
+    /// Add the rows whose key is new (first wins); returns how many.
+    fn absorb(&mut self, pabgb: &[u8], pabgh: &[u8], source: u8) -> u32 {
+        let mut added = 0;
+        for e in parse_faction_info_lossy(pabgb, pabgh) {
+            if let std::collections::hash_map::Entry::Vacant(v) = self.by_key.entry(e.key) {
                 v.insert(e.name.clone());
-                groups.insert(e.key, (e.group_key, e.relation_group_key));
-                entries.push((e.key, e.name));
+                self.groups.insert(e.key, (e.group_key, e.relation_group_key));
+                self.entries.push((e.key, e.name));
+                self.sources.push(source);
+                added += 1;
             }
         }
-        CrimsonFactionInfoHandle { by_key, entries, groups }
+        added
     }
 }
 
@@ -222,6 +235,52 @@ pub unsafe extern "C" fn crimson_faction_info_get_entry(
         write_str_to_buf(name, buf, buf_len, required)
     }))
     .unwrap_or(error::PANIC)
+}
+
+/// Merge a DLC copy of the table (`<install>/dlc/<name>/0008`, e.g.
+/// `faction.dlc_01.staticinfobody` + `.staticinfoheader`) into a loaded
+/// handle. Adds only the rows whose key the handle lacks, after the existing
+/// entries; a shared key keeps the base row (on 2.06 base and `dlc_01` agree
+/// on every field this bridge exposes). `*out_added` = rows added.
+///
+/// **Optional.** Without the DLC installed (Steam installs `dlc/dlc_01` only
+/// for owners) skip this call: every function works on the base rows alone.
+/// Call it once per DLC, in folder order; [`crimson_faction_info_entry_source`] then
+/// reports 1 for the first DLC's rows, 2 for the second's. Not thread-safe
+/// against concurrent lookups on the same handle.
+///
+/// # Safety
+/// `handle` and `out_added` must be non-null; `body` / `header` must point
+/// to `*_len` readable bytes (null iff the length is 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_faction_info_merge_dlc_from_bytes(
+    handle: *mut CrimsonFactionInfoHandle,
+    body: *const u8,
+    body_len: usize,
+    header: *const u8,
+    header_len: usize,
+    out_added: *mut u32,
+) -> i32 {
+    unsafe {
+        super::merge_dlc_ffi(handle, body, body_len, header, header_len, out_added, |h, b, hd| {
+            let source = h.sources.next_merge();
+            h.absorb(b, hd, source)
+        })
+    }
+}
+
+/// Where entry `idx` came from: 0 = the base table, `n` = the `n`-th DLC
+/// merged with [`crimson_faction_info_merge_dlc_from_bytes`]. Lets a list hide DLC rows.
+///
+/// # Safety
+/// `handle` and `out_source` must be non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_faction_info_entry_source(
+    handle: *const CrimsonFactionInfoHandle,
+    idx: u32,
+    out_source: *mut u32,
+) -> i32 {
+    unsafe { super::entry_source_ffi(handle, idx, out_source, |h| &h.sources) }
 }
 
 /// The faction's `factiongroup` key and `factionrelationgroup` key.
@@ -493,5 +552,49 @@ mod tests {
         assert_eq!(faction_name(1_000_095), None); // no group
         unsafe { crate::c_abi::paloc::crimson_paloc_free(ph) };
         unsafe { crimson_faction_info_free(h) };
+    }
+}
+
+#[cfg(test)]
+mod dlc_tests {
+    //! Merging `dlc_01`'s faction copy (11 DLC-only factions on 2.06, e.g.
+    //! `Faction_Satyros` in `FactionGroup_Ocean` "Great Ocean").
+    use super::*;
+    use crate::binary::gamedata_layout::{body, extract_bin, extract_dlc_bin, header};
+    use std::ptr;
+
+    #[test]
+    fn c_abi_faction_info_dlc_merge_live() {
+        let (Some(b), Some(h)) = (extract_bin(&body("faction")), extract_bin(&header("faction"))) else {
+            eprintln!("skipping c_abi_faction_info_dlc_merge_live: no game install");
+            return;
+        };
+        let (Some(db), Some(dh)) = (
+            extract_dlc_bin("dlc_01", &body("faction.dlc_01")),
+            extract_dlc_bin("dlc_01", &header("faction.dlc_01")),
+        ) else {
+            eprintln!("skipping c_abi_faction_info_dlc_merge_live: dlc_01 not installed");
+            return;
+        };
+        let mut fh: *mut CrimsonFactionInfoHandle = ptr::null_mut();
+        assert_eq!(unsafe { crimson_faction_info_load_from_bytes(b.as_ptr(), b.len(), h.as_ptr(), h.len(), &mut fh) }, error::OK);
+        const SATYROS: u32 = 1_000_099; // dlc_01 only
+        let (mut g, mut r) = (0u16, 0u16);
+        assert_eq!(unsafe { crimson_faction_info_lookup_group_keys(fh, SATYROS, &mut g, &mut r) }, error::NOT_FOUND);
+
+        let mut base = 0u32;
+        unsafe { crimson_faction_info_entry_count(fh, &mut base) };
+        let mut added = 0u32;
+        assert_eq!(unsafe { crimson_faction_info_merge_dlc_from_bytes(fh, db.as_ptr(), db.len(), dh.as_ptr(), dh.len(), &mut added) }, error::OK);
+        eprintln!("dlc_01 merge: +{added} factions");
+        assert!(added >= 5, "added {added} DLC factions");
+        assert_eq!(unsafe { crimson_faction_info_lookup_group_keys(fh, SATYROS, &mut g, &mut r) }, error::OK);
+        assert_eq!(g, 16967, "FactionGroup_Ocean");
+        let mut src = 9u32;
+        assert_eq!(unsafe { crimson_faction_info_entry_source(fh, base, &mut src) }, error::OK);
+        assert_eq!(src, 1);
+        assert_eq!(unsafe { crimson_faction_info_entry_source(fh, 0, &mut src) }, error::OK);
+        assert_eq!(src, 0);
+        unsafe { crimson_faction_info_free(fh) };
     }
 }

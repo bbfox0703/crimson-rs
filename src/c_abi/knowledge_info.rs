@@ -32,6 +32,7 @@ use std::os::raw::c_char;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use super::error;
+use super::EntrySources;
 use super::paloc::CrimsonPalocHandle;
 use crate::crypto::checksum::calculate_checksum;
 use crate::knowledge_info::parse_knowledge_info_lossy;
@@ -42,6 +43,8 @@ use crate::knowledge_info::parse_knowledge_info_lossy;
 pub struct CrimsonKnowledgeInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,
+    /// Base table or which merged DLC, per entry.
+    sources: EntrySources,
 }
 
 impl CrimsonKnowledgeInfoHandle {
@@ -54,21 +57,32 @@ impl CrimsonKnowledgeInfoHandle {
     /// Build from the body, plus (2.06+) the `.staticinfoheader` that holds
     /// the row names. Without a header only a pre-2.06 body yields rows.
     fn from_bytes(data: &[u8], header: Option<&[u8]>) -> Self {
+        let mut h = CrimsonKnowledgeInfoHandle {
+            by_key: HashMap::new(),
+            entries: Vec::new(),
+            sources: EntrySources::default(),
+        };
+        h.absorb(data, header, 0);
+        h
+    }
+
+    /// Add the rows whose key is new (first wins — see mission_info::from_bytes
+    /// for the rationale); returns how many.
+    fn absorb(&mut self, data: &[u8], header: Option<&[u8]>, source: u8) -> u32 {
         let raw = match header {
             Some(h) => crate::knowledge_info::parse_knowledge_info_lossy_with_header(data, h),
             None => parse_knowledge_info_lossy(data),
         };
-        // First-wins dedup (see mission_info::from_bytes for the
-        // rationale; same comment applies here).
-        let mut by_key: HashMap<u32, String> = HashMap::with_capacity(raw.len());
-        let mut entries: Vec<(u32, String)> = Vec::with_capacity(raw.len());
+        let mut added = 0;
         for e in raw {
-            if let std::collections::hash_map::Entry::Vacant(v) = by_key.entry(e.key) {
+            if let std::collections::hash_map::Entry::Vacant(v) = self.by_key.entry(e.key) {
                 v.insert(e.name.clone());
-                entries.push((e.key, e.name));
+                self.entries.push((e.key, e.name));
+                self.sources.push(source);
+                added += 1;
             }
         }
-        CrimsonKnowledgeInfoHandle { by_key, entries }
+        added
     }
 }
 
@@ -248,6 +262,52 @@ pub unsafe extern "C" fn crimson_knowledgeinfo_lookup_string_key(
         write_str_to_buf(name, buf, buf_len, required)
     }))
     .unwrap_or(error::PANIC)
+}
+
+/// Merge a DLC copy of the table (`<install>/dlc/<name>/0008`, e.g.
+/// `knowledgeinfo.dlc_01.staticinfobody` + `.staticinfoheader`) into a loaded
+/// handle. Adds only the rows whose key the handle lacks, after the existing
+/// entries; a shared key keeps the base row (on 2.06 base and `dlc_01` agree
+/// on every field this bridge exposes). `*out_added` = rows added.
+///
+/// **Optional.** Without the DLC installed (Steam installs `dlc/dlc_01` only
+/// for owners) skip this call: every function works on the base rows alone.
+/// Call it once per DLC, in folder order; [`crimson_knowledgeinfo_entry_source`] then
+/// reports 1 for the first DLC's rows, 2 for the second's. Not thread-safe
+/// against concurrent lookups on the same handle.
+///
+/// # Safety
+/// `handle` and `out_added` must be non-null; `body` / `header` must point
+/// to `*_len` readable bytes (null iff the length is 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_knowledgeinfo_merge_dlc_from_bytes(
+    handle: *mut CrimsonKnowledgeInfoHandle,
+    body: *const u8,
+    body_len: usize,
+    header: *const u8,
+    header_len: usize,
+    out_added: *mut u32,
+) -> i32 {
+    unsafe {
+        super::merge_dlc_ffi(handle, body, body_len, header, header_len, out_added, |h, b, hd| {
+            let source = h.sources.next_merge();
+            h.absorb(b, (!hd.is_empty()).then_some(hd), source)
+        })
+    }
+}
+
+/// Where entry `idx` came from: 0 = the base table, `n` = the `n`-th DLC
+/// merged with [`crimson_knowledgeinfo_merge_dlc_from_bytes`]. Lets a list hide DLC rows.
+///
+/// # Safety
+/// `handle` and `out_source` must be non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_knowledgeinfo_entry_source(
+    handle: *const CrimsonKnowledgeInfoHandle,
+    idx: u32,
+    out_source: *mut u32,
+) -> i32 {
+    unsafe { super::entry_source_ffi(handle, idx, out_source, |h| &h.sources) }
 }
 
 // ── Display-name lookup (production — one-shot chain) ──────────────────────

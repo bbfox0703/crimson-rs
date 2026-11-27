@@ -19,6 +19,7 @@ use std::os::raw::c_char;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use super::error;
+use super::EntrySources;
 use super::knowledge_info::CrimsonKnowledgeInfoHandle;
 use super::paloc::CrimsonPalocHandle;
 use crate::faction_node_info::parse_faction_node_info_lossy;
@@ -31,22 +32,35 @@ pub struct CrimsonFactionNodeInfoHandle {
     entries: Vec<(u32, String)>,
     /// `FactionNodeKey → KnowledgeKey` (the knowledge naming the place).
     knowledge_by_key: HashMap<u32, u32>,
+    /// Base table or which merged DLC, per entry.
+    sources: EntrySources,
 }
 
 impl CrimsonFactionNodeInfoHandle {
     fn from_bytes(pabgb: &[u8], pabgh: &[u8]) -> Self {
-        let raw = parse_faction_node_info_lossy(pabgb, pabgh);
-        let mut by_key: HashMap<u32, String> = HashMap::with_capacity(raw.len());
-        let mut entries: Vec<(u32, String)> = Vec::with_capacity(raw.len());
-        let mut knowledge_by_key: HashMap<u32, u32> = HashMap::with_capacity(raw.len());
-        for e in raw {
-            if let std::collections::hash_map::Entry::Vacant(v) = by_key.entry(e.key) {
+        let mut h = CrimsonFactionNodeInfoHandle {
+            by_key: HashMap::new(),
+            entries: Vec::new(),
+            knowledge_by_key: HashMap::new(),
+            sources: EntrySources::default(),
+        };
+        h.absorb(pabgb, pabgh, 0);
+        h
+    }
+
+    /// Add the rows whose key is new (first wins); returns how many.
+    fn absorb(&mut self, pabgb: &[u8], pabgh: &[u8], source: u8) -> u32 {
+        let mut added = 0;
+        for e in parse_faction_node_info_lossy(pabgb, pabgh) {
+            if let std::collections::hash_map::Entry::Vacant(v) = self.by_key.entry(e.key) {
                 v.insert(e.name.clone());
-                knowledge_by_key.insert(e.key, e.knowledge_key);
-                entries.push((e.key, e.name));
+                self.knowledge_by_key.insert(e.key, e.knowledge_key);
+                self.entries.push((e.key, e.name));
+                self.sources.push(source);
+                added += 1;
             }
         }
-        CrimsonFactionNodeInfoHandle { by_key, entries, knowledge_by_key }
+        added
     }
 }
 
@@ -245,6 +259,52 @@ pub unsafe extern "C" fn crimson_factionnode_get_entry(
         write_str_to_buf(name, buf, buf_len, required)
     }))
     .unwrap_or(error::PANIC)
+}
+
+/// Merge a DLC copy of the table (`<install>/dlc/<name>/0008`, e.g.
+/// `factionnode.dlc_01.staticinfobody` + `.staticinfoheader`) into a loaded
+/// handle. Adds only the rows whose key the handle lacks, after the existing
+/// entries; a shared key keeps the base row (on 2.06 base and `dlc_01` agree
+/// on every field this bridge exposes). `*out_added` = rows added.
+///
+/// **Optional.** Without the DLC installed (Steam installs `dlc/dlc_01` only
+/// for owners) skip this call: every function works on the base rows alone.
+/// Call it once per DLC, in folder order; [`crimson_factionnode_entry_source`] then
+/// reports 1 for the first DLC's rows, 2 for the second's. Not thread-safe
+/// against concurrent lookups on the same handle.
+///
+/// # Safety
+/// `handle` and `out_added` must be non-null; `body` / `header` must point
+/// to `*_len` readable bytes (null iff the length is 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_factionnode_merge_dlc_from_bytes(
+    handle: *mut CrimsonFactionNodeInfoHandle,
+    body: *const u8,
+    body_len: usize,
+    header: *const u8,
+    header_len: usize,
+    out_added: *mut u32,
+) -> i32 {
+    unsafe {
+        super::merge_dlc_ffi(handle, body, body_len, header, header_len, out_added, |h, b, hd| {
+            let source = h.sources.next_merge();
+            h.absorb(b, hd, source)
+        })
+    }
+}
+
+/// Where entry `idx` came from: 0 = the base table, `n` = the `n`-th DLC
+/// merged with [`crimson_factionnode_merge_dlc_from_bytes`]. Lets a list hide DLC rows.
+///
+/// # Safety
+/// `handle` and `out_source` must be non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_factionnode_entry_source(
+    handle: *const CrimsonFactionNodeInfoHandle,
+    idx: u32,
+    out_source: *mut u32,
+) -> i32 {
+    unsafe { super::entry_source_ffi(handle, idx, out_source, |h| &h.sources) }
 }
 
 /// The `KnowledgeKey` naming a node: the knowledge row whose title is the
@@ -603,5 +663,133 @@ mod tests {
         );
         assert_eq!(count, 0);
         unsafe { crimson_factionnode_free(sh) };
+    }
+}
+
+#[cfg(test)]
+mod dlc_tests {
+    //! Merging `dlc_01`'s factionnode + knowledgeinfo copies. Skips when the
+    //! DLC is not installed; the base-only path is what the other tests pin.
+    use super::*;
+    use crate::binary::gamedata_layout::{body, extract_bin, extract_dlc_bin, header, paloc_bytes};
+    use crate::c_abi::knowledge_info::{
+        crimson_knowledgeinfo_entry_count, crimson_knowledgeinfo_free,
+        crimson_knowledgeinfo_entry_source, crimson_knowledgeinfo_load_from_bytes_with_header,
+        crimson_knowledgeinfo_merge_dlc_from_bytes,
+    };
+    use crate::c_abi::paloc::{crimson_paloc_free, crimson_paloc_load_from_bytes};
+    use std::ptr;
+
+    fn name(sh: *const CrimsonFactionNodeInfoHandle, kh: *const CrimsonKnowledgeInfoHandle, ph: *const CrimsonPalocHandle, node: u32) -> Option<String> {
+        let mut req = 0usize;
+        if unsafe { crimson_factionnode_lookup_display_name(sh, kh, ph, node, ptr::null_mut(), 0, &mut req) } != error::BUFFER_TOO_SMALL {
+            return None;
+        }
+        let mut buf = vec![0u8; req];
+        let rc = unsafe { crimson_factionnode_lookup_display_name(sh, kh, ph, node, buf.as_mut_ptr(), buf.len(), &mut req) };
+        assert_eq!(rc, error::OK);
+        Some(String::from_utf8(buf[..req - 1].to_vec()).unwrap())
+    }
+
+    #[test]
+    fn c_abi_factionnode_dlc_merge_live() {
+        let (Some(nb), Some(nh), Some(kb), Some(khd), Some(pal)) = (
+            extract_bin(&body("factionnode")),
+            extract_bin(&header("factionnode")),
+            extract_bin(&body("knowledgeinfo")),
+            extract_bin(&header("knowledgeinfo")),
+            paloc_bytes("0020", "eng"),
+        ) else {
+            eprintln!("skipping c_abi_factionnode_dlc_merge_live: no game install");
+            return;
+        };
+        let (Some(dnb), Some(dnh), Some(dkb), Some(dkh)) = (
+            extract_dlc_bin("dlc_01", &body("factionnode.dlc_01")),
+            extract_dlc_bin("dlc_01", &header("factionnode.dlc_01")),
+            extract_dlc_bin("dlc_01", &body("knowledgeinfo.dlc_01")),
+            extract_dlc_bin("dlc_01", &header("knowledgeinfo.dlc_01")),
+        ) else {
+            eprintln!("skipping c_abi_factionnode_dlc_merge_live: dlc_01 not installed");
+            return;
+        };
+        let mut sh: *mut CrimsonFactionNodeInfoHandle = ptr::null_mut();
+        let mut kh: *mut CrimsonKnowledgeInfoHandle = ptr::null_mut();
+        let mut ph: *mut CrimsonPalocHandle = ptr::null_mut();
+        unsafe {
+            assert_eq!(crimson_factionnode_load_from_bytes(nb.as_ptr(), nb.len(), nh.as_ptr(), nh.len(), &mut sh), error::OK);
+            assert_eq!(crimson_knowledgeinfo_load_from_bytes_with_header(kb.as_ptr(), kb.len(), khd.as_ptr(), khd.len(), &mut kh), error::OK);
+            assert_eq!(crimson_paloc_load_from_bytes(pal.as_ptr(), pal.len(), &mut ph), error::OK);
+        }
+        let (mut base_nodes, mut base_knowledge) = (0u32, 0u32);
+        unsafe {
+            crimson_factionnode_entry_count(sh, &mut base_nodes);
+            crimson_knowledgeinfo_entry_count(kh, &mut base_knowledge);
+        }
+
+        // Without the DLC: a DLC-only node is simply unknown.
+        const ILIYA: u32 = 1_000_566; // Node_Ocean_IliyaIsland, dlc_01 only
+        assert_eq!(name(sh, kh, ph, ILIYA), None);
+
+        let (mut added_nodes, mut added_knowledge) = (0u32, 0u32);
+        unsafe {
+            assert_eq!(crimson_factionnode_merge_dlc_from_bytes(sh, dnb.as_ptr(), dnb.len(), dnh.as_ptr(), dnh.len(), &mut added_nodes), error::OK);
+            assert_eq!(crimson_knowledgeinfo_merge_dlc_from_bytes(kh, dkb.as_ptr(), dkb.len(), dkh.as_ptr(), dkh.len(), &mut added_knowledge), error::OK);
+        }
+        // 2.06: 142 nodes and 795 knowledge rows exist only in dlc_01.
+        eprintln!("dlc_01 merge: +{added_nodes} nodes, +{added_knowledge} knowledge rows");
+        assert!(added_nodes >= 100, "added {added_nodes} DLC nodes");
+        assert!(added_knowledge >= 500, "added {added_knowledge} DLC knowledge rows");
+        let mut total = 0u32;
+        unsafe { crimson_factionnode_entry_count(sh, &mut total) };
+        assert_eq!(total, base_nodes + added_nodes);
+
+        let mut src = 9u32;
+        unsafe {
+            assert_eq!(crimson_factionnode_entry_source(sh, 0, &mut src), error::OK);
+            assert_eq!(src, 0);
+            assert_eq!(crimson_factionnode_entry_source(sh, total - 1, &mut src), error::OK);
+            assert_eq!(src, 1);
+            assert_eq!(crimson_factionnode_entry_source(sh, total, &mut src), error::OUT_OF_RANGE);
+            let mut ksrc = 9u32;
+            assert_eq!(crimson_knowledgeinfo_entry_source(kh, base_knowledge, &mut ksrc), error::OK);
+            assert_eq!(ksrc, 1);
+        }
+        assert_eq!(name(sh, kh, ph, ILIYA).as_deref(), Some("Iliya Island"));
+        assert_eq!(name(sh, kh, ph, 1_000_044).as_deref(), Some("Hernand Castle"));
+
+        // Every node, base and DLC, has a place name once both are merged.
+        let h = unsafe { &*sh };
+        let missing = h.entries.iter().filter(|&&(k, _)| name(sh, kh, ph, k).is_none()).count();
+        assert_eq!(missing, 0, "nodes without a place name after the DLC merge");
+
+        // Merging the same table again adds nothing.
+        let mut again = 9u32;
+        unsafe {
+            assert_eq!(crimson_factionnode_merge_dlc_from_bytes(sh, dnb.as_ptr(), dnb.len(), dnh.as_ptr(), dnh.len(), &mut again), error::OK);
+        }
+        assert_eq!(again, 0);
+
+        unsafe {
+            crimson_paloc_free(ph);
+            crimson_knowledgeinfo_free(kh);
+            crimson_factionnode_free(sh);
+        }
+    }
+
+    #[test]
+    fn c_abi_factionnode_dlc_merge_args() {
+        let mut sh: *mut CrimsonFactionNodeInfoHandle = ptr::null_mut();
+        assert_eq!(unsafe { crimson_factionnode_load_from_bytes(ptr::null(), 0, ptr::null(), 0, &mut sh) }, error::OK);
+        let mut added = 9u32;
+        unsafe {
+            assert_eq!(crimson_factionnode_merge_dlc_from_bytes(ptr::null_mut(), ptr::null(), 0, ptr::null(), 0, &mut added), error::NULL_ARG);
+            assert_eq!(crimson_factionnode_merge_dlc_from_bytes(sh, ptr::null(), 4, ptr::null(), 0, &mut added), error::NULL_ARG);
+            assert_eq!(crimson_factionnode_merge_dlc_from_bytes(sh, ptr::null(), 0, ptr::null(), 0, &mut added), error::OK);
+            assert_eq!(added, 0);
+            let mut src = 0u32;
+            assert_eq!(crimson_factionnode_entry_source(sh, 0, &mut src), error::OUT_OF_RANGE);
+            assert_eq!(crimson_factionnode_entry_source(sh, 0, ptr::null_mut()), error::NULL_ARG);
+            crimson_factionnode_free(sh);
+        }
     }
 }

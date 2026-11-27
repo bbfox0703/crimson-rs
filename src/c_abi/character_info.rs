@@ -38,6 +38,7 @@ use std::os::raw::c_char;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use super::error;
+use super::EntrySources;
 use super::paloc::CrimsonPalocHandle;
 use crate::character_info::parse_character_info_lossy;
 
@@ -53,27 +54,41 @@ pub struct CrimsonCharacterInfoHandle {
     entries: Vec<(u32, String)>,
     /// `CharacterKey → FactionKey` (0 = the row has no faction).
     faction_by_key: HashMap<u32, u32>,
+    /// Base table or which merged DLC, per entry.
+    sources: EntrySources,
 }
 
 impl CrimsonCharacterInfoHandle {
     /// Build from the body, plus (2.06+) the `.staticinfoheader` that holds
     /// the row names. Without a header only a pre-2.06 body yields rows.
     fn from_bytes(data: &[u8], header: Option<&[u8]>) -> Self {
+        let mut h = CrimsonCharacterInfoHandle {
+            by_key: HashMap::new(),
+            entries: Vec::new(),
+            faction_by_key: HashMap::new(),
+            sources: EntrySources::default(),
+        };
+        h.absorb(data, header, 0);
+        h
+    }
+
+    /// Add the rows whose key is new (first wins); returns how many.
+    fn absorb(&mut self, data: &[u8], header: Option<&[u8]>, source: u8) -> u32 {
         let raw = match header {
             Some(h) => crate::character_info::parse_character_info_lossy_with_header(data, h),
             None => parse_character_info_lossy(data),
         };
-        let mut by_key: HashMap<u32, String> = HashMap::with_capacity(raw.len());
-        let mut entries: Vec<(u32, String)> = Vec::with_capacity(raw.len());
-        let mut faction_by_key: HashMap<u32, u32> = HashMap::with_capacity(raw.len());
+        let mut added = 0;
         for e in raw {
-            if let std::collections::hash_map::Entry::Vacant(v) = by_key.entry(e.key) {
+            if let std::collections::hash_map::Entry::Vacant(v) = self.by_key.entry(e.key) {
                 v.insert(e.name.clone());
-                faction_by_key.insert(e.key, e.faction_key);
-                entries.push((e.key, e.name));
+                self.faction_by_key.insert(e.key, e.faction_key);
+                self.entries.push((e.key, e.name));
+                self.sources.push(source);
+                added += 1;
             }
         }
-        CrimsonCharacterInfoHandle { by_key, entries, faction_by_key }
+        added
     }
 }
 
@@ -256,6 +271,54 @@ pub unsafe extern "C" fn crimson_characterinfo_lookup_string_key(
         write_str_to_buf(name, buf, buf_len, required)
     }))
     .unwrap_or(error::PANIC)
+}
+
+// ── DLC ────────────────────────────────────────────────────────────────────
+
+/// Merge a DLC copy of the table (`<install>/dlc/<name>/0008`, e.g.
+/// `characterinfo.dlc_01.staticinfobody` + `.staticinfoheader`) into a loaded
+/// handle. Adds only the rows whose key the handle lacks, after the existing
+/// entries; a shared key keeps the base row (on 2.06 base and `dlc_01` agree
+/// on every field this bridge exposes). `*out_added` = rows added.
+///
+/// **Optional.** Without the DLC installed (Steam installs `dlc/dlc_01` only
+/// for owners) skip this call: every function works on the base rows alone.
+/// Call it once per DLC, in folder order; [`crimson_characterinfo_entry_source`] then
+/// reports 1 for the first DLC's rows, 2 for the second's. Not thread-safe
+/// against concurrent lookups on the same handle.
+///
+/// # Safety
+/// `handle` and `out_added` must be non-null; `body` / `header` must point
+/// to `*_len` readable bytes (null iff the length is 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_characterinfo_merge_dlc_from_bytes(
+    handle: *mut CrimsonCharacterInfoHandle,
+    body: *const u8,
+    body_len: usize,
+    header: *const u8,
+    header_len: usize,
+    out_added: *mut u32,
+) -> i32 {
+    unsafe {
+        super::merge_dlc_ffi(handle, body, body_len, header, header_len, out_added, |h, b, hd| {
+            let source = h.sources.next_merge();
+            h.absorb(b, (!hd.is_empty()).then_some(hd), source)
+        })
+    }
+}
+
+/// Where entry `idx` came from: 0 = the base table, `n` = the `n`-th DLC
+/// merged with [`crimson_characterinfo_merge_dlc_from_bytes`]. Lets a list hide DLC rows.
+///
+/// # Safety
+/// `handle` and `out_source` must be non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_characterinfo_entry_source(
+    handle: *const CrimsonCharacterInfoHandle,
+    idx: u32,
+    out_source: *mut u32,
+) -> i32 {
+    unsafe { super::entry_source_ffi(handle, idx, out_source, |h| &h.sources) }
 }
 
 // ── Faction ────────────────────────────────────────────────────────────────
@@ -8007,5 +8070,58 @@ mod tests {
                 eprintln!("  {cls}: {with_pos}/{total} instances carry a top-level _position");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod dlc_tests {
+    //! Merging `dlc_01`'s characterinfo copy (287 DLC-only characters on 2.06).
+    use super::*;
+    use crate::binary::gamedata_layout::{body, extract_bin, extract_dlc_bin, header};
+    use std::ptr;
+
+    #[test]
+    fn c_abi_characterinfo_dlc_merge_live() {
+        let (Some(b), Some(h)) = (extract_bin(&body("characterinfo")), extract_bin(&header("characterinfo"))) else {
+            eprintln!("skipping c_abi_characterinfo_dlc_merge_live: no game install");
+            return;
+        };
+        let (Some(db), Some(dh)) = (
+            extract_dlc_bin("dlc_01", &body("characterinfo.dlc_01")),
+            extract_dlc_bin("dlc_01", &header("characterinfo.dlc_01")),
+        ) else {
+            eprintln!("skipping c_abi_characterinfo_dlc_merge_live: dlc_01 not installed");
+            return;
+        };
+        let mut ch: *mut CrimsonCharacterInfoHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_characterinfo_load_from_bytes_with_header(b.as_ptr(), b.len(), h.as_ptr(), h.len(), &mut ch) },
+            error::OK
+        );
+        const SATYROS: u32 = 1_000_099; // Faction_Satyros, dlc_01 only
+        const SATYR: u32 = 1_004_389; // NHM_Satyros_1, dlc_01 only
+        let mut members = 9u32;
+        assert_eq!(unsafe { crimson_characterinfo_faction_member_count(ch, SATYROS, &mut members) }, error::OK);
+        assert_eq!(members, 0);
+        let mut f = 0u32;
+        assert_eq!(unsafe { crimson_characterinfo_lookup_faction_key(ch, SATYR, &mut f) }, error::NOT_FOUND);
+
+        let mut base = 0u32;
+        unsafe { crimson_characterinfo_entry_count(ch, &mut base) };
+        let mut added = 0u32;
+        assert_eq!(
+            unsafe { crimson_characterinfo_merge_dlc_from_bytes(ch, db.as_ptr(), db.len(), dh.as_ptr(), dh.len(), &mut added) },
+            error::OK
+        );
+        eprintln!("dlc_01 merge: +{added} characters");
+        assert!(added >= 200, "added {added} DLC characters");
+        assert_eq!(unsafe { crimson_characterinfo_lookup_faction_key(ch, SATYR, &mut f) }, error::OK);
+        assert_eq!(f, SATYROS);
+        assert_eq!(unsafe { crimson_characterinfo_faction_member_count(ch, SATYROS, &mut members) }, error::OK);
+        assert_eq!(members, 9);
+        let mut src = 9u32;
+        assert_eq!(unsafe { crimson_characterinfo_entry_source(ch, base, &mut src) }, error::OK);
+        assert_eq!(src, 1);
+        unsafe { crimson_characterinfo_free(ch) };
     }
 }
