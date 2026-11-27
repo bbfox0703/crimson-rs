@@ -463,7 +463,7 @@ src/
     ├── character_info.rs    # CharacterKey → name + display (cat-byte strip, NO hash hop, lo32=0x30)
     │                        #   + resolve_portrait: fuzzy match against list_npc_portraits output
     │                        #   + lookup_faction_key / faction_member_count (FactionKey from the row head)
-    ├── dye_color_group_info.rs                # DyeColorGroupInfoKey (u32) → "Her_Color_Group_I" etc.
+    ├── dye_color_group_info.rs                # DyeColorGroupInfoKey (u32) → "Her_Color_Group_I" etc., palette, each color's unlock KnowledgeKey, localized theme name
     ├── part_prefab_dye_texture_pallete_info.rs # PartPrefabDyeTexturePalleteKey (u16) → palette tier (cloth/leather/metal + variants)
     ├── part_prefab_dye_slot_info.rs           # PartPrefabKey (u32) → slot_count + per-slot default materials
     │                                           #   (replaces dye_slot_counts.json); 1.13 adds
