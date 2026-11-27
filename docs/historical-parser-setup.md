@@ -10,8 +10,9 @@ Replace `<commit>` with the commit hash of the last-known-good parser for the pr
 
 ```powershell
 # 1. Export the historical parser's sources into a sibling directory.
-#    (Not `git worktree add`: it fails on this repo with
-#    `external filter 'git-crypt smudge' failed` on tests/fixtures/saves/.
+#    (Not `git worktree add`: commits before 2026-11-27 still carry
+#    git-crypt'd save fixtures under tests/fixtures/saves/, and a worktree of
+#    one can fail with `external filter 'git-crypt smudge' failed`.
 #    Drop `.cargo` from the path list if it doesn't exist at <commit>.)
 mkdir ../crimson-rs-<ver>
 git archive <commit> src Cargo.toml Cargo.lock pyproject.toml python .cargo | tar -x -C ../crimson-rs-<ver>

@@ -37,6 +37,11 @@ python/**/*.pdb
 # git-crypt symmetric key: NEVER commit it. The live key lives in
 # .git/git-crypt/ (which git already never tracks) and is exported OUTSIDE
 # the repo. This guard catches a key file accidentally copied into the tree.
-# (The encrypted *.save fixtures themselves are committed — see .gitattributes.)
+# (Only old commits still hold git-crypt'd files; see below.)
 *.key
 /.git-crypt/
+
+# Real save files are player data: they live in the private crimson-rs-private
+# repo (cloned next to this one; see src/test_fixtures.rs), never in this
+# public repo. They used to be committed here under git-crypt until 2026-11-27.
+*.save

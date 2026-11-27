@@ -993,16 +993,12 @@ mod tests {
     /// shared field carried by name, new arrays / lists absent with markers.
     #[test]
     fn template_crosses_schemas_from_the_1_10_fixture() {
-        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/saves/1.10/save.save");
-        let (Ok(data), Some(target)) = (std::fs::read(&fixture), newest_live_save()) else {
+        const FIXTURE: &str = "1.10/save.save";
+        let (Some(_), Some(target)) = (crate::test_fixtures::save(FIXTURE), newest_live_save()) else {
             eprintln!("skipping: fixture or live save missing");
             return;
         };
-        if data.get(..4) != Some(b"SAVE") {
-            eprintln!("skipping: fixture is git-crypt locked");
-            return;
-        }
-        let src = load(&fixture);
+        let src = load(&crate::test_fixtures::saves_dir().join(FIXTURE));
         let (sb, sf, src_elements) = merc_list(src);
         let (idx, source) = src_elements
             .iter()

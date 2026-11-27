@@ -14,7 +14,7 @@ If you're tempted to use these from the active pipeline, **stop and use the acti
 
 ## When porting these to the next version pair (e.g. 1.05 → 1.06)
 
-1. Build the previous version's parser as a sibling install with the `git archive` route in [`../CLAUDE.md`](../CLAUDE.md) ("Sibling-parser"): `git worktree add` fails on this repo because the `tests/fixtures/saves/` git-crypt smudge filter can't run in a fresh worktree.
+1. Build the previous version's parser as a sibling install with the `git archive` route in [`../CLAUDE.md`](../CLAUDE.md) ("Sibling-parser"): `git worktree add` of a commit before 2026-11-27 can fail, because those commits still carry the git-crypt'd `tests/fixtures/saves/`.
 2. Copy `align_104_105.py` → `align_105_106.py`, update path constants and the `.crimson_rs_<ver>` import path.
 3. Same for `diff_104_105.py`, `diff_104_105_full.py`, `dump_104_spans.py`.
 4. Sanity-check the anchor scanner (`scripts/build_items_jsonl.py` `looks_like_item_start`) against the new patch's `string_key` shapes (longer? non-ASCII?) **before** assuming any schema change. The 1.05 stragglers were anchor-scanner artifacts, not schema drift.
