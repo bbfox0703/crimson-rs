@@ -22,6 +22,13 @@ needs and what crimson-rs needs to ship (or not ship).
 > **Replaces the PyQt5 reference editor's hand-maintained
 > `dye_slot_counts.json`** end-to-end — the C# editor can now look up
 > slot counts by item key directly.
+>
+> **2026-11-27: the item → slot-row join goes through the character
+> prefabs.** A `partprefabdyeslotinfo` row is one `.pac` mesh keyed by
+> the checksum of its path, and an item's prefab lists several meshes.
+> The new `crimson_item_part_prefab_load_*_with_prefab_pamt` loaders
+> resolve 909 of the 917 dyeable 2.06 items (the name join: 70, five of
+> them wrong). See "Item → mesh join (2026-11-27)".
 
 ---
 
@@ -336,13 +343,18 @@ Before 2.01 the three bytes were the per-channel flags `active(ch)`.
    `crimson_item_part_prefab_resolve_dye_slot_count`. The dye slot count
    is the popcount of the union.
 
-**Not confirmed.** Only two dyed items in the saves on this PC resolve to
-a prefab, both in the 1.10 fixtures. The other dyed items there (200914,
-1000313, 2111103, 103023) are body-type variants with no
-`partprefabdyeslotinfo` row (see v3 below). The live saves hold one dyed
-item, 9102, which also resolves to no prefab. So no save written by a
-2.01+ build confirms the save side; it rests on the 1.10 dyes matching
-those prefabs' numbering on 2.06.
+**Confirmed on a 2.06 save (2026-11-27).** The name join reached only
+two dyed fixture items. Through the prefab join ("Item → mesh join
+(2026-11-27)" below) every dyed item in the saves on this PC resolves:
+- 2.06 slot102 (dyed in game on 2.06): 111147 carries `_dyeSlotNo` 0, 1
+  and 7, all inside its dye slot union {0..7}. 9102 carries 0, inside
+  {0, 2, 3, 6, 7, 9}.
+- 1.10 `base_sample`: every `_dyeSlotNo` on the six dyed items is one of
+  the item's *channel* numbers (`mat_indices`) on 2.06, but three are
+  numbers whose 2.06 mask bit is clear: 200914 slot 3 (channel
+  `[4, 3, 3]` only enables 4), 2111103 slot 2 and 103023 slot 1. The 1.10
+  game wrote those elements; 2.06 no longer marks the numbers dyeable.
+  An editor should keep such elements and offer only the mask bits.
 
 **C ABI (additive, 2026-11-27).**
 
@@ -379,6 +391,111 @@ for (int n = 0; n < 32; n++) {
 ```
 
 ---
+
+## Item → mesh join (2026-11-27)
+
+**Rule.**
+- A `partprefabdyeslotinfo` row describes one `.pac` **mesh**:
+  - its slots are the mesh's sub-meshes in order;
+  - the last slot's `tail_name` is the `.pac` path;
+  - the row key is `calculate_checksum(lowercase(pac path))` (Jenkins,
+    `crate::crypto::checksum`). That holds on 1,703 / 1,703 rows on 2.06.
+- A row's `prefab_name` is its *first sub-mesh* name, not a prefab name.
+- An item's `merged_prefab_visual_list[].prefab_names` (through
+  stringinfo) name **character prefabs**: `<name>.prefab` files in the
+  character PAZ group (0009 on 2.06, `character/bin__/prefab/...`).
+- A prefab is a reflection-serialized scene. Each component stores its
+  mesh as a `[u32 len][path]` string ending in `.pac`.
+  `cd_m0001_00_so_phm_ub_31067.prefab` (111147) lists
+  `..._so_phm_ub_31066.pac`, `..._so_phm_lb_31066.pac`,
+  `cd_phm_00_lb_belt_00_0001.pac` and `..._so_phm_sho_31066.pac`.
+- Item → prefab name → `.prefab` → `.pac` paths → checksum → rows. The
+  item's dye slot numbers are the **union** of those rows' masks. The
+  numbers form one space across the whole outfit (they overlap between
+  meshes), so union them; don't number per mesh.
+
+The original join matched the prefab name against a row's `prefab_name`.
+That only hits when a mesh's first sub-mesh happens to share the prefab's
+name. Sub-mesh names repeat across meshes, so five of its 70 dyeable 2.06
+hits were wrong meshes. For example, spear 1001163 went to a horse-saddle
+hook, and boots 131024 to another pair's mesh.
+
+**Body variants.** Each `merged_prefab_visual_list` element is a variant
+for the tribe / genders in its `tribe_gender_list`, e.g. `player_1`,
+`human_female` or `bosshuman_male`. The ground-drop model element
+(`cd_t0254_dropitem_*`, empty list) has no dye rows.
+- 526 dyeable 2.06 items have more than one variant with rows, and 512 of
+  them offer the same numbers in every variant.
+- In the other 14 the variants differ. Usually the male mesh offers more
+  than the female or boss one: 133172 offers 0..4 male and 0..2 female.
+- Nine items give one number different default materials in different
+  variants: 133172 slot 0 is `cloth` on male, `leather` on female.
+- The save keeps one dye list per item. So the item-level lookups take an
+  optional tribe / gender name and union the variants that list it (all
+  variants when it is null).
+
+**Coverage (2.06).** 909 of 917 `is_dyeable` items resolve; the name join
+resolved 70. The eight that don't use meshes with no dye row:
+- two crossbows;
+- two horse wagon connectors;
+- `cd_t9999_empty`;
+- `fs_phm_00_hel_0002_d`, `cd_phm_07_hel_0030_c` and the cloak
+  `cd_phm_00_cloak_00_0447_t`.
+
+No dyeable item has a prefab missing from 0009. The DLC tree's
+`iteminfo.dlc_01` and `dlc/dlc_01/0009` are not joined yet.
+
+**C ABI (additive).**
+
+| Function | Purpose |
+|---|---|
+| `crimson_item_part_prefab_load_from_bytes_with_prefab_pamt(iteminfo, len, stringinfo, len, pp_pabgb, len, pp_pabgh, len, prefab_pamt_path, *out)` | Prefab join. `prefab_pamt_path` is the `0.pamt` of the group holding the character `.prefab` files (`<game>/0009/0.pamt` on 2.06). `IO` if unreadable, `NOT_FOUND` if it lists no `.prefab`. Takes ~2 s on 2.06. |
+| `crimson_item_part_prefab_load_from_file_with_prefab_pamt(4 table paths, prefab_pamt_path, *out)` | Same, from files. |
+| `crimson_item_part_prefab_lookup_dye_slot_bits(h, item_key, tribe_gender, *out_bits)` | Union of the dye slot bits of the item's rows: the `_dyeSlotNo` values to offer. `tribe_gender` is nullable (`"player_1"`, ...). `NOT_FOUND` if no rows or no variant lists `tribe_gender`. |
+| `crimson_item_part_prefab_lookup_channel_dye_slot_bits(h, item_key, tribe_gender, *out_bits)` | Union of every channel number (`mat_indices`), dyeable or not. A superset of the above: numbers a save may carry from an older patch. |
+| `crimson_item_part_prefab_lookup_dye_slot_material(h, item_key, tribe_gender, dye_slot_no, buf, len, *required)` | Default material of a number over the selected rows (first non-empty, variant then mesh order). `""` if unnamed, `OUT_OF_RANGE` if unused. |
+
+The existing `lookup_count` / `lookup_key_at` / `lookup_prefab_name_at` /
+`resolve_dye_slot_count` work on either handle. On a prefab-join handle
+the keys are every row of every variant (deduplicated), and the name is
+each row's `prefab_name`. The new lookups also work on a name-join handle.
+
+Rust: `PartPrefabDyeSlotInfoEntry::channel_dye_slot_bits`.
+
+**Pins.**
+- `c_abi_item_part_prefab_with_prefab_pamt_live`:
+  - 111147 → rows `f407029b 4170373c 86db33f9 f736011d`, bits `0xff`
+    (contains 0, 1, 7);
+  - 9102 → bits `0b0010_1100_1101`;
+  - the spear fix;
+  - the 133172 variant bits and materials;
+  - coverage ≥ 98 %.
+- `part_prefab_key_is_the_pac_path_checksum_live`: the key rule on every
+  row.
+- `dye_slot_no_is_an_item_dye_slot_via_prefabs_in_the_1_10_fixture`: the
+  1.10 save side, including the three out-of-mask numbers.
+
+C# editor recipe:
+
+```csharp
+// Load once: the three gamedata tables + the character PAMT.
+crimson_item_part_prefab_load_from_bytes_with_prefab_pamt(..., Path.Combine(gameRoot, "0009", "0.pamt"), out var h);
+crimson_item_part_prefab_lookup_dye_slot_bits(h, itemKey, null, out uint offer);          // rows to show
+crimson_item_part_prefab_lookup_channel_dye_slot_bits(h, itemKey, null, out uint valid);  // keep these elements
+for (int n = 0; n < 32; n++) if ((offer & (1u << n)) != 0) {
+    // label: crimson_item_part_prefab_lookup_dye_slot_material(h, itemKey, null, (byte)n, ...)
+    // save:  the ItemDyeSaveData element with _dyeSlotNo == n (absent = 0)
+}
+```
+
+**`_grimeOpacity`.** The schema types it `int8` (-128..127). Across the
+13 saves in the live save folder and the 1.09 / 1.10 fixtures it is present on exactly
+two elements, 85 and 101, both on 111147 in slot102. The other 176
+elements omit it. That is too little to confirm a range, a default, or
+the guess "repair ≈ 100 − grime × 100 / 127, absent = 127". One
+observation fits it: 111147 has three meshes with dye rows (ub, sho, lb),
+which matches the three parts the in-game UI shows.
+
 
 ## C ABI surface (for `CrimsonAtomtic`)
 
@@ -488,7 +605,7 @@ communicated via `out_resolve_source`:
 | Constant | Value | Meaning |
 |---|---:|---|
 | `DIRECT` | 0 | `out_slot_count` is authoritative — chained both bridges cleanly. |
-| `NOT_RESOLVED_NO_PARTPREFAB` | 1 | Item has no partprefab mapping; editor should fall back to a curated default (e.g. the human-male equip-slot prefab's slot count) or show "unknown". 76% of 1.07 `is_dyeable=1` items hit this — they're body-type variants (goblin / dwarf / tribe meshes) that share the human male's dye-slot layout but aren't listed in `partprefabdyeslotinfo`. `out_slot_count = 0`. |
+| `NOT_RESOLVED_NO_PARTPREFAB` | 1 | Item has no partprefab mapping; editor should fall back to a curated default (e.g. the human-male equip-slot prefab's slot count) or show "unknown". 76% of 1.07 `is_dyeable=1` items hit this — they're body-type variants (goblin / dwarf / tribe meshes) that share the human male's dye-slot layout but aren't listed in `partprefabdyeslotinfo`. `out_slot_count = 0`. **2026-11-27:** those items are not unlisted; the name join missed their meshes. With a `_with_prefab_pamt` handle 8 of 917 dyeable 2.06 items hit this. |
 | `NOT_RESOLVED_NO_SLOT_INFO` | 2 | Partprefab present but missing from the slot-info table. Shouldn't happen given how the join is built — defensive guard for cross-version safety. `out_slot_count = 0`. |
 
 **Resolution policy**: always uses `partprefab[0]` (first resolved
@@ -593,6 +710,9 @@ join at load time —
 [`src/c_abi/item_part_prefab.rs`](../src/c_abi/item_part_prefab.rs)
 exposes `lookup_count` / `lookup_key_at` / `lookup_prefab_name_at` so
 the C# editor can drop `dye_slot_counts.json` entirely.
+
+> **Superseded 2026-11-27** by "Item → mesh join (2026-11-27)": the
+> body-type items below are reached through their `.prefab` meshes.
 
 Coverage in 1.07: ~120 items resolve to at least one partprefab key
 (out of 507 `is_dyeable=1` items). The remaining dyeable items carry
