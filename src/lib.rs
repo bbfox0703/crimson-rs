@@ -111,11 +111,14 @@ mod tests {
     use crate::binary::papgt::PackGroupTreeMeta;
     use crate::item_info::ItemInfo;
 
-    // Hardcoded to the maintainer's local install. Tests skip gracefully
-    // if the files aren't present (CI / fresh machines) — they don't fail.
-    const GAME_DIR: &str = r"D:\SteamLibrary\steamapps\common\Crimson Desert";
-    // The parser targets Crimson Desert 1.05. The roundtrip test reads the
-    // current 1.05 binary that `scripts\export_for_ce.py` extracts to
+    // The install the live tests read: `CRIMSON_GAME_ROOT`, else the
+    // maintainer's default path (`gamedata_layout::game_root`). Tests skip
+    // gracefully if the files aren't present (CI / fresh machines).
+    fn game_dir() -> std::path::PathBuf {
+        gamedata_layout::game_root()
+    }
+    // The parser targets the latest patch only. The roundtrip test reads the
+    // binary that `scripts\export_for_ce.py` last extracted to
     // `out\iteminfo.pabgb`. Test skips if the file isn't present (e.g. a
     // fresh checkout that hasn't run the export pipeline).
     const BINARY_PATH: &str = concat!(
@@ -125,22 +128,20 @@ mod tests {
     // PAPGT / PAMT in the live game install (used by the parse / roundtrip
     // tests below). meta/0.papgt is the global descriptor; any group's
     // 0.pamt works for the parse path — 0019 ships in every region.
-    const PAPGT_PATH: &str = concat!(
-        r"D:\SteamLibrary\steamapps\common\Crimson Desert",
-        r"\meta\0.papgt"
-    );
-    const PAMT_PATH: &str = concat!(
-        r"D:\SteamLibrary\steamapps\common\Crimson Desert",
-        r"\0019\0.pamt"
-    );
+    fn papgt_path() -> std::path::PathBuf {
+        game_dir().join("meta").join("0.papgt")
+    }
+    fn pamt_path() -> std::path::PathBuf {
+        game_dir().join("0019").join("0.pamt")
+    }
 
     /// Read a file, or print a skip notice and return `None` so tests can
     /// `let Some(data) = ... else { return };` instead of panicking.
-    fn try_read(path: &str, label: &str) -> Option<Vec<u8>> {
-        match std::fs::read(path) {
+    fn try_read(path: std::path::PathBuf, label: &str) -> Option<Vec<u8>> {
+        match std::fs::read(&path) {
             Ok(data) => Some(data),
             Err(e) => {
-                eprintln!("skipping: {label} not found at {path}: {e}");
+                eprintln!("skipping: {label} not found at {}: {e}", path.display());
                 None
             }
         }
@@ -148,7 +149,7 @@ mod tests {
 
     #[test]
     fn test_full_roundtrip() {
-        let Some(data) = try_read(BINARY_PATH, "1.04 baseline binary") else {
+        let Some(data) = try_read(BINARY_PATH.into(), "out/iteminfo.pabgb") else {
             return;
         };
         let mut offset = 0;
@@ -168,7 +169,7 @@ mod tests {
 
     #[test]
     fn test_papgt_parse() {
-        let Some(data) = try_read(PAPGT_PATH, "papgt") else {
+        let Some(data) = try_read(papgt_path(), "papgt") else {
             return;
         };
         let papgt = PackGroupTreeMeta::parse(&data).unwrap();
@@ -187,7 +188,7 @@ mod tests {
 
     #[test]
     fn test_papgt_roundtrip() {
-        let Some(data) = try_read(PAPGT_PATH, "papgt") else {
+        let Some(data) = try_read(papgt_path(), "papgt") else {
             return;
         };
         let papgt = PackGroupTreeMeta::parse(&data).unwrap();
@@ -199,7 +200,7 @@ mod tests {
 
     #[test]
     fn test_pamt_parse() {
-        let Some(data) = try_read(PAMT_PATH, "pamt") else {
+        let Some(data) = try_read(pamt_path(), "pamt") else {
             return;
         };
         let pamt = PackMeta::parse(&data, None).unwrap();
@@ -222,7 +223,7 @@ mod tests {
 
     #[test]
     fn test_pamt_roundtrip() {
-        let Some(data) = try_read(PAMT_PATH, "pamt") else {
+        let Some(data) = try_read(pamt_path(), "pamt") else {
             return;
         };
         let pamt = PackMeta::parse(&data, None).unwrap();
@@ -240,7 +241,7 @@ mod tests {
     fn extract_paloc_from_archive(group: &str, lang: &str) -> Option<Vec<u8>> {
         let data = gamedata_layout::paloc_bytes(group, lang);
         if data.is_none() {
-            eprintln!("skipping: no {lang} paloc in group {group} of {GAME_DIR}");
+            eprintln!("skipping: no {lang} paloc in group {group} of {}", game_dir().display());
         }
         data
     }
@@ -282,7 +283,7 @@ mod tests {
         use crate::binary::paloc::{is_wrapped, unwrap_container, wrap_container};
 
         let Some(blobs) = gamedata_layout::paloc_blobs(group, lang) else {
-            eprintln!("skipping: no {lang} paloc in group {group} of {GAME_DIR}");
+            eprintln!("skipping: no {lang} paloc in group {group} of {}", game_dir().display());
             return;
         };
         assert!(!blobs.is_empty());
@@ -325,10 +326,10 @@ mod tests {
 
     #[test]
     fn test_skill_roundtrip_1_05() {
-        let Some(pabgh) = extract_skill_from_archive(GAME_DIR, &gamedata_layout::header("skill")) else {
+        let Some(pabgh) = gamedata_layout::extract_bin(&gamedata_layout::header("skill")) else {
             return;
         };
-        let Some(pabgb) = extract_skill_from_archive(GAME_DIR, &gamedata_layout::body("skill")) else {
+        let Some(pabgb) = gamedata_layout::extract_bin(&gamedata_layout::body("skill")) else {
             return;
         };
         let (fallback, total) = run_skill_roundtrip("live game install", &pabgh, &pabgb);
@@ -355,11 +356,11 @@ mod tests {
     #[ignore]
     fn _probe_skill_entry_failures() {
         use crate::skill_info::{SkillData, probe_entry_failures};
-        let Some(pabgh) = extract_skill_from_archive(GAME_DIR, &gamedata_layout::header("skill")) else {
+        let Some(pabgh) = gamedata_layout::extract_bin(&gamedata_layout::header("skill")) else {
             eprintln!("skipping: live install not found");
             return;
         };
-        let Some(pabgb) = extract_skill_from_archive(GAME_DIR, &gamedata_layout::body("skill")) else {
+        let Some(pabgb) = gamedata_layout::extract_bin(&gamedata_layout::body("skill")) else {
             return;
         };
         let report = probe_entry_failures(&pabgh, &pabgb)
@@ -433,41 +434,6 @@ mod tests {
         (raw_fallback_count, parsed.entries.len())
     }
 
-    fn extract_skill_from_archive(game_dir: &str, file_name: &str) -> Option<Vec<u8>> {
-        use crate::binary::paz;
-        use std::path::Path;
-
-        let group_dir = Path::new(game_dir).join("0008");
-        let pamt_path = group_dir.join("0.pamt");
-        let pamt_data = match std::fs::read(&pamt_path) {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("skipping: {}: {}", pamt_path.display(), e);
-                return None;
-            }
-        };
-        let pamt = PackMeta::parse(&pamt_data, None).unwrap();
-        let dir = pamt
-            .directories
-            .iter()
-            .find(|d| d.path == gamedata_layout::bin_dir())
-            .expect("dir not found");
-        let file = dir
-            .files
-            .iter()
-            .find(|f| f.name == file_name)
-            .unwrap_or_else(|| panic!("{} not found", file_name));
-        Some(
-            paz::extract_file(
-                &group_dir,
-                file,
-                gamedata_layout::bin_dir(),
-                &pamt.header.encrypt_info.encrypt_info,
-            )
-            .unwrap(),
-        )
-    }
-
     #[test]
     fn test_paloc_kor_roundtrip() {
         roundtrip_paloc_files("0019", "kor");
@@ -476,9 +442,8 @@ mod tests {
     #[test]
     fn test_game_dir_papgt_pamt_checksums() {
         use crate::crypto::checksum;
-        use std::path::Path;
 
-        let papgt_path = Path::new(GAME_DIR).join("meta/0.papgt");
+        let papgt_path = game_dir().join("meta/0.papgt");
         let papgt_data = match std::fs::read(&papgt_path) {
             Ok(d) => d,
             Err(e) => {
@@ -496,7 +461,7 @@ mod tests {
         let mut validated = 0;
         let mut skipped = 0;
         for entry in &papgt.entries {
-            let pamt_path = Path::new(GAME_DIR).join(&entry.group_name).join("0.pamt");
+            let pamt_path = game_dir().join(&entry.group_name).join("0.pamt");
 
             if !pamt_path.exists() {
                 println!("  SKIP group={} (no 0.pamt found)", entry.group_name);
