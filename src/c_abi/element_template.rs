@@ -20,8 +20,8 @@
 //! - a field the target class no longer has is dropped (and counted);
 //! - a field the target class gained stays absent — with its `0x01` absence
 //!   marker when it is a dynamic array or object list — except an inline
-//!   object locator (`meta_kind` 4): the game never writes one absent (64k
-//!   present, none absent across saves from 1.10 to 2.03), so it is created
+//!   object locator (`meta_kind` 4): the game never writes one absent, so
+//!   it is created
 //!   with an empty child of the class the target save itself uses for that
 //!   field;
 //! - a field whose kind or size changed is `TEMPLATE_MISMATCH`, never a

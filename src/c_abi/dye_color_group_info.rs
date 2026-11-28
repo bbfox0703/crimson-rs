@@ -3,9 +3,9 @@
 //! Resolves `DyeColorGroupInfoKey (u32)` — the gamedata key stored as
 //! `ItemDyeSaveData._dyeColorGroupInfoKey` in the save's
 //! `_itemDyeDataList`. Returns the row's internal name (e.g.
-//! `"Her_Color_Group_I"`, `"Dem_Color_Group_III"`); the dye UI shows
-//! a localized version, but for v1 the C# editor renders the raw
-//! internal name in the "Named family" dropdown.
+//! `"Her_Color_Group_I"`, `"Dem_Color_Group_III"`); the localized name the
+//! dye UI shows comes from
+//! [`crimson_dye_color_group_info_lookup_display_name`].
 //!
 //! Both `dyecolorgroupinfo.pabgb` and `dyecolorgroupinfo.pabgh` must
 //! be loaded together — the PABGH provides the explicit (key, offset)
@@ -32,9 +32,8 @@ pub struct CrimsonDyeColorGroupInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,
     /// Logical-RGBA palette per key (post-swap from on-disk BGRA).
-    /// 109 records per row in 1.07; the bridge doesn't pin the
-    /// count so a future patch with a different palette size still
-    /// resolves.
+    /// The bridge doesn't pin the record count, so a palette of a
+    /// different size still resolves.
     palettes: HashMap<u32, Vec<[u8; 4]>>,
     /// Each palette position's unlock condition, parallel to `palettes`.
     conditions: HashMap<u32, Vec<PaletteCondition>>,
@@ -273,9 +272,8 @@ pub unsafe extern "C" fn crimson_dye_color_group_info_get_entry(
 // (R, G, B, A) so the values returned here match the save's u8 fields
 // directly. See [`crate::dye_color_group_info`] for the rationale.
 
-/// Number of palette positions for `color_group_key` (109 in 1.07,
-/// but the ABI doesn't pin the count — a future patch with a
-/// different palette size will report the new value).
+/// Number of palette positions for `color_group_key` (the ABI doesn't
+/// pin the count; a palette of a different size reports its own).
 ///
 /// Returns [`error::NOT_FOUND`] if the key isn't in the table.
 ///
@@ -354,8 +352,8 @@ pub unsafe extern "C" fn crimson_dye_color_group_info_palette_at(
 /// exact match (e.g. the save's RGB was set by a tool like Cheat
 /// Engine off-grid), [`error::NOT_FOUND`] when the key is unknown.
 /// Alpha is not part of the match (every observed position uses
-/// `0xFF`). The first matching position wins; no 2.06 palette repeats an
-/// RGB, so the answer is unique there.
+/// `0xFF`). The first matching position wins; no current palette repeats
+/// an RGB, so the answer is unique.
 ///
 /// The C# editor uses this to highlight which palette cell a
 /// currently-applied dye came from in its picker grid.
@@ -484,7 +482,7 @@ pub unsafe extern "C" fn crimson_dye_color_group_info_lookup_display_name(
 #[cfg(test)]
 mod tests {
     //! Live-install integration test. Pins all 10 (key → name) mappings
-    //! from the 1.07 install and exercises the lookup + enumeration +
+    //! and exercises the lookup + enumeration +
     //! NULL-arg paths.
 
     use crate::binary::gamedata_layout;
@@ -493,8 +491,8 @@ mod tests {
     use std::path::PathBuf;
     use std::ptr;
 
-    /// (key, expected internal name) — all 10 rows from the live 1.07
-    /// install, same set as the parser test pins.
+    /// (key, expected internal name) — all 10 rows, same set as the
+    /// parser test pins.
     const KNOWN: &[(u32, &str)] = &[
         (0xc88211f5, "Her_Color_Group_I"),
         (0xdc274476, "Dem_Color_Group_I"),
@@ -709,9 +707,9 @@ mod tests {
     /// every observed save RGB (6 Hernand reds + 5 Pororin olives,
     /// from `_probe_item_dye_data_with_mercenary_resolution`) must
     /// reverse-resolve to its exact gradient position, and the
-    /// forward lookup must return the same RGB. Closes the BGRA-byte-
-    /// order question — if a future patch reorders bytes or shifts
-    /// positions, this test fires first.
+    /// forward lookup must return the same RGB. Pins the BGRA byte
+    /// order: if a patch reorders bytes or shifts positions, this test
+    /// fires first.
     #[test]
     fn c_abi_dye_color_group_info_palette_pins_slot103_observations() {
         let Some((pabgb, pabgh)) = crate::dye_color_group_info::extract_pair_for_tests() else {
@@ -746,8 +744,8 @@ mod tests {
             (POR, 55, 0x8c, 0x85, 0x30),
         ];
 
-        // 1.07 palettes have 109 positions per theme. Floor at >=50 so
-        // a patch with a slightly different size doesn't false-fail.
+        // Floor at >=50 so a patch with a slightly different palette size
+        // doesn't false-fail.
         let mut size: u32 = 0;
         assert_eq!(
             unsafe { crimson_dye_color_group_info_palette_size(h, HER, &mut size) },
@@ -838,8 +836,8 @@ mod tests {
         };
         // The parsers read the latest patch only, so UNSUPPORTED_VERSION here is
         // drift (condition bytecode the reader does not know), not an old
-        // install. It used to skip, on exactly the drift this test exists to
-        // catch (audit E-03).
+        // install; skipping on it would hide exactly the drift this test
+        // exists to catch.
         assert_ne!(
             knowledge(HER, 0),
             Err(error::UNSUPPORTED_VERSION),

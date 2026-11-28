@@ -2,7 +2,7 @@
 //!
 //! Resolves `PartPrefabDyeTexturePalleteKey (u16)` — the gamedata
 //! key stored as `ItemDyeSaveData._texturePalleteKey` in the save's
-//! `_itemDyeDataList`. 11 rows in 2.06 (key 0..=10). Each row defines
+//! `_itemDyeDataList`. 11 rows (keys 0..=10; the live test pins them). Each row defines
 //! a "palette tier" — a set of 3 material sub-records (cloth /
 //! leather / metal) with paired icon + texture DDS paths.
 //!
@@ -518,7 +518,7 @@ mod tests {
         );
         assert_eq!(count, 11);
 
-        // sub_count: key=0 → 3 in 1.13 (was 2 ≤1.12); key=1..=10 → 3.
+        // sub_count is 3 on every key.
         let mut sub_count: u32 = 0;
         assert_eq!(
             unsafe {

@@ -1,14 +1,14 @@
 //! `partprefabdyeslotinfo.pabgb` bridge — C ABI surface.
 //!
 //! Resolves `PartPrefabKey (u32)` — gamedata key identifying a
-//! dyeable prefab (an item's wearable mesh). Replaces the PyQt5
-//! reference editor's hand-maintained `dye_slot_counts.json`:
+//! dyeable prefab (an item's wearable mesh):
 //!
-//! - `lookup_slot_count(prefab_key)` — the count the JSON used to carry.
+//! - `lookup_slot_count(prefab_key)` — the row's sub-mesh count (not its
+//!   dye slot count; that is the popcount of `lookup_dye_slot_bits`).
 //! - `lookup_prefab_name(prefab_key)` — the prefab internal name.
 //! - `lookup_slot_default_material(prefab_key, slot_idx, mat_idx)` —
 //!   the per-slot default material that the editor can pre-populate
-//!   in its dye dropdowns (richer than the JSON ever was).
+//!   in its dye dropdowns.
 //! - `lookup_slot_mat_indices` / `lookup_slot_mask` — raw 3-byte arrays
 //!   for advanced UI / debugging. The mask is **12 bytes on 2.01+**, so
 //!   `lookup_slot_mask` is a partial read there; `lookup_slot_mask_full`
@@ -21,9 +21,9 @@
 //! - `lookup_slot_tail_name` — next sub-prefab name (or, for the
 //!   LAST slot in a row, the full `.pac` asset path).
 //! - `lookup_slot_extra_layer_count` / `..._extra_layer_material` /
-//!   `..._extra_layer_mask` / `..._extra_layer_flag` — 1.13's second
-//!   per-slot dye layer ("expanded dyeable equipment"; 0 layers on
-//!   1.07-1.12 rows, 1 on the new dyeable gear).
+//!   `..._extra_layer_mask` / `..._extra_layer_flag` — the second
+//!   per-slot dye layer ("expanded dyeable equipment"; 0 layers on most
+//!   slots, 1 on gear that has it).
 //!
 //! The cross-reference between an `_itemKey` and its `PartPrefabKey`
 //! is NOT in this file. [`super::item_part_prefab`] resolves it: an item's
@@ -193,8 +193,8 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_entry_count(
 
 /// Number of slots on the mesh row identified by `prefab_key`: one per
 /// sub-mesh. **Not** the number of dye slots: that is the popcount of
-/// [`crimson_part_prefab_dye_slot_info_lookup_dye_slot_bits`] (on 2.06 the
-/// two agree on 392 of 1,703 rows).
+/// [`crimson_part_prefab_dye_slot_info_lookup_dye_slot_bits`], and the two
+/// often differ.
 ///
 /// # Safety
 /// `handle` and `out_count` must be non-null.
@@ -361,10 +361,10 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_mat_indic
 
 /// Read the first 3 mask bytes into `out_mask[0..3]`.
 ///
-/// **Wrong meaning since 2.01.** Before 2.01 the mask was one flag per
-/// material channel. From 2.01 it is 12 bytes, one flag per dye slot
-/// number, so these first 3 bytes are the flags of dye slots 0, 1 and 2,
-/// not of the slot's three channels. The old per-channel meaning is
+/// **A partial read.** The mask is 12 bytes, one flag per dye slot number,
+/// so these first 3 bytes are the flags of dye slots 0, 1 and 2, not of the
+/// slot's three channels (the 3-byte shape dates from a per-channel mask).
+/// Per-channel flags come from
 /// [`crimson_part_prefab_dye_slot_info_lookup_slot_active_channels`], which
 /// takes the same 3-byte out-param. The whole field is
 /// [`crimson_part_prefab_dye_slot_info_lookup_slot_mask_full`] or, as bits,
@@ -409,9 +409,9 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_mask(
 ///
 /// Two-call: pass `buf_len = 0` to learn the width via `*required`, then
 /// call again with a buffer that big. `BUFFER_TOO_SMALL` (with `*required`
-/// set) means the field is wider than the buffer — including after a
-/// future patch widens it again, which is why this takes a length instead
-/// of a fixed-size out-param.
+/// set) means the field is wider than the buffer — including if a patch
+/// widens it, which is why this takes a length instead of a fixed-size
+/// out-param.
 ///
 /// Byte `n` is the flag of dye slot number `n` (the values in
 /// `mat_indices` and the save's `_dyeSlotNo`). See
@@ -457,8 +457,9 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_mask_full
 /// (0 or 1) per channel into `out_flags[0..3]`: channel `ch` is active when
 /// `mat_indices[ch] != 0xFF` and `mask[mat_indices[ch]] != 0`.
 ///
-/// This is what [`crimson_part_prefab_dye_slot_info_lookup_slot_mask`]
-/// returned before 2.01, with the same out-param shape. The channel's dye
+/// Same out-param shape as
+/// [`crimson_part_prefab_dye_slot_info_lookup_slot_mask`], which does not
+/// answer this question (it reads raw mask bytes). The channel's dye
 /// slot number, the value to write into `_dyeSlotNo`, is
 /// `mat_indices[ch]` ([`crimson_part_prefab_dye_slot_info_lookup_slot_mat_indices`]).
 ///
@@ -628,16 +629,15 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_extra_lay
     .unwrap_or(error::PANIC)
 }
 
-// ── Per-slot extra-layer getters (1.13) ─────────────────────────────────────
+// ── Per-slot extra-layer getters ────────────────────────────────────────────
 //
-// 1.13's "expanded dyeable equipment" gave some slots a **second** material/dye
+// "Expanded dyeable equipment" gives some slots a **second** material/dye
 // layer (see `crate::part_prefab_dye_slot_info::DyeExtraLayer`). These getters
 // expose it alongside the primary-layer getters above. `extra_layer_count` is
-// 0 on every 1.07-1.12 slot and on most 1.13 slots; the new dyeable gear
-// reports 1.
+// 0 on most slots and 1 on gear that has the second layer.
 
-/// Number of extra (secondary) dye layers on `slot_idx`. 0 on 1.07-1.12
-/// rows and on unaffected 1.13 slots; 1 for the new dyeable gear.
+/// Number of extra (secondary) dye layers on `slot_idx`. 0 on most slots;
+/// 1 on gear with an expanded dye layer.
 ///
 /// # Safety
 /// `handle` and `out_count` must be non-null.
@@ -717,7 +717,7 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_extra_lay
 }
 
 /// Read the first 3 of extra layer `layer_idx`'s mask bytes on `slot_idx`
-/// into `out_mask[0..3]`. Same 2.01 partial-read caveat as
+/// into `out_mask[0..3]`. Same partial-read caveat as
 /// [`crimson_part_prefab_dye_slot_info_lookup_slot_mask`] — prefer
 /// [`crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_mask_full`].
 ///
@@ -861,8 +861,8 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_get_entry_key(
 /// two-call flow works: call once with `buf_len = 0` to size, then again
 /// with a buffer that big. A field that widens in a future patch reports
 /// the new width and returns `BUFFER_TOO_SMALL` rather than silently
-/// truncating — which is exactly how the 3-byte `..._mask` getters
-/// degraded when 2.01 widened the mask to 12.
+/// truncating, as the fixed 3-byte `..._mask` getters do on the 12-byte
+/// mask.
 fn write_bytes_to_buf(src: &[u8], buf: *mut u8, buf_len: usize, required: *mut usize) -> i32 {
     unsafe { *required = src.len() };
     if buf_len < src.len() {
@@ -877,7 +877,7 @@ fn write_bytes_to_buf(src: &[u8], buf: *mut u8, buf_len: usize, required: *mut u
 
 #[cfg(test)]
 mod tests {
-    //! Live-install integration test. Pins the row count and a handful
+    //! Live-install integration test. Pins a row-count floor and a handful
     //! of (key, prefab_name, slot_count) tuples; exercises per-slot
     //! getters on the multi-slot known row.
 
@@ -886,10 +886,8 @@ mod tests {
     use std::path::PathBuf;
     use std::ptr;
 
-    /// (key, expected prefab_name, expected slot_count). Verified on the
-    /// live 1.12 install (2026-06-19). First three carry over unchanged
-    /// from the 1.07 probe pass; the last three replace 1.07 keys that
-    /// 1.12 removed (the −143-row drop, 1,111 → 968).
+    /// (key, expected prefab_name, expected slot_count), pinned from the
+    /// live install.
     const KNOWN: &[(u32, &str, u32)] = &[
         (0xc7bbaada, "cd_phm_00_lb_00_0054", 1),
         (0xfbad5654, "cd_phm_00_hel_0057_02_inside", 2),
@@ -1095,8 +1093,8 @@ mod tests {
             error::OK
         );
 
-        // Full-width mask: two-call sizing, then the bytes (12 since 2.01,
-        // the only width this parser reads).
+        // Full-width mask: two-call sizing, then the bytes (12, the only
+        // width this parser reads).
         let mut need: usize = 0;
         assert_eq!(
             unsafe {
@@ -1220,10 +1218,10 @@ mod tests {
             error::OUT_OF_RANGE
         );
 
-        // 1.13 extra-layer getters. The 1.12 vest row has 0 extra layers on
-        // slot 0; the new 1.13 cloak 0x54534e48 has a slot with 1 extra layer
-        // whose materials include "leather". Guard the 1.13 key so older
-        // installs (where it's absent) don't fail.
+        // Extra-layer getters. The vest row has 0 extra layers on slot 0;
+        // the cloak 0x54534e48 has a slot with 1 extra layer whose materials
+        // include "leather". The cloak check is guarded so an install
+        // without that key doesn't fail.
         let mut xc: u32 = 99;
         assert_eq!(
             unsafe {
@@ -1417,7 +1415,7 @@ mod tests {
     }
 
     /// (key, slot_idx, mat_indices, slot dye-slot bits, active channels,
-    /// prefab dye-slot bits). Verified on live 2.06 (2026-11-27). The first
+    /// prefab dye-slot bits), pinned from the live install. The first
     /// two were dyed in-game on 1.10: the private fixture save `1.10/
     /// broken_save_after_length_change/base_sample` holds items 121013
     /// (dye entries `_dyeSlotNo` 0, 1, 2) and 131013 (0, 1) on exactly these
@@ -1436,7 +1434,7 @@ mod tests {
         (0x54bbd875, 1, [0xFF, 4, 9], (1 << 4) | (1 << 9), [0, 1, 1], 1 | (1 << 4) | (1 << 9)),
     ];
 
-    /// The 2.01 mask is one flag per dye slot number: pins the rule on every
+    /// The mask is one flag per dye slot number: pins the rule on every
     /// live slot and on the rows above.
     #[test]
     fn c_abi_part_prefab_dye_slot_numbers_live() {
@@ -1457,8 +1455,8 @@ mod tests {
         assert_eq!(rc, error::OK);
         let handle = unsafe { &*h };
 
-        // Every set mask bit is one of the slot's dye slot numbers (no
-        // exception on 2.01 or 2.06), extra layers included.
+        // Every set mask bit is one of the slot's dye slot numbers, extra
+        // layers included.
         let (mut slots, mut legacy_zero, mut active_any, mut conflicts) = (0, 0, 0, 0);
         for e in &handle.entries {
             let mut name_of: HashMap<u8, &str> = HashMap::new();
@@ -1515,7 +1513,7 @@ mod tests {
             "{slots} slots: {active_any} with an active channel, {legacy_zero} that the \
              legacy 3-byte getter reads as zero; {conflicts} dye-slot material conflicts"
         );
-        // One material name per (prefab, dye slot number): 0 on 2.01 and 2.06.
+        // One material name per (prefab, dye slot number).
         assert_eq!(conflicts, 0, "a dye slot number carries two material names");
 
         for &(key, slot_idx, mi, slot_bits, active, row_bits) in DYE_SLOT_PINS {

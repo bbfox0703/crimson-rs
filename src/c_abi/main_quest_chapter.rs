@@ -25,13 +25,10 @@
 //! one arc heading that is a mission title). Those are the keys a save
 //! stores, so the key lookups below keep answering when a patch retitles a
 //! mission, where a title lookup would silently return `NOT_FOUND`. The
-//! titles were reconciled against 2.02, when 58 of them had drifted from
-//! the live strings and were re-paired with their game rows (the source
-//! MD's "Reconciliation against 2.02" lists each one with its evidence),
-//! and follow the live strings since: 2.03 retitled six missions and two
-//! arcs, and 2.04 one mission. `curated_titles_match_live_install` fails
-//! the next time a key's live title stops matching. Five wiki-only titles
-//! with no live
+//! titles follow the live strings; the source MD's reconciliation and
+//! retitle sections record how each was paired with its game row, with
+//! the evidence. `curated_titles_match_live_install` fails the next time
+//! a key's live title stops matching. Five wiki-only titles with no live
 //! counterpart are kept as [`Entry::Unresolved`]: the title lookups still
 //! answer for them, the key lookups cannot.
 //!
@@ -156,7 +153,6 @@ const EPILOGUE: &str = "Epilogue: Journey's End";
 // ── Arc headings, each tied to the game row its title comes from ─────────
 
 const TRIALS_OF_KINDNESS: Option<Arc> = arc("Trials of Kindness", Quest(1_000_027));
-// was "Trace"
 const TRACES: Option<Arc> = arc("Traces", Quest(1_000_509));
 const UNEXPECTED_GIFT: Option<Arc> = arc("Unexpected Gift", Quest(1_000_004));
 const HERNAND_IN_CHAOS: Option<Arc> = arc("Hernand in Chaos", Quest(10_011_000));
@@ -164,38 +160,29 @@ const THE_END_OF_GREED: Option<Arc> = arc("The End of Greed", Quest(1_000_267));
 const HOMESTEAD: Option<Arc> = arc("Homestead", Quest(11_006_000));
 const THE_FACE_BEHIND_THE_MASK: Option<Arc> = arc("The Face Behind the Mask", Quest(10_029_000));
 const PIONEERING: Option<Arc> = arc("Pioneering", Quest(1_001_048));
-// was "Mysterious Iron Pot"
 const MYSTERIOUS_POT: Option<Arc> = arc("Mysterious Pot", Quest(1_000_142));
 const DAILY_LIFE: Option<Arc> = arc("Daily Life", Quest(1_001_216));
 const FORBIDDEN_KNOWLEDGE: Option<Arc> = arc("Forbidden Knowledge", Quest(10_040_400));
-// 2.03 retitle (was "Uninvited Guest")
 const GUEST_UNBIDDEN: Option<Arc> = arc("Guest Unbidden", Quest(1_000_118));
 const BLACK_AND_WHITE: Option<Arc> = arc("Black and White", Quest(1_000_724));
 const BLAZING_BEACON: Option<Arc> = arc("Blazing Beacon", Quest(10_060_100));
-// was "Under the Banner"
 const BELOW_THE_BANNERS: Option<Arc> = arc("Below the Banners", Quest(1_000_781));
 const CRADLE_OF_DEFENSE: Option<Arc> = arc("Cradle of Defense", Mission(1_001_231));
 const TURNING_TIDES: Option<Arc> = arc("Turning Tides", Quest(1_000_281));
-// was "The Undying Shields"
 const THE_UNYIELDING_SHIELDS: Option<Arc> = arc("The Unyielding Shields", Quest(1_000_112));
-// was "Dawn Mist"
 const MORNING_MIST: Option<Arc> = arc("Morning Mist", Quest(1_000_579));
-// was "Dawnrise"
 const DAWN: Option<Arc> = arc("Dawn", Quest(1_000_597));
 const DECISIVE_BATTLE: Option<Arc> = arc("Decisive Battle", Quest(1_000_099));
 const TWISTED_FATE: Option<Arc> = arc("Twisted Fate", Quest(1_000_009));
 const ASHEN_STEPS: Option<Arc> = arc("Ashen Steps", Quest(1_001_076));
-// was "To Demeniss"
 const DEMENISS_BOUND: Option<Arc> = arc("Demeniss Bound", Quest(1_000_725));
 const TRAITOR: Option<Arc> = arc("Traitor", Quest(1_000_180));
 const THE_CALLING: Option<Arc> = arc("The Calling", Quest(1_000_354));
 const SHATTERED_TIES: Option<Arc> = arc("Shattered Ties", Quest(1_000_212));
 const THINNING_BLADE: Option<Arc> = arc("Thinning Blade", Quest(1_000_292));
-// was "Six Pensive Statues and the Evil Spirit"
 const SIX_STATUES_AND_THE_BEAST: Option<Arc> = arc("Six Statues and the Beast", Quest(1_000_305));
 const VEILED_WITCH: Option<Arc> = arc("Veiled Witch", Quest(1_000_319));
 const ENLIGHTENMENT: Option<Arc> = arc("Enlightenment", Quest(1_000_355));
-// 2.03 retitle (was "Secret Weapon")
 const HIDDEN_ACE: Option<Arc> = arc("Hidden Ace", Quest(1_000_767));
 const GREATER_FIREPOWER: Option<Arc> = arc("Greater Firepower", Quest(1_000_776));
 const BRAVE_NEW_WORLD: Option<Arc> = arc("Brave New World", Quest(1_000_741));
@@ -205,34 +192,26 @@ const THE_VOID: Option<Arc> = arc("The Void", Quest(1_000_726));
 const JOURNEYS_END: Option<Arc> = arc("Journey's End", Quest(1_000_358));
 
 /// The curated table in story order. Titles are the live English display
-/// strings (reconciled against Crimson Desert 2.02 and updated for 2.03's
-/// eight retitles and 2.04's one — see the "Reconciliation against 2.02",
-/// "Retitles in 2.03" and "Retitles in 2.04" sections of the source MD);
-/// `curated_titles_match_live_install`
-/// fails as soon as a key's live title stops matching its row.
+/// strings (the source MD's reconciliation and retitle sections record
+/// each pairing); `curated_titles_match_live_install` fails as soon as a
+/// key's live title stops matching its row.
 const ROWS: &[Row] = &[
     // ── Prologue: Dead of Night ────────────────────────────────────────
     row(PROLOGUE, None, "Ambush", Quest(10_001)),
-    // 2.03 restored the pre-2.01 title (2.01–2.02: "Unfamiliar Land").
     row(PROLOGUE, None, "Unfamiliar Lands", Mission(1_000_157)),
     row(PROLOGUE, None, "In Ashes", Mission(1_000_160)),
-    // no counterpart in 2.02 — kept from the original transcription
+    // no live counterpart — kept from the original transcription
     row(PROLOGUE, None, "Unknown Space", Unresolved),
     row(PROLOGUE, None, "Realm of Uncertainty", Mission(1_000_620)),
     row(PROLOGUE, None, "New Journey", Mission(1_000_164)),
     // ── Chapter 1: The First Encounter ─────────────────────────────────
     row(CH1, TRIALS_OF_KINDNESS, "Where Rumors Gather", Mission(1_000_052)),
-    // 2.01 retitle (was "Mysterious Man").
     row(CH1, TRIALS_OF_KINDNESS, "A Mysterious Beggar", Mission(1_000_053)),
     row(CH1, TRIALS_OF_KINDNESS, "True Wisdom in Kindness", Mission(1_000_294)),
-    // was "Actions Speak Louder than Words"
     row(CH1, TRIALS_OF_KINDNESS, "Actions Speak Volumes", Mission(1_000_042)),
-    // was "Heart Beyond Borders" (inferred)
     row(CH1, TRIALS_OF_KINDNESS, "A Transcendent Connection", Mission(1_000_051)),
     row(CH1, TRACES, "Mystical Key", Mission(1_000_043)),
-    // was "Polar Opposites"
     row(CH1, TRACES, "Faced With the Truth", Mission(1_000_048)),
-    // was "Abyss Without Balance"
     row(CH1, TRACES, "The Faltering Abyss", Mission(1_000_546)),
     row(CH1, TRACES, "Woman in White", Mission(1_000_166)),
     // ── Chapter 2: Golden Greed ────────────────────────────────────────
@@ -241,56 +220,41 @@ const ROWS: &[Row] = &[
     row(CH2, UNEXPECTED_GIFT, "Reunion", Mission(1_000_507)),
     row(CH2, HERNAND_IN_CHAOS, "For Honor", Mission(1_000_177)),
     row(CH2, HERNAND_IN_CHAOS, "Awestruck", Mission(1_000_178)),
-    // was "Shadow Cast Over the River"
     row(CH2, HERNAND_IN_CHAOS, "Shadow Over the River", Mission(1_000_529)),
-    // was "Where Misery Gathers"
     row(CH2, HERNAND_IN_CHAOS, "A Collection of Woes", Mission(1_000_517)),
     row(CH2, HERNAND_IN_CHAOS, "Trial After Trial", Mission(1_000_179)),
-    // was "The Man Trapped in the Mire"
     row(CH2, HERNAND_IN_CHAOS, "Down in the Muck", Mission(1_000_180)),
     row(CH2, HERNAND_IN_CHAOS, "Missing Companion", Mission(1_000_181)),
-    // was "Secrets Hidden in the Dark"
     row(CH2, HERNAND_IN_CHAOS, "Shadowed Secrets", Mission(1_000_183)),
     row(CH2, THE_END_OF_GREED, "Veil of Darkness", Mission(1_000_185)),
     row(CH2, THE_END_OF_GREED, "The Flames of Greed", Mission(1_000_187)),
     row(CH2, THE_END_OF_GREED, "Kidnapped Healer", Mission(1_000_190)),
     row(CH2, THE_END_OF_GREED, "Rebellion or Revolution", Mission(1_000_191)),
-    // was "Cheers Echoing From the Edge"
     row(CH2, THE_END_OF_GREED, "Resounding Victory", Mission(1_000_193)),
     // ── Chapter 3: Howling Hill ────────────────────────────────────────
     row(CH3, HOMESTEAD, "Old Friend", Mission(1_000_215)),
     row(CH3, HOMESTEAD, "First Step to Rebuilding", Mission(1_000_216)),
     row(CH3, HOMESTEAD, "A Fresh Start", Mission(1_000_218)),
-    // was "Reward for Their Sweat"
     row(CH3, HOMESTEAD, "A Well-Earned Meal", Mission(1_000_219)),
-    // was "Return of the Comrade"
     row(CH3, HOMESTEAD, "Comrade's Return", Mission(1_000_220)),
-    // no counterpart in 2.02 — kept from the original transcription
+    // no live counterpart — kept from the original transcription
     row(CH3, HOMESTEAD, "Familiar Curses", Unresolved),
-    // was "Return" (inferred)
     row(CH3, THE_FACE_BEHIND_THE_MASK, "Homecoming", Mission(1_000_504)),
     row(CH3, THE_FACE_BEHIND_THE_MASK, "Traces in the Manor", Mission(1_000_282)),
-    // was "Nonhuman"
     row(CH3, THE_FACE_BEHIND_THE_MASK, "Inhuman", Mission(1_000_235)),
-    // was "Seed of Unease"
     row(CH3, THE_FACE_BEHIND_THE_MASK, "Seed of Dread", Mission(1_001_417)),
     row(CH3, THE_FACE_BEHIND_THE_MASK, "Dance with the Devil", Mission(1_000_284)),
-    // was "Hope After the Draught" (inferred)
     row(CH3, PIONEERING, "The Storm Passes", Mission(1_001_018)),
     row(CH3, PIONEERING, "Scattered Comrades", Mission(1_000_373)),
     row(CH3, PIONEERING, "Rumors from the Sawmill", Mission(1_000_660)),
     row(CH3, PIONEERING, "A Gentle Touch", Mission(1_000_116)),
-    // was "Bustling Hill" (inferred)
     row(CH3, PIONEERING, "Commotion at Howling Hill", Mission(1_000_852)),
     row(CH3, PIONEERING, "Greymanes Reunited", Mission(1_001_206)),
     // ── Chapter 4: The Price of Knowledge ──────────────────────────────
     row(CH4, MYSTERIOUS_POT, "Kilnden Workshop", Mission(1_000_012)),
-    // was "Kiln Repair at the Kilnden Workshop"
     row(CH4, MYSTERIOUS_POT, "Kilnden Kiln Repair", Mission(1_000_013)),
     row(CH4, MYSTERIOUS_POT, "The Mysterious Pot", Mission(1_000_019)),
-    // was "The Iron Pot's Usage"
     row(CH4, MYSTERIOUS_POT, "Pot Put to Good Use", Mission(1_000_225)),
-    // was "Disturbance at the Arena"
     row(CH4, DAILY_LIFE, "Ruckus in the Arena", Mission(1_001_219)),
     row(CH4, DAILY_LIFE, "Skilled in Archery", Mission(1_001_389)),
     row(CH4, FORBIDDEN_KNOWLEDGE, "The Words of Alustin", Mission(1_000_281)),
@@ -299,10 +263,8 @@ const ROWS: &[Row] = &[
     row(CH4, FORBIDDEN_KNOWLEDGE, "Gate to the Otherworld", Mission(1_000_266)),
     row(CH4, FORBIDDEN_KNOWLEDGE, "Spire of the Stars", Mission(1_000_267)),
     row(CH4, FORBIDDEN_KNOWLEDGE, "Obsession and Madness", Mission(1_000_268)),
-    // 2.03 retitle (2.02: "A Looming Shadow"; wiki: "Casted Shadow")
     row(CH4, FORBIDDEN_KNOWLEDGE, "Cast Shadow", Mission(1_000_269)),
     // ── Chapter 5: Guest Unbidden ──────────────────────────────────────
-    // was "Double-sided Invitation"
     row(CH5, GUEST_UNBIDDEN, "Ulterior Motives", Mission(1_000_432)),
     row(CH5, GUEST_UNBIDDEN, "Unwelcomed Guests", Mission(1_000_240)),
     row(CH5, GUEST_UNBIDDEN, "Demenissian Delegation", Mission(1_000_242)),
@@ -310,22 +272,16 @@ const ROWS: &[Row] = &[
     row(CH5, BLACK_AND_WHITE, "The Missing Seal", Mission(1_001_574)),
     row(CH5, BLACK_AND_WHITE, "Crowcaller", Mission(1_000_580)),
     row(CH5, BLACK_AND_WHITE, "The Crow's Warning", Mission(1_000_244)),
-    // was "Bloodwind"
     row(CH5, BLACK_AND_WHITE, "Blood on the Wind", Mission(1_000_245)),
-    // was "Secret at the Church"
     row(CH5, BLACK_AND_WHITE, "The Church's Hidden Secret", Mission(1_000_247)),
-    // 2.03 retitle (2.02: "Approaching the Nest"; wiki: "Toward the Nest (Spire of Soaring)")
     row(CH5, BLACK_AND_WHITE, "Toward the Nest", Mission(1_000_248)),
     // ── Chapter 6: Cracks in the Shield ────────────────────────────────
-    // was "News"
     row(CH6, BLAZING_BEACON, "News Arrives", Mission(1_000_137)),
     row(CH6, BLAZING_BEACON, "To the Battlefield", Mission(1_000_139)),
     row(CH6, BLAZING_BEACON, "The Counterattack", Mission(1_000_142)),
-    // no counterpart in 2.02 — kept from the original transcription
+    // no live counterpart — kept from the original transcription
     row(CH6, BELOW_THE_BANNERS, "Pike Again", Unresolved),
-    // was "The Touch of Deliverance"
     row(CH6, CRADLE_OF_DEFENSE, "Hand of Deliverance", Mission(1_000_419)),
-    // was "Fire on the Frontlines"
     row(CH6, CRADLE_OF_DEFENSE, "Fire on the Front Line", Mission(1_000_161)),
     row(CH6, TURNING_TIDES, "Fire Support", Mission(1_000_866)),
     row(CH6, TURNING_TIDES, "In Ashes", Mission(1_000_783)),
@@ -339,10 +295,8 @@ const ROWS: &[Row] = &[
     // ── Chapter 7: Homecoming ──────────────────────────────────────────
     row(CH7, MORNING_MIST, "Ashes of Treachery", Mission(1_000_195)),
     row(CH7, MORNING_MIST, "Trust Lost", Mission(1_001_774)),
-    // was "Bared Fang"
     row(CH7, MORNING_MIST, "Bared Fangs", Mission(1_001_692)),
     row(CH7, MORNING_MIST, "Rekindled Hope", Mission(1_000_163)),
-    // was "Podium of Resolve"
     row(CH7, MORNING_MIST, "A Stand of Resolve", Mission(1_000_134)),
     row(CH7, DAWN, "Shadows Over Pailune", Mission(1_000_004)),
     row(CH7, DAWN, "Driving out the Shadows", Mission(1_000_207)),
@@ -353,55 +307,40 @@ const ROWS: &[Row] = &[
     row(CH7, DECISIVE_BATTLE, "The Counterattack", Mission(1_000_253)),
     row(CH7, DECISIVE_BATTLE, "Unleashed Fury", Mission(1_000_255)),
     row(CH7, DECISIVE_BATTLE, "The Final Bridge", Mission(1_000_256)),
-    // no counterpart in 2.02 — kept from the original transcription
+    // no live counterpart — kept from the original transcription
     row(CH7, DECISIVE_BATTLE, "Broken Claws", Unresolved),
-    // was "Battle at Silverwolf Mountain"
     row(CH7, DECISIVE_BATTLE, "Battle at Silver Wolf Mountain", Mission(1_000_258)),
-    // 2.03 restored the wiki title (2.02: "Hollow Victory")
     row(CH7, DECISIVE_BATTLE, "Incomplete Victory", Mission(1_000_259)),
     row(CH7, TWISTED_FATE, "Ludvig's Whereabouts", Mission(1_000_174)),
     row(CH7, TWISTED_FATE, "Time to Face Justice", Mission(1_000_400)),
     // ── Chapter 8: Blood Coronation ────────────────────────────────────
-    // was "Healing Pailune" (inferred)
     row(CH8, ASHEN_STEPS, "The Unending Pursuit", Mission(1_000_092)),
-    // was "A Bond" (inferred)
     row(CH8, ASHEN_STEPS, "Bonds", Mission(1_001_213)),
     row(CH8, ASHEN_STEPS, "Ritual Preparations", Mission(1_000_058)),
     row(CH8, ASHEN_STEPS, "Where the Wind Guides You", Mission(1_000_083)),
     row(CH8, DEMENISS_BOUND, "Chasing a Shadow", Mission(1_000_047)),
     row(CH8, DEMENISS_BOUND, "Blazing Fire", Mission(1_000_272)),
-    // was "Whispering Shadows"
     row(CH8, DEMENISS_BOUND, "Murmurs in the Dark", Mission(1_000_212)),
-    // was "Bloodied Invitation" (inferred)
     row(CH8, DEMENISS_BOUND, "Signed in Blood", Mission(1_000_388)),
-    // was "Resolve Amidst a Storm"
     row(CH8, DEMENISS_BOUND, "Steadfast in the Storm", Mission(1_000_276)),
-    // was "Preparations for Advance"
     row(CH8, DEMENISS_BOUND, "Preparing to Strike", Mission(1_000_135)),
-    // was "Rebel Suppression"
     row(CH8, DEMENISS_BOUND, "Quelling the Uprising", Mission(1_001_390)),
     row(CH8, DEMENISS_BOUND, "The Cursed Knight", Mission(1_001_215)),
     row(CH8, DEMENISS_BOUND, "The Blood Coronation", Mission(1_000_283)),
-    // was "Clue" (inferred)
     row(CH8, TRAITOR, "The Thread", Mission(1_000_271)),
     row(CH8, TRAITOR, "A Fleeting Dream", Mission(1_000_287)),
     // ── Chapter 9: The Sage of the Desert ──────────────────────────────
-    // 2.03 retitle (was "An Unknown Voice")
     row(CH9, THE_CALLING, "Mysterious Voice", Mission(1_000_060)),
     row(CH9, THE_CALLING, "Cloister of Enlightenment", Mission(1_002_627)),
-    // was "Mark of the Scar"
     row(CH9, SHATTERED_TIES, "The Spear's Mark", Mission(1_000_159)),
     row(CH9, SHATTERED_TIES, "Shackles of Fate", Mission(1_002_821)),
-    // was "Crossing Point"
     row(CH9, THINNING_BLADE, "The Crossroads", Mission(1_000_162)),
     row(CH9, THINNING_BLADE, "Unwavering Steps", Mission(1_002_833)),
-    // was "Morning Fog"
     row(CH9, SIX_STATUES_AND_THE_BEAST, "The Shroud of Dawn", Mission(1_000_158)),
     row(CH9, SIX_STATUES_AND_THE_BEAST, "Jijeong Temple in Chaos", Mission(1_000_285)),
     row(CH9, SIX_STATUES_AND_THE_BEAST, "Path to Enlightenment", Mission(1_000_296)),
     row(CH9, SIX_STATUES_AND_THE_BEAST, "Path of the Disciple", Mission(1_000_297)),
     row(CH9, SIX_STATUES_AND_THE_BEAST, "True Strength", Mission(1_000_117)),
-    // was "Face the Inner Self"
     row(CH9, SIX_STATUES_AND_THE_BEAST, "Confronting What Lies Within", Mission(1_002_834)),
     row(CH9, VEILED_WITCH, "Fragments of Darkness", Mission(1_000_683)),
     row(CH9, VEILED_WITCH, "Pursuit Beyond the Veil", Mission(1_001_224)),
@@ -409,10 +348,9 @@ const ROWS: &[Row] = &[
     row(CH9, ENLIGHTENMENT, "The Cloister of Enlightenment", Mission(1_000_250)),
     row(CH9, ENLIGHTENMENT, "The Sage of the Desert", Mission(1_000_251)),
     row(CH9, ENLIGHTENMENT, "New Perspectives", Mission(1_000_252)),
-    // no counterpart in 2.02 — kept from the original transcription
+    // no live counterpart — kept from the original transcription
     row(CH9, ENLIGHTENMENT, "Lust for Power", Unresolved),
     // ── Chapter 10: Counterattack ──────────────────────────────────────
-    // was "Untouchable" (inferred)
     row(CH10, HIDDEN_ACE, "A New Front", Mission(1_000_223)),
     row(CH10, HIDDEN_ACE, "The Gate of War", Mission(1_000_224)),
     row(CH10, HIDDEN_ACE, "Master of the Ironworks", Mission(1_000_411)),
@@ -420,19 +358,16 @@ const ROWS: &[Row] = &[
     row(CH10, HIDDEN_ACE, "Clockwork Insect Clash", Mission(1_001_404)),
     row(CH10, GREATER_FIREPOWER, "Beating Heart", Mission(1_000_418)),
     row(CH10, GREATER_FIREPOWER, "Invaders from the East", Mission(1_000_069)),
-    // 2.03 restored the wiki title (2.02: "Cold-Hearted Hunter")
     row(CH10, GREATER_FIREPOWER, "Frozen Hearted Predator", Mission(1_000_232)),
     row(CH10, GREATER_FIREPOWER, "Lingering Shadow", Mission(1_000_233)),
     // ── Chapter 11: Truth and Reality ──────────────────────────────────
     row(CH11, BRAVE_NEW_WORLD, "The City of Steel", Mission(1_000_107)),
-    // was "Crossroads"
     row(CH11, BRAVE_NEW_WORLD, "At a Crossroads", Mission(1_000_616)),
     row(CH11, BRAVE_NEW_WORLD, "Strange Manor", Mission(1_000_434)),
     row(CH11, BRAVE_NEW_WORLD, "Fortress Keys", Mission(1_000_110)),
     row(CH11, BRAVE_NEW_WORLD, "Truth and Lies", Mission(1_000_184)),
     row(CH11, FOREBODING_SHADOW, "Master of a Forgotten Land", Mission(1_000_111)),
     row(CH11, FOREBODING_SHADOW, "Whispers in the Wind", Mission(1_000_113)),
-    // was "Cloud Fortress Orbian"
     row(CH11, FOREBODING_SHADOW, "Flying Fortress Orbian", Mission(1_000_114)),
     // ── Chapter 12: The Abyss ──────────────────────────────────────────
     row(CH12, THE_FINAL_BATTLE, "Precise Execution", Mission(1_001_226)),
@@ -443,13 +378,10 @@ const ROWS: &[Row] = &[
     row(CH12, THE_VOID, "Blinding Darkness", Mission(1_000_108)),
     // ── Epilogue: Journey's End ────────────────────────────────────────
     row(EPILOGUE, JOURNEYS_END, "A New Beginning", Mission(1_000_112)),
-    // was "Peace in Hernand"
     row(EPILOGUE, JOURNEYS_END, "Peace Restored", Mission(1_000_531)),
-    // was "The Unyielding Shields"
     row(EPILOGUE, JOURNEYS_END, "The Unyielding Shield", Mission(1_000_532)),
     row(EPILOGUE, JOURNEYS_END, "The Heart of Pywel", Mission(1_000_540)),
     row(EPILOGUE, JOURNEYS_END, "The Enduring Flame", Mission(1_000_536)),
-    // was "Evolving City"
     row(EPILOGUE, JOURNEYS_END, "The Evolving City", Mission(1_001_690)),
     row(EPILOGUE, JOURNEYS_END, "The Desert's Edge", Mission(1_000_534)),
     row(EPILOGUE, JOURNEYS_END, "New Horizons", Mission(1_000_329)),
@@ -1286,7 +1218,8 @@ mod tests {
         assert_eq!(call_by_key(arc, 1_000_160).unwrap(), "");
         assert_eq!(call_by_key(ch, 1_000_783).unwrap(), "Chapter 6: Cracks in the Shield");
         assert_eq!(call_by_key(arc, 1_000_783).unwrap(), "Turning Tides");
-        // Re-paired in the 2.02 reconciliation ("Bared Fang" → "Bared Fangs").
+        // A title the source MD's reconciliation paired with its game row
+        // (the wiki spells it "Bared Fang").
         assert_eq!(call_by_key(arc, 1_001_692).unwrap(), "Morning Mist");
         // Quest keys: an arc's quest, and the Prologue's quest-kind entry.
         let q = crimson_main_quest_chapter_for_quest_key;

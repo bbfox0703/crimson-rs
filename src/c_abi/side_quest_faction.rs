@@ -8,16 +8,16 @@
 //! for that one). The list follows the in-game journal, so most entries
 //! are **missions** — `MissionKey` display titles at PALOC `lo32 = 0x101`
 //! (e.g. `Mission_GreymaneCamp_Carl → 1_001_073 → "Carl's Request"`) —
-//! and 20 are quests, `QuestKey` titles at `lo32 = 0x100` (e.g.
+//! the rest are quests, `QuestKey` titles at `lo32 = 0x100` (e.g.
 //! `Quest_Node_Her_GreymaneCamp_Contents → 1_000_881 → "Record of the
 //! Greymanes"`). Every row records that key, so
 //! [`crimson_side_quest_faction_for_mission_key`] /
 //! [`crimson_side_quest_faction_for_quest_key`] answer from what a save
 //! stores and survive a retitle; the faction column is curated and ships
-//! as static data. Titles were reconciled against 2.02 (9 had drifted —
-//! see the source MD) and follow the live strings since (2.03 retitled
-//! one); `curated_titles_match_live_install` fails the next time a key's
-//! live title stops matching.
+//! as static data. Titles follow the live strings (the source MD records
+//! how each was paired with its game row);
+//! `curated_titles_match_live_install` fails the next time a key's live
+//! title stops matching.
 //!
 //! The source MD also has Traditional-Chinese annotations in the
 //! section headings — those are informational only and don't appear
@@ -57,17 +57,15 @@ use super::main_quest_chapter::Entry::{self, Mission, Quest};
 /// (`lo32 = 0x101`). Where a title is both, the row carries the quest.
 type Row = (&'static str, &'static str, Entry);
 
-/// Titles are the live English display strings (reconciled against Crimson
-/// Desert 2.02, updated for 2.03's one retitle — see the source MD);
-/// `curated_titles_match_live_install` fails as soon as a key's live title
-/// stops matching its row.
+/// Titles are the live English display strings (the source MD records each
+/// pairing); `curated_titles_match_live_install` fails as soon as a key's
+/// live title stops matching its row.
 const ROWS: &[Row] = &[
     // ── Scattered Embers ──────────────────────────────────────────────
     ("Record of the Greymanes", "Scattered Embers", Quest(1_000_881)),
     ("Strongbox with Wheels", "Scattered Embers", Quest(1_000_157)),
     ("Brightening the Spirits", "Scattered Embers", Quest(1_000_350)),
     ("Chance to Make a Fortune", "Scattered Embers", Quest(1_000_404)),
-    // was "To the Rescue"
     ("Rescuing the Pailunese Refugees", "Scattered Embers", Mission(1_001_412)),
     ("The Greymanes' New Fangs", "Scattered Embers", Quest(1_000_330)),
     ("The Nag and the Stubborn One", "Scattered Embers", Mission(1_001_205)),
@@ -105,13 +103,9 @@ const ROWS: &[Row] = &[
     ("Ronald's Request", "Greymane Commissions", Mission(1_001_112)),
     ("Pierce's Request", "Greymane Commissions", Mission(1_001_123)),
     // ── House Celeste ─────────────────────────────────────────────────
-    // was "Bounty Target: Jeffrey"
     ("Bounty Notice - Jeffrey", "House Celeste", Mission(1_000_833)),
-    // was "Bounty Target: Bianca"
     ("Bounty Notice - Bianca", "House Celeste", Mission(1_000_349)),
-    // was "Bounty Target: Simon de Montfort"
     ("Bounty Notice - Simon de Montfort", "House Celeste", Mission(1_000_344)),
-    // was "Bounty Target: Alessio"
     ("Bounty Notice - Alessio", "House Celeste", Mission(1_000_347)),
     // ── House Roberts ─────────────────────────────────────────────────
     ("Estate in Dismay", "House Roberts", Quest(1_000_016)),
@@ -119,7 +113,6 @@ const ROWS: &[Row] = &[
     ("Boulder from the Sky", "House Roberts", Quest(1_000_630)),
     // ── Hernand Commissions ───────────────────────────────────────────
     ("Serge's Request", "Hernand Commissions", Mission(1_000_688)),
-    // 2.03 retitle (was "Breaking in the Grindstone")
     ("Break in the grindstone", "Hernand Commissions", Mission(1_000_015)),
     ("Lunchbox of Love", "Hernand Commissions", Mission(1_000_231)),
     ("The Weight of Knowledge", "Hernand Commissions", Quest(1_000_290)),
@@ -137,12 +130,10 @@ const ROWS: &[Row] = &[
     ("A Favor for Hernand", "Hernand Requests", Quest(1_000_163)),
     ("Bells Ringing Again", "Hernand Requests", Mission(1_000_568)),
     // ── Other factions (one or two quests each) ───────────────────────
-    // was "The Trembling Woods"
     ("Trembling Woods", "Pororin Forest Guardians", Quest(1_000_159)),
     ("House of Spears", "House Alfonso", Quest(1_000_874)),
     ("Lord Amidst the Ruins", "House Serkis", Quest(1_000_894)),
     ("Deathchime", "House Wells", Quest(1_000_278)),
-    // was "Mushrooms Growing Among Poisons"
     ("Mushrooms Growing Among Poison", "Demeniss Commissions", Quest(1_000_615)),
     ("Crossroads of Succession", "Pailune Militia", Quest(1_000_282)),
     ("Antumbra's Sword", "Antumbra Order", Mission(1_000_757)),
@@ -162,7 +153,6 @@ const ROWS: &[Row] = &[
         "Hunters of the Abandoned Castle Ruins",
         Mission(1_001_423),
     ),
-    // was "The Fangs that Devoured the Village"
     ("The Fangs That Devoured the Village", "The Fangs Beneath the Rock", Mission(1_000_130)),
     ("The Gorge Under Siege", "Those Who Constrict the Research Expedition", Mission(1_002_133)),
     ("Rainforest Gorge", "Those Who Constrict the Research Expedition", Mission(1_002_132)),
@@ -184,9 +174,8 @@ fn quest_index() -> &'static HashMap<&'static str, usize> {
         let mut m: HashMap<&'static str, usize> = HashMap::with_capacity(ROWS.len());
         for (i, row) in ROWS.iter().enumerate() {
             // `or_insert` here is defensive — the integrity test
-            // catches duplicates at build time. If a future revision
-            // accidentally introduces one, lookup falls back to the
-            // first declaration in MD order.
+            // catches duplicates. Should one slip in, lookup falls back
+            // to the first declaration in MD order.
             m.entry(row.0).or_insert(i);
         }
         m
@@ -617,7 +606,7 @@ mod tests {
             call_faction_for_quest("Carl's Request").unwrap(),
             "Greymane Commissions"
         );
-        // Multi-word faction (2.02 title; the wiki had "Bounty Target: …")
+        // Multi-word faction (live title; the wiki has "Bounty Target: …")
         assert_eq!(
             call_faction_for_quest("Bounty Notice - Simon de Montfort").unwrap(),
             "House Celeste"
@@ -884,7 +873,7 @@ mod tests {
         // "Record of the Greymanes" (quest) / "Carl's Request" (mission)
         assert_eq!(call_by_key(q, 1_000_881).unwrap(), "Scattered Embers");
         assert_eq!(call_by_key(m, 1_001_073).unwrap(), "Greymane Commissions");
-        // Re-paired in the 2.02 reconciliation.
+        // Titles the source MD's reconciliation paired with their game rows.
         assert_eq!(call_by_key(m, 1_000_344).unwrap(), "House Celeste");
         assert_eq!(call_by_key(q, 1_000_159).unwrap(), "Pororin Forest Guardians");
         // The key spaces overlap: 1_000_157 is the quest "Strongbox with
