@@ -25,6 +25,57 @@ landed together. **Reading tip:** grep `^## ` for the index, then read from the 
 
 -----
 
+## 2026-11-28 — Audit P7: loaders report tables they cannot read, unverified saves, no leaked strings
+
+The seventh batch, on the same branch as the entries below. Theme: a C ABI call that could not do its
+job now says so instead of returning `OK`. Status table after it: 94 fixed, 19 partly, 32 open (mostly
+nits and doc items), 2 not fixing, 2 merged.
+
+- **Table loaders (B-02, E-04):**
+  - Every table loader runs `check_rows` (`src/c_abi/mod.rs`) before it hands out a handle. That covers
+    the `_with_header`, `_load_from_file`, body-only, `(pabgb, pabgh)`, name-only-macro and dye
+    loaders, about 60 call sites. They return `BODY_PARSE` with no handle in three cases:
+    - a non-empty header that is not a 2.06 header matching the body;
+    - a header whose rows none read;
+    - a non-empty body read without a header that gives no row.
+  - All three used to return `OK` with 0 rows, or noise rows from the body scan.
+  - The DLC merges check the DLC header against its body the same way. They used to return `OK`
+    with `added == 0`.
+  - `sibling_header` ignores the extension's case and reports read errors other than "not found"
+    as `IO`. It used to turn both into "no header".
+  - **Not caught:** single rows dropped inside an otherwise readable table. The live tests pin those
+    counts (E-04 stays partly fixed).
+  - **Pre-2.06 data:** a header in an older layout now returns `BODY_PARSE` instead of being ignored.
+    The parsers target the latest patch only.
+- **Unverified saves (F-10):** `crimson_save_write_to_file` returns the new `HMAC_UNVERIFIED` (−28) and
+  writes nothing when the save's HMAC failed on load. Writing computes a fresh HMAC, so it used to make
+  a damaged or tampered save valid, even with no edit. The new `crimson_save_set_allow_hmac_rewrap(h, 1)`
+  opts in. Python's `write_save*` is unchanged.
+- **No leaked strings (A-16, C-19):** `CString::data` is a `Cow`. It borrows when the bytes are UTF-8
+  and owns a lossy copy otherwise; the raw bytes are still written back. The lossy copy used to be
+  `Box::leak`ed, once per load in a long-running host. 2.06 iteminfo and the English PALOC have no
+  such strings, so this was latent. The PALOC handle keeps the first entry for a duplicate key
+  (`collect` kept the last), matching its enumeration and the other bridges.
+- **Test (E-03):** the palette-knowledge live test fails on `UNSUPPORTED_VERSION` instead of skipping.
+  On a latest-only parser that code means drift.
+- **New tests:**
+  - `load_check_tests`: the `check_rows` cases, and `sibling_header` case handling.
+  - `hmac_rewrap_tests`: on the 1.10 fixture.
+  - `cstring_tests`: non-UTF-8 is owned and round-trips.
+- **Measured on this PC:** 431 passed, 48 ignored, with the install and fixtures; the same 431 pass
+  with neither. Strict clippy and the bare-default build are clean. The C ABI live tests (251) all
+  still get `OK` on the 2.06 tables, DLC merges included. Python, after `maturin develop --release`:
+  - live iteminfo round-trips body and header byte for byte (7,068 rows, every name present);
+  - the English PALOC parses (222,887 entries).
+- **CrimsonAtomtic** (read-only look at its P/Invoke calls):
+  - It loads every table with its header (`_with_header`, `_with_pabgh` or the `(pabgb, pabgh)`
+    loaders), so the new checks change nothing on 2.06.
+  - New exports: `crimson_save_set_allow_hmac_rewrap`, and the error code −28.
+  - A save that fails HMAC can no longer be written until the editor opts in. It should surface
+    `HMAC_UNVERIFIED` rather than treat it as a write failure.
+  - A loader can now return `BODY_PARSE` where it used to return an empty handle.
+  - No existing signature changed.
+
 ## 2026-11-28 — Fork guards drop the upstream remote
 
 - `scripts/setup-fork-guards.ps1` now removes the `upstream` remote instead of keeping it with a

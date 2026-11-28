@@ -58,12 +58,12 @@ PARTLY 多半是計數、行號、來源或後果的細節修正，缺陷本身�
 | A-13 | 版本閘門只有常數和文件公式，沒有 Rust 或 C ABI 函式實作「成對比較 + patch 下限」，也沒有測試釘住公式 | low | ✅ 已修 | `0d0b576`（`parser_supports` + C ABI `crimson_parser_supports` + 測試） |
 | A-14 | A 區塊的關鍵測試在 CI 上不跑：CI 是 `cargo test --lib`（不含 `c_abi`），checksum KAT 只… | low | ✅ 已修 | CI 跑 `c_abi` 測試 `45daf6f`、解壓縮大小測試 `0cdfd25`、ChaCha20 KAT `0d0b576` |
 | A-15 | Python-only builder 的截斷：PAPGT `entry_count` u8 wrap、trie 片段長度 `as u8… | low | ✅ 已修 | `0d0b576` |
-| A-16 | PALOC handle：重複 key 時 lookup 與列舉不一致；非 UTF-8 字串每次載入都 `Box::leak` | nit | ⬜ 未修 |  |
+| A-16 | PALOC handle：重複 key 時 lookup 與列舉不一致；非 UTF-8 字串每次載入都 `Box::leak` | nit | ✅ 已修 | `66d6245` |
 | A-17 | Paver 的 DLC 尾段讀不懂時退回 10 位元組讀法，`build` 變成 DLC 數量；`BinaryRead for Pave… | nit | ✅ 已修 | `0d0b576` |
 | A-18 | 文件與程式碼脫節：缺 `.paz` 回 `BODY_PARSE`（文件說 `IO`）、worldmap SDF 的舊說明、`c-abi-… | nit | 🟡 部分 | 符號目錄補齊 `e0a9689`；其他文件細項未改 |
 | A-19 | Feature gate／lint 小問題：`papgt.rs` 對有用到的 import 標 `allow(unused_import… | nit | ⬜ 未修 |  |
 | B-01 | `legacy_pair` / `to_legacy_layout` 失敗時靜默退回原始位元組，版本漂移不會明確失敗 | low | ↪ 併入 | → B-02 |
-| B-02 | C ABI 的 `_with_header`、`_load_from_file`、name-only 巨集與 DLC merge 在 h… | medium | 🟡 部分 | 第 5 點（雜訊列）隨 D-01 改讀 header `a6857ac`；loader 一律回 `OK` 未改 |
+| B-02 | C ABI 的 `_with_header`、`_load_from_file`、name-only 巨集與 DLC merge 在 h… | medium | ✅ 已修 | 雜訊列隨 D-01 `a6857ac`；loader、`sibling_header`、DLC merge 改回報 `b14b6b4` |
 | B-03 | test-only `gamedata_layout::resolved()` 找不到已知佈局時默默選最新佈局，live 測試會「ski… | low | ✅ 已修 | `d541ce2`（找不到佈局改為 panic） |
 | B-04 | 寬度組合與錯誤路徑的單元測試覆蓋不足；`WIDTHS` 只有 15 種組合中的 12 種 | low | ⬜ 未修 |  |
 | B-05 | 直接呼叫 `parse_named_header` 的 iteminfo 與 stringinfo 不驗證 offset+size 鏈；… | low | ✅ 已修 | `017f867`（iteminfo 加 packing 檢查；stringinfo 本就逐列比對 offset） |
@@ -92,7 +92,7 @@ PARTLY 多半是計數、行號、來源或後果的細節修正，缺陷本身�
 | C-16 | `quick_slot_index` 從 2.04 起恆為 0，getter 卻回 `OK`；`IS_IMPORTANT_ITEM` 是… | nit | ⬜ 未修 |  |
 | C-17 | `item_info` / `string_info` 無條件的 `allow(dead_code)` 抵銷了 `lib.rs` 依賴的… | nit | ✅ 已修 | `423d0a1` |
 | C-18 | `test_skill_roundtrip_cross_version` 在封存存在時必定失敗；`test_skill_roundtri… | low | ✅ 已修 | `02395c6`；資料改放 private repo `5ad3a14` |
-| C-19 | 非 UTF-8 的 `CString` 會 `Box::leak`，在長駐的 C# 編輯器裡每次載入都洩漏 | nit | ⬜ 未修 |  |
+| C-19 | 非 UTF-8 的 `CString` 會 `Box::leak`，在長駐的 C# 編輯器裡每次載入都洩漏 | nit | ✅ 已修 | `66d6245` |
 | D-01 | 2.06 的 `_with_header`／`_load_from_file` 路徑丟掉 header 的權威列表，改用啟發式掃描重建的… | medium | ✅ 已修 | `a6857ac` |
 | D-02 | characterinfo 在 2.06 載入了 359 個雜湊 32-bit key 列，但 `lookup_string_key`／… | low | ✅ 已修 | `a6857ac` |
 | D-03 | CI 用 default features 跑 `cargo test --lib`，D 區塊全部模組都在 `c_abi` 之後，離線單… | medium | ✅ 已修 | `45daf6f` |
@@ -106,8 +106,8 @@ PARTLY 多半是計數、行號、來源或後果的細節修正，缺陷本身�
 | D-11 | 文件與程式碼脫節：`c-abi-surface.md` 沒有逐一列出 D 區塊的符號、列數過時（計畫書待查事項）、巨集說明、模組文件互相… | nit | 🟡 部分 | 第 1 項（符號）`e0a9689`；其餘文件細項未改 |
 | E-01 | `resolve_dye_slot_count` 回傳的是第一個 mesh 的 sub-mesh 數，不是 dye slot 數；rus… | medium | ✅ 已修 | `b90dfcf` |
 | E-02 | Dye 色票的「等長切分」fallback 會在長度混雜但總長剛好整除時靜默讀錯，違反模組文件「讀不懂就給空色票」的承諾 | low | ✅ 已修 | `1a41191` |
-| E-03 | `palette_knowledge_at` 的 live 測試把 `UNSUPPORTED_VERSION` 當成「舊版 instal… | low | ⬜ 未修 |  |
-| E-04 | 四個 E loader 遇到版本漂移都回 `OK`，只給空的或部分的 handle；C ABI 沒有任何「被丟棄的列數」訊號 | low | ⬜ 未修 |  |
+| E-03 | `palette_knowledge_at` 的 live 測試把 `UNSUPPORTED_VERSION` 當成「舊版 instal… | low | ✅ 已修 | `4213732` |
+| E-04 | 四個 E loader 遇到版本漂移都回 `OK`，只給空的或部分的 handle；C ABI 沒有任何「被丟棄的列數」訊號 | low | 🟡 部分 | 表頭讀不懂、整表讀不到改回 `BODY_PARSE` `b14b6b4`；表內單列被丟棄仍無訊號（live 測試釘列數） |
 | E-05 | Prefab join 把抽取錯誤當成「沒有這個 prefab」吞掉，並快取結果；DLC merge 會退回同名的 base prefa… | low | 🟡 部分 | 抽取錯誤改為回報、不快取、不退回 base `1a41191`；merge 仍用載入時解析的 PAMT |
 | E-06 | `.prefab` 字串掃描與路徑正規化：`.pac` 副檔名區分大小寫、排除空白與非 ASCII、不處理 `\`、同名 prefab… | nit | ⬜ 未修 |  |
 | E-07 | 新的 `_with_prefab_pamt` 與 `merge_dlc` 入口會解析呼叫端給的 PAMT，繼承 A-01／A-02 的行… | nit | ↪ 併入 | → A-01／A-02 |
@@ -129,7 +129,7 @@ PARTLY 多半是計數、行號、來源或後果的細節修正，缺陷本身�
 | F-07 | 構造輸入可觸發的 panic：marker 走訪呼叫 `try_decode_object_list_at` 前沒檢查 18 位元組；`… | low | ✅ 已修 | `1c7023e` |
 | F-08 | `trailing_pad` 內的 stale offset 只在「整個 block 搬家、內部不變長」時才會被 relocate；同一… | low | ⬜ 未修 |  |
 | F-09 | 版本漂移不會明確失敗：未知 `meta_kind`、mask byte count 超界、未知 class、TOC 截短、list 部分… | low | 🟡 部分 | TOC 截短改報錯 `5da56e3`；其餘「猜了繼續讀」未改 |
-| F-10 | HMAC 驗證失敗仍可載入，寫回時一律重算 HMAC 而不看 `hmac_ok`：損壞或被竄改的存檔會被重新封成「有效」 | low | ⬜ 未修 |  |
+| F-10 | HMAC 驗證失敗仍可載入，寫回時一律重算 HMAC 而不看 `hmac_ok`：損壞或被竄改的存檔會被重新封成「有效」 | low | ✅ 已修 | `b14b6b4`（寫回回 `HMAC_UNVERIFIED` −28，`crimson_save_set_allow_hmac_rewrap` 可明確放行） |
 | F-11 | Header / TOC 的 offset 與 size 只做到「不越界」，沒驗證順序、重疊、間隙、`stream_size`；enco… | low | 🟡 部分 | encoder 先檢查 block 連續 `1a41191`；reader 仍只檢查不越界 |
 | F-12 | `scalar_from_bytes` 是公開 API 卻不驗證 `data.len() == size`（size 1 + 空切片 p… | nit | ✅ 已修 | `1c7023e` |
 | F-13 | 文件與程式碼脫節：`stream_size` 定義、「no-op roundtrip 位元組一致」的三種互相矛盾的說法、不存在的 `do… | nit | 🟡 部分 | `stream_size` 說明 `7426d4b`；其他矛盾說法未改 |
@@ -199,7 +199,7 @@ PARTLY 多半是計數、行號、來源或後果的細節修正，缺陷本身�
 | D 新發現 | `mission_info` 模組文件把漏掉的列說成只有 `Challenge_*` | nit | ✅ 已修 | `a6857ac` |
 | I 新發現 | `find_characterinfo_header`／`find_questinfo_header` 用 `unwrap_or_default()` | low | ✅ 已修 | `cc45659` |
 
-149 條 finding：↪ 併入 2、✅ 已修 89、➖ 不修 2、⬜ 未修 37、🟡 部分 19。另有上表最後 6 列的新發現。
+149 條 finding：↪ 併入 2、✅ 已修 94、➖ 不修 2、⬜ 未修 32、🟡 部分 19。另有上表最後 6 列的新發現。
 
 <!-- status-table:end -->
 
@@ -508,7 +508,7 @@ PARTLY 多半是計數、行號、來源或後果的細節修正，缺陷本身�
 | P3 | 測試與基礎設施：live iteminfo byte roundtrip 測試（base + `dlc_01`）、`CRIMSON_GAME_ROOT` 一致採用、`G:` 死測試、`repo_doc_budget` 改量 git 位元組、腳本覆寫保護 | C-02、C-18／I-04、I-02、I-03、I-05、I-13、I-14、I-16 | |
 | P4 | 文件與註解脫節（一次處理）：`c-abi-surface.md` 補符號、過時列數與版本註解、`allow(dead_code)` 清理 | A-18、B-12、C-13～C-17、D-08～D-11、E-14～E-16、G-13、G-16、H-13～H-15、I-07、I-10～I-12 等 nit | |
 
-**進度（2026-11-28）：** P0 與四項 P1 已在 `dev` 完成：CI 改跑 `--features c_abi`（404 個測試）；skill 2.06 inline condition（raw fallback 1,683 → 308）；D 區塊七個 `_with_header` 改讀 header 列與 characterinfo 先比對完整 key；存檔 FFI 的 G-01／G-03／G-04／G-06。細節見 [`dev-log.md`](dev-log.md)。P2 也已完成：E-01（`resolve_dye_slot_count` 改回傳真正的 dye slot 數）、F-01（encoder 拒絕未解完的 block）、G-02（每次 commit 驗證重新 decode 的結果）、G-11（新錯誤碼 −27）、G-10 的 placeholder 部分、H-06～H-09（`pack_mod` 系列）。G-10 的 scalar type name 比對需要改 CRET 格式，尚未處理。P3 也已完成：A-01（trie 迴圈與深度上限）、A-02／A-03／F-05／H-17（配置與解壓縮大小上限）、A-12（DDS 表頭上限）、F-02／F-03（TOC count 與 locator 巢狀上限）、C-02（live iteminfo base + `dlc_01` 寫回測試）、C-18／I-04（跨版本 skill 測試改讀版本封存）、I-02（漂移時測試失敗而非 skip，只改了共用 helper）、I-03、I-05、I-13、I-14、I-16。P4 也已完成：C ABI 符號目錄補齊並加測試（A-18／C-14／D-11／E-14／G-16 的符號部分）、過時的 CI／TailSizeCache／版本註解（C-01、I-07、I-10、I-11）、`CrimsonItemInfoSummary` offset 釘住（C-13）、paloc key 長度（D-08）、stale `allow(dead_code)` 與其遮住的死碼（C-17、F-14、I-12）、Python stub／版本自檢／api.md（H-13～H-15）。P5（排程表外的 medium 與 low 程式缺陷）也已完成：A-05／A-08／A-09／A-11、B-05／B-06／B-09、C-05／C-07／C-08／C-09、D-09、F-07／F-12、G-08／G-12／G-13／G-15、H-01／H-02／H-03／H-10／H-19，以及 I-02 剩下的 28 個模組 helper；跨版本 skill 測試的資料改放 `crimson-rs-private/gamedata/`。P6（剩下的 low／nit 程式缺陷）也已完成：A-04／A-06／F-06／A-13／A-14／A-15／A-17、A-10 的 flag 與 paver 部分、B-08／B-10、C-06／C-10／C-12、D-05、E-02、E-05 的錯誤回報、F-11 的 encoder 檢查、G-05、H-05／H-12、I-08／I-17、I-19 的原生指令部分；B-03 早在 `d541ce2` 已修，D-04 決定不修（PALOC 依 key 查名稱也涵蓋只在 DLC 的列）。各條目前狀態以上方「修正狀態總表」為準。
+**進度（2026-11-28）：** P0 與四項 P1 已在 `dev` 完成：CI 改跑 `--features c_abi`（404 個測試）；skill 2.06 inline condition（raw fallback 1,683 → 308）；D 區塊七個 `_with_header` 改讀 header 列與 characterinfo 先比對完整 key；存檔 FFI 的 G-01／G-03／G-04／G-06。細節見 [`dev-log.md`](dev-log.md)。P2 也已完成：E-01（`resolve_dye_slot_count` 改回傳真正的 dye slot 數）、F-01（encoder 拒絕未解完的 block）、G-02（每次 commit 驗證重新 decode 的結果）、G-11（新錯誤碼 −27）、G-10 的 placeholder 部分、H-06～H-09（`pack_mod` 系列）。G-10 的 scalar type name 比對需要改 CRET 格式，尚未處理。P3 也已完成：A-01（trie 迴圈與深度上限）、A-02／A-03／F-05／H-17（配置與解壓縮大小上限）、A-12（DDS 表頭上限）、F-02／F-03（TOC count 與 locator 巢狀上限）、C-02（live iteminfo base + `dlc_01` 寫回測試）、C-18／I-04（跨版本 skill 測試改讀版本封存）、I-02（漂移時測試失敗而非 skip，只改了共用 helper）、I-03、I-05、I-13、I-14、I-16。P4 也已完成：C ABI 符號目錄補齊並加測試（A-18／C-14／D-11／E-14／G-16 的符號部分）、過時的 CI／TailSizeCache／版本註解（C-01、I-07、I-10、I-11）、`CrimsonItemInfoSummary` offset 釘住（C-13）、paloc key 長度（D-08）、stale `allow(dead_code)` 與其遮住的死碼（C-17、F-14、I-12）、Python stub／版本自檢／api.md（H-13～H-15）。P5（排程表外的 medium 與 low 程式缺陷）也已完成：A-05／A-08／A-09／A-11、B-05／B-06／B-09、C-05／C-07／C-08／C-09、D-09、F-07／F-12、G-08／G-12／G-13／G-15、H-01／H-02／H-03／H-10／H-19，以及 I-02 剩下的 28 個模組 helper；跨版本 skill 測試的資料改放 `crimson-rs-private/gamedata/`。P6（剩下的 low／nit 程式缺陷）也已完成：A-04／A-06／F-06／A-13／A-14／A-15／A-17、A-10 的 flag 與 paver 部分、B-08／B-10、C-06／C-10／C-12、D-05、E-02、E-05 的錯誤回報、F-11 的 encoder 檢查、G-05、H-05／H-12、I-08／I-17、I-19 的原生指令部分；B-03 早在 `d541ce2` 已修，D-04 決定不修（PALOC 依 key 查名稱也涵蓋只在 DLC 的列）。P7（FFI 回報失敗）也已完成：B-02（每個表 loader 讀不到表時回 `BODY_PARSE`、`sibling_header` 不分大小寫並回報 I/O 錯誤、DLC merge 檢查 header）、E-04 的整表部分、F-10（HMAC 未通過的存檔預設不寫回）、A-16／C-19（`CString` 不再 `Box::leak`）、E-03。各條目前狀態以上方「修正狀態總表」為準。
 
 **不修：** A-07（REFUTED）。**併入他項：** E-07 → A-01／A-02；B-01 → B-02。
 
