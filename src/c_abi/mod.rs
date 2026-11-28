@@ -4921,9 +4921,9 @@ mod tests {
     use std::ptr;
 
     fn find_save() -> Option<PathBuf> {
-        // The save-test fixture is slot107 — the current Crimson Desert 1.12
-        // save. Pinning every save test to it keeps the mutation / round-trip
-        // suite validating against the live latest-patch save format.
+        // The save-test fixture is slot107, the maintainer's save that tracks
+        // the latest patch. Pinning every save test to it keeps the mutation /
+        // round-trip suite validating against the live save format.
         let local = std::env::var_os("LOCALAPPDATA")?;
         let root = PathBuf::from(local).join("Pearl Abyss/CD/save");
         for user in std::fs::read_dir(&root).ok()?.flatten() {

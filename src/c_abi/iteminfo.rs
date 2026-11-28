@@ -170,8 +170,9 @@ fn pack_iteminfo_flags(item: &ItemInfo) -> u32 {
 // `crimson_iteminfo_lookup_summary` populates this struct from the cached
 // per-key metadata. Field ordering picks the largest scalars first so the
 // repr(C) layout has no implicit padding mid-struct; the trailing
-// `_reserved: [u8; 5]` brings the size up to a clean 72 bytes
-// (`size_of::<CrimsonItemInfoSummary>()` is asserted in the unit tests).
+// `_reserved: u8` ends the fields at 76 bytes and the u64 alignment pads
+// the struct to 80. The size, the alignment and every field's offset are
+// asserted at build time below.
 //
 // The summary intentionally omits variable-length data (string_key,
 // icon_path full string, the various Lists). Callers that need those
@@ -214,11 +215,39 @@ const _: () = {
     // Layout under repr(C):
     //   3×u64 + 9×u32 + 4×u16 + 8×u8 = 24+36+8+8 = 76 bytes raw,
     //   rounded up to 80 by the u64 alignment requirement (the trailing
-    //   `_reserved: u8` sits at offset 71; bytes 72..79 are pad bytes
+    //   `_reserved: u8` sits at offset 75; bytes 76..79 are pad bytes
     //   the compiler adds to make the struct's total size a multiple
     //   of its 8-byte alignment).
     assert!(std::mem::size_of::<CrimsonItemInfoSummary>() == 80);
     assert!(std::mem::align_of::<CrimsonItemInfoSummary>() == 8);
+    // Every field's offset, so a reorder that keeps the size (swapping two
+    // u32s, say) breaks the build instead of C#'s reads (audit C-13).
+    use std::mem::offset_of;
+    type S = CrimsonItemInfoSummary;
+    assert!(offset_of!(S, max_stack_count) == 0);
+    assert!(offset_of!(S, cooltime) == 8);
+    assert!(offset_of!(S, respawn_time_seconds) == 16);
+    assert!(offset_of!(S, key) == 24);
+    assert!(offset_of!(S, flags) == 28);
+    assert!(offset_of!(S, icon_path_hash) == 32);
+    assert!(offset_of!(S, equip_type_info) == 36);
+    assert!(offset_of!(S, equipable_hash) == 40);
+    assert!(offset_of!(S, equipable_level) == 44);
+    assert!(offset_of!(S, knowledge_info) == 48);
+    assert!(offset_of!(S, material_key) == 52);
+    assert!(offset_of!(S, gimmick_info) == 56);
+    assert!(offset_of!(S, category_info) == 60);
+    assert!(offset_of!(S, inventory_info) == 62);
+    assert!(offset_of!(S, minimum_extract_enchant_level) == 64);
+    assert!(offset_of!(S, max_endurance) == 66);
+    assert!(offset_of!(S, item_type) == 68);
+    assert!(offset_of!(S, item_tier) == 69);
+    assert!(offset_of!(S, quick_slot_index) == 70);
+    assert!(offset_of!(S, item_charge_type) == 71);
+    assert!(offset_of!(S, usable_alert_type) == 72);
+    assert!(offset_of!(S, knowledge_obtain_type) == 73);
+    assert!(offset_of!(S, apply_drop_stat_type) == 74);
+    assert!(offset_of!(S, _reserved) == 75);
 };
 
 /// Opaque handle exposing lean per-item lookups against the loaded

@@ -739,7 +739,7 @@ mod tests {
     #[test]
     fn test_parse_first_item() {
         let Some(data) = try_load_binary() else {
-            eprintln!("skipping: 1.04 baseline binary not found at {BINARY_PATH}");
+            eprintln!("skipping: {BINARY_PATH} not found (run scripts/export_for_ce.py)");
             return;
         };
         let mut offset = 0;

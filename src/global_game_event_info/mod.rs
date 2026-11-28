@@ -120,19 +120,19 @@ fn extract_group_key(payload: &[u8]) -> Option<u32> {
 /// - payload is shorter than `0x3A`
 /// - `class_tag` doesn't match — signals the row uses a different
 ///   payload shape (RoyalSupply / FactionBlockEvent_*)
-/// - the 14 bytes aren't valid ASCII digits / don't parse as u64
+/// - the name isn't 1..=20 ASCII digits / doesn't parse as u64
 const PALOC_STRING_REF_TAG: u32 = 0x0002_C12C;
 const PALOC_STRING_REF_TAG_OFFSET: usize = 0x1F;
 const PALOC_STRING_REF_LEN_OFFSET: usize = 0x28;
 const PALOC_STRING_REF_NAME_OFFSET: usize = 0x2C;
-/// The numeric PALOC key is always rendered as exactly 14 ASCII
-/// decimal digits — `(hi32 = event_key) << 32 + lo32 = namespace`
-/// always fits in 14 digits because `event_key < 0x4300` and the
-/// lo32 namespace is small (the observed lo32 is in the 0..=0x3FF
-/// range).
-const PALOC_NUMERIC_LEN: usize = 14;
+/// The numeric PALOC key, `(hi32 = event_key) << 32 | lo32 = namespace`,
+/// rendered in decimal. Every key on 1.08 to 2.06 is 14 digits (event keys
+/// up to 0x430B), but that is a property of the data, not the format: a key
+/// outside 0x0919..=0x5AF3 renders as 13 or 15 digits, so the length field
+/// is trusted up to the 20 digits a u64 can take (audit D-08).
+const PALOC_NUMERIC_MAX_LEN: usize = 20;
 fn extract_paloc_key(payload: &[u8]) -> Option<u64> {
-    if payload.len() < PALOC_STRING_REF_NAME_OFFSET + PALOC_NUMERIC_LEN {
+    if payload.len() < PALOC_STRING_REF_NAME_OFFSET {
         return None;
     }
     let tag = u32::from_le_bytes([
@@ -150,16 +150,14 @@ fn extract_paloc_key(payload: &[u8]) -> Option<u64> {
         payload[PALOC_STRING_REF_LEN_OFFSET + 2],
         payload[PALOC_STRING_REF_LEN_OFFSET + 3],
     ]) as usize;
-    if name_len != PALOC_NUMERIC_LEN {
-        // Defensive: the field-length should always be 14 (1.07-2.04).
-        // If a future patch changes it, return None rather than risk
-        // mis-reading.
+    if !(1..=PALOC_NUMERIC_MAX_LEN).contains(&name_len) {
         return None;
     }
-    let bytes = &payload[PALOC_STRING_REF_NAME_OFFSET
-        ..PALOC_STRING_REF_NAME_OFFSET + PALOC_NUMERIC_LEN];
-    let s = std::str::from_utf8(bytes).ok()?;
-    s.parse::<u64>().ok()
+    let bytes = payload.get(PALOC_STRING_REF_NAME_OFFSET..PALOC_STRING_REF_NAME_OFFSET + name_len)?;
+    if !bytes.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    std::str::from_utf8(bytes).ok()?.parse::<u64>().ok()
 }
 
 #[cfg(test)]
@@ -460,15 +458,25 @@ mod tests {
 
     #[test]
     fn extract_paloc_key_rejects_wrong_length() {
-        // Tag matches but name_len != 14 → None (defensive guard
-        // against schema drift).
-        let mut payload = vec![0u8; PALOC_STRING_REF_TAG_OFFSET];
-        payload.extend_from_slice(&PALOC_STRING_REF_TAG.to_le_bytes());
-        payload.push(0);
-        payload.extend_from_slice(&0x4258u16.to_le_bytes());
-        payload.extend_from_slice(&[0, 0]);
-        payload.extend_from_slice(&13u32.to_le_bytes()); // wrong: 13 not 14
-        payload.extend_from_slice(b"7294572455596"); // 13 chars
-        assert_eq!(extract_paloc_key(&payload), None);
+        // The length field is trusted for 1..=20 digits: 14 is what the data
+        // uses today, but an event key outside 0x0919..=0x5AF3 renders as 13
+        // or 15 digits (audit D-08). Zero, 21, non-digits or a length running
+        // past the payload → None.
+        let with = |len: u32, name: &[u8]| {
+            let mut payload = vec![0u8; PALOC_STRING_REF_TAG_OFFSET];
+            payload.extend_from_slice(&PALOC_STRING_REF_TAG.to_le_bytes());
+            payload.push(0);
+            payload.extend_from_slice(&0x4258u16.to_le_bytes());
+            payload.extend_from_slice(&[0, 0]);
+            payload.extend_from_slice(&len.to_le_bytes());
+            payload.extend_from_slice(name);
+            extract_paloc_key(&payload)
+        };
+        assert_eq!(with(13, b"7294572455596"), Some(7_294_572_455_596));
+        assert_eq!(with(15, b"100000000000000"), Some(100_000_000_000_000));
+        assert_eq!(with(0, b""), None);
+        assert_eq!(with(21, b"123456789012345678901"), None);
+        assert_eq!(with(14, b"7294572455596x"), None);
+        assert_eq!(with(14, b"7294"), None, "length past the payload");
     }
 }

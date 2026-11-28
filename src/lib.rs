@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn test_full_roundtrip() {
-        let Some(data) = try_read(BINARY_PATH.into(), "out/iteminfo.pabgb") else {
+        let Some(data) = try_read(BINARY_PATH.into(), "out/iteminfo.pabgb (from export_for_ce.py)") else {
             return;
         };
         let mut offset = 0;
@@ -539,8 +539,8 @@ mod tests {
             .filter(|p| p.is_dir())
             .collect();
         user_dirs.sort();
-        // Prefer slot107 — the current Crimson Desert 1.12 save — so the
-        // save tests validate against the live latest-patch format.
+        // Prefer slot107, the maintainer's save that tracks the latest patch,
+        // so the save tests validate against the live format.
         for user_path in &user_dirs {
             let path = user_path.join("slot107").join("save.save");
             if let Ok(data) = std::fs::read(&path) {
@@ -769,7 +769,7 @@ mod tests {
             }
         }
 
-        // Hard invariant: against the live 1.06 save, every byte of
+        // Hard invariant: against every live and fixture save, every byte of
         // every block must be accounted for — either decoded into a
         // typed field or captured as a `trailing_pad`. A regression
         // here means a format detail has drifted.

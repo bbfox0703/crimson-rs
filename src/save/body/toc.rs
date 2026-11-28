@@ -7,7 +7,8 @@
 //! ```text
 //! u32 prefix_zero    (typically 0)
 //! u32 toc_count      (N)
-//! u32 stream_size    (total data section size, in bytes)
+//! u32 stream_size    (absolute end of the data section: equals the body
+//!                     length on every save measured, and the encoder writes it so)
 //!
 //! repeat N times (20 bytes each):
 //!     u32 class_index     (index into schema.types)
