@@ -21,6 +21,10 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Nothing here writes to the repository.
+permissions:
+  contents: read
+
 jobs:
   lint-and-test:
     name: clippy + cargo test
@@ -32,6 +36,13 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+
+      # PyO3's abi3-py312 needs a 3.12+ interpreter for every build with the
+      # `python` feature; pinned rather than left to the runner image.
+      - name: Install Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
 
       - name: Cache cargo target
         uses: Swatinem/rust-cache@v2
@@ -47,6 +58,13 @@ jobs:
       # `cargo check` keeps it compiling but skips the dead-code lint.
       - name: cargo check (default features, must compile)
         run: cargo check --lib
+      # Each consumer feature alone is what actually ships: `c_abi` builds the
+      # native dll / lib, `python` the wheel. Neither is covered by the
+      # combined clippy run below.
+      - name: cargo check --features c_abi (the native build alone)
+        run: cargo check --lib --features c_abi
+      - name: cargo check --features python (the wheel build alone)
+        run: cargo check --lib --features python
       - name: clippy --features c_abi,python (strict)
         run: cargo clippy --all-targets --lib --features c_abi,python -- -D warnings
 
@@ -58,3 +76,35 @@ jobs:
       # cap mirrors the local invocation (see CLAUDE.md).
       - name: cargo test --lib --features c_abi
         run: cargo test --lib --features c_abi -- --test-threads=4
+
+  # The shipped artifact: the MSVC release dll / lib, with the static CRT from
+  # .cargo/config.toml. Fails if the dll imports anything beyond system DLLs
+  # (a CRT DLL, python3.dll, or a native dependency). Not a required check.
+  windows-native:
+    name: windows native dll
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo target
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo build --release --features c_abi
+        run: cargo build --release --lib --features c_abi
+
+      - name: dll imports system DLLs only
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $dumpbin = & $vswhere -latest -products * -find 'VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe' | Select-Object -First 1
+          if (-not $dumpbin) { throw 'dumpbin not found' }
+          $deps = & $dumpbin /nologo /dependents target\release\crimson_rs.dll |
+            ForEach-Object { $_.Trim() } | Where-Object { $_ -match '\.dll$' -and $_ -notmatch '^Dump of file' }
+          $deps | ForEach-Object { "  $_" }
+          $allowed = '^(?i)(kernel32|ntdll|bcrypt|bcryptprimitives|advapi32|ws2_32|userenv|api-ms-win-core-[a-z0-9-]+)\.dll$'
+          $bad = $deps | Where-Object { $_ -notmatch $allowed }
+          if ($bad) { throw "crimson_rs.dll imports non-system DLLs: $($bad -join ', ')" }
+          if (-not (Test-Path target\release\crimson_rs.lib)) { throw 'crimson_rs.lib (staticlib) missing' }
