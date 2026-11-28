@@ -96,6 +96,22 @@ fn check_fully_decoded(block: &ObjectBlock) -> Result<(), String> {
     Ok(())
 }
 
+/// Does `block` (or a block nested in it) carry pad bytes that could hide an
+/// offset? Pad is written back verbatim and relocated only by the block's own
+/// shift, so an offset inside it goes stale when the block's length changes.
+/// A wrapper prefix of one `0x01` byte, which every game-written locator
+/// with a prefix has, cannot hold an offset and does not count.
+fn carries_pad(block: &ObjectBlock) -> bool {
+    !block.trailing_pad.is_empty()
+        || block.fields.iter().any(|f| match &f.value {
+            FieldValue::Locator { wrapper_prefix, child, .. } => {
+                !matches!(wrapper_prefix.as_slice(), [] | [1]) || child.as_deref().is_some_and(carries_pad)
+            }
+            FieldValue::ObjectList { elements, .. } => elements.iter().any(carries_pad),
+            _ => false,
+        })
+}
+
 /// The encoder lays the data section out as the TOC's blocks back to back,
 /// from the end of the TOC to `stream_size`. A save whose blocks overlap,
 /// leave gaps or stop short of `stream_size` would lose those bytes on
@@ -274,8 +290,22 @@ pub fn encode_body(
     // position. For unmodified blocks this is correct; for moved blocks
     // we'll patch in pass 2.
     let mut block_bytes: Vec<Vec<u8>> = Vec::with_capacity(blocks.len());
-    for block in blocks {
-        block_bytes.push(encode_top_level_block(block, block.data_offset)?);
+    for (i, block) in blocks.iter().enumerate() {
+        let bytes = encode_top_level_block(block, block.data_offset)?;
+        // A block that only moves keeps its pad in place relative to itself,
+        // and the relocation pass fixes the shift. One whose length changed
+        // has moved bytes inside it, which the pass cannot follow. Game-written
+        // saves carry no such pad, so this only refuses a block after drift.
+        if bytes.len() != block.data_size as usize && carries_pad(block) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "block {i} ({}) changed length and carries pad bytes that may hold an offset; refusing to re-encode it",
+                    block.class_name
+                ),
+            ));
+        }
+        block_bytes.push(bytes);
     }
 
     // Recompute data_offset for each block, accumulating from data_start.
@@ -688,4 +718,30 @@ fn write_u16(out: &mut Vec<u8>, v: u16) {
 #[inline]
 fn write_u32(out: &mut Vec<u8>, v: u32) {
     out.extend_from_slice(&v.to_le_bytes());
+}
+
+#[cfg(test)]
+mod pad_tests {
+    use crate::save::{Body, Save};
+
+    /// A block that changed length while carrying pad is refused.
+    #[test]
+    fn length_change_with_pad_is_refused() {
+        let Some(data) = crate::test_fixtures::save("1.10/save.save") else {
+            return;
+        };
+        let save = Save::parse(&data).unwrap();
+        let body = Body::parse(&save.body).unwrap();
+        let mut blocks = body.decode_blocks(&save.body);
+        assert!(body.write(&save.body, &blocks).is_ok(), "unedited body encodes");
+
+        // Four bytes of pad change the block's length, as an edit would.
+        blocks[0].trailing_pad = vec![0; 4];
+        let err = body.write(&save.body, &blocks).unwrap_err();
+        assert!(err.to_string().contains("carries pad"), "{err}");
+
+        // Back to no pad, the body encodes again.
+        blocks[0].trailing_pad.clear();
+        assert!(body.write(&save.body, &blocks).is_ok());
+    }
 }

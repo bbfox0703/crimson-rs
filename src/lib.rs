@@ -837,6 +837,8 @@ mod tests {
             let mut objects = 0usize;
             let mut markers = 0usize;
             let mut pad_bytes = 0usize;
+            let mut prefix_bytes = 0usize;
+            let mut odd_prefixes = 0usize;
             let mut fallback: Vec<String> = Vec::new();
             let mut bad_hp: Vec<u64> = Vec::new();
             for block in &blocks {
@@ -844,6 +846,12 @@ mod tests {
                     objects += 1;
                     pad_bytes += obj.trailing_pad.len();
                     for f in &obj.fields {
+                        if let FieldValue::Locator { wrapper_prefix, .. } = &f.value {
+                            prefix_bytes += wrapper_prefix.len();
+                            if !matches!(wrapper_prefix.as_slice(), [] | [1]) {
+                                odd_prefixes += 1;
+                            }
+                        }
                         if f.present || !matches!(f.meta_kind, 3 | 6 | 7) {
                             continue;
                         }
@@ -866,7 +874,7 @@ mod tests {
                 });
             }
             println!(
-                "{}: {objects} objects, {markers} absence markers, {pad_bytes} trailing_pad bytes",
+                "{}: {objects} objects, {markers} absence markers, {pad_bytes} trailing_pad bytes, {prefix_bytes} wrapper_prefix bytes",
                 path.display()
             );
             assert!(
@@ -875,6 +883,8 @@ mod tests {
                 path.display()
             );
             assert_eq!(pad_bytes, 0, "{}: trailing_pad bytes left over", path.display());
+            // The encoder refuses any other prefix, which could hide an offset.
+            assert_eq!(odd_prefixes, 0, "{}: a wrapper_prefix other than empty or 01", path.display());
             assert!(
                 bad_hp.is_empty(),
                 "{}: implausible MercenarySaveData._currentHp (misaligned read?): {bad_hp:?}",
