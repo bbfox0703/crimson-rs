@@ -731,23 +731,17 @@ pub fn parse_iteminfo_with_header<'a>(
 mod tests {
     use super::*;
 
-    // The parser targets Crimson Desert 1.05. The test reads the 1.05
-    // binary that `scripts\export_for_ce.py` extracts to `out\iteminfo.pabgb`.
-    // Both files are gitignored (they ship Pearl Abyss content) and the
-    // test skips cleanly when they aren't present.
-    const BINARY_PATH: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        r"\out\iteminfo.pabgb"
-    );
-
+    // The live install's tables; the tests skip without one. They used to
+    // read whatever `scripts/export_for_ce.py` last left in `out\`, which
+    // could be another version (audit I-08).
     fn try_load_binary() -> Option<Vec<u8>> {
-        std::fs::read(BINARY_PATH).ok()
+        crate::binary::gamedata_layout::extract_bin(&crate::binary::gamedata_layout::body("iteminfo"))
     }
 
     #[test]
     fn test_parse_first_item() {
         let Some(data) = try_load_binary() else {
-            eprintln!("skipping: {BINARY_PATH} not found (run scripts/export_for_ce.py)");
+            eprintln!("skipping: no game install");
             return;
         };
         let mut offset = 0;
@@ -760,9 +754,9 @@ mod tests {
 
     #[test]
     fn test_parse_with_header() {
-        let header_path = concat!(env!("CARGO_MANIFEST_DIR"), r"\out\iteminfo.staticinfoheader");
-        let (Some(data), Ok(header)) = (try_load_binary(), std::fs::read(header_path)) else {
-            eprintln!("skipping: out/iteminfo.pabgb or out/iteminfo.staticinfoheader not found");
+        let header = crate::binary::gamedata_layout::extract_bin(&crate::binary::gamedata_layout::header("iteminfo"));
+        let (Some(data), Some(header)) = (try_load_binary(), header) else {
+            eprintln!("skipping: no game install");
             return;
         };
         let items = parse_iteminfo_with_header(&data, &header).unwrap();

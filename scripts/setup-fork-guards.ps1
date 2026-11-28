@@ -14,16 +14,25 @@
 #
 $ErrorActionPreference = 'Stop'
 
+# $ErrorActionPreference does not cover native commands: a failing `gh` or
+# `git` (gh not logged in, say) used to let the script carry on and print a
+# summary as if every guard were set (audit I-19).
+function Invoke-NativeChecked {
+    param([string]$What, [scriptblock]$Command)
+    & $Command
+    if ($LASTEXITCODE -ne 0) { throw "$What failed (exit $LASTEXITCODE)" }
+}
+
 # 1. gh pr / list / checks / view default to the fork, not the upstream parent.
-gh repo set-default bbfox0703/crimson-rs
+Invoke-NativeChecked 'gh repo set-default' { gh repo set-default bbfox0703/crimson-rs }
 
 # 2. A bare `git push` always goes to the fork.
-git config remote.pushDefault origin
+Invoke-NativeChecked 'git config remote.pushDefault' { git config remote.pushDefault origin }
 
 # 3. `git push upstream ...` errors out instead of pushing to potter420. Fetch
 #    is left intact so upstream changes can still be pulled for reference.
 if (git remote | Select-String -Quiet '^upstream$') {
-    git remote set-url --push upstream DISABLED_no_push_to_potter420
+    Invoke-NativeChecked 'git remote set-url --push upstream' { git remote set-url --push upstream DISABLED_no_push_to_potter420 }
 }
 
 # 4. A pre-push hook refuses any push whose destination is potter420/crimson-rs,
@@ -48,8 +57,10 @@ case "`$url" in
 esac
 exit 0
 "@
+$hookInstalled = $true
 if ((Test-Path $hookPath) -and -not (Select-String -Path $hookPath -Quiet -SimpleMatch $hookMarker)) {
     Write-Warning "$hookPath exists and is not ours; left it alone (fork-guard hook NOT installed)."
+    $hookInstalled = $false
 } else {
     [IO.File]::WriteAllText($hookPath, $hook.Replace("`r`n", "`n") + "`n", [Text.UTF8Encoding]::new($false))
 }
@@ -58,6 +69,6 @@ Write-Output 'Fork guards set:'
 Write-Output "  gh default repo : $(gh repo set-default --view 2>&1)"
 Write-Output "  push default    : $(git config --get remote.pushDefault)"
 try { Write-Output "  upstream push   : $(git remote get-url --push upstream)" } catch {}
-Write-Output "  pre-push hook   : $hookPath"
+Write-Output "  pre-push hook   : $(if ($hookInstalled) { $hookPath } else { 'NOT installed (see the warning above)' })"
 Write-Output ''
 Write-Output 'PRs: gh pr create --base main --head dev   (now resolves to bbfox0703/crimson-rs)'

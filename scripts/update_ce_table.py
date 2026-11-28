@@ -171,7 +171,12 @@ def props_from_bin(root: Path) -> dict[int, tuple[int, int, int | None]]:
         for r in crimson_rs.parse_iteminfo_from_bytes(data):
             out.setdefault(
                 r["key"],
-                (r["max_stack_count"], r["inventory_info_list"][0], r.get("item_importance_kind")),
+                (
+                    r["max_stack_count"],
+                    # Guarded as on the other path: a list can be empty.
+                    r["inventory_info_list"][0] if r["inventory_info_list"] else 0,
+                    r.get("item_importance_kind"),
+                ),
             )
     if not out:
         sys.exit(f"--props-bin: no iteminfo table found under {root}")

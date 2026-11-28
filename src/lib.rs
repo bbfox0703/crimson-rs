@@ -117,14 +117,6 @@ mod tests {
     fn game_dir() -> std::path::PathBuf {
         gamedata_layout::game_root()
     }
-    // The parser targets the latest patch only. The roundtrip test reads the
-    // binary that `scripts\export_for_ce.py` last extracted to
-    // `out\iteminfo.pabgb`. Test skips if the file isn't present (e.g. a
-    // fresh checkout that hasn't run the export pipeline).
-    const BINARY_PATH: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        r"\out\iteminfo.pabgb"
-    );
     // PAPGT / PAMT in the live game install (used by the parse / roundtrip
     // tests below). meta/0.papgt is the global descriptor; any group's
     // 0.pamt works for the parse path — 0019 ships in every region.
@@ -149,7 +141,9 @@ mod tests {
 
     #[test]
     fn test_full_roundtrip() {
-        let Some(data) = try_read(BINARY_PATH.into(), "out/iteminfo.pabgb (from export_for_ce.py)") else {
+        // The live install's table (it used to read whatever export_for_ce.py
+        // last left in out\, possibly another version; audit I-08).
+        let Some(data) = gamedata_layout::extract_bin(&gamedata_layout::body("iteminfo")) else {
             return;
         };
         let mut offset = 0;
