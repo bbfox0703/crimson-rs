@@ -1896,6 +1896,21 @@ fn save_to_py_dict<'py>(py: Python<'py>, save: &crate::save::Save) -> PyResult<P
 // ── Registration ───────────────────────────────────────────────────────────
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // Version self-check (audit H-15): `PARSER_TARGET` is the game patch this
+    // build's parsers target, `(major, minor, min_patch)` in paver numbering.
+    // A stale wheel shows up as a target older than the install's paver.
+    {
+        use crate::binary::paver;
+        m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+        m.add(
+            "PARSER_TARGET",
+            (
+                paver::PARSER_TARGET_GAMEDATA_MAJOR,
+                paver::PARSER_TARGET_GAMEDATA_MINOR,
+                paver::PARSER_MIN_GAMEDATA_PATCH,
+            ),
+        )?;
+    }
     m.add_function(wrap_pyfunction!(parse_iteminfo_from_file, m)?)?;
     m.add_function(wrap_pyfunction!(parse_iteminfo_from_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(parse_iteminfo_tracked, m)?)?;

@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import Any, TypedDict
+
+__version__: str
+"""The crate version (``Cargo.toml``)."""
+PARSER_TARGET: tuple[int, int, int]
+"""Game patch the parsers target, ``(major, minor, min_patch)`` in paver
+numbering (``(2, 6, 0)`` for 2.06). Compare it with the install's
+``meta/0.paver`` to catch a stale build."""
 
 from crimson_rs.enums import Compression as Compression
 from crimson_rs.enums import Crypto as Crypto
@@ -106,18 +113,30 @@ class EnchantData(TypedDict):
     enchant_stat_data: EnchantStatData
     buy_price_list: list[ItemPriceInfo]
     equip_buffs: list[EquipmentBuff]
+    unk_post_equip_buffs: int
+    """u32 after ``equip_buffs``; meaning not RE'd."""
 
 
-class GimmickVisualPrefabData(TypedDict):
-    tag_name_hash: int
-    """u32"""
+class MergedPrefabVisualData(TypedDict):
+    """1.13+: one element of ``merged_prefab_visual_list``, the merge of the
+    old ``prefab_data_list`` and ``gimmick_visual_prefab_data_list``."""
     scale: list[float]
-    """[f32; 3] - 3 floats."""
+    """[f32; 3]; (1, 1, 1) on prefab-origin rows."""
     prefab_names: list[int]
     """StringInfoKey list (u32)."""
     animation_path_list: list[int]
     """StringInfoKey list (u32)."""
+    equip_slot_list: list[int]
+    """u16 list."""
+    tribe_gender_list: list[int]
+    """StringInfoKey list (u32)."""
+    unk_pre_is_craft_material: int
+    """u8"""
+    is_craft_material: int
+    """u8"""
     use_gimmick_prefab: int
+    """u8"""
+    unk_post_flag: int
     """u8"""
 
 
@@ -158,6 +177,10 @@ class InspectData(TypedDict):
     """CharacterKey (u32)."""
     spawn_reason_hash: int
     """u32"""
+    unk_post_inspect_effect_a: float
+    """f32; meaning not RE'd."""
+    unk_post_inspect_effect_b: float
+    """f32; meaning not RE'd."""
     socket_name: str
     speak_character_info: int
     """CharacterKey (u32)."""
@@ -236,16 +259,6 @@ class MoneyTypeDefine(TypedDict):
     unit_data_list_map: list[MoneyUnitEntry]
 
 
-class PrefabData(TypedDict):
-    prefab_names: list[int]
-    """StringInfoKey list (u32)."""
-    equip_slot_list: list[int]
-    """u16 list."""
-    tribe_gender_list: list[int]
-    """StringInfoKey list (u32)."""
-    is_craft_material: int
-    """u8"""
-
 
 class RepairData(TypedDict):
     resource_item_info: int
@@ -298,6 +311,10 @@ class DockingChildData(TypedDict):
     """ItemKey (u32)."""
     attach_parent_socket_name: str
     attach_child_socket_name: str
+    unk_post_summon_tag_a: int
+    """u32; meaning not RE'd."""
+    unk_post_summon_tag_b: int
+    """u32; meaning not RE'd."""
     docking_tag_name_hash: list[int]
     """[u32; 4] - 4 ints."""
     docking_equip_slot_no: int
@@ -394,8 +411,6 @@ class ItemInfo(TypedDict):
     item_icon_list: list[ItemIconData]
     map_icon_path: int
     """StringInfoKey (u32)."""
-    money_icon_path: int
-    """StringInfoKey (u32)."""
     use_map_icon_alert: int
     """u8"""
     item_type: int
@@ -423,8 +438,6 @@ class ItemInfo(TypedDict):
     """u8"""
     extract_multi_change_info: int
     """MultiChangeKey (u32)."""
-    extract_additional_drop_set_info: int
-    """u32"""
     minimum_extract_enchant_level: int
     """u16"""
     item_memo: str
@@ -489,9 +502,7 @@ class ItemInfo(TypedDict):
     """u8"""
     drop_default_data: DropDefaultData | None
     """2.04: None where it would be all defaults (no sockets, tag-18 sub item)."""
-    prefab_data_list: list[PrefabData]
     enchant_data_list: list[EnchantData]
-    gimmick_visual_prefab_data_list: list[GimmickVisualPrefabData]
     price_list: list[ItemPriceInfo]
     docking_child_data: DockingChildData | None
     docking_child_data_list: list[DockingChildData]
@@ -564,32 +575,35 @@ class ItemInfo(TypedDict):
     """2.04: StringInfoKey (u32), was str. Empty string is 0xeac5e173."""
     enable_equip_in_clone_actor: int
     """u8"""
-    new_icon_path: str
-    """1.05: CString that replaced the four 1.04 bool fields
-    is_blocked_store_sell..is_preserved_on_extract. Empty for items
-    without a custom icon (most Class B items, all ammo)."""
+    is_blocked_store_sell: int
+    """u8"""
+    is_preorder_item: int
+    """u8"""
+    is_preserved_on_extract: int
+    """u8"""
+    is_equip_quick_slot_visible: int
+    """u8"""
+    is_has_item_use_data_inventory_buff: int
+    """u8"""
     respawn_time_seconds: int | None
-    """1.05: i64. Present only when `new_icon_path` is empty."""
+    """i64"""
+    unk_pre_max_endurance_a: int
+    """Meaning not RE'd."""
     max_endurance: int | None
-    """1.05: u16. Present only when `new_icon_path` is empty."""
-    ammo_mid_block: list[int] | None
-    """1.05: 22 raw bytes. Present only on the 18 ammo / projectile
-    items (max_endurance == 0 with a real binary mid block)."""
-    icon_flag: int | None
-    """1.05: u8 (observed `01`). Present only when `new_icon_path` is
-    non-empty."""
-    icon_unk_zeros: list[int] | None
-    """1.05: 9 raw bytes (observed all-zero). Present only when
-    `new_icon_path` is non-empty."""
+    """u16"""
+    unk_post_apply_drop_stat_type: int
+    """Meaning not RE'd."""
+    unk_pre_gimmick_visual: int | None
+    """Conditional on ``equip_type_info``; writing it back does not re-check
+    the condition, so keep it consistent when editing ``equip_type_info``."""
+    merged_prefab_visual_list: list[MergedPrefabVisualData]
+    """1.13+: the merged prefab + gimmick-visual list (see the class)."""
     repair_data_list: list[RepairData]
 
-    # NOTE: the entries above still describe the 1.04/1.05-era layout and are
-    # substantially out of date — `new_icon_path` / `ammo_mid_block` /
-    # `icon_flag` / `icon_unk_zeros` belong to the discredited "variant tail"
-    # model that was removed from the parser long ago, and the 1.08–1.15
-    # additions were never mirrored here. Treat this TypedDict as a partial
-    # view; `src/item_info/item.rs` is the source of truth. The 1.16 fields
-    # below are accurate.
+    # The field set matches what `parse_iteminfo_from_bytes` returns on 2.06
+    # (124 keys, checked 2026-11-28 against the live install); the order and
+    # the per-field notes above are partial. `src/item_info/item.rs` is the
+    # source of truth for the layout.
     unk_pre_respawn_a: int
     """1.16: u32. 0 on all but 36 items (Wood_Branch_* tiers, which carry an
     ItemKey-shaped value)."""
@@ -1314,6 +1328,8 @@ class SkillEntry(TypedDict):
     name_bytes: bytes
     """Raw name bytes (without trailing NUL). Source of truth for
     serialisation; ``name`` may differ on non-UTF-8 input."""
+    unk_post_key: int
+    """u8 after the key; meaning not RE'd."""
     is_blocked: int
     """u8"""
     pad_01: bytes
@@ -1410,4 +1426,55 @@ def extract_file_from_paz(paz_path: str, vfs_path: str) -> bytes:
         IOError: If the PAMT or PAZ file cannot be read.
         ValueError: If the directory or file is not found in the PAMT.
     """
+    ...
+
+
+# ── Saves and lossy iteminfo (declared 2026-11-28; the module had them) ─────
+
+
+class LossyItemInfo(TypedDict):
+    items: list[ItemInfo]
+    spans: list[ItemSpan]
+    errors: list[dict[str, Any]]
+    """One dict per recovery: ``item_start``, ``fail_offset``, ``recovered_at``, …
+    A single damaged row can log many entries, so ``len(errors)`` overstates
+    the number of lost items."""
+
+
+def parse_iteminfo_lossy(data: bytes) -> LossyItemInfo:
+    """Like :func:`parse_iteminfo_tracked`, but on an error scans forward to
+    the next plausible item start and continues."""
+    ...
+
+
+def parse_save_from_bytes(data: bytes) -> dict[str, Any]:
+    """Parse a save file's raw bytes. Keys: ``header`` (128 bytes), ``version``,
+    ``flags``, ``payload_size``, ``uncompressed_size``, ``nonce`` (16 bytes),
+    ``hmac`` (32 bytes), ``hmac_ok`` (bool), ``body`` (decompressed bytes)."""
+    ...
+
+
+def parse_save_from_file(path: str) -> dict[str, Any]:
+    """:func:`parse_save_from_bytes` on a file."""
+    ...
+
+
+def write_save_with_nonce(header: bytes, body: bytes, nonce: bytes) -> bytes:
+    """Encode a save: 128-byte ``header`` (from a ``parse_save_*`` result),
+    decompressed ``body`` and a 16-byte ChaCha20 ``nonce`` (the original for a
+    decode-stable round trip, random for a fresh write). Re-seals whatever
+    ``body`` is given; it does not re-encode decoded blocks."""
+    ...
+
+
+def parse_save_body_from_bytes(body: bytes) -> dict[str, Any]:
+    """Schema and TOC of a decompressed save body: ``prefix`` (14 bytes),
+    ``schema`` (types and fields) and ``toc`` (``prefix_zero``, ``toc_count``,
+    ``stream_size``, ``entries``)."""
+    ...
+
+
+def decode_save_body_blocks(body: bytes) -> dict[str, Any]:
+    """Decode every TOC entry of a save body into nested block dicts (fields
+    with ``kind``, ``start``, ``end`` and kind-specific values)."""
     ...

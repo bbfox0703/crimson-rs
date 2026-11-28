@@ -24,26 +24,31 @@ Compression.LZ4       # 2
 Compression.ZLIB      # 3
 
 Crypto.NONE           # 0
-Crypto.ICE            # 1
-Crypto.AES            # 2
+Crypto.ICE            # 1  (archive code only: packing rejects it)
+Crypto.AES            # 2  (archive code only: packing rejects it)
 Crypto.CHACHA20       # 3
 
 Language.ALL          # 0x7FFF (all 15 languages)
 Language.KOR          # 0x0001
 Language.ENG          # 0x0002
 Language.JPN          # 0x0004
-Language.CHT          # 0x0008
-Language.GER          # 0x0010
-Language.FRA          # 0x0020
-Language.SPA          # 0x0040
-Language.POR          # 0x0080
-Language.RUS          # 0x0100
-Language.TUR          # 0x0200
-Language.THA          # 0x0400
-Language.IND          # 0x0800
-Language.CHS          # 0x1000
-Language.ARA          # 0x2000
+Language.RUS          # 0x0008
+Language.TUR          # 0x0010
+Language.SPA_ES       # 0x0020
+Language.SPA_MX       # 0x0040
+Language.FRE          # 0x0080
+Language.GER          # 0x0100
+Language.ITA          # 0x0200
+Language.POL          # 0x0400
+Language.POR_BR       # 0x0800
+Language.ZHO_TW       # 0x1000
+Language.ZHO_CN       # 0x2000
+Language.ARA          # 0x4000
 ```
+
+The values are `python/crimson_rs/enums.py`; the PAPGT's language field uses them (on
+2.06 the optional group `0036` carries `0x0080`, French). This table listed a different,
+wrong set until 2026-11-28.
 
 ---
 
@@ -74,7 +79,7 @@ pack_mod(
 - `output_dir` — Where to write the packed output (paz + pamt + papgt)
 - `group_name` — Pack group name: four digits not already listed in the game's `meta/0.papgt` (e.g. `"0099"`). On 2.06 the PAPGT lists `0036`–`0040` (the optional language groups) with no folder on disk, so a free folder name is not enough; `pack_mod` and `create_pack_group*` refuse a listed name (they used to replace that entry) and anything that is not four digits
 - `compression` — `Compression.LZ4` (default), `.ZLIB`, or `.NONE`
-- `crypto` — `Crypto.NONE` (default), `.ICE`, `.AES`, or `.CHACHA20`
+- `crypto` — `Crypto.NONE` (default) or `.CHACHA20`; `.ICE` and `.AES` are rejected
 - `encrypt_info` — 3 bytes of encryption key material (default: `b"\x00\x00\x00"`)
 - `max_chunk_size` — Max bytes per `.paz` file (default: 500MB)
 - `is_optional` — Whether the group is optional (default: `False`)
@@ -451,7 +456,7 @@ All data is returned as plain Python dicts, lists, and primitives. No custom cla
 
 ## ItemInfo
 
-Each item is a dict with 105 fields. All fields are required for serialization.
+Each item is a dict with 124 fields on 2.06 (the `ItemInfo` TypedDict in `__init__.pyi` lists them). All fields are required for serialization.
 
 ### Identity Fields
 
