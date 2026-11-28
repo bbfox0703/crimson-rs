@@ -29,10 +29,11 @@ Invoke-NativeChecked 'gh repo set-default' { gh repo set-default bbfox0703/crims
 # 2. A bare `git push` always goes to the fork.
 Invoke-NativeChecked 'git config remote.pushDefault' { git config remote.pushDefault origin }
 
-# 3. `git push upstream ...` errors out instead of pushing to potter420. Fetch
-#    is left intact so upstream changes can still be pulled for reference.
+# 3. No `upstream` remote at all. The parent has not moved since the fork and
+#    nothing is ever fetched from it or sent to it, so the remote only offered
+#    a wrong target (it used to be kept with its push URL disabled).
 if (git remote | Select-String -Quiet '^upstream$') {
-    Invoke-NativeChecked 'git remote set-url --push upstream' { git remote set-url --push upstream DISABLED_no_push_to_potter420 }
+    Invoke-NativeChecked 'git remote remove upstream' { git remote remove upstream }
 }
 
 # 4. A pre-push hook refuses any push whose destination is potter420/crimson-rs,
@@ -68,7 +69,7 @@ if ((Test-Path $hookPath) -and -not (Select-String -Path $hookPath -Quiet -Simpl
 Write-Output 'Fork guards set:'
 Write-Output "  gh default repo : $(gh repo set-default --view 2>&1)"
 Write-Output "  push default    : $(git config --get remote.pushDefault)"
-try { Write-Output "  upstream push   : $(git remote get-url --push upstream)" } catch {}
+Write-Output "  upstream remote : $(if (git remote | Select-String -Quiet '^upstream$') { 'STILL PRESENT' } else { 'none' })"
 Write-Output "  pre-push hook   : $(if ($hookInstalled) { $hookPath } else { 'NOT installed (see the warning above)' })"
 Write-Output ''
 Write-Output 'PRs: gh pr create --base main --head dev   (now resolves to bbfox0703/crimson-rs)'
