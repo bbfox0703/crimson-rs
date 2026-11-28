@@ -522,31 +522,11 @@ mod tests {
     // Exercises the parser against the live install's stringinfo pair.
     // Skips when the game isn't present.
     fn find_table_bytes() -> Option<(Vec<u8>, Vec<u8>)> {
-        use crate::binary::gamedata_layout;
-        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| {
-                std::path::PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
-            });
-        let group_dir = game_root.join("0008");
-        let pamt_bytes = std::fs::read(group_dir.join("0.pamt")).ok()?;
-        let pamt = crate::binary::pamt::PackMeta::parse(&pamt_bytes, None).ok()?;
-        let dir = pamt
-            .directories
-            .iter()
-            .find(|d| d.path == gamedata_layout::bin_dir())?;
-        let extract = |name: String| {
-            crate::binary::paz::extract_file(
-                &group_dir,
-                dir.files.iter().find(|f| f.name == name)?,
-                gamedata_layout::bin_dir(),
-                &pamt.header.encrypt_info.encrypt_info,
-            )
-            .ok()
-        };
+        // None only when the install (or the table) is absent; an install
+        // that is there but unreadable fails the test (audit I-02).
         Some((
-            extract(gamedata_layout::body("stringinfo"))?,
-            extract(gamedata_layout::header("stringinfo"))?,
+            crate::binary::gamedata_layout::extract_bin(&crate::binary::gamedata_layout::body("stringinfo"))?,
+            crate::binary::gamedata_layout::extract_bin(&crate::binary::gamedata_layout::header("stringinfo"))?,
         ))
     }
 

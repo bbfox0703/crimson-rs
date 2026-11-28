@@ -171,7 +171,7 @@ mod tests {
     /// 2.06+: the row names live here. Empty when absent (an older install
     /// needs none, and `parse_mission_info_lossy_with_header` then scans the body alone).
     fn find_missioninfo_header() -> Vec<u8> {
-        gamedata_layout::extract_bin(&gamedata_layout::header("missioninfo")).unwrap_or_default()
+        gamedata_layout::extract_bin(&gamedata_layout::header("missioninfo")).expect("the 2.06 header next to the table body (install present but header missing: drift?)")
     }
 
     #[test]

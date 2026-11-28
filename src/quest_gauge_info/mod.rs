@@ -142,7 +142,7 @@ mod tests {
     /// 2.06+: the row names live here. Empty when absent (an older install
     /// needs none, and `parse_quest_gauge_info_lossy_with_header` then scans the body alone).
     fn find_questgauge_header() -> Vec<u8> {
-        gamedata_layout::extract_bin(&gamedata_layout::header("questgaugeinfo")).unwrap_or_default()
+        gamedata_layout::extract_bin(&gamedata_layout::header("questgaugeinfo")).expect("the 2.06 header next to the table body (install present but header missing: drift?)")
     }
 
     #[test]
