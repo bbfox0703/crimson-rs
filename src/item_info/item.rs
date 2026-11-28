@@ -18,7 +18,7 @@ use crate::py_binary_struct;
 // `parse_iteminfo_with_header`.
 //
 // The base row index equals the row's position. The DLC table's does not. Its
-// meaning is open; see the 2.06 row in `scripts/CLAUDE.md`. Content: one base
+// meaning is open; see the 2.06 row in `docs/validated-patches.md`. Content: one base
 // item removed (1005744, at row 3,340) and one added (1007080, at row 6,076), so
 // CE item IDs 3,340–6,075 move down by one; IDs 3,771–3,797 and 6,941–7,015 were
 // also reordered, and every other ID kept its value. `iteminfo.dlc_01` grew from 1,555 to 8,218

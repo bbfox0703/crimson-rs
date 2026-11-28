@@ -14,7 +14,7 @@ For every item it compares the array key with `items.jsonl` (CE order), then
 scans each object for offsets whose value equals a known iteminfo field on
 *every* item: key, `max_stack_count`, `item_importance_kind`, and
 `inventory_info_list[0]` (stored as InventoryKey - 1). Re-run it on a new
-patch to see whether the offsets recorded in scripts/CLAUDE.md still hold.
+patch to see whether the offsets in docs/runtime-item-objects.md still hold.
 
 Usage (the game must be running; run export_for_ce.py first):
     python -I scripts/probe_runtime_items.py --array 0x2A962770000 [--items out/items.jsonl]

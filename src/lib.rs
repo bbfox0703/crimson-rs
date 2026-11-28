@@ -19,6 +19,8 @@ mod binary;
 mod character_info;
 #[cfg(test)]
 mod test_fixtures;
+#[cfg(test)]
+mod repo_doc_budget;
 #[cfg(feature = "c_abi")]
 mod craft_tool_group_info;
 #[cfg(feature = "c_abi")]
