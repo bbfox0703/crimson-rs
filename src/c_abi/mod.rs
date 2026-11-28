@@ -1114,8 +1114,12 @@ pub unsafe extern "C" fn crimson_save_list_inventory_items(
                                     ) => {
                                         rec.transferred_item_key = *v;
                                     }
+                                    // u16 on every patch read; a widening to u32 keeps working.
                                     ("_slotNo", FieldValue::Scalar(ScalarValue::U16(v))) => {
                                         rec.slot_no = u32::from(*v);
+                                    }
+                                    ("_slotNo", FieldValue::Scalar(ScalarValue::U32(v))) => {
+                                        rec.slot_no = *v;
                                     }
                                     ("_itemNo", FieldValue::Scalar(ScalarValue::U64(v))) => {
                                         rec.item_no = *v;
