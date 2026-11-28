@@ -29,15 +29,7 @@ from pathlib import Path
 
 import crimson_rs
 
-from gamedata_layout import resolve_bin_layout
-
-
-GAME_DIR_CANDIDATES = [
-    r"D:\SteamLibrary\steamapps\common\Crimson Desert",
-    r"F:\SteamLibrary\steamapps\common\Crimson Desert",
-    r"E:\SteamLibrary\steamapps\common\Crimson Desert",
-    r"C:\Program Files (x86)\Steam\steamapps\common\Crimson Desert",
-]
+from gamedata_layout import find_game_dir, resolve_bin_layout
 
 
 # (table_label, pabgh_filename, pabgb_filename | None for pabgh-only,
@@ -102,17 +94,6 @@ PABGB_GROUP = "0008"
 # and the extensions without touching a byte inside. `resolve_bin_layout`
 # says which naming the install on disk uses, and `_resolved` maps a
 # table entry onto it.
-
-
-def find_game_dir(explicit: str | None) -> str:
-    if explicit:
-        if not Path(explicit).is_dir():
-            sys.exit(f"--game-dir not found: {explicit}")
-        return explicit
-    for c in GAME_DIR_CANDIDATES:
-        if Path(c).is_dir():
-            return c
-    sys.exit("Game install not found. Pass --game-dir.")
 
 
 # Count / key width pairs of a 2.06 header, as `WIDTHS` in

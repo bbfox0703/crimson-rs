@@ -26,6 +26,8 @@ in `docs/historical-parser-setup.md` depends on.
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 from typing import NamedTuple
 
@@ -33,6 +35,34 @@ import crimson_rs
 
 
 GAMEDATA_GROUP = "0008"
+
+# Where the scripts look for the install when --game-dir is not given,
+# after the CRIMSON_GAME_ROOT environment variable (the tests read it too).
+GAME_DIR_CANDIDATES = [
+    r"D:\SteamLibrary\steamapps\common\Crimson Desert",
+    r"F:\SteamLibrary\steamapps\common\Crimson Desert",
+    r"E:\SteamLibrary\steamapps\common\Crimson Desert",
+    r"C:\Program Files (x86)\Steam\steamapps\common\Crimson Desert",
+]
+
+
+def game_dir_candidates() -> list[str]:
+    """CRIMSON_GAME_ROOT (when set), then GAME_DIR_CANDIDATES."""
+    env = os.environ.get("CRIMSON_GAME_ROOT")
+    return ([env] if env else []) + GAME_DIR_CANDIDATES
+
+
+def find_game_dir(explicit: str | None) -> str:
+    """`explicit` (--game-dir) if given, else the first existing candidate;
+    exits with a message otherwise."""
+    if explicit:
+        if not Path(explicit).is_dir():
+            sys.exit(f"--game-dir not found: {explicit}")
+        return explicit
+    for c in game_dir_candidates():
+        if Path(c).is_dir():
+            return c
+    sys.exit("Game install not found. Pass --game-dir or set CRIMSON_GAME_ROOT.")
 
 
 class BinLayout(NamedTuple):

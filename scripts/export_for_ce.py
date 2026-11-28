@@ -52,15 +52,7 @@ from typing import NamedTuple
 
 import crimson_rs
 
-from gamedata_layout import GAMEDATA_GROUP, discover_paloc_targets, resolve_bin_layout
-
-
-GAME_DIR_CANDIDATES = [
-    r"D:\SteamLibrary\steamapps\common\Crimson Desert",
-    r"F:\SteamLibrary\steamapps\common\Crimson Desert",
-    r"E:\SteamLibrary\steamapps\common\Crimson Desert",
-    r"C:\Program Files (x86)\Steam\steamapps\common\Crimson Desert",
-]
+from gamedata_layout import GAMEDATA_GROUP, discover_paloc_targets, find_game_dir, resolve_bin_layout
 
 
 # Localization groups that may host the paloc files. Patches occasionally
@@ -82,20 +74,6 @@ OUTPUT_LANG_SUFFIX = {
     "cht":    "zh-tw",
     "chs":    "zh-cn",
 }
-
-
-def find_game_dir(explicit: str | None) -> str:
-    if explicit:
-        if not Path(explicit).is_dir():
-            sys.exit(f"--game-dir not found: {explicit}")
-        return explicit
-    for c in GAME_DIR_CANDIDATES:
-        if Path(c).is_dir():
-            return c
-    sys.exit(
-        "Game install not found. Pass --game-dir, or edit GAME_DIR_CANDIDATES "
-        "in this script."
-    )
 
 
 def _is_ident_byte(b: int) -> bool:
@@ -330,7 +308,6 @@ def export_iteminfo_lossy(game_dir: str, out_dir: Path) -> list[dict]:
         )
     print(f"  -> {skip_path.name}")
     return items
-
 
 
 # ── Header mode (default): CE index = base header rows, then DLC-only rows ──

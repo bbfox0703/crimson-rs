@@ -187,11 +187,17 @@ def props_from_bin(root: Path) -> dict[int, tuple[int, int, int | None]]:
 
 
 def read_paver(game_dir: str | None) -> str:
-    env_root = os.environ.get("CRIMSON_GAME_ROOT")
-    candidates = [game_dir] if game_dir else ([env_root] if env_root else []) + [
-        r"D:\SteamLibrary\steamapps\common\Crimson Desert",
-        r"C:\Program Files (x86)\Steam\steamapps\common\Crimson Desert",
-    ]
+    if game_dir:
+        candidates = [game_dir]
+    else:
+        # The shared install lookup; gamedata_layout needs crimson_rs, which
+        # this script otherwise loads only for --props-bin.
+        try:
+            from gamedata_layout import game_dir_candidates
+            candidates = game_dir_candidates()
+        except ImportError:
+            env_root = os.environ.get("CRIMSON_GAME_ROOT")
+            candidates = [env_root] if env_root else []
     for g in candidates:
         try:
             b = (Path(g) / "meta" / "0.paver").read_bytes()

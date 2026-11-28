@@ -34,32 +34,14 @@ from pathlib import Path
 
 import crimson_rs
 
-from gamedata_layout import PalocTarget, discover_paloc_targets, resolve_bin_layout
+from gamedata_layout import PalocTarget, discover_paloc_targets, find_game_dir, resolve_bin_layout
 
-
-GAME_DIR_CANDIDATES = [
-    r"D:\SteamLibrary\steamapps\common\Crimson Desert",
-    r"F:\SteamLibrary\steamapps\common\Crimson Desert",
-    r"E:\SteamLibrary\steamapps\common\Crimson Desert",
-    r"C:\Program Files (x86)\Steam\steamapps\common\Crimson Desert",
-]
 
 BIN_GROUP = "0008"
 
 # Localization groups that may host the paloc files — the same generous range
 # export_for_ce.py scans (Korean lives in 0019, English in 0020).
 PALOC_GROUPS = [f"{n:04d}" for n in range(19, 50)]
-
-
-def find_game_dir(explicit: str | None) -> str:
-    if explicit:
-        if not Path(explicit).is_dir():
-            sys.exit(f"--game-dir not found: {explicit}")
-        return explicit
-    for c in GAME_DIR_CANDIDATES:
-        if Path(c).is_dir():
-            return c
-    sys.exit("Game install not found. Pass --game-dir.")
 
 
 def list_bin_files(game_dir: str, bin_dir: str) -> list[tuple[str, str]]:

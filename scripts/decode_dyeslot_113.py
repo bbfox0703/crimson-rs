@@ -28,9 +28,9 @@ from pathlib import Path
 REPO = Path('.').resolve(); sys.path.insert(0, str(REPO)); import crimson_rs
 
 sys.path.insert(0, str(REPO / "scripts"))
-from gamedata_layout import resolve_bin_layout
+from gamedata_layout import find_game_dir, resolve_bin_layout
 
-GAME = r"D:\SteamLibrary\steamapps\common\Crimson Desert"
+GAME = find_game_dir(None)
 GROUP = "0008"
 # 2.01 renamed the directory and the .pabgb/.pabgh extensions; `stem` here
 # is the bare table name and the layout supplies the rest.
