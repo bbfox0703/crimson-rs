@@ -338,6 +338,40 @@ mod tests {
         );
     }
 
+    /// The post-buff validator that the skill boundary probe relies on caps
+    /// every list and `dev_*` string. Real data past a cap makes the whole
+    /// table fail to load, so this fails while the largest value is still
+    /// under half the cap, leaving a patch's growth room to be noticed first.
+    #[test]
+    fn skill_post_buff_stays_under_half_the_validator_caps() {
+        use crate::skill_info::SkillData;
+        use crate::skill_info::post_buff::{POST_BUFF_LIST_CAP, POST_BUFF_TEXT_CAP};
+        let Some(pabgh) = gamedata_layout::extract_bin(&gamedata_layout::header("skill")) else {
+            return;
+        };
+        let Some(pabgb) = gamedata_layout::extract_bin(&gamedata_layout::body("skill")) else {
+            return;
+        };
+        let data = SkillData::parse(&pabgh, &pabgb).unwrap();
+        let mut list = 0usize;
+        let mut text = 0usize;
+        for e in &data.entries {
+            let p = &e.post_buff;
+            list = list
+                .max(p.usable_character_info_list.len())
+                .max(p.usable_condition.len())
+                .max(p.use_resource_stat_list.len())
+                .max(p.use_resource_item_list.len())
+                .max(p.use_driver_resource_stat_list.len())
+                .max(p.reserve_slot_info_list.len())
+                .max(p.skill_group_key_list.len());
+            text = text.max(p.dev_skill_name.len()).max(p.dev_skill_desc.len());
+        }
+        println!("skill post-buff maxima: list {list} (cap {POST_BUFF_LIST_CAP}), text {text} B (cap {POST_BUFF_TEXT_CAP})");
+        assert!(list * 2 <= POST_BUFF_LIST_CAP as usize, "a post-buff list has {list} elements: raise the validator cap");
+        assert!(text * 2 <= POST_BUFF_TEXT_CAP as usize, "a dev_* string has {text} bytes: raise the validator cap");
+    }
+
     /// Per-entry skill diagnostic. `SkillData::parse` aborts on the first
     /// bad entry, which tells you nothing about how widespread a new
     /// patch's drift is. This walks every entry independently and reports

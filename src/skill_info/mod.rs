@@ -32,7 +32,7 @@
 
 mod buff_data;
 mod pabgh;
-mod post_buff;
+pub(crate) mod post_buff;
 
 pub use buff_data::{BuffData, BuffDataBody, SkillFormat, TailSizeCache};
 pub use pabgh::{SkillIndexEntry, entry_ranges, parse_pabgh, write_pabgh};

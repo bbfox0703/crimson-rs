@@ -331,6 +331,11 @@ pub fn write_post_buff_tail<W: io::Write>(w: &mut W, p: &PostBuff) -> io::Result
     p.video_path.write_to(w)
 }
 
+/// Element-count cap per list in [`try_parse_post_buff_end`].
+pub(crate) const POST_BUFF_LIST_CAP: u32 = 50;
+/// Byte cap per `dev_*` string in [`try_parse_post_buff_end`].
+pub(crate) const POST_BUFF_TEXT_CAP: u32 = 2000;
+
 /// Bounded validator used by the subclass-tail probe, over the fields behind
 /// the buff matrix. Mirrors the Python `_try_parse_post_buff` heuristics:
 /// per-list element count caps + a UTF-8 plausibility check on the dev_* strings.
@@ -343,16 +348,16 @@ pub fn try_parse_post_buff_end(data: &[u8], mut p: usize) -> Option<usize> {
     // Counted list, capped; `size` bytes per element.
     let skip_list = |p: usize, size: usize| -> Option<usize> {
         let cnt = read_u32_at(data, p)?;
-        if cnt > 50 {
+        if cnt > POST_BUFF_LIST_CAP {
             return None;
         }
         let end = p.checked_add(4 + (cnt as usize) * size)?;
         (end <= body_len).then_some(end)
     };
-    // `u32 len + len bytes`: cap 2000, must be valid UTF-8 if non-empty.
+    // `u32 len + len bytes`: capped, must be valid UTF-8 if non-empty.
     let skip_text = |p: usize| -> Option<usize> {
         let slen = read_u32_at(data, p)?;
-        if slen > 2000 {
+        if slen > POST_BUFF_TEXT_CAP {
             return None;
         }
         let end = p.checked_add(4 + slen as usize)?;
