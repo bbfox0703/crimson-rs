@@ -179,7 +179,12 @@ def _resolved(layout, name: str) -> str:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--game-dir", help="Crimson Desert install path")
-    ap.add_argument("--version", default="1.08", help="version label for the output dir (default: 1.08)")
+    ap.add_argument(
+        "--version",
+        required=True,
+        help="version label for the output dir, e.g. 2.06 (no default: a bare run used to "
+        "overwrite the committed 1.08 snapshot)",
+    )
     ap.add_argument("--out", help="output directory (default: <repo>/data/gamedata-keys-<version>)")
     args = ap.parse_args()
 

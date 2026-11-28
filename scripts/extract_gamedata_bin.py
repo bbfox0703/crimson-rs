@@ -171,6 +171,11 @@ def main() -> None:
         help="also keep this language's PALOC under <out>/paloc/<LANG>/ "
         "(repeatable; the archive keeps 'eng' from 2.02 on)",
     )
+    ap.add_argument(
+        "--force",
+        action="store_true",
+        help="write into an output directory that already has files in it",
+    )
     args = ap.parse_args()
 
     game = find_game_dir(args.game_dir)
@@ -181,6 +186,13 @@ def main() -> None:
     else:
         sys.exit("Pass --out or set CRIMSON_GAMEDATA_BIN.")
     paloc_targets = resolve_paloc(game, args.paloc)
+    # The archive is the ground truth once Steam has patched the install, and a
+    # rerun with the wrong --version would overwrite a kept version in place.
+    if out_dir.is_dir() and any(out_dir.iterdir()) and not args.force:
+        sys.exit(
+            f"{out_dir} already has files. It may be a kept version that cannot be "
+            "re-extracted; check --version, or pass --force to overwrite."
+        )
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Game dir : {game}")

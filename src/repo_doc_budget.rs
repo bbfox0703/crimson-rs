@@ -47,7 +47,12 @@ fn claude_md_files_stay_under_40_kb() {
     let over: Vec<String> = found
         .iter()
         .filter_map(|p| {
-            let len = std::fs::metadata(p).ok()?.len();
+            // Count the bytes git stores: with `core.autocrlf` a Windows
+            // checkout has CRLF line ends, which made the local count one byte
+            // per line larger than on the Linux CI runner (audit I-13).
+            let bytes = std::fs::read(p).ok()?;
+            let crlf = bytes.windows(2).filter(|w| w == b"\r\n").count();
+            let len = (bytes.len() - crlf) as u64;
             (len > LIMIT_BYTES).then(|| format!("{} is {len} bytes", p.display()))
         })
         .collect();
