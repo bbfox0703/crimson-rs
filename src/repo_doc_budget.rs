@@ -1,5 +1,6 @@
 //! Test-only guards on repository documents: every `CLAUDE.md` stays under
-//! 40 KB, and `docs/c-abi-surface.md` names every exported C symbol.
+//! 40 KB, `docs/c-abi-surface.md` names every exported C symbol, and no
+//! source comment cites a line of this repo or carries an audit tag.
 //!
 //! On the size guard:
 //!
@@ -51,8 +52,8 @@ fn claude_md_files_stay_under_40_kb() {
         .iter()
         .filter_map(|p| {
             // Count the bytes git stores: with `core.autocrlf` a Windows
-            // checkout has CRLF line ends, which made the local count one byte
-            // per line larger than on the Linux CI runner (audit I-13).
+            // checkout has CRLF line ends, one byte per line more than the
+            // Linux CI runner sees.
             let bytes = std::fs::read(p).ok()?;
             let crlf = bytes.windows(2).filter(|w| w == b"\r\n").count();
             let len = (bytes.len() - crlf) as u64;
@@ -68,9 +69,8 @@ fn claude_md_files_stay_under_40_kb() {
 }
 
 /// Every exported `crimson_*` function must be named somewhere in
-/// `docs/c-abi-surface.md` (its "Symbol index" lists them all). The catalog
-/// had drifted to 272 of 311 symbols missing (audit A-18, C-14, D-11, E-14,
-/// G-16). Collects direct `extern "C" fn` items, `scalar_getter!` uses and
+/// `docs/c-abi-surface.md` (its "Symbol index" lists them all), so the
+/// catalog cannot drift from the exports. Collects direct `extern "C" fn` items, `scalar_getter!` uses and
 /// the names passed to `impl_name_only_bridge!`.
 #[test]
 fn c_abi_surface_lists_every_symbol() {
@@ -120,4 +120,64 @@ fn c_abi_surface_lists_every_symbol() {
         missing.len(),
         missing.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n")
     );
+}
+
+/// Every `.rs` file under `src/`, for the comment rule below.
+fn rust_sources(dir: &Path, found: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        match entry.file_type() {
+            Ok(t) if t.is_dir() => rust_sources(&path, found),
+            Ok(t) if t.is_file() && path.extension().is_some_and(|e| e == "rs") => found.push(path),
+            _ => {}
+        }
+    }
+}
+
+/// Does `comment` cite a line of this repo (`foo.rs:12`), or carry an audit
+/// tag (`audit F-10`)? Both belong in `docs/dev-log.md`, not in the source
+/// (the "Code comments" rule in `CLAUDE.md`).
+fn breaks_comment_rule(comment: &str) -> Option<&'static str> {
+    let bytes = comment.as_bytes();
+    for ext in [".rs:", ".py:", ".md:", ".pyi:", ".toml:"] {
+        let mut from = 0;
+        while let Some(i) = comment[from..].find(ext) {
+            let after = from + i + ext.len();
+            if bytes.get(after).is_some_and(u8::is_ascii_digit) {
+                return Some("cites a line number");
+            }
+            from = after;
+        }
+    }
+    let mut from = 0;
+    while let Some(i) = comment[from..].find("audit ") {
+        let tag = &bytes[from + i + 6..];
+        if tag.len() >= 3 && (b'A'..=b'I').contains(&tag[0]) && tag[1] == b'-' && tag[2].is_ascii_digit() {
+            return Some("carries an audit tag");
+        }
+        from += i + 6;
+    }
+    None
+}
+
+#[test]
+fn comments_cite_no_lines_or_audit_tags() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    rust_sources(&root.join("src"), &mut files);
+    let this = root.join("src").join("repo_doc_budget.rs");
+    let mut bad = Vec::new();
+    for f in files.iter().filter(|f| **f != this) {
+        let Ok(text) = std::fs::read_to_string(f) else { continue };
+        for (n, line) in text.lines().enumerate() {
+            let Some(at) = line.find("//") else { continue };
+            if let Some(why) = breaks_comment_rule(&line[at..]) {
+                bad.push(format!("{}:{} {why}: {}", f.strip_prefix(root).unwrap_or(f).display(), n + 1, line.trim()));
+            }
+        }
+    }
+    assert!(bad.is_empty(), "{} comment line(s) break the comment rule:\n{}", bad.len(), bad.join("\n"));
 }
