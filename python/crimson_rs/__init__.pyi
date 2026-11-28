@@ -1258,7 +1258,9 @@ class BuffDataBody(TypedDict):
     field_58: int | None
     """u8 in 1.04+ format; None in 1.03."""
     field_60: int
-    """u32"""
+    """u32 ConditionInfoKey through 2.05.01; 0 in the 2.06 format."""
+    field_60_condition: bytes | None
+    """2.06+: the raw inline condition, tag byte included (``b"\x00"`` for none, ``b"\x01"`` + bytecode); None before 2.06."""
     field_62: int
     """u32"""
     field_64: int
@@ -1337,7 +1339,7 @@ class SkillData(TypedDict):
     entries: list[SkillEntry]
     """In on-disk PABGH order (which is offset-sorted in vanilla)."""
     format: str
-    """``"with_field_58"`` (1.04+) or ``"no_field_58"`` (1.03)."""
+    """``"inline_condition"`` (2.06+), ``"with_field_58"`` (1.04 to 2.05.01) or ``"no_field_58"`` (1.03)."""
     index_order: list[SkillIndexEntry]
     """On-disk PABGH order, preserved for byte-identical roundtrip."""
     row_indices: list[int] | None

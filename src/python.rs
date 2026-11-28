@@ -1093,6 +1093,7 @@ fn skill_format_to_str(f: SkillFormat) -> &'static str {
     match f {
         SkillFormat::WithField58 => "with_field_58",
         SkillFormat::NoField58 => "no_field_58",
+        SkillFormat::InlineCondition => "inline_condition",
     }
 }
 
@@ -1100,8 +1101,9 @@ fn skill_format_from_str(s: &str) -> PyResult<SkillFormat> {
     match s {
         "with_field_58" => Ok(SkillFormat::WithField58),
         "no_field_58" => Ok(SkillFormat::NoField58),
+        "inline_condition" => Ok(SkillFormat::InlineCondition),
         other => Err(PyValueError::new_err(format!(
-            "unknown skill format '{}': expected 'with_field_58' or 'no_field_58'",
+            "unknown skill format '{}': expected 'with_field_58', 'no_field_58' or 'inline_condition'",
             other
         ))),
     }
@@ -1288,6 +1290,7 @@ fn buff_data_body_to_py<'py>(
     d.set_item("field_56", body.field_56)?;
     d.set_item("field_58", body.field_58)?;
     d.set_item("field_60", body.field_60)?;
+    d.set_item("field_60_condition", body.field_60_condition.as_deref().map(|c| PyBytes::new(py, c)))?;
     d.set_item("field_62", body.field_62)?;
     d.set_item("field_64", body.field_64)?;
     d.set_item("field_66", body.field_66)?;
@@ -1325,6 +1328,10 @@ fn buff_data_body_from_py(d: &Bound<'_, PyDict>) -> PyResult<BuffDataBody> {
             _ => None,
         },
         field_60: get(d, "field_60")?,
+        field_60_condition: match d.get_item("field_60_condition")? {
+            Some(v) if !v.is_none() => Some(v.extract()?),
+            _ => None,
+        },
         field_62: get(d, "field_62")?,
         field_64: get(d, "field_64")?,
         field_66: get(d, "field_66")?,

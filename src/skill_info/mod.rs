@@ -20,6 +20,12 @@
 //!   head and tail are the post-buff fields split around the matrix (see
 //!   `post_buff`). Nothing inside `BuffData` moved: 1,976 of the 2,068 entries
 //!   carried over from 2.03 keep their exact length.
+//! - 2.06 inlined conditions: `BuffData.field_60`, a `u32 ConditionInfoKey`
+//!   through 2.05.01, is now `00` (none) or `01` + bytecode
+//!   ([`SkillFormat::InlineCondition`]). The bytecode's length depends on each
+//!   function's argument layout, which is not decoded, so the loader probes
+//!   for it the same way it probes tail sizes: a length counts only if the
+//!   rest of the entry then parses to its end.
 //! - Cross-version probe (May 2026) showed 11 type_id sizes drift
 //!   between 1.03 / 1.04 / 1.05, so the brute-force probe must stay —
 //!   hard-coding sizes would silently break older or future versions.
@@ -93,11 +99,16 @@ pub struct EntryFailureReport {
 /// probing impossible at all (bad PABGH, no format detected).
 #[cfg(test)]
 pub fn probe_entry_failures(pabgh: &[u8], pabgb: &[u8]) -> io::Result<EntryFailureReport> {
+    let is_206 = crate::binary::static_header::to_legacy_layout(pabgb, pabgh).is_some();
     let (pabgb, pabgh) = crate::binary::static_header::legacy_pair(pabgb, pabgh);
     let (pabgb, pabgh): (&[u8], &[u8]) = (&pabgb, &pabgh);
     let index = parse_pabgh(pabgh)?;
     let ranges = entry_ranges(&index, pabgb.len());
-    let format = detect_format(pabgb, &index, &ranges)?;
+    let format = if is_206 {
+        SkillFormat::InlineCondition
+    } else {
+        detect_format(pabgb, &index, &ranges)?
+    };
 
     let mut cache = TailSizeCache::new();
     let mut failures = Vec::new();
@@ -123,19 +134,24 @@ impl SkillData {
             let rows = row_indices(pabgb, pabgh).ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidData, "skill: unreadable 2.06 row index")
             })?;
-            let mut data = Self::parse_legacy(&t.header, &t.body)?;
+            // A 2.06 table also carries the 2.06 `BuffData` (inline conditions).
+            let mut data = Self::parse_legacy(&t.header, &t.body, Some(SkillFormat::InlineCondition))?;
             data.row_indices = Some(rows);
             return Ok(data);
         }
-        Self::parse_legacy(pabgh, pabgb)
+        Self::parse_legacy(pabgh, pabgb, None)
     }
 
     /// Parse a pair in the pre-2.06 layout (`[u32 len][name][key]` rows).
-    fn parse_legacy(pabgh: &[u8], pabgb: &[u8]) -> io::Result<Self> {
+    /// `format` is detected when `None`.
+    fn parse_legacy(pabgh: &[u8], pabgb: &[u8], format: Option<SkillFormat>) -> io::Result<Self> {
         let index = parse_pabgh(pabgh)?;
         let ranges = entry_ranges(&index, pabgb.len());
 
-        let format = detect_format(pabgb, &index, &ranges)?;
+        let format = match format {
+            Some(f) => f,
+            None => detect_format(pabgb, &index, &ranges)?,
+        };
 
         let mut cache = TailSizeCache::new();
         let mut entries = Vec::with_capacity(index.len());
@@ -362,7 +378,6 @@ fn try_parse_buff_levels(
     format: SkillFormat,
     cache: &mut TailSizeCache,
 ) -> io::Result<(Vec<Vec<BuffData>>, usize)> {
-    let body_end = body.len();
     let level_count = u32::read_from(body, &mut p)? as usize;
     if level_count > 100 {
         return Err(io::Error::new(
@@ -386,39 +401,9 @@ fn try_parse_buff_levels(
                 buffs.push(BuffData { flag, body: None });
                 continue;
             }
-            let mut body_bd = buff_data::read_common_base(body, &mut p, format)?;
-            let tid = body_bd.type_id;
-
-            let tail_size = if let Some(&sz) = cache.get(&tid) {
-                sz
-            } else {
-                let remaining_buffs = buff_count - bi - 1;
-                let remaining_levels = level_count - lev - 1;
-                let found = probe_subclass_tail(
-                    body, p, remaining_buffs, remaining_levels, body_end, format, cache,
-                )
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("subclass-tail probe failed for type_id={}", tid),
-                    )
-                })?;
-                cache.insert(tid, found);
-                found
-            };
-
-            if p + tail_size > body_end {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    format!(
-                        "subclass tail of {} bytes for type_id={} would overrun body",
-                        tail_size, tid
-                    ),
-                ));
-            }
-            body_bd.subclass_tail = body[p..p + tail_size].to_vec();
-            p += tail_size;
-
+            let remaining = (buff_count - bi - 1, level_count - lev - 1);
+            let (body_bd, after) = read_buff(body, p, remaining, format, cache)?;
+            p = after;
             buffs.push(BuffData {
                 flag: 0,
                 body: Some(body_bd),
@@ -427,6 +412,79 @@ fn try_parse_buff_levels(
         levels.push(buffs);
     }
     Ok((levels, p))
+}
+
+/// Read one non-null buff at `p` (just after its flag): the common base, then
+/// the subclass tail. Probes what the bytes do not say: an uncached tail size
+/// (inserted into `cache` once found) and, in the 2.06 format, the length of an
+/// inline condition with bytecode. A condition length is accepted only if the
+/// rest of the entry then parses to its end. `remaining` is `(buffs left in this
+/// level, levels left)`. Returns the buff and the position after it.
+fn read_buff(
+    body: &[u8],
+    p: usize,
+    remaining: (usize, usize),
+    format: SkillFormat,
+    cache: &mut TailSizeCache,
+) -> io::Result<(BuffDataBody, usize)> {
+    let body_end = body.len();
+    let (remaining_buffs, remaining_levels) = remaining;
+    let probing = buff_data::inline_condition_at(body, p, format)?.is_some();
+    let lengths: Vec<Option<usize>> = if probing {
+        (2..=buff_data::MAX_INLINE_CONDITION).map(Some).collect()
+    } else {
+        vec![None]
+    };
+    let mut memo = RestMemo::new();
+    for len in lengths {
+        let mut q = p;
+        let mut bd = match buff_data::read_common_base_with(body, &mut q, format, len) {
+            Ok(bd) => bd,
+            Err(_) if probing => continue,
+            Err(e) => return Err(e),
+        };
+        let tid = bd.type_id;
+        let tail_size = if let Some(&sz) = cache.get(&tid) {
+            if probing
+                && !rest_fits(body, q + sz, remaining_buffs, remaining_levels, format, cache, &mut memo)
+            {
+                continue;
+            }
+            sz
+        } else {
+            match probe_subclass_tail(body, q, remaining_buffs, remaining_levels, body_end, format, cache) {
+                Some(sz) => {
+                    cache.insert(tid, sz);
+                    sz
+                }
+                None if probing => continue,
+                None => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("subclass-tail probe failed for type_id={}", tid),
+                    ));
+                }
+            }
+        };
+        if q + tail_size > body_end {
+            if probing {
+                continue;
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!(
+                    "subclass tail of {} bytes for type_id={} would overrun body",
+                    tail_size, tid
+                ),
+            ));
+        }
+        bd.subclass_tail = body[q..q + tail_size].to_vec();
+        return Ok((bd, q + tail_size));
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("no inline-condition length up to {} fits at {p}", buff_data::MAX_INLINE_CONDITION),
+    ))
 }
 
 /// Try sizes 0..=PROBE_MAX_TAIL for the current buff's subclass tail. For
@@ -462,75 +520,94 @@ fn probe_subclass_tail(
 }
 
 /// Walk the remaining buffs + levels using only the existing cache (no
-/// nested probing), then check post-buff parses to body_end exactly.
+/// nested tail probing), then check post-buff parses to body_end exactly.
 /// Returns true on a clean parse.
 fn try_parse_remaining_cache_only(
     body: &[u8],
-    mut p: usize,
+    p: usize,
     remaining_buffs: usize,
     remaining_levels: usize,
     body_end: usize,
     format: SkillFormat,
     cache: &TailSizeCache,
 ) -> bool {
-    // Remaining buffs in current level
-    for _ in 0..remaining_buffs {
-        if p >= body_end {
-            return false;
+    debug_assert_eq!(body_end, body.len());
+    rest_fits(body, p, remaining_buffs, remaining_levels, format, cache, &mut RestMemo::new())
+}
+
+/// Results of [`rest_fits`] at its branch points, keyed by
+/// `(position, buffs left in the level, levels left)`.
+type RestMemo = std::collections::HashMap<(usize, usize, usize), bool>;
+
+/// Whether the rest of the entry from `p` parses to the end of `body`: the
+/// buffs left in this level, the levels left, then the post-buff tail. Tail
+/// sizes come from `cache` only. A 2.06 inline condition with bytecode is the
+/// one thing still unknown, so the walk branches over its possible lengths
+/// there (memoized); everywhere else it is a straight loop, so a long buff list
+/// does not recurse.
+fn rest_fits(
+    body: &[u8],
+    mut p: usize,
+    mut buffs_left: usize,
+    mut levels_left: usize,
+    format: SkillFormat,
+    cache: &TailSizeCache,
+    memo: &mut RestMemo,
+) -> bool {
+    let body_end = body.len();
+    loop {
+        if buffs_left == 0 {
+            if levels_left == 0 {
+                return post_buff::try_parse_post_buff_end(body, p) == Some(body_end);
+            }
+            let Some(bc) = body.get(p..p + 4) else { return false };
+            let bc = u32::from_le_bytes([bc[0], bc[1], bc[2], bc[3]]) as usize;
+            if bc > 200 {
+                return false;
+            }
+            p += 4;
+            buffs_left = bc;
+            levels_left -= 1;
+            continue;
         }
-        let flag = body[p];
+        let Some(&flag) = body.get(p) else { return false };
         p += 1;
+        buffs_left -= 1;
         if flag != 0 {
             continue;
         }
-        let mut p_mut = p;
-        let bd = match buff_data::read_common_base(body, &mut p_mut, format) {
-            Ok(v) => v,
+        match buff_data::inline_condition_at(body, p, format) {
             Err(_) => return false,
-        };
-        p = p_mut;
-        let tid = bd.type_id;
-        let Some(&sz) = cache.get(&tid) else {
-            return false;
-        };
-        p += sz;
-        if p > body_end {
-            return false;
-        }
-    }
-    // Remaining levels
-    for _ in 0..remaining_levels {
-        if p + 4 > body_end {
-            return false;
-        }
-        let bc = u32::from_le_bytes([body[p], body[p + 1], body[p + 2], body[p + 3]]) as usize;
-        p += 4;
-        for _ in 0..bc {
-            if p >= body_end {
-                return false;
+            Ok(None) => {
+                let Ok(bd) = buff_data::read_common_base(body, &mut p, format) else { return false };
+                let Some(&sz) = cache.get(&bd.type_id) else { return false };
+                p += sz;
+                if p > body_end {
+                    return false;
+                }
             }
-            let flag = body[p];
-            p += 1;
-            if flag != 0 {
-                continue;
-            }
-            let mut p_mut = p;
-            let bd = match buff_data::read_common_base(body, &mut p_mut, format) {
-                Ok(v) => v,
-                Err(_) => return false,
-            };
-            p = p_mut;
-            let tid = bd.type_id;
-            let Some(&sz) = cache.get(&tid) else {
-                return false;
-            };
-            p += sz;
-            if p > body_end {
-                return false;
+            Ok(Some(_)) => {
+                let key = (p, buffs_left, levels_left);
+                if let Some(&v) = memo.get(&key) {
+                    return v;
+                }
+                let mut fits = false;
+                for len in 2..=buff_data::MAX_INLINE_CONDITION {
+                    let mut q = p;
+                    let Ok(bd) = buff_data::read_common_base_with(body, &mut q, format, Some(len)) else {
+                        continue;
+                    };
+                    let Some(&sz) = cache.get(&bd.type_id) else { continue };
+                    if q + sz <= body_end && rest_fits(body, q + sz, buffs_left, levels_left, format, cache, memo) {
+                        fits = true;
+                        break;
+                    }
+                }
+                memo.insert(key, fits);
+                return fits;
             }
         }
     }
-    post_buff::try_parse_post_buff_end(body, p) == Some(body_end)
 }
 
 /// Brute-force scan for the post-buff start position. Tries every offset

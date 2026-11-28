@@ -331,7 +331,16 @@ mod tests {
         let Some(pabgb) = extract_skill_from_archive(GAME_DIR, &gamedata_layout::body("skill")) else {
             return;
         };
-        run_skill_roundtrip("1.05 (live game install)", &pabgh, &pabgb);
+        let (fallback, total) = run_skill_roundtrip("live game install", &pabgh, &pabgb);
+        // The raw fallback keeps an entry's bytes but drops its buff fields,
+        // so a schema drift inside `BuffData` still round-trips. 2.04 to
+        // 2.05.01 left ~14% on the fallback (303-304 of ~2,160); 2.06's
+        // inline conditions pushed it to 78% (1,683 of 2,163) with every test
+        // green until the parser learned them (308 of 2,163). Fail past 20%.
+        assert!(
+            fallback * 5 <= total,
+            "skill raw fallback on {fallback} of {total} entries (over 20%): BuffData drift?"
+        );
     }
 
     /// Per-entry skill diagnostic. `SkillData::parse` aborts on the first
@@ -387,11 +396,12 @@ mod tests {
             let Some(pabgb) = extract_skill_from_archive(&game_dir, &gamedata_layout::body("skill")) else {
                 continue;
             };
-            run_skill_roundtrip(version, &pabgh, &pabgb);
+            let _ = run_skill_roundtrip(version, &pabgh, &pabgb);
         }
     }
 
-    fn run_skill_roundtrip(label: &str, pabgh: &[u8], pabgb: &[u8]) {
+    /// Parse, write back, compare bytes. Returns `(raw fallback entries, entries)`.
+    fn run_skill_roundtrip(label: &str, pabgh: &[u8], pabgb: &[u8]) -> (usize, usize) {
         use crate::skill_info::SkillData;
         let parsed = SkillData::parse(pabgh, pabgb)
             .unwrap_or_else(|e| panic!("{}: parse failed: {}", label, e));
@@ -414,6 +424,7 @@ mod tests {
         assert_eq!(b.len(), pabgb.len(), "{}: pabgb size mismatch", label);
         assert_eq!(h, pabgh, "{}: pabgh bytes mismatch", label);
         assert_eq!(b, pabgb, "{}: pabgb bytes mismatch", label);
+        (raw_fallback_count, parsed.entries.len())
     }
 
     fn extract_skill_from_archive(game_dir: &str, file_name: &str) -> Option<Vec<u8>> {

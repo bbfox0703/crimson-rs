@@ -293,7 +293,7 @@ for entry in skills["entries"]:
                 print(buff["body"]["type_id"])
 ```
 
-The `BuffData` subclass tail size depends on `type_id` (0..119) and is **not statically known** — the loader brute-forces sizes 0..500 per unique `type_id` and caches the discovery. For ~10% of entries (cross-version probing showed 547/1924 in 1.03, ~190/1963 in 1.04+) the probe cannot resolve, and the raw bytes are preserved in `buff_raw_fallback` for byte-identical roundtrip via `serialize_skillinfo`.
+The `BuffData` subclass tail size depends on `type_id` (0..119) and is **not statically known** — the loader brute-forces sizes 0..500 per unique `type_id` and caches the discovery. For some entries (547/1924 in 1.03, ~190/1963 in 1.04, ~14% from 2.04 on: 308 of 2,163 in 2.06) the probe cannot resolve, and the raw bytes are preserved in `buff_raw_fallback` for byte-identical roundtrip via `serialize_skillinfo`.
 
 **Raises:** `ValueError` on parse errors (truncated input, malformed index).
 
