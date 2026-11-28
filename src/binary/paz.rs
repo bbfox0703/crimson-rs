@@ -116,6 +116,10 @@ pub fn decompress(
 /// `InvalidData` error here so the caller can distinguish them from
 /// outright PAZ corruption.
 const PARTIAL_HEADER_BYTES: usize = 128;
+/// Largest DDS side the per-mip decoder accepts (Direct3D's limit is 16,384).
+const MAX_DDS_DIMENSION: usize = 32_768;
+/// Most mip levels it accepts (a 32,768 px side needs 16).
+const MAX_DDS_MIPS: usize = 32;
 
 pub(crate) fn decompress_partial(
     decrypted: &[u8],
@@ -349,6 +353,17 @@ impl DdsInfo {
         } else {
             return None;
         };
+        // The header is untrusted: bound what drives the size arithmetic, the
+        // allocations and the per-mip loop (audit A-12). Direct3D caps a
+        // texture at 16,384 px a side, which needs 15 mip levels.
+        if width > MAX_DDS_DIMENSION || height > MAX_DDS_DIMENSION || mip_count > MAX_DDS_MIPS {
+            return None;
+        }
+        if let DdsBody::PixelsBpp(bpp) = body
+            && bpp > 128
+        {
+            return None;
+        }
         Some(DdsInfo {
             width,
             height,
@@ -363,18 +378,18 @@ impl DdsInfo {
             DdsBody::Block8 => {
                 let bw = width.div_ceil(4).max(1);
                 let bh = height.div_ceil(4).max(1);
-                Some(bw * bh * 8)
+                bw.checked_mul(bh)?.checked_mul(8)
             }
             DdsBody::Block16 => {
                 let bw = width.div_ceil(4).max(1);
                 let bh = height.div_ceil(4).max(1);
-                Some(bw * bh * 16)
+                bw.checked_mul(bh)?.checked_mul(16)
             }
             DdsBody::PixelsBpp(bpp) => {
                 if bpp == 0 || bpp % 8 != 0 {
                     return None;
                 }
-                Some(width * height * (bpp / 8))
+                width.checked_mul(height)?.checked_mul(bpp / 8)
             }
         }
     }
@@ -384,7 +399,7 @@ impl DdsInfo {
         let (mut w, mut h) = (self.width.max(1), self.height.max(1));
         let mips = self.mip_count.max(1);
         for _ in 0..mips {
-            total += self.mip_payload_size(w, h)?;
+            total = total.checked_add(self.mip_payload_size(w, h)?)?;
             w = (w / 2).max(1);
             h = (h / 2).max(1);
         }
@@ -1108,6 +1123,26 @@ mod tests {
         }
         assert!(decompress(&data, Compression::None, data.len() + 1).is_err());
         assert!(decompress_partial(&[0u8; 200], 1 << 40).is_err());
+    }
+
+    /// A DDS header with a huge mip count or size is not decoded per mip; it
+    /// used to drive a 2^32-step loop and wrapping size arithmetic (A-12).
+    #[test]
+    fn test_dds_header_bounds() {
+        let mut h = vec![0u8; 148];
+        h[..4].copy_from_slice(b"DDS ");
+        h[8..12].copy_from_slice(&0x0002_0000u32.to_le_bytes()); // mipmap count present
+        h[12..16].copy_from_slice(&64u32.to_le_bytes());
+        h[16..20].copy_from_slice(&64u32.to_le_bytes());
+        h[28..32].copy_from_slice(&7u32.to_le_bytes());
+        h[80..84].copy_from_slice(&0x4u32.to_le_bytes()); // FOURCC
+        h[84..88].copy_from_slice(b"DXT1");
+        assert!(DdsInfo::parse(&h).is_some());
+        h[28..32].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(DdsInfo::parse(&h).is_none(), "mip count");
+        h[28..32].copy_from_slice(&7u32.to_le_bytes());
+        h[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(DdsInfo::parse(&h).is_none(), "width");
     }
 
     #[test]
