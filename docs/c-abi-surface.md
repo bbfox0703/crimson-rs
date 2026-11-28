@@ -725,7 +725,7 @@ missing from this file, so add a line here (or a mention above) with any new exp
 - `crimson_dye_color_group_info_entry_count` — Number of color-group rows in the table.
 - `crimson_dye_color_group_info_lookup_name` — Look up the internal name for a given `DyeColorGroupInfoKey (u32)`.
 - `crimson_dye_color_group_info_get_entry` — Get the `(key, internal_name)` pair at insertion index `idx`.
-- `crimson_dye_color_group_info_palette_size` — Number of palette positions for `color_group_key` (109 in 1.07, but the ABI doesn't pin the count — a future patch with a different palett…
+- `crimson_dye_color_group_info_palette_size` — Number of palette positions for `color_group_key` (the ABI doesn't pin the count; a palette of a different size reports its own).
 - `crimson_dye_color_group_info_palette_at` — Logical RGBA at `position_idx` inside `color_group_key`'s palette.
 - `crimson_dye_color_group_info_position_for_rgb` — Reverse lookup — find the palette position that matches the given `(r, g, b)`.
 - `crimson_dye_color_group_info_palette_knowledge_at` — The `KnowledgeKey` that unlocks palette position `position` of `color_group_key`: the key of the color record's inlined `CheckKnowledge(<k…
@@ -768,7 +768,7 @@ missing from this file, so add a line here (or a mention above) with any new exp
 - `crimson_factionrelationgroup_load_from_file` — Parse `factionrelationgroup.pabgb` + `.pabgh` from disk.
 - `crimson_factionrelationgroup_load_from_bytes` — Parse factionrelationgroup pabgb + pabgh bytes already in memory.
 - `crimson_factionrelationgroup_free` — Free a handle returned by either loader.
-- `crimson_factionrelationgroup_entry_count` — Total number of `factionrelationgroup` rows in the loaded table (5 on 2.06).
+- `crimson_factionrelationgroup_entry_count` — Total number of `factionrelationgroup` rows in the loaded table.
 - `crimson_factionrelationgroup_lookup_string_key` — Look up the internal name for a given `FactionRelationGroupKey` (a u16 key widened to u32).
 - `crimson_factionrelationgroup_lookup_relation` — The `FactionRelationType` between two relation groups: 1 War or 3 BloodAlly for every pair of distinct groups on 2.06 (0 Neutral and 2 Agr…
 - `crimson_factionrelationgroup_lookup_related_count` — Total number of groups a row lists, across all its relation lists (War, then BloodAlly); `Graymane` returns 4.
@@ -844,12 +844,12 @@ missing from this file, so add a line here (or a mention above) with any new exp
 
 **`src/c_abi/house_info.rs`**
 
-- `crimson_house_info_load_from_file` — # Safety Both path arguments must be NUL-terminated UTF-8 strings.
-- `crimson_house_info_load_from_bytes` — # Safety Both `pabgb` and `pabgh` must point to `*_len` readable bytes (may be null iff length is 0).
-- `crimson_house_info_free` — # Safety `handle` must be null or a pointer previously returned by one of the loaders and not yet freed.
-- `crimson_house_info_entry_count` — # Safety `handle` must be live; `out_count` must be non-null.
-- `crimson_house_info_lookup_string_key` — # Safety `handle` and `required` must be non-null; `buf` may be null iff `buf_len == 0`.
-- `crimson_house_info_get_entry` — # Safety `handle`, `out_key`, and `required` must be non-null; `buf` may be null iff `buf_len == 0`.
+- `crimson_house_info_load_from_file` — Load the table from its body / header file pair on disk.
+- `crimson_house_info_load_from_bytes` — Load the table from body and header bytes already in memory.
+- `crimson_house_info_free` — Free a handle returned by either loader.
+- `crimson_house_info_entry_count` — Number of rows in the handle.
+- `crimson_house_info_lookup_string_key` — Copy a row's name, by key, into `buf` (two-call sizing).
+- `crimson_house_info_get_entry` — Row `idx`'s key, and its name into `buf` (two-call sizing).
 
 **`src/c_abi/item_group_info.rs`**
 
@@ -862,9 +862,9 @@ missing from this file, so add a line here (or a mention above) with any new exp
 
 **`src/c_abi/item_part_prefab.rs`**
 
-- `crimson_item_part_prefab_load_from_file` — Parse the three required tables from disk (the original name join; prefer [`crimson_item_part_prefab_load_from_file_with_prefab_pamt`], se…
+- `crimson_item_part_prefab_load_from_file` — Parse the three required tables from disk (the name join; prefer [`crimson_item_part_prefab_load_from_file_with_prefab_pamt`], see the mod…
 - `crimson_item_part_prefab_load_from_bytes` — Parse the three required tables from in-memory bytes.
-- `crimson_item_part_prefab_load_from_bytes_with_prefab_pamt` — Build the join through the character prefabs (the 2026-11-27 join; see the module docs).
+- `crimson_item_part_prefab_load_from_bytes_with_prefab_pamt` — Build the join through the character prefabs (the prefab join; see the module docs).
 - `crimson_item_part_prefab_load_from_file_with_prefab_pamt` — File-path form of [`crimson_item_part_prefab_load_from_bytes_with_prefab_pamt`].
 - `crimson_item_part_prefab_merge_dlc_from_bytes` — Merge an installed DLC into a loaded handle: its `iteminfo` and `stringinfo` bodies (`iteminfo.dlc_01.staticinfobody`, `stringinfo.dlc_01.…
 - `crimson_item_part_prefab_lookup_source` — Where an item's join came from: 0 = the base table, `n` = the `n`-th [`crimson_item_part_prefab_merge_dlc_from_bytes`].
@@ -894,7 +894,7 @@ missing from this file, so add a line here (or a mention above) with any new exp
 - `crimson_iteminfo_socket_allows_gem` — Check whether `gem_key` is in `item_key`'s gamedata-defined allowed-gem list (`DropDefaultData::socket_item_list` plus the items of `add_s…
 - `crimson_iteminfo_socket_allowed_gem_count` — Number of entries in `item_key`'s gamedata allowed-gem list.
 - `crimson_iteminfo_socket_allowed_gem_at` — Read the allowed-gem itemkey at insertion index `idx` for `item_key`.
-- `crimson_iteminfo_canonical_gem_count` — Number of itemkeys in the canonical gem set (sorted-ascending union of every item's `socket_item_list`).
+- `crimson_iteminfo_canonical_gem_count` — Number of itemkeys in the canonical gem set (`item_type == 74` and `category_info == 2501`, sorted ascending).
 - `crimson_iteminfo_canonical_gem_at` — Read the canonical gem itemkey at sorted-ascending index `idx`.
 - `crimson_iteminfo_lookup_flags` — Read the static-flag bitmask for `item_key`.
 - `crimson_iteminfo_lookup_summary` — One-shot lookup that fills the entire static-metadata snapshot for `item_key`.
@@ -1099,12 +1099,12 @@ missing from this file, so add a line here (or a mention above) with any new exp
 
 **`src/c_abi/royal_supply_info.rs`**
 
-- `crimson_royal_supply_info_load_from_file` — # Safety Path args must be NUL-terminated UTF-8 strings; out_handle non-null.
-- `crimson_royal_supply_info_load_from_bytes` — # Safety `pabgb`/`pabgh` may be null iff length is 0; out_handle non-null.
-- `crimson_royal_supply_info_free` — # Safety `handle` must be null or live and unfreed.
-- `crimson_royal_supply_info_entry_count` — # Safety `handle` live; `out_count` non-null.
-- `crimson_royal_supply_info_lookup_string_key` — # Safety `handle`/`required` non-null; `buf` may be null iff `buf_len == 0`.
-- `crimson_royal_supply_info_get_entry` — # Safety `handle`/`out_key`/`required` non-null; `buf` may be null iff `buf_len == 0`.
+- `crimson_royal_supply_info_load_from_file` — Load the table from its body / header file pair on disk.
+- `crimson_royal_supply_info_load_from_bytes` — Load the table from body and header bytes already in memory.
+- `crimson_royal_supply_info_free` — Free a handle returned by either loader.
+- `crimson_royal_supply_info_entry_count` — Number of rows in the handle.
+- `crimson_royal_supply_info_lookup_string_key` — Copy a row's name, by key, into `buf` (two-call sizing).
+- `crimson_royal_supply_info_get_entry` — Row `idx`'s key, and its name into `buf` (two-call sizing).
 
 **`src/c_abi/side_quest_faction.rs`**
 

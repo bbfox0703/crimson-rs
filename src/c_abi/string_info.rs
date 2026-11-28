@@ -42,7 +42,11 @@ impl CrimsonStringInfoHandle {
         for e in raw_entries {
             entries.push((e.hash, e.value));
         }
-        let by_hash = entries.iter().cloned().collect();
+        // First row wins for a duplicate hash, as in every other bridge.
+        let mut by_hash = HashMap::with_capacity(entries.len());
+        for (hash, value) in &entries {
+            by_hash.entry(*hash).or_insert_with(|| value.clone());
+        }
         Ok(CrimsonStringInfoHandle { by_hash, entries })
     }
 }
