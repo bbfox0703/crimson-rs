@@ -380,23 +380,29 @@ mod tests {
         }
     }
 
-    /// Cross-version skill roundtrip: validates the parser also handles
-    /// the 1.03 (NoField58) and 1.04 (WithField58, smaller type_id table)
-    /// formats. Reads from a hard-coded path on the maintainer's machine
-    /// and skips on absence.
+    /// Skill round-trip on every version the version archive keeps in the
+    /// 2.04+ entry layout the parser reads (2.04 through 2.06). Reads the loose
+    /// `skill.staticinfo{body,header}` from `CRIMSON_GAMEDATA_BIN` (default
+    /// `X:\Crimson Desert\gamedata-bin`, the runbook's archive) and skips the
+    /// versions or the archive it does not find. It used to point at a `G:`
+    /// folder of old installs that no longer exists, and would have panicked on
+    /// one (it looked up the 2.01+ bin directory in a 1.0x PAMT; audit C-18).
     #[test]
     fn test_skill_roundtrip_cross_version() {
-        const VERSIONED_ROOT: &str = r"G:\我的雲端硬碟\temp\Crimson Desert";
-        for version in ["1.03.01", "1.04.01", "1.05.01"] {
-            let game_dir = format!(r"{}\{}", VERSIONED_ROOT, version);
-            let Some(pabgh) = extract_skill_from_archive(&game_dir, &gamedata_layout::header("skill")) else {
-                eprintln!("skipping {}: install not found", version);
+        let root = std::env::var_os("CRIMSON_GAMEDATA_BIN")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(r"X:\Crimson Desert\gamedata-bin"));
+        for version in ["2.04", "2.04.08", "2.05", "2.05.01", "2.06"] {
+            let dir = root.join(version);
+            let (Ok(pabgh), Ok(pabgb)) = (
+                std::fs::read(dir.join("skill.staticinfoheader")),
+                std::fs::read(dir.join("skill.staticinfobody")),
+            ) else {
+                eprintln!("skipping skill {version}: not in {}", root.display());
                 continue;
             };
-            let Some(pabgb) = extract_skill_from_archive(&game_dir, &gamedata_layout::body("skill")) else {
-                continue;
-            };
-            let _ = run_skill_roundtrip(version, &pabgh, &pabgb);
+            let (fallback, total) = run_skill_roundtrip(version, &pabgh, &pabgb);
+            assert!(fallback * 5 <= total, "skill {version}: raw fallback on {fallback} of {total} entries");
         }
     }
 

@@ -762,4 +762,37 @@ mod tests {
         assert_eq!(items[0].string_key.data, "Pyeonjeon_Arrow");
         assert!(items.iter().enumerate().all(|(i, it)| it.row_index as usize == i));
     }
+
+    /// Every row of the live install's iteminfo, base and `dlc_01`, writes back
+    /// byte for byte (audit C-02: no test read the live tables, and only the
+    /// DLC table carries some fields, the 2.04 lesson). Skips without an
+    /// install; the DLC half skips without `dlc_01`.
+    #[test]
+    fn live_iteminfo_rows_write_back_byte_for_byte() {
+        use crate::binary::BinaryWrite;
+        use crate::binary::gamedata_layout::{body, extract_bin, extract_dlc_bin, header};
+        let tables = [
+            ("iteminfo", extract_bin(&body("iteminfo")), extract_bin(&header("iteminfo"))),
+            (
+                "iteminfo.dlc_01",
+                extract_dlc_bin("dlc_01", &body("iteminfo.dlc_01")),
+                extract_dlc_bin("dlc_01", &header("iteminfo.dlc_01")),
+            ),
+        ];
+        for (name, b, h) in tables {
+            let (Some(b), Some(h)) = (b, h) else {
+                eprintln!("skipping {name}: not installed");
+                continue;
+            };
+            let rows = crate::binary::static_header::parse_named_header(&h, 2, 4).expect("2.06 header");
+            let items = parse_iteminfo_with_header(&b, &h).unwrap();
+            assert_eq!(items.len(), rows.len(), "{name}: rows");
+            for (item, row) in items.iter().zip(&rows) {
+                let mut out = Vec::new();
+                item.write_to(&mut out).unwrap();
+                assert!(out == b[row.range()], "{name}: row {} ({}) differs on write-back", item.key.0, row.name);
+            }
+            eprintln!("{name}: {} rows write back byte for byte", items.len());
+        }
+    }
 }
