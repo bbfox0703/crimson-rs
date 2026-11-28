@@ -577,3 +577,518 @@ migrated later if a cross-cutting ABI change ever lands.
 Lossy anchor-scan parsers used by the c_abi bridges live alongside in
 `src/<table>_info/mod.rs`. Each parser is feature-gated to the c_abi bridge that
 consumes it.
+
+## Symbol index
+
+<!-- symbol-index:start -->
+
+Every exported `crimson_*` function, 373 in all, grouped by source file, with the first line
+of its rustdoc. `repo_doc_budget::c_abi_surface_lists_every_symbol` fails when a symbol is
+missing from this file, so add a line here (or a mention above) with any new export.
+
+**`src/c_abi/all_items.rs`**
+
+- `crimson_save_list_all_items` — Flat-list every player-owned item across the save's container classes (active equip, active reserve, inventory, mercenary equip, mercenary…
+
+**`src/c_abi/character_info.rs`**
+
+- `crimson_characterinfo_load_from_file` — Parse `characterinfo.pabgb` from disk.
+- `crimson_characterinfo_load_from_bytes` — Parse characterinfo bytes already in memory.
+- `crimson_characterinfo_load_from_bytes_with_header` — Parse in-memory `characterinfo` bytes together with the table's `.staticinfoheader`.
+- `crimson_characterinfo_free` — Free a handle returned by either loader.
+- `crimson_characterinfo_entry_count` — Total number of characters in the loaded table.
+- `crimson_characterinfo_lookup_string_key` — Look up the internal name for a given `CharacterKey (u32)` and write it into `buf` (NUL-terminated UTF-8).
+- `crimson_characterinfo_merge_dlc_from_bytes` — Merge a DLC copy of the table (`<install>/dlc/<name>/0008`, e.g. `characterinfo.dlc_01.staticinfobody` + `.staticinfoheader`) into a loade…
+- `crimson_characterinfo_entry_source` — Where entry `idx` came from: 0 = the base table, `n` = the `n`-th DLC merged with [`crimson_characterinfo_merge_dlc_from_bytes`].
+- `crimson_characterinfo_lookup_faction_key` — The `FactionKey` of `character_key`'s row — the `faction` table key the character belongs to, which the save does not record (see `src/cha…
+- `crimson_characterinfo_faction_member_count` — How many characters belong to `faction_key` (rows whose `FactionKey` equals it).
+- `crimson_characterinfo_lookup_display_name` — One-shot display name resolution: `CharacterKey → PALOC at `(row_key << 32) | lo32_namespace` → localized string`, where `row_key` is the…
+- `crimson_characterinfo_get_entry` — Get the `(character_key, internal_name)` pair at insertion index `idx`.
+- `crimson_characterinfo_resolve_portrait` — Resolve a `CharacterKey` to the best-matching NPC portrait DDS path in a single call.
+
+**`src/c_abi/checksum.rs`**
+
+- `crimson_calculate_checksum` — Compute the Jenkins hashlittle2 `c` output (Pearl Abyss variant — init constant `0xDEBA1DCD`) over `data`.
+
+**`src/c_abi/craft_tool_group_info.rs`**
+
+- `crimson_craft_tool_group_info_load_from_file` — Load from a `.staticinfobody` path (the header beside it is read too). (`impl_name_only_bridge!`)
+- `crimson_craft_tool_group_info_load_from_bytes` — Load from body + header bytes. (`impl_name_only_bridge!`)
+- `crimson_craft_tool_group_info_free` — Free the handle. (`impl_name_only_bridge!`)
+- `crimson_craft_tool_group_info_entry_count` — Number of rows. (`impl_name_only_bridge!`)
+- `crimson_craft_tool_group_info_lookup_string_key` — Key → internal name (two-call buffer). (`impl_name_only_bridge!`)
+- `crimson_craft_tool_group_info_get_entry` — Row at an index: key + internal name. (`impl_name_only_bridge!`)
+
+**`src/c_abi/craft_tool_info.rs`**
+
+- `crimson_craft_tool_info_load_from_file` — Load from a `.staticinfobody` path (the header beside it is read too). (`impl_name_only_bridge!`)
+- `crimson_craft_tool_info_load_from_bytes` — Load from body + header bytes. (`impl_name_only_bridge!`)
+- `crimson_craft_tool_info_free` — Free the handle. (`impl_name_only_bridge!`)
+- `crimson_craft_tool_info_entry_count` — Number of rows. (`impl_name_only_bridge!`)
+- `crimson_craft_tool_info_lookup_string_key` — Key → internal name (two-call buffer). (`impl_name_only_bridge!`)
+- `crimson_craft_tool_info_get_entry` — Row at an index: key + internal name. (`impl_name_only_bridge!`)
+
+**`src/c_abi/dye_color_group_info.rs`**
+
+- `crimson_dye_color_group_info_load_from_file` — Parse `dyecolorgroupinfo.pabgb` + `.pabgh` from disk.
+- `crimson_dye_color_group_info_load_from_bytes` — Parse bytes already in memory.
+- `crimson_dye_color_group_info_free` — Free a handle returned by either loader.
+- `crimson_dye_color_group_info_entry_count` — Number of color-group rows in the table.
+- `crimson_dye_color_group_info_lookup_name` — Look up the internal name for a given `DyeColorGroupInfoKey (u32)`.
+- `crimson_dye_color_group_info_get_entry` — Get the `(key, internal_name)` pair at insertion index `idx`.
+- `crimson_dye_color_group_info_palette_size` — Number of palette positions for `color_group_key` (109 in 1.07, but the ABI doesn't pin the count — a future patch with a different palett…
+- `crimson_dye_color_group_info_palette_at` — Logical RGBA at `position_idx` inside `color_group_key`'s palette.
+- `crimson_dye_color_group_info_position_for_rgb` — Reverse lookup — find the palette position that matches the given `(r, g, b)`.
+- `crimson_dye_color_group_info_palette_knowledge_at` — The `KnowledgeKey` that unlocks palette position `position` of `color_group_key`: the key of the color record's inlined `CheckKnowledge(<k…
+- `crimson_dye_color_group_info_lookup_display_name` — The theme's localized display name ("Hernandian Dye", "埃爾南德染劑"), from the row's trailer: PALOC `(color_group_key << 32) | 0x231`.
+
+**`src/c_abi/element_template.rs`**
+
+- `crimson_save_export_element_template` — Export one `object_list` element as a name-keyed element template (see the module docs).
+- `crimson_save_list_insert_element_template` — Build a list element from a name-keyed template under THIS save's schema and insert it into an `object_list` field at `insert_at`.
+
+**`src/c_abi/faction_info.rs`**
+
+- `crimson_faction_info_load_from_file` — Load from a `.pabgb` / `.staticinfobody` path and its header path.
+- `crimson_faction_info_load_from_bytes` — Load from in-memory body + header bytes.
+- `crimson_faction_info_free` — # Safety `handle` must be null or a pointer previously returned by one of the loaders and not yet freed.
+- `crimson_faction_info_entry_count` — # Safety `handle` must be live; `out_count` must be non-null.
+- `crimson_faction_info_lookup_string_key` — Internal name of `faction_key` (two-call pattern over `buf`).
+- `crimson_faction_info_get_entry` — `(faction_key, internal_name)` at index `idx` (two-call pattern over `buf`; `out_key` is always written).
+- `crimson_faction_info_merge_dlc_from_bytes` — Merge a DLC copy of the table (`<install>/dlc/<name>/0008`, e.g. `faction.dlc_01.staticinfobody` + `.staticinfoheader`) into a loaded hand…
+- `crimson_faction_info_entry_source` — Where entry `idx` came from: 0 = the base table, `n` = the `n`-th DLC merged with [`crimson_faction_info_merge_dlc_from_bytes`].
+- `crimson_faction_info_lookup_group_keys` — The faction's `factiongroup` key and `factionrelationgroup` key.
+- `crimson_faction_info_lookup_group_display_name` — Localized name of a faction group: PALOC `(faction_group_key << 32) | 0x214` (`faction.paloc`; 16965 → "Greymanes" in English).
+- `crimson_faction_info_lookup_display_name` — The player-facing name of a faction: its group's localized name (`Faction_Graymane` → "Greymanes", `Faction_Celeste_Hernand` → "Hernand").
+
+**`src/c_abi/faction_node_info.rs`**
+
+- `crimson_factionnode_load_from_file` — Parse `factionnode.pabgb` + `.pabgh` from disk.
+- `crimson_factionnode_load_from_bytes` — Parse factionnode pabgb + pabgh bytes already in memory.
+- `crimson_factionnode_free` — Free a handle returned by either loader.
+- `crimson_factionnode_entry_count` — Total number of `factionnode` rows in the loaded table.
+- `crimson_factionnode_lookup_string_key` — Look up the internal name for a given `FactionNodeKey (u32)` and write it into `buf` (NUL-terminated UTF-8).
+- `crimson_factionnode_get_entry` — Get the `(faction_node_key, internal_name)` pair at insertion index `idx`.
+- `crimson_factionnode_merge_dlc_from_bytes` — Merge a DLC copy of the table (`<install>/dlc/<name>/0008`, e.g. `factionnode.dlc_01.staticinfobody` + `.staticinfoheader`) into a loaded…
+- `crimson_factionnode_entry_source` — Where entry `idx` came from: 0 = the base table, `n` = the `n`-th DLC merged with [`crimson_factionnode_merge_dlc_from_bytes`].
+- `crimson_factionnode_lookup_knowledge_key` — The `KnowledgeKey` naming a node: the knowledge row whose title is the place name the game shows (`Node_Her_HernandCastle` 1000044 → 10000…
+- `crimson_factionnode_lookup_display_name` — The node's localized place name: `FactionNodeKey → KnowledgeKey →` knowledge name `→ PALOC (hashlittle2(name) << 32) | 0x490`, the knowled…
+
+**`src/c_abi/faction_relation_group_info.rs`**
+
+- `crimson_factionrelationgroup_load_from_file` — Parse `factionrelationgroup.pabgb` + `.pabgh` from disk.
+- `crimson_factionrelationgroup_load_from_bytes` — Parse factionrelationgroup pabgb + pabgh bytes already in memory.
+- `crimson_factionrelationgroup_free` — Free a handle returned by either loader.
+- `crimson_factionrelationgroup_entry_count` — Total number of `factionrelationgroup` rows in the loaded table (always 5 in 1.07).
+- `crimson_factionrelationgroup_lookup_string_key` — Look up the internal name for a given `FactionRelationGroupKey` (passed as u32 — only the low 16 bits are meaningful).
+- `crimson_factionrelationgroup_lookup_relation` — The `FactionRelationType` between two relation groups: 1 War or 3 BloodAlly for every pair of distinct groups on 2.06 (0 Neutral and 2 Agr…
+- `crimson_factionrelationgroup_lookup_related_count` — Total number of groups a row lists, across all its relation lists (War, then BloodAlly); `Graymane` returns 4.
+- `crimson_factionrelationgroup_lookup_related_at` — Read a single sibling-row reference at `idx`.
+- `crimson_factionrelationgroup_get_entry` — Get the `(faction_relation_group_key, internal_name)` pair at insertion index `idx`.
+
+**`src/c_abi/faction_spawn_data_info.rs`**
+
+- `crimson_factionspawndatainfo_load_from_file` — Parse `factionspawndatainfo.pabgb` + `.pabgh` from disk.
+- `crimson_factionspawndatainfo_load_from_bytes` — Parse factionspawndatainfo pabgb + pabgh bytes already in memory.
+- `crimson_factionspawndatainfo_free` — Free a handle returned by either loader.
+- `crimson_factionspawndatainfo_entry_count` — Total number of `factionspawndatainfo` rows in the loaded table.
+- `crimson_factionspawndatainfo_lookup_string_key` — Look up the internal name for a given `FactionSpawnDataKey (u32)`.
+- `crimson_factionspawndatainfo_get_entry` — Get the `(faction_spawn_data_key, internal_name)` pair at insertion index `idx`.
+
+**`src/c_abi/game_advice_group_info.rs`**
+
+- `crimson_game_advice_group_info_load_from_file` — Load from a `.staticinfobody` path (the header beside it is read too). (`impl_name_only_bridge!`)
+- `crimson_game_advice_group_info_load_from_bytes` — Load from body + header bytes. (`impl_name_only_bridge!`)
+- `crimson_game_advice_group_info_free` — Free the handle. (`impl_name_only_bridge!`)
+- `crimson_game_advice_group_info_entry_count` — Number of rows. (`impl_name_only_bridge!`)
+- `crimson_game_advice_group_info_lookup_string_key` — Key → internal name (two-call buffer). (`impl_name_only_bridge!`)
+- `crimson_game_advice_group_info_get_entry` — Row at an index: key + internal name. (`impl_name_only_bridge!`)
+
+**`src/c_abi/game_advice_info.rs`**
+
+- `crimson_game_advice_info_load_from_file` — Load from a `.staticinfobody` path (the header beside it is read too). (`impl_name_only_bridge!`)
+- `crimson_game_advice_info_load_from_bytes` — Load from body + header bytes. (`impl_name_only_bridge!`)
+- `crimson_game_advice_info_free` — Free the handle. (`impl_name_only_bridge!`)
+- `crimson_game_advice_info_entry_count` — Number of rows. (`impl_name_only_bridge!`)
+- `crimson_game_advice_info_lookup_string_key` — Key → internal name (two-call buffer). (`impl_name_only_bridge!`)
+- `crimson_game_advice_info_get_entry` — Row at an index: key + internal name. (`impl_name_only_bridge!`)
+
+**`src/c_abi/gameplay_variable_info.rs`**
+
+- `crimson_gameplay_variable_info_load_from_file` — Load from a `.staticinfobody` path (the header beside it is read too). (`impl_name_only_bridge!`)
+- `crimson_gameplay_variable_info_load_from_bytes` — Load from body + header bytes. (`impl_name_only_bridge!`)
+- `crimson_gameplay_variable_info_free` — Free the handle. (`impl_name_only_bridge!`)
+- `crimson_gameplay_variable_info_entry_count` — Number of rows. (`impl_name_only_bridge!`)
+- `crimson_gameplay_variable_info_lookup_string_key` — Key → internal name (two-call buffer). (`impl_name_only_bridge!`)
+- `crimson_gameplay_variable_info_get_entry` — Row at an index: key + internal name. (`impl_name_only_bridge!`)
+
+**`src/c_abi/gimmick_info.rs`**
+
+- `crimson_gimmickinfo_load_from_file` — Parse `gimmickinfo.pabgb` from disk.
+- `crimson_gimmickinfo_load_from_bytes` — Parse gimmickinfo bytes already in memory.
+- `crimson_gimmickinfo_load_from_bytes_with_header` — Parse in-memory `gimmickinfo` bytes together with the table's `.staticinfoheader`.
+- `crimson_gimmickinfo_free` — Free a handle returned by either loader.
+- `crimson_gimmickinfo_entry_count` — Total number of gimmicks in the loaded table.
+- `crimson_gimmickinfo_lookup_string_key` — Look up the internal name for a given `GimmickInfoKey (u32)` and write it into `buf` (NUL-terminated UTF-8).
+- `crimson_gimmickinfo_lookup_display_name` — One-shot display name resolution: `GimmickInfoKey → PALOC at `(gimmick_key << 32) | lo32_namespace` → localized string`.
+- `crimson_gimmickinfo_get_entry` — Get the `(gimmick_key, internal_name)` pair at insertion index `idx`.
+
+**`src/c_abi/global_game_event_group_info.rs`**
+
+- `crimson_global_game_event_group_info_load_from_file` — Load from a `.staticinfobody` path (the header beside it is read too). (`impl_name_only_bridge!`)
+- `crimson_global_game_event_group_info_load_from_bytes` — Load from body + header bytes. (`impl_name_only_bridge!`)
+- `crimson_global_game_event_group_info_free` — Free the handle. (`impl_name_only_bridge!`)
+- `crimson_global_game_event_group_info_entry_count` — Number of rows. (`impl_name_only_bridge!`)
+- `crimson_global_game_event_group_info_lookup_string_key` — Key → internal name (two-call buffer). (`impl_name_only_bridge!`)
+- `crimson_global_game_event_group_info_get_entry` — Row at an index: key + internal name. (`impl_name_only_bridge!`)
+
+**`src/c_abi/global_game_event_info.rs`**
+
+- `crimson_global_game_event_info_load_from_file` — Parse `globalgameevent.{pabgb,pabgh}` from disk.
+- `crimson_global_game_event_info_load_from_bytes` — Parse globalgameevent bytes already in memory.
+- `crimson_global_game_event_info_free` — Free a handle returned by either loader.
+- `crimson_global_game_event_info_entry_count` — Total number of entries in the loaded table.
+- `crimson_global_game_event_info_lookup_string_key` — Look up the internal template name for a `GlobalGameEventInfoKey`.
+- `crimson_global_game_event_info_lookup_group_key` — Look up the `GlobalGameEventGroupKey` for a given event key.
+- `crimson_global_game_event_info_lookup_paloc_key` — Look up the 64-bit PALOC key for a given event's localized display name.
+- `crimson_global_game_event_info_get_entry` — Fetch the (key, name) pair at a positional index for iteration.
+
+**`src/c_abi/house_info.rs`**
+
+- `crimson_house_info_load_from_file` — # Safety Both path arguments must be NUL-terminated UTF-8 strings.
+- `crimson_house_info_load_from_bytes` — # Safety Both `pabgb` and `pabgh` must point to `*_len` readable bytes (may be null iff length is 0).
+- `crimson_house_info_free` — # Safety `handle` must be null or a pointer previously returned by one of the loaders and not yet freed.
+- `crimson_house_info_entry_count` — # Safety `handle` must be live; `out_count` must be non-null.
+- `crimson_house_info_lookup_string_key` — # Safety `handle` and `required` must be non-null; `buf` may be null iff `buf_len == 0`.
+- `crimson_house_info_get_entry` — # Safety `handle`, `out_key`, and `required` must be non-null; `buf` may be null iff `buf_len == 0`.
+
+**`src/c_abi/item_group_info.rs`**
+
+- `crimson_item_group_info_load_from_file` — Load from a `.staticinfobody` path (the header beside it is read too). (`impl_name_only_bridge!`)
+- `crimson_item_group_info_load_from_bytes` — Load from body + header bytes. (`impl_name_only_bridge!`)
+- `crimson_item_group_info_free` — Free the handle. (`impl_name_only_bridge!`)
+- `crimson_item_group_info_entry_count` — Number of rows. (`impl_name_only_bridge!`)
+- `crimson_item_group_info_lookup_string_key` — Key → internal name (two-call buffer). (`impl_name_only_bridge!`)
+- `crimson_item_group_info_get_entry` — Row at an index: key + internal name. (`impl_name_only_bridge!`)
+
+**`src/c_abi/item_part_prefab.rs`**
+
+- `crimson_item_part_prefab_load_from_file` — Parse the three required tables from disk (the original name join; prefer [`crimson_item_part_prefab_load_from_file_with_prefab_pamt`], se…
+- `crimson_item_part_prefab_load_from_bytes` — Parse the three required tables from in-memory bytes.
+- `crimson_item_part_prefab_load_from_bytes_with_prefab_pamt` — Build the join through the character prefabs (the 2026-11-27 join; see the module docs).
+- `crimson_item_part_prefab_load_from_file_with_prefab_pamt` — File-path form of [`crimson_item_part_prefab_load_from_bytes_with_prefab_pamt`].
+- `crimson_item_part_prefab_merge_dlc_from_bytes` — Merge an installed DLC into a loaded handle: its `iteminfo` and `stringinfo` bodies (`iteminfo.dlc_01.staticinfobody`, `stringinfo.dlc_01.…
+- `crimson_item_part_prefab_lookup_source` — Where an item's join came from: 0 = the base table, `n` = the `n`-th [`crimson_item_part_prefab_merge_dlc_from_bytes`].
+- `crimson_item_part_prefab_free` — Free a handle returned by any loader.
+- `crimson_item_part_prefab_resolved_item_count` — Number of items with at least one resolvable partprefab key.
+- `crimson_item_part_prefab_lookup_count` — Number of partprefab keys resolvable for a given item.
+- `crimson_item_part_prefab_lookup_key_at` — Get the partprefab key at insertion order `idx` for the given item.
+- `crimson_item_part_prefab_lookup_prefab_name_at` — Get the prefab name string corresponding to the partprefab key at position `idx`.
+- `crimson_item_part_prefab_lookup_dye_slot_bits` — The dye slot numbers an item offers: the union of the dye slot bits of every `partprefabdyeslotinfo` row of its body variants (bit `n` = `…
+- `crimson_item_part_prefab_lookup_channel_dye_slot_bits` — Every dye slot number a material channel of the item's rows carries (`mat_indices`), whether or not the current mask enables it: a superse…
+- `crimson_item_part_prefab_lookup_dye_slot_material` — Default material name of dye slot number `dye_slot_no` on an item: the first non-empty name over its rows, in variant then mesh order.
+- `crimson_item_part_prefab_resolve_dye_slot_count` — One-shot "how many dye slots does this item have?": the number of `_dyeSlotNo` values the item offers, i.e. the bits set in the union of […
+
+**`src/c_abi/iteminfo.rs`**
+
+- `crimson_iteminfo_load_from_file` — Parse an `iteminfo.pabgb` blob from disk.
+- `crimson_iteminfo_load_from_bytes` — Parse iteminfo bytes already in memory (preferred — the editor pulls them through PAZ extraction first).
+- `crimson_iteminfo_load_from_bytes_with_header` — Parse in-memory iteminfo bytes together with the table's `.staticinfoheader`.
+- `crimson_iteminfo_free` — Free a handle returned by either loader.
+- `crimson_iteminfo_entry_count` — Total number of items in the loaded `iteminfo.pabgb`.
+- `crimson_iteminfo_lookup_string_key` — Look up the `string_key` for a given `ItemKey (u32)` and write it into `buf` (NUL-terminated UTF-8).
+- `crimson_iteminfo_lookup_icon_path_hash` — Look up the first `item_icon_list[0].icon_path` for a given `ItemKey (u32)` and write the resulting `StringInfoKey` (u32 hash) into `*out_…
+- `crimson_iteminfo_lookup_max_stack` — Look up the `max_stack_count` for a given `ItemKey (u32)` and write it into `*out_max_stack`.
+- `crimson_iteminfo_lookup_look_detail_mission_info` — Look up the `look_detail_mission_info` (a `MissionKey` u32) for a given `ItemKey (u32)` and write it into `*out_mission_key`.
+- `crimson_iteminfo_lookup_artifact_for_mission` — Reverse of [`crimson_iteminfo_lookup_look_detail_mission_info`]: given a `MissionKey (u32)`, return the `ItemKey (u32)` of the artifact wh…
+- `crimson_iteminfo_lookup_socket_caps` — Look up the gamedata socket caps for `item_key`.
+- `crimson_iteminfo_socket_allows_gem` — Check whether `gem_key` is in `item_key`'s gamedata-defined allowed-gem list (`DropDefaultData::socket_item_list`).
+- `crimson_iteminfo_socket_allowed_gem_count` — Number of entries in `item_key`'s gamedata allowed-gem list.
+- `crimson_iteminfo_socket_allowed_gem_at` — Read the allowed-gem itemkey at insertion index `idx` for `item_key`.
+- `crimson_iteminfo_canonical_gem_count` — Number of itemkeys in the canonical gem set (sorted-ascending union of every item's `socket_item_list`).
+- `crimson_iteminfo_canonical_gem_at` — Read the canonical gem itemkey at sorted-ascending index `idx`.
+- `crimson_iteminfo_lookup_flags` — Read the static-flag bitmask for `item_key`.
+- `crimson_iteminfo_lookup_summary` — One-shot lookup that fills the entire static-metadata snapshot for `item_key`.
+- `crimson_iteminfo_get_entry` — Get the `(item_key, string_key)` pair at insertion index `idx`.
+
+**`src/c_abi/knowledge_info.rs`**
+
+- `crimson_knowledgeinfo_load_from_file` — Parse `knowledgeinfo.pabgb` from disk.
+- `crimson_knowledgeinfo_load_from_bytes` — Parse knowledgeinfo bytes already in memory.
+- `crimson_knowledgeinfo_load_from_bytes_with_header` — Parse in-memory `knowledgeinfo` bytes together with the table's `.staticinfoheader`.
+- `crimson_knowledgeinfo_free` — Free a handle returned by either loader.
+- `crimson_knowledgeinfo_entry_count` — Total number of knowledge rows in the loaded table.
+- `crimson_knowledgeinfo_lookup_string_key` — Look up the internal name for a given `KnowledgeKey (u32)` and write it into `buf` (NUL-terminated UTF-8).
+- `crimson_knowledgeinfo_merge_dlc_from_bytes` — Merge a DLC copy of the table (`<install>/dlc/<name>/0008`, e.g. `knowledgeinfo.dlc_01.staticinfobody` + `.staticinfoheader`) into a loade…
+- `crimson_knowledgeinfo_entry_source` — Where entry `idx` came from: 0 = the base table, `n` = the `n`-th DLC merged with [`crimson_knowledgeinfo_merge_dlc_from_bytes`].
+- `crimson_knowledgeinfo_lookup_display_name` — One-shot title resolution: chain `KnowledgeKey → internal name → hashlittle2 → PALOC u64 key → localized string`.
+- `crimson_knowledgeinfo_get_entry` — Get the `(knowledge_key, internal_name)` pair at insertion index `idx`.
+
+**`src/c_abi/main_quest_chapter.rs`**
+
+- `crimson_main_quest_table_entry_count` — Total number of `(chapter, arc, mission)` rows in the curated table.
+- `crimson_main_quest_table_get_entry` — Read the row at `idx`.
+- `crimson_main_quest_chapter_for_arc` — Resolve a quest arc display title (the bold bullets in the source MD — e.g. "Trials of Kindness", "Hernand in Chaos", "Journey's End") to…
+- `crimson_main_quest_chapter_for_mission` — Resolve a mission display title (e.g. "Where Rumors Gather", "Unfamiliar Lands") to its chapter heading.
+- `crimson_main_quest_arc_for_mission` — Resolve a mission display title to its quest arc title (e.g. "Where Rumors Gather" → "Trials of Kindness").
+- `crimson_main_quest_chapter_for_mission_key` — Resolve a `MissionKey` — the save-side key — to its chapter heading.
+- `crimson_main_quest_arc_for_mission_key` — Resolve a `MissionKey` to its arc title — the empty string for Prologue missions, as with [`crimson_main_quest_arc_for_mission`].
+- `crimson_main_quest_chapter_for_quest_key` — Resolve a `QuestKey` to its chapter heading: the key of an arc's quest (e.g. 1000027 `Quest_MeetAlustain_Test`, "Trials of Kindness") or o…
+- `crimson_main_quest_table_get_entry_keys` — Read the game keys of the row at `idx` — the companion of [`crimson_main_quest_table_get_entry`], which returns its strings.
+
+**`src/c_abi/mercenary_info.rs`**
+
+- `crimson_mercenary_info_load_from_file` — Parse `mercenaryinfo.pabgb` + `.pabgh` from disk.
+- `crimson_mercenary_info_load_from_bytes` — Parse mercenaryinfo pabgb + pabgh bytes already in memory.
+- `crimson_mercenary_info_free` — Free a handle returned by either loader.
+- `crimson_mercenary_info_entry_count` — Total number of `mercenaryinfo` rows in the loaded table.
+- `crimson_mercenary_info_lookup_string_key` — Look up the internal template name for a given `MercenaryKey` and write it into `buf` (NUL-terminated UTF-8).
+- `crimson_mercenary_info_get_entry` — Get the `(mercenary_key, internal_name)` pair at insertion index `idx`.
+
+**`src/c_abi/mission_info.rs`**
+
+- `crimson_missioninfo_load_from_file` — Parse `missioninfo.pabgb` from disk.
+- `crimson_missioninfo_load_from_bytes` — Parse missioninfo bytes already in memory (preferred — the editor pulls them through PAZ extraction first, then calls in).
+- `crimson_missioninfo_load_from_bytes_with_header` — Parse in-memory `missioninfo` bytes together with the table's `.staticinfoheader`.
+- `crimson_missioninfo_free` — Free a handle returned by either loader.
+- `crimson_missioninfo_entry_count` — Total number of missions in the loaded table.
+- `crimson_missioninfo_lookup_string_key` — Look up the internal name for a given `MissionKey (u32)` and write it into `buf` (NUL-terminated UTF-8).
+- `crimson_missioninfo_lookup_display_name` — One-shot title resolution: chain `MissionKey → internal name → hashlittle2 → PALOC u64 key → localized string` and write the result into `…
+- `crimson_missioninfo_get_entry` — Get the `(mission_key, internal_name)` pair at insertion index `idx`.
+
+**`src/c_abi/mod.rs`**
+
+- `crimson_save_load_from_file` — Load and fully decode a `.save` file.
+- `crimson_save_free` — Free a handle returned by [`crimson_save_load_from_file`].
+- `crimson_save_list_inventory_items` — Flat-list every item slot across every `InventorySaveData` block in the save.
+- `crimson_save_list_character_refs` — Flat-list every present `CharacterKey` field across every block in the save (top-level + nested via ObjectList / Locator).
+- `crimson_save_get_mutation_version` — Read the handle's mutation counter — a monotonic `u64` that bumps by exactly 1 on every successful mutation through the C ABI surface ([`c…
+- `crimson_save_get_version` — Scalar getter on the save handle (header field).
+- `crimson_save_get_flags` — Scalar getter on the save handle (header field).
+- `crimson_save_get_block_count` — Scalar getter on the save handle (header field).
+- `crimson_save_get_hmac_ok` — HMAC verification result.
+- `crimson_save_get_block_info` — Fill `out` with the summary of the block at TOC `index`.
+- `crimson_save_get_block_class_name` — Write the class name of the block at TOC `index` into `buf` as a NUL-terminated UTF-8 string.
+- `crimson_save_get_block_json` — Serialize the full per-field decode of the block at TOC `index` as a JSON document.
+- `crimson_save_set_scalar_field` — Overwrite the bytes of a fixed-size scalar field with `bytes`.
+- `crimson_save_set_scalar_field_path` — Path-addressed variant of [`crimson_save_set_scalar_field`].
+- `crimson_save_set_float3_field_path` — Set the value of an already-present `float3` (12-byte / 3 × f32) field.
+- `crimson_save_set_float3_field_present` — Toggle the presence of a `float3` field.
+- `crimson_save_set_float4_field_path` — Set the value of an already-present `float4` / `quaternion` (16-byte / 4 × f32) field.
+- `crimson_save_set_float4_field_present` — Toggle the presence of a `float4` / `quaternion` field.
+- `crimson_save_set_uint4_field_path` — Set the value of an already-present `uint4` (16-byte / 4 × u32) field.
+- `crimson_save_set_uint4_field_present` — Toggle the presence of a `uint4` field.
+- `crimson_save_set_scalar_fields_batch` — Apply many scalar mutations in one FFI round trip, sharing a single post-batch re-decode.
+- `crimson_save_list_remove_element` — Remove element `element_idx` from the `object_list` field reached by `(block_idx, path[], field_idx)`.
+- `crimson_save_list_remove_elements_batch` — Drop many `object_list` elements in one FFI round trip, sharing a single post-batch re-emit + re-decode.
+- `crimson_save_list_clone_element` — Clone element `src_element_idx` of an `object_list` and insert the copy at `dst_element_idx`.
+- `crimson_save_transplant_list_element` — Transplant one `object_list` element from a SOURCE save into a TARGET save's list, retargeting the element's embedded schema type-indices…
+- `crimson_save_set_scalar_field_present` — Flip the mask bit of a fixed-size scalar field, inserting (or removing) the corresponding bytes in the enclosing block's payload.
+- `crimson_save_set_object_list_present` — Flip the mask bit of an `object_list` field, creating (or removing) the corresponding list payload in the enclosing block.
+- `crimson_save_set_scalar_fields_present_batch` — Apply many [`CrimsonScalarPresentBatchOp`] mutations in one FFI round trip, sharing a single post-batch re-emit + re-decode.
+- `crimson_save_make_empty_element_bytes` — Produce the minimal valid bytes for a list element of `class_index`.
+- `crimson_save_list_insert_element` — Insert a caller-supplied list-element bytes blob into an `object_list` field at `insert_at`.
+- `crimson_save_dynamic_array_set_u32_elements` — Serialize the in-memory save back to `path` using the original nonce.
+- `crimson_save_dynamic_array_get_u32_elements` — Read the contents of a `dynamic_array<u32>` field as a flat little-endian `u32` sequence.
+- `crimson_save_set_inline_bytes_field` — Wholesale-replace the contents of an `inline_bytes` field (the schema's `meta_kind == 1` shape: a `u32 count` header followed by `count *…
+- `crimson_save_get_inline_bytes_field` — Read the raw payload bytes of an `inline_bytes` field — the read counterpart to [`crimson_save_set_inline_bytes_field`].
+- `crimson_save_write_to_file` — Uses `Save::write_with_nonce` so the on-disk layout matches what the game produced — HMAC re-computed, ChaCha20 re-applied.
+- `crimson_save_begin_deferred_redecode` — Open a deferred-redecode batch on the save handle.
+- `crimson_save_end_deferred_redecode` — Commit the deferred-redecode batch opened by [`crimson_save_begin_deferred_redecode`].
+- `crimson_save_abort_deferred_redecode` — Abort the deferred-redecode batch opened by [`crimson_save_begin_deferred_redecode`], discarding every in-memory mutation since `begin_*`…
+- `crimson_save_is_deferred_redecode_open` — Returns `1` (in `*out_open`) if a deferred-redecode batch is currently open on the handle, `0` otherwise.
+- `crimson_house_info_load_from_file` — Load from a `.staticinfobody` path (the header beside it is read too). (`impl_name_only_bridge!`)
+- `crimson_house_info_load_from_bytes` — Load from body + header bytes. (`impl_name_only_bridge!`)
+- `crimson_house_info_free` — Free the handle. (`impl_name_only_bridge!`)
+- `crimson_house_info_entry_count` — Number of rows. (`impl_name_only_bridge!`)
+- `crimson_house_info_lookup_string_key` — Key → internal name (two-call buffer). (`impl_name_only_bridge!`)
+- `crimson_house_info_get_entry` — Row at an index: key + internal name. (`impl_name_only_bridge!`)
+
+**`src/c_abi/paloc.rs`**
+
+- `crimson_paloc_load_from_file` — Load and parse a `.paloc` file from disk.
+- `crimson_paloc_load_from_bytes` — Load and parse PALOC bytes that already live in memory.
+- `crimson_paloc_free` — Free a handle returned by [`crimson_paloc_load_from_file`].
+- `crimson_paloc_entry_count` — Total number of (key, value) pairs in the table.
+- `crimson_paloc_lookup` — Look up the value for `key` and copy its UTF-8 bytes into `buf`.
+- `crimson_paloc_get_entry` — Get the (key, value) pair at index `idx` in insertion order.
+
+**`src/c_abi/part_prefab_dye_slot_info.rs`**
+
+- `crimson_part_prefab_dye_slot_info_load_from_file` — Parse from disk.
+- `crimson_part_prefab_dye_slot_info_load_from_bytes` — Parse bytes already in memory.
+- `crimson_part_prefab_dye_slot_info_free` — Free a handle.
+- `crimson_part_prefab_dye_slot_info_entry_count` — Total number of prefab rows.
+- `crimson_part_prefab_dye_slot_info_lookup_slot_count` — Number of slots on the mesh row identified by `prefab_key`: one per sub-mesh.
+- `crimson_part_prefab_dye_slot_info_lookup_prefab_name` — Prefab internal name (e.g. `"cd_phm_00_lb_00_0054"`).
+- `crimson_part_prefab_dye_slot_info_lookup_slot_default_material` — Default material name for `slot_idx`'s `mat_idx` channel (`mat_idx ∈ {0, 1, 2}`).
+- `crimson_part_prefab_dye_slot_info_lookup_slot_tail_name` — Tail name — next sub-prefab for non-final slots, full `.pac` path for the last slot.
+- `crimson_part_prefab_dye_slot_info_lookup_slot_mat_indices` — Read the 3 material-index bytes into `out_indices[0..3]`.
+- `crimson_part_prefab_dye_slot_info_lookup_slot_mask` — Read the first 3 mask bytes into `out_mask[0..3]`.
+- `crimson_part_prefab_dye_slot_info_lookup_slot_mask_full` — Read a slot's **complete** mask into `buf` (12 bytes on 2.01+, 3 on 1.07-2.00), sized-buffer style.
+- `crimson_part_prefab_dye_slot_info_lookup_slot_active_channels` — Which of `slot_idx`'s three material channels are dyeable, one byte (0 or 1) per channel into `out_flags[0..3]`: channel `ch` is active wh…
+- `crimson_part_prefab_dye_slot_info_lookup_slot_dye_slot_bits` — `slot_idx`'s mask as bits: bit `n` of `*out_bits` is set when dye slot number `n` is dyeable on this slot.
+- `crimson_part_prefab_dye_slot_info_lookup_dye_slot_bits` — The prefab's dye slots: bit `n` of `*out_bits` is set when any slot or extra layer of the prefab enables dye slot number `n`.
+- `crimson_part_prefab_dye_slot_info_lookup_dye_slot_material` — Default material name (`"cloth"` / `"leather"` / `"metal"` / …) of dye slot number `dye_slot_no` on the prefab: the name of any primary-la…
+- `crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_dye_slot_bits` — Extra layer `layer_idx`'s mask on `slot_idx` as bits, indexed by dye slot number like [`crimson_part_prefab_dye_slot_info_lookup_slot_dye_…
+- `crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_count` — Number of extra (secondary) dye layers on `slot_idx`.
+- `crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_material` — Default material name for extra layer `layer_idx`'s `mat_idx` channel (`mat_idx ∈ {0, 1, 2}`) on `slot_idx`.
+- `crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_mask` — Read the first 3 of extra layer `layer_idx`'s mask bytes on `slot_idx` into `out_mask[0..3]`.
+- `crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_mask_full` — Read an extra layer's **complete** mask into `buf` (12 bytes on 2.01+, 3 on 1.13-2.00), sized-buffer style.
+- `crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_flag` — Read extra layer `layer_idx`'s trailing flag byte on `slot_idx`.
+- `crimson_part_prefab_dye_slot_info_get_entry_key` — Read the prefab key at insertion index `idx` (PABGH on-disk order).
+
+**`src/c_abi/part_prefab_dye_texture_pallete_info.rs`**
+
+- `crimson_part_prefab_dye_texture_pallete_load_from_file` — Parse the pair from disk.
+- `crimson_part_prefab_dye_texture_pallete_load_from_bytes` — Parse bytes already in memory.
+- `crimson_part_prefab_dye_texture_pallete_free` — Free a handle.
+- `crimson_part_prefab_dye_texture_pallete_entry_count` — Total number of palette rows in the table.
+- `crimson_part_prefab_dye_texture_pallete_lookup_sub_count` — Number of sub-records inside the palette row keyed by `palette_key`.
+- `crimson_part_prefab_dye_texture_pallete_lookup_sub_material_name` — Material identifier — `"cloth"`, `"leather"`, `"metal"`, … # Safety `handle` and `required` must be non-null; `buf` may be null iff `buf_l…
+- `crimson_part_prefab_dye_texture_pallete_lookup_sub_icon_path` — UI icon DDS path (falls back to texture path for `palette_key=0`).
+- `crimson_part_prefab_dye_texture_pallete_lookup_sub_texture_path` — Material texture DDS path used at runtime.
+- `crimson_part_prefab_dye_texture_pallete_lookup_sub_variant_name` — Variant label inside a material — empty when absent, or `"wool"` / `"velvet"` / `"silk"`.
+- `crimson_part_prefab_dye_texture_pallete_lookup_sub_variant_value` — Variant strength — `-1.0` is the "no variant" sentinel.
+- `crimson_part_prefab_dye_texture_pallete_get_entry_key` — Read the palette key at insertion index `idx` (PABGH on-disk order).
+
+**`src/c_abi/paver.rs`**
+
+- `crimson_paver_read_from_file` — Parse `meta/0.paver` from disk into the four version components.
+- `crimson_paver_read_from_bytes` — Parse a paver buffer already in memory (e.g. when the caller pulled the file through some other mechanism).
+- `crimson_parser_target_gamedata_major` — The Crimson Desert gamedata `major` version this build's parsers target.
+- `crimson_parser_target_gamedata_minor` — The Crimson Desert gamedata `minor` version this build's parsers target.
+- `crimson_parser_min_gamedata_patch` — The lowest gamedata `patch` this build's parsers read on the target `(major, minor)`.
+- `crimson_parser_compatible_gamedata_minors` — Write the full allow-list of gamedata `minor` versions this build's parsers can load into `out_buf`, and the count into `out_count`.
+
+**`src/c_abi/paz.rs`**
+
+- `crimson_paz_extract_file` — Extract a single file from a Crimson Desert pack group.
+- `crimson_paz_list_npc_portraits` — List every NPC portrait DDS file in a PAZ group's PAMT.
+- `crimson_paz_list_dir` — List every file in a single PAMT directory, with the metadata a caller needs to drive [`crimson_paz_extract_file`] (filename) and pre-size…
+
+**`src/c_abi/positions.rs`**
+
+- `crimson_save_list_field_positions` — Flat-list every positioned entity across the save's container classes (active character, mercenaries / mounts, field gimmicks).
+
+**`src/c_abi/quest_gauge_info.rs`**
+
+- `crimson_questgaugeinfo_load_from_file` — Parse `questgaugeinfo.pabgb` from disk.
+- `crimson_questgaugeinfo_load_from_bytes` — Parse questgaugeinfo bytes already in memory.
+- `crimson_questgaugeinfo_load_from_bytes_with_header` — Parse in-memory `questgaugeinfo` bytes together with the table's `.staticinfoheader`.
+- `crimson_questgaugeinfo_free` — Free a handle returned by either loader.
+- `crimson_questgaugeinfo_entry_count` — Total number of gauges in the loaded table.
+- `crimson_questgaugeinfo_lookup_string_key` — Look up the internal name for a given `QuestGaugeKey (u32)` and write it into `buf` (NUL-terminated UTF-8).
+- `crimson_questgaugeinfo_get_entry` — Get the `(gauge_key, internal_name)` pair at insertion index `idx`.
+
+**`src/c_abi/quest_info.rs`**
+
+- `crimson_questinfo_load_from_file` — Parse `questinfo.pabgb` from disk via the anchor-scan path.
+- `crimson_questinfo_load_from_bytes` — Parse questinfo bytes already in memory via the anchor-scan path.
+- `crimson_questinfo_load_from_bytes_with_header` — Parse in-memory `questinfo` bytes together with the table's `.staticinfoheader`.
+- `crimson_questinfo_load_from_file_with_pabgh` — Parse `questinfo.pabgb` + `questinfo.pabgh` from disk — the **recommended** path.
+- `crimson_questinfo_load_from_bytes_with_pabgh` — Parse questinfo bytes already in memory via the PABGH-driven path — the **recommended** loader for any caller that has both files.
+- `crimson_questinfo_free` — Free a handle returned by either loader.
+- `crimson_questinfo_entry_count` — Total number of quests in the loaded table.
+- `crimson_questinfo_lookup_string_key` — Look up the internal name for a given `QuestKey (u32)` and write it into `buf` (NUL-terminated UTF-8).
+- `crimson_questinfo_lookup_display_name` — One-shot title resolution: chain `QuestKey → internal name → hashlittle2 → PALOC u64 key → localized string`.
+- `crimson_questinfo_get_entry` — Get the `(quest_key, internal_name)` pair at insertion index `idx`.
+
+**`src/c_abi/region_info.rs`**
+
+- `crimson_region_info_load_from_file` — Load from a `.staticinfobody` path (the header beside it is read too). (`impl_name_only_bridge!`)
+- `crimson_region_info_load_from_bytes` — Load from body + header bytes. (`impl_name_only_bridge!`)
+- `crimson_region_info_free` — Free the handle. (`impl_name_only_bridge!`)
+- `crimson_region_info_entry_count` — Number of rows. (`impl_name_only_bridge!`)
+- `crimson_region_info_lookup_string_key` — Key → internal name (two-call buffer). (`impl_name_only_bridge!`)
+- `crimson_region_info_get_entry` — Row at an index: key + internal name. (`impl_name_only_bridge!`)
+
+**`src/c_abi/reserve_slot_info.rs`**
+
+- `crimson_reserve_slot_info_load_from_file` — Load from a `.staticinfobody` path (the header beside it is read too). (`impl_name_only_bridge!`)
+- `crimson_reserve_slot_info_load_from_bytes` — Load from body + header bytes. (`impl_name_only_bridge!`)
+- `crimson_reserve_slot_info_free` — Free the handle. (`impl_name_only_bridge!`)
+- `crimson_reserve_slot_info_entry_count` — Number of rows. (`impl_name_only_bridge!`)
+- `crimson_reserve_slot_info_lookup_string_key` — Key → internal name (two-call buffer). (`impl_name_only_bridge!`)
+- `crimson_reserve_slot_info_get_entry` — Row at an index: key + internal name. (`impl_name_only_bridge!`)
+
+**`src/c_abi/royal_supply_info.rs`**
+
+- `crimson_royal_supply_info_load_from_file` — # Safety Path args must be NUL-terminated UTF-8 strings; out_handle non-null.
+- `crimson_royal_supply_info_load_from_bytes` — # Safety `pabgb`/`pabgh` may be null iff length is 0; out_handle non-null.
+- `crimson_royal_supply_info_free` — # Safety `handle` must be null or live and unfreed.
+- `crimson_royal_supply_info_entry_count` — # Safety `handle` live; `out_count` non-null.
+- `crimson_royal_supply_info_lookup_string_key` — # Safety `handle`/`required` non-null; `buf` may be null iff `buf_len == 0`.
+- `crimson_royal_supply_info_get_entry` — # Safety `handle`/`out_key`/`required` non-null; `buf` may be null iff `buf_len == 0`.
+
+**`src/c_abi/side_quest_faction.rs`**
+
+- `crimson_side_quest_table_entry_count` — Total number of `(quest, faction)` rows in the curated table.
+- `crimson_side_quest_table_get_entry` — Read the row at `idx`.
+- `crimson_side_quest_faction_for_quest` — Resolve a side-quest display title (the `quest:` value in the source MD — e.g. "Record of the Greymanes", "Carl's Request") to its faction…
+- `crimson_side_quest_quest_count_for_faction` — Number of side quests in the curated set that belong to `faction_name`.
+- `crimson_side_quest_quest_at_for_faction` — The `idx`-th side quest title in `faction_name`'s curated list.
+- `crimson_side_quest_faction_for_mission_key` — Resolve a `MissionKey` — the save-side key — to its faction name, independent of the display title, so it survives a retitle.
+- `crimson_side_quest_faction_for_quest_key` — Resolve a `QuestKey` to its faction name.
+- `crimson_side_quest_table_get_entry_key` — Read the game key of the row at `idx` — the companion of [`crimson_side_quest_table_get_entry`], which returns its strings.
+
+**`src/c_abi/skill_info.rs`**
+
+- `crimson_skillinfo_load_from_file` — Parse `skill.pabgh` + `skill.pabgb` from disk.
+- `crimson_skillinfo_load_from_bytes` — Parse skill bytes already in memory (preferred — the editor pulls them through PAZ extraction first, then calls in).
+- `crimson_skillinfo_free` — Free a handle returned by either loader.
+- `crimson_skillinfo_entry_count` — Total number of skills in the loaded pair.
+- `crimson_skillinfo_lookup_string_key` — Look up the entry name for a given `SkillKey (u32)` and write it into `buf` (NUL-terminated UTF-8).
+- `crimson_skillinfo_get_entry` — Get the `(skill_key, name)` pair at PABGH on-disk index `idx`.
+
+**`src/c_abi/stage_info.rs`**
+
+- `crimson_stageinfo_load_from_file` — Parse `stageinfo.pabgb` from disk via the anchor-scan path.
+- `crimson_stageinfo_load_from_bytes` — Parse stageinfo bytes already in memory via the anchor-scan path.
+- `crimson_stageinfo_load_from_bytes_with_header` — Parse in-memory `stageinfo` bytes together with the table's `.staticinfoheader`.
+- `crimson_stageinfo_load_from_file_with_pabgh` — Parse `stageinfo.pabgb` + `stageinfo.pabgh` from disk — the **recommended** path.
+- `crimson_stageinfo_load_from_bytes_with_pabgh` — Parse stageinfo bytes already in memory via the PABGH-driven path — the **recommended** loader for any caller that has both files.
+- `crimson_stageinfo_free` — Free a handle returned by either loader.
+- `crimson_stageinfo_entry_count` — Total number of stages in the loaded table.
+- `crimson_stageinfo_lookup_string_key` — Look up the internal name for a given `StageKey (u32)` and write it into `buf` (NUL-terminated UTF-8).
+- `crimson_stageinfo_lookup_display_name` — One-shot title resolution: chain `StageKey → internal name → hashlittle2 → PALOC u64 key → localized string`.
+- `crimson_stageinfo_get_entry` — Get the `(stage_key, internal_name)` pair at insertion index `idx`.
+
+**`src/c_abi/store_info.rs`**
+
+- `crimson_store_info_load_from_file` — Parse `storeinfo.pabgb` + `.pabgh` from disk.
+- `crimson_store_info_load_from_bytes` — Parse storeinfo pabgb + pabgh bytes already in memory.
+- `crimson_store_info_free` — Free a handle returned by either loader.
+- `crimson_store_info_entry_count` — Total number of `storeinfo` rows in the loaded table.
+- `crimson_store_info_lookup_string_key` — Look up the internal template name for a given `StoreKey` and write it into `buf` (NUL-terminated UTF-8).
+- `crimson_store_info_get_entry` — Get the `(store_key, internal_name)` pair at insertion index `idx`.
+
+**`src/c_abi/string_info.rs`**
+
+- `crimson_string_info_load_from_file` — Parse a `stringinfo.pabgb` blob from disk.
+- `crimson_string_info_load_from_bytes` — Parse stringinfo bytes already in memory (preferred — the editor pulls them through PAZ extraction first).
+- `crimson_string_info_free` — Free a handle returned by either loader.
+- `crimson_string_info_entry_count` — Total number of entries in the loaded `stringinfo.pabgb`.
+- `crimson_string_info_lookup_by_hash` — Look up the resolved string for a given `StringInfoKey` (u32 hash) and write it into `buf` (NUL-terminated UTF-8).
+- `crimson_string_info_get_entry` — Get the `(hash, value)` pair at insertion index `idx`.
+
+**`src/c_abi/sub_level_info.rs`**
+
+- `crimson_sublevelinfo_load_from_file` — Parse `sublevelinfo.pabgb` from disk.
+- `crimson_sublevelinfo_load_from_bytes` — Parse sublevelinfo bytes already in memory.
+- `crimson_sublevelinfo_load_from_bytes_with_header` — Parse in-memory `sublevelinfo` bytes together with the table's `.staticinfoheader`.
+- `crimson_sublevelinfo_free` — Free a handle returned by either loader.
+- `crimson_sublevelinfo_entry_count` — Total number of sub-level tracks in the loaded table.
+- `crimson_sublevelinfo_lookup_string_key` — Look up the internal name for a given `SubLevelKey (u32)` and write it into `buf` (NUL-terminated UTF-8).
+- `crimson_sublevelinfo_get_entry` — Get the `(sub_level_key, internal_name)` pair at insertion index `idx`.
+
+**`src/c_abi/trigger_region_info.rs`**
+
+- `crimson_trigger_region_info_load_from_file` — Load from a `.staticinfobody` path (the header beside it is read too). (`impl_name_only_bridge!`)
+- `crimson_trigger_region_info_load_from_bytes` — Load from body + header bytes. (`impl_name_only_bridge!`)
+- `crimson_trigger_region_info_free` — Free the handle. (`impl_name_only_bridge!`)
+- `crimson_trigger_region_info_entry_count` — Number of rows. (`impl_name_only_bridge!`)
+- `crimson_trigger_region_info_lookup_string_key` — Key → internal name (two-call buffer). (`impl_name_only_bridge!`)
+- `crimson_trigger_region_info_get_entry` — Row at an index: key + internal name. (`impl_name_only_bridge!`)
+
+<!-- symbol-index:end -->
