@@ -187,13 +187,10 @@ mod tests {
         let scanned = crate::binary::static_header::header_row_names(&data, &header).is_none();
         println!("parsed {} missioninfo entries from {} bytes", entries.len(), data.len());
 
-        // 1.06 sample showed ~4,300 mission entries; just assert plausible
-        // population, not a fixed count (patches add/remove missions).
-        assert!(
-            entries.len() > 1_000,
-            "expected >1000 mission entries, got {}",
-            entries.len()
-        );
+        // Every row the 2.06 header lists parses; a floor would let most of
+        // the table go missing unnoticed.
+        let listed = crate::binary::static_header::detect_named_pair(&header, &data).expect("2.06 header").2.len();
+        assert_eq!(entries.len(), listed, "rows parsed vs rows the header lists");
 
         // Build a fast lookup and validate the seven verified mappings.
         let by_key: std::collections::HashMap<u32, &str> =

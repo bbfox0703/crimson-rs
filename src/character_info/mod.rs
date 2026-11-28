@@ -259,16 +259,10 @@ mod tests {
             entries.len(),
             data.len()
         );
-        // 1.07 yields ~7k anchor-scannable rows from the 24 MB file
-        // (§6's ~17k figure was the 1.06 prototype against the 1.5 MB
-        // file; the row schema's variable body grew with the dataset).
-        // Pin >5000 as a loose plausibility floor that tolerates
-        // patches adding / removing characters.
-        assert!(
-            entries.len() > 5_000,
-            "expected >5000 characterinfo entries, got {}",
-            entries.len()
-        );
+        // Every row the 2.06 header lists parses; a floor would let most of
+        // the table go missing unnoticed.
+        let listed = crate::binary::static_header::detect_named_pair(&find_characterinfo_header(), &data).expect("2.06 header").2.len();
+        assert_eq!(entries.len(), listed, "rows parsed vs rows the header lists");
 
         // First-wins to mirror bridge behaviour. Existence + non-empty
         // name is the contract — exact internal-name strings vary

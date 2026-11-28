@@ -177,14 +177,10 @@ mod tests {
             entries.len(),
             data.len()
         );
-        // 1.06 shipped 40 real rows after the strict scanner; pin to
-        // >30 for plausibility while leaving headroom for future
-        // patches adding new sub-level tracks.
-        assert!(
-            entries.len() > 30,
-            "expected >30 sublevel entries, got {}",
-            entries.len()
-        );
+        // Every row the 2.06 header lists parses; a floor would let most of
+        // the table go missing unnoticed.
+        let listed = crate::binary::static_header::detect_named_pair(&find_sublevelinfo_header(), &data).expect("2.06 header").2.len();
+        assert_eq!(entries.len(), listed, "rows parsed vs rows the header lists");
 
         // First-wins to mirror the bridge's behaviour: the real row at
         // the smallest offset is the canonical entry; body-byte

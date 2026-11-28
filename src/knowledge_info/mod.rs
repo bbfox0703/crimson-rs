@@ -169,12 +169,10 @@ mod tests {
             entries.len(),
             data.len()
         );
-        // 1.06 has ~5,400 knowledge rows. Pin to >1000 for plausibility.
-        assert!(
-            entries.len() > 1_000,
-            "expected >1000 knowledge entries, got {}",
-            entries.len()
-        );
+        // Every row the 2.06 header lists parses; a floor would let most of
+        // the table go missing unnoticed.
+        let listed = crate::binary::static_header::detect_named_pair(&find_knowledge_header(), &data).expect("2.06 header").2.len();
+        assert_eq!(entries.len(), listed, "rows parsed vs rows the header lists");
 
         let by_key: std::collections::HashMap<u32, &str> =
             entries.iter().map(|e| (e.key, e.name.as_str())).collect();

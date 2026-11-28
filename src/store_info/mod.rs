@@ -155,11 +155,10 @@ mod tests {
             entries.len(),
             pabgb.len()
         );
-        assert!(
-            entries.len() >= 250,
-            "expected at least 250 storeinfo rows in 1.07, got {}",
-            entries.len()
-        );
+        // Every row the 2.06 header lists parses; a floor would let most of
+        // the table go missing unnoticed.
+        let listed = crate::binary::static_header::detect_named_pair(&pabgh, &pabgb).expect("2.06 header").2.len();
+        assert_eq!(entries.len(), listed, "rows parsed vs rows the header lists");
         let by_key: std::collections::HashMap<u32, &str> =
             entries.iter().map(|e| (e.key, e.name.as_str())).collect();
         for &(key, expected) in KNOWN {
