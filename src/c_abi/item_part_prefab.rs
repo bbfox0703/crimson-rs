@@ -2010,7 +2010,6 @@ mod tests {
     /// and the prefab-join handle built through the C ABI.
     struct LivePrefabJoin {
         item_b: Vec<u8>,
-        rows: Vec<crate::part_prefab_dye_slot_info::PartPrefabDyeSlotInfoEntry>,
         h: *mut CrimsonItemPartPrefabHandle,
     }
 
@@ -2049,8 +2048,7 @@ mod tests {
             )
         };
         assert_eq!(rc, error::OK);
-        let rows = crate::part_prefab_dye_slot_info::parse_part_prefab_dye_slot_info_lossy(&pp_b, &pp_h);
-        Some(LivePrefabJoin { item_b, rows, h })
+        Some(LivePrefabJoin { item_b, h })
     }
 
     fn keys_of(h: *const CrimsonItemPartPrefabHandle, item: u32) -> Vec<u32> {
