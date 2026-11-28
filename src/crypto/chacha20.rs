@@ -21,8 +21,8 @@ const PACK_ENTRY_BASE_KEY: [u8; 32] = [
 /// the XOR of the 3 encrypt_info bytes.
 ///
 /// Errors when the 32-bit block counter, which starts at the filename's hash,
-/// would pass 2^32 inside `data`: the cipher panicked there, and how the game
-/// handles that boundary is not known (audit A-06).
+/// would pass 2^32 inside `data`: the cipher would panic there, and how the
+/// game handles that boundary is not known.
 pub fn decrypt_pack_entry(data: &[u8], group_encrypt_info: &[u8; 3], entry_path: &str) -> io::Result<Vec<u8>> {
     let filename = entry_path.rsplit('/').next().unwrap_or(entry_path);
     let counter = checksum::calculate_checksum(filename.as_bytes());
@@ -68,8 +68,8 @@ pub fn encrypt_pack_entry(data: &[u8], group_encrypt_info: &[u8; 3], entry_path:
 mod tests {
     /// Regression vector for the pack-entry cipher (key derivation from the
     /// group's encrypt_info and the filename hash, then ChaCha20). It pins
-    /// today's output, which extraction from the live install confirms; any
-    /// change to the derivation breaks it. CI had no ChaCha20 test (A-14).
+    /// the output that extraction from the live install agrees with; any
+    /// change to the derivation breaks it.
     #[test]
     fn pack_entry_known_answer() {
         let out = super::decrypt_pack_entry(b"crimson-rs chacha20 kat", &[2, 14, 97], "gamedata/ui/icon.dds").unwrap();

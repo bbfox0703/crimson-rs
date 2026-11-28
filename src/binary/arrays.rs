@@ -58,11 +58,9 @@ impl BinaryWrite for [u32; 4] {
 
 // ── 12 × u16 (Crimson Desert ItemInfo `inventory_info_list`) ───────────────
 //
-// 1.16 relocated the single head-side `inventory_info: InventoryKey` to the
-// item end and widened it to nine slots, absorbing the 1.13-era constant item
-// tail as slot 8; 2.03 appended a tenth and 2.04 two more. Each element is an `InventoryKey`
-// (u16); 0xFF marks an unused slot. See the "ItemInfo (2.03)" and
-// "ItemInfo (1.16)" headers in `src/item_info/item.rs`.
+// The item's inventory slots, stored at the item end. Each element is an
+// `InventoryKey` (u16); 0xFF marks an unused slot. The item layout is
+// described in `src/item_info/item.rs`.
 
 impl<'a> BinaryRead<'a> for [u16; 12] {
     fn read_from(data: &'a [u8], offset: &mut usize) -> io::Result<Self> {

@@ -3,8 +3,7 @@
 //! The saves are real player data, so they live in the private
 //! `crimson-rs-private` repo, cloned next to this checkout
 //! (`../crimson-rs-private/saves`), or wherever `CRIMSON_FIXTURES_DIR` points
-//! (the folder holding `1.09/`, `1.10/`, …). They used to sit in
-//! `tests/fixtures/saves/` under git-crypt, until 2026-11-27.
+//! (the folder holding `1.09/`, `1.10/`, …).
 //!
 //! A test asks for one file and skips when it is missing: CI never has the
 //! private repo, and neither does a clone that hasn't fetched it.

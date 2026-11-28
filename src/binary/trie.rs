@@ -106,7 +106,7 @@ impl TrieStringBuffer {
 
     /// The full string at `offset`: its ancestors' parts, root first, then
     /// its own. Walks the parent chain in a loop rather than recursively, so a
-    /// crafted buffer cannot overflow the stack (audit A-01): a parent that
+    /// crafted buffer cannot overflow the stack: a parent that
     /// points back at itself (possible in the absolute encoding), a chain
     /// longer than the buffer could hold (every node takes at least 2 bytes)
     /// or than [`MAX_TRIE_DEPTH`], or a name over [`MAX_TRIE_STRING`] is an
@@ -438,8 +438,8 @@ mod tests {
         assert_eq!(trie.get_string(0).unwrap(), "hello");
     }
 
-    /// A parent that points back at itself, or a long chain, used to recurse
-    /// until the stack overflowed and the process aborted (audit A-01).
+    /// A parent that points back at itself, or a long chain, is an error, not
+    /// a recursion that overflows the stack and aborts the process.
     #[test]
     fn test_trie_parent_loop_is_an_error() {
         // Absolute encoding: the node at 0 names itself as its parent.

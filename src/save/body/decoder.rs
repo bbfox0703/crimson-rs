@@ -307,19 +307,18 @@ pub(crate) fn decode_fields_in_region(
 // open with a 0x00 tag followed by a u32 count.
 //
 // The legacy walks (`decode_fields_in_region`, the inline-payload walk)
-// skip absent fields without consuming anything, so every marker landed in
+// skip absent fields without consuming anything, so every marker lands in
 // the NEXT field: scalars read one byte early per preceding marker, list
-// headers grew "marker run" variants, dynamic arrays grew leading/trailing
-// 01 runs, and what was left at the end became `trailing_pad`. The bytes
-// still round-tripped, but the values after an absent array/list were
-// wrong.
+// headers match "marker run" variants, dynamic arrays carry leading/trailing
+// 01 runs, and what is left at the end becomes `trailing_pad`. The bytes
+// still round-trip, but the values after an absent array/list are wrong.
 //
 // `walk_fields_with_markers` decodes with the real rule and is strict: it
 // returns `None` the moment the rule does not explain a byte (a missing
 // marker, an array or list without its 0x00 tag, a list whose elements do
 // not all decode, a locator without a decodable child). Callers then fall
 // back to the legacy walk unchanged, so a block the rule cannot explain
-// decodes exactly as it did before.
+// decodes exactly as the legacy walk reads it.
 
 /// Every schema field placed, and the cursor just past the last one.
 type MarkerWalk = (Vec<DecodedField>, usize);
@@ -564,8 +563,8 @@ fn decode_dynamic_array(
     }
 
     // Variant 1: prefix `00 00 XX 01 00`, count u32, data, trailing
-    // `01 01 01 01 01`. The 3rd byte (XX) is a flag whose meaning we
-    // don't yet know — observed values include 0x06 (most arrays) and
+    // `01 01 01 01 01`. The 3rd byte (XX) is a flag whose meaning is
+    // not known — observed values include 0x06 (most arrays) and
     // 0x01 (e.g. FactionNodeElementSaveData._reviveQuestList). The
     // surrounding constraints (fixed bytes at 0,1,3,4 + count < 0x10000
     // + 5-byte trailing pattern) are strict enough that allowing any
@@ -720,8 +719,8 @@ const MAX_PAYLOAD_NESTING: usize = 16;
 
 /// Marks a locator child payload as being decoded. Refuses (`None`) a payload
 /// that is already being decoded further up (a child whose
-/// `child_payload_offset` points back at an ancestor, which recursed until the
-/// stack overflowed; audit F-03) and nesting past [`MAX_PAYLOAD_NESTING`].
+/// `child_payload_offset` points back at an ancestor would recurse until the
+/// stack overflows) and nesting past [`MAX_PAYLOAD_NESTING`].
 struct PayloadGuard;
 
 impl PayloadGuard {
@@ -1043,10 +1042,10 @@ fn decode_inline_object_payload(
     })?;
     let size_u32 = read_u32(raw, size_at);
     // Bytes between the forward-walk end and the trailing-size location
-    // are not claimed by any field. The decoder previously dropped them
-    // (they were still "covered" at the enclosing block level via
-    // collect_decoded_ranges, so undecoded_ranges stayed empty). The
-    // encoder needs them verbatim — return as a pad slice to caller.
+    // are not claimed by any field (the enclosing block still counts them
+    // as covered via collect_decoded_ranges, so undecoded_ranges stays
+    // empty). The encoder needs them verbatim — return as a pad slice to
+    // caller.
     let pad = raw[cursor..size_at].to_vec();
     Ok((size_at + 4, reserved_u32, size_u32, fields, pad))
 }
@@ -1066,16 +1065,15 @@ fn decode_object_list(
     // shapes vary across game versions and a couple of bytes of padding
     // sometimes precede the real header.
     //
-    // 1.10 widened the leading-pad on `ContentsMiscSaveData`'s
-    // `ReflectObject` lists (e.g. `_alertHistorySaveDataList`) from 3 pad
-    // bytes to 4 — the real `zero1_count_u24` header now sits at
-    // body_offset 4 instead of 3. Without offset 4 in the scan the first
-    // list mis-reads its count, decodes zero elements, and every
-    // downstream field in the block desyncs (107 KB undecoded on a 1.10
-    // save). The furthest-reach tiebreak keeps older saves unaffected:
-    // their correct offset (≤3) still wins, and offset 4 lands on a
-    // non-header byte that errors out. See `_probe_contents_misc_drift`
-    // in `lib.rs` for the 1.09↔1.10 comparison that pinned this.
+    // From 1.10, `ContentsMiscSaveData`'s `ReflectObject` lists (e.g.
+    // `_alertHistorySaveDataList`) carry 4 leading pad bytes instead of 3,
+    // so the real `zero1_count_u24` header sits at body_offset 4. Without
+    // offset 4 in the scan the first list mis-reads its count, decodes zero
+    // elements, and every downstream field in the block desyncs. The
+    // furthest-reach tiebreak keeps older saves right: their correct offset
+    // (≤3) still wins, and offset 4 lands on a non-header byte that errors
+    // out. `_probe_contents_misc_drift` in `lib.rs` compares the two
+    // layouts.
     const MAX_LEADING_PAD: usize = 4;
     let mut best: Option<(usize, FieldValue, &'static str)> = None;
     let mut last_err: Option<io::Error> = None;
@@ -1107,7 +1105,7 @@ fn try_decode_object_list_at(
     by_index: &HashMap<u32, &TypeDef>,
 ) -> io::Result<(usize, FieldValue, &'static str)> {
     // Every header variant below is at least 18 bytes; a list starting in the
-    // last bytes of the region used to index past the body (audit F-07).
+    // last bytes of the region must not index past the body.
     let tail_cursor = tail_cursor.min(raw.len());
     if body_cursor + 18 > tail_cursor {
         return overrun("object list header");
@@ -1329,10 +1327,8 @@ fn overrun<T>(what: &'static str) -> io::Result<T> {
 /// `locator_wrapper` populated, suitable for direct insertion into a
 /// `FieldValue::ObjectList::elements` vector.
 ///
-/// Used by the c_abi `list_insert_element` entry point (Phase B.3) to
-/// validate caller-supplied template bytes. Gated to `c_abi` builds
-/// because that's the only consumer; PyO3 / lib-only consumers don't
-/// need it.
+/// Used by the c_abi `list_insert_element` entry point to validate
+/// caller-supplied template bytes, hence gated to `c_abi` builds.
 #[cfg(feature = "c_abi")]
 pub(crate) fn decode_one_list_element_bytes(
     bytes: &[u8],

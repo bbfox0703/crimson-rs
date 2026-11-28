@@ -78,8 +78,8 @@ impl ToPyValue for [f32; 3] {
 impl WritePyValue for [f32; 3] {
     fn write_from_py(w: &mut Vec<u8>, obj: &Bound<'_, PyAny>) -> PyResult<()> {
         let list = obj.cast::<PyList>()?;
-        // A list of the wrong length wrote a short or long row that only
-        // failed on the next parse (audit H-10).
+        // A list of the wrong length would write a short or long row that
+        // fails only on the next parse, so it is refused here.
         if list.len() != 3 {
             return Err(PyValueError::new_err(format!("expected 3 values, got {}", list.len())));
         }
@@ -100,8 +100,8 @@ impl ToPyValue for [u32; 2] {
 impl WritePyValue for [u32; 2] {
     fn write_from_py(w: &mut Vec<u8>, obj: &Bound<'_, PyAny>) -> PyResult<()> {
         let list = obj.cast::<PyList>()?;
-        // A list of the wrong length wrote a short or long row that only
-        // failed on the next parse (audit H-10).
+        // A list of the wrong length would write a short or long row that
+        // fails only on the next parse, so it is refused here.
         if list.len() != 2 {
             return Err(PyValueError::new_err(format!("expected 2 values, got {}", list.len())));
         }
@@ -113,8 +113,7 @@ impl WritePyValue for [u32; 2] {
     }
 }
 
-// ItemInfo `inventory_info_list` — twelve InventoryKey (u16) slots (nine in
-// 1.16–2.02, ten in 2.03).
+// ItemInfo `inventory_info_list` — twelve InventoryKey (u16) slots.
 impl ToPyValue for [u16; 12] {
     fn to_py_value(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         Ok(self.to_vec().into_pyobject(py)?.into_any().unbind())
@@ -124,8 +123,8 @@ impl ToPyValue for [u16; 12] {
 impl WritePyValue for [u16; 12] {
     fn write_from_py(w: &mut Vec<u8>, obj: &Bound<'_, PyAny>) -> PyResult<()> {
         let list = obj.cast::<PyList>()?;
-        // The width changed in 2.03 and 2.04; a shorter list from an older
-        // export would otherwise write an item short.
+        // The slot count has changed across patches; a shorter list from an
+        // export of an older patch would otherwise write an item short.
         if list.len() != 12 {
             return Err(PyValueError::new_err(format!(
                 "inventory_info_list needs 12 InventoryKey slots, got {}",
@@ -149,8 +148,8 @@ impl ToPyValue for [u32; 4] {
 impl WritePyValue for [u32; 4] {
     fn write_from_py(w: &mut Vec<u8>, obj: &Bound<'_, PyAny>) -> PyResult<()> {
         let list = obj.cast::<PyList>()?;
-        // A list of the wrong length wrote a short or long row that only
-        // failed on the next parse (audit H-10).
+        // A list of the wrong length would write a short or long row that
+        // fails only on the next parse, so it is refused here.
         if list.len() != 4 {
             return Err(PyValueError::new_err(format!("expected 4 values, got {}", list.len())));
         }
@@ -189,7 +188,7 @@ impl ToPyValue for HeaderName<'_> {
 }
 
 impl WritePyValue for HeaderName<'_> {
-    /// The name lives in the table's header since 2.06, so the row gets no bytes.
+    /// The name lives in the table's `.staticinfoheader`, so the row gets no bytes.
     fn write_from_py(_w: &mut Vec<u8>, _obj: &Bound<'_, PyAny>) -> PyResult<()> {
         Ok(())
     }

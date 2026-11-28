@@ -87,7 +87,7 @@ pub const PAPGT_TRAILER_SIZE: usize = 64;
 /// [u8; 64] trailer
 /// ```
 ///
-/// There is no Jenkins checksum any more. The trailer is high-entropy and no
+/// This layout has no Jenkins checksum. The trailer is high-entropy and no
 /// plain hash of the body, and `meta/0.papk` sits next to it, so it is treated
 /// as a signature: it is carried verbatim, and it cannot be recomputed here.
 /// Told apart from the older layout by its section lengths adding up exactly.
@@ -167,8 +167,8 @@ impl PackGroupTreeMeta {
 
         // Read group names buffer: i32 length prefix + data
         check_remaining(data, offset, 4)?;
-        // A negative i32 used to become a huge usize whose bounds check could
-        // wrap and then panic in the slice (audit A-09).
+        // A negative i32 is an error: cast to usize it would be huge, and its
+        // bounds check could wrap and then panic in the slice.
         let buf_len = usize::try_from(i32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()))
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "negative PAPGT name buffer length"))?;
         offset += 4;
@@ -212,7 +212,7 @@ impl PackGroupTreeMeta {
     /// A 2.04+ PAPGT keeps its old [`Self::trailer`], which no longer matches
     /// the edited entries; whether the game accepts that is not established.
     ///
-    /// Errors (audit A-15) on a name with a NUL byte (the buffer is
+    /// Errors on a name with a NUL byte (the buffer is
     /// NUL-separated, so it would split the name) or when the entry count
     /// would pass the u8 the header stores it in.
     pub fn add_entry(
@@ -314,7 +314,7 @@ mod tests {
     use super::*;
 
     /// A negative name-buffer length in the old layout is an error, not a
-    /// wrapped bounds check that then panics (audit A-09).
+    /// wrapped bounds check that then panics.
     #[test]
     fn negative_name_buffer_length_is_an_error() {
         let mut data = vec![0u8; 12]; // old layout: header with 0 entries

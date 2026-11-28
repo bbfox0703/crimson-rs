@@ -42,7 +42,7 @@ fn zlib_max_output(input_len: usize) -> usize {
 /// from the PAMT, an untrusted file, so it is checked before anything is
 /// allocated (a size the input cannot possibly expand to is an error, not a
 /// multi-GB allocation that aborts the process) and the output must match it
-/// exactly; a short or long stream is an error (audit A-03).
+/// exactly; a short or long stream is an error.
 pub fn decompress(
     data: &[u8],
     compression: Compression,
@@ -97,8 +97,8 @@ pub fn decompress(
 /// 2. **Header + LZ4(prefix dict)** — the first `PARTIAL_HEADER_BYTES`
 ///    (128) bytes are stored verbatim, then the remainder is one LZ4
 ///    block. The decoder uses those 128 bytes as a prefix dictionary
-///    so back-references can reach into the header. Covers every file
-///    under `0012/ui/texture/icon/` in 1.06 (every item icon).
+///    so back-references can reach into the header. Covers the item
+///    icons under `0012/ui/texture/icon/`.
 /// 3. **DDS per-mip table** — for DDS textures the engine can encode
 ///    each mip level independently. The on-disk size of mip *i* is
 ///    stored as a u32 in the DDS reserved area at `0x20 + 4*i` (11
@@ -110,7 +110,7 @@ pub fn decompress(
 ///    CrimsonForge modding tool — see `core/compression_engine.py`
 ///    `_decompress_type1_dds_per_mip_sizes`.
 ///
-/// **Not yet handled**: the PAR-container layout used by `.pam` /
+/// **Not handled**: the PAR-container layout used by `.pam` /
 /// `.pamlod` / `.pac` mesh assets in 0009/0015 (per-section LZ4 blocks
 /// indexed by an 8-slot table at offset 0x10). Those return an
 /// `InvalidData` error here so the caller can distinguish them from
@@ -146,7 +146,7 @@ pub(crate) fn decompress_partial(
 
     // Every strategy below decodes LZ4, which cannot expand past
     // `lz4_max_output`; refuse a declared size beyond that before any
-    // strategy allocates it (audit A-02 / A-12).
+    // strategy allocates it.
     if uncompressed_size > lz4_max_output(decrypted.len()) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -281,10 +281,10 @@ fn try_partial_dds_per_mip(decrypted: &[u8], uncompressed_size: usize) -> Option
 
 /// Minimal DDS header reader, just enough for the per-mip partial
 /// decompressor: width, height, mip count, header length, and per-mip
-/// raw byte size given (width, height). Covers every format observed
-/// in Crimson Desert 1.06's PAZ archives (DXT1/3/5, DX10-wrapped
-/// BC1..BC7, packed RGB(A), single-channel luminance, DX10 RGBA8 /
-/// R8 / R16F / etc).
+/// raw byte size given (width, height). Covers the formats observed
+/// in the game's PAZ archives (DXT1/3/5, DX10-wrapped BC1..BC7,
+/// packed RGB(A), single-channel luminance, DX10 RGBA8 / R8 / R16F /
+/// etc).
 #[derive(Debug, Clone, Copy)]
 struct DdsInfo {
     width: usize,
@@ -354,7 +354,7 @@ impl DdsInfo {
             return None;
         };
         // The header is untrusted: bound what drives the size arithmetic, the
-        // allocations and the per-mip loop (audit A-12). Direct3D caps a
+        // allocations and the per-mip loop. Direct3D caps a
         // texture at 16,384 px a side, which needs 15 mip levels.
         if width > MAX_DDS_DIMENSION || height > MAX_DDS_DIMENSION || mip_count > MAX_DDS_MIPS {
             return None;
@@ -409,7 +409,7 @@ impl DdsInfo {
 
 /// DX10 DXGI_FORMAT → DdsBody. Codes per
 /// https://learn.microsoft.com/en-us/windows/win32/api/dxgiformat/ne-dxgiformat-dxgi_format
-/// trimmed to what Pearl Abyss actually ships in 1.06.
+/// trimmed to the formats the game ships.
 fn dxgi_body(dxgi: u32) -> Option<DdsBody> {
     Some(match dxgi {
         // RGBA8 / BGRA8 32-bit
@@ -554,7 +554,7 @@ impl PackGroupBuilder {
 
         // The PAMT stores these as u32 / u16, and the trie as one length byte
         // per name fragment (every fragment lies inside one path segment); a
-        // value past those used to be truncated silently (audit A-15).
+        // value past those is refused rather than silently truncated.
         if dir_path.split('/').chain([file_name]).any(|s| s.len() > 255) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -746,9 +746,9 @@ impl PackGroupBuilder {
                 count: u16::try_from(pamt_chunks.len()).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "more than 65,535 .paz chunks"))?,
                 unknown0: 0, // seen in real files, always the same, maybe a version or magic?
                 // The key the files were encrypted with: extraction derives the
-                // ChaCha20 key from this header, and a fixed [2, 14, 97] made a
-                // pack encrypted with any other key unreadable (audit A-04).
-                // Live PAMTs pair [2, 14, 97] with 50 and [0, 0, 0] with 0.
+                // ChaCha20 key from this header, so it must name the key the
+                // builder used. Live PAMTs pair [2, 14, 97] with 50 and
+                // [0, 0, 0] with 0.
                 encrypt_info: PackEncryptInfo {
                     unknown0: if self.encrypt_info == [0, 0, 0] { 0 } else { 50 },
                     encrypt_info: self.encrypt_info,
@@ -797,7 +797,7 @@ pub fn extract_file(
     )?;
 
     // Read the compressed/encrypted data. The size comes from the PAMT: check
-    // it against the chunk file before allocating (audit A-02).
+    // it against the chunk file before allocating.
     let chunk_len = fh.metadata()?.len();
     let end = u64::from(file.file.chunk_offset) + u64::from(file.file.compressed_size);
     if end > chunk_len {
@@ -1125,8 +1125,7 @@ mod tests {
     }
 
     /// The declared size comes from the PAMT. A size the input cannot expand
-    /// to is refused before allocating, and the output must match it exactly
-    /// (audit A-03).
+    /// to is refused before allocating, and the output must match it exactly.
     #[test]
     fn test_decompress_checks_the_declared_size() {
         let data = vec![7u8; 4096];
@@ -1142,7 +1141,7 @@ mod tests {
     }
 
     /// A DDS header with a huge mip count or size is not decoded per mip; it
-    /// used to drive a 2^32-step loop and wrapping size arithmetic (A-12).
+    /// would drive a 2^32-step loop and wrapping size arithmetic.
     #[test]
     fn test_dds_header_bounds() {
         let mut h = vec![0u8; 148];
@@ -1162,9 +1161,8 @@ mod tests {
     }
 
     /// A pack encrypted with a non-default key extracts back through its own
-    /// PAMT: the header now names the key the builder used, which a fixed
-    /// [2, 14, 97] did not (audit A-04). Also covers ChaCha20 + LZ4 together,
-    /// which no builder test did (A-14).
+    /// PAMT: the header names the key the builder used. Also covers ChaCha20
+    /// and LZ4 together.
     #[test]
     fn test_pack_group_builder_chacha20_round_trip() {
         let dir = make_tempdir();
@@ -1181,7 +1179,7 @@ mod tests {
     }
 
     /// A path segment over 255 bytes is refused instead of truncating the
-    /// trie length byte (audit A-15).
+    /// trie length byte.
     #[test]
     fn test_pack_group_builder_refuses_long_names() {
         let dir = make_tempdir();

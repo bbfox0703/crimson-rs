@@ -31,8 +31,7 @@ pub struct TocEntry {
     pub sentinel2: u32,
     pub data_offset: u32,
     pub data_size: u32,
-    /// Byte offset where this entry begins in the body. Useful for a
-    /// future writer that needs to reproduce the same layout.
+    /// Byte offset of this entry's 20-byte TOC record in the body.
     pub entry_offset: usize,
 }
 
@@ -62,9 +61,8 @@ impl Toc {
 
         let toc_start = schema_end + TOC_HEADER_SIZE;
         // The count is untrusted: a TOC the body cannot hold is an error, not
-        // a count-sized allocation (0xFFFFFFFF asked for ~128 GiB) followed by
-        // entries read out of the data section (audit F-02). This also ends
-        // the old "short TOC tolerated" truncation, which hid a bad count.
+        // a count-sized allocation (0xFFFFFFFF would ask for ~128 GiB)
+        // followed by entries read out of the data section.
         let room = (raw.len() - toc_start) / TOC_ENTRY_SIZE;
         if toc_count as usize > room {
             return Err(io::Error::new(
@@ -105,8 +103,7 @@ fn read_u32(raw: &[u8], at: usize) -> u32 {
 mod tests {
     use super::*;
 
-    /// A count the body cannot hold is an error, not a ~128 GiB allocation
-    /// (audit F-02).
+    /// A count the body cannot hold is an error, not a ~128 GiB allocation.
     #[test]
     fn toc_count_must_fit_the_body() {
         let mut raw = vec![0u8; 4];

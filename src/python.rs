@@ -40,8 +40,8 @@ fn wr_item(w: &mut Vec<u8>, obj: &Bound<'_, PyAny>) -> PyResult<()> {
 
 // ── Module functions ───────────────────────────────────────────────────────
 
-/// Parse an iteminfo body. Since 2.06 a row's `string_key` lives in the
-/// table's `.staticinfoheader`; pass that header to get the names (and a check
+/// Parse an iteminfo body. A row's `string_key` lives in the table's
+/// `.staticinfoheader`; pass that header to get the names (and a check
 /// that every row's key and length match it). Without it `string_key` is "".
 #[pyfunction]
 #[pyo3(signature = (path, header_path=None))]
@@ -99,7 +99,7 @@ pub fn parse_iteminfo_from_bytes_inner(py: Python<'_>, data: &[u8]) -> PyResult<
 
 /// Try to find the next plausible item start at or after `from_offset`.
 ///
-/// Since 2.06 an item row begins with `u32 key` then `u32 row index` then
+/// An item row begins with `u32 key` then `u32 row index` then
 /// `is_blocked: u8`. We scan byte-by-byte for a position where:
 ///   - `key` is non-zero with the high byte zero (game item keys are
 ///     comfortably below 2^24);
@@ -108,9 +108,9 @@ pub fn parse_iteminfo_from_bytes_inner(py: Python<'_>, data: &[u8]) -> PyResult<
 fn scan_next_item_start(data: &[u8], from_offset: usize) -> Option<usize> {
     use crate::binary::static_header::read_body_row;
 
-    // `[u32 key][u32 row index][is_blocked: u8 = 0]`: the row shape since 2.06
-    // (the name moved to the header). A weaker anchor than the named head it
-    // replaced, so the row index is held to a plausible table size.
+    // `[u32 key][u32 row index][is_blocked: u8 = 0]`: the row shape (the name
+    // lives in the header). With no name to anchor on, the row index is held
+    // to a plausible table size.
     (from_offset..data.len()).find(|&o| {
         let Some(row) = read_body_row(&data[o..], 4) else {
             return false;
@@ -263,7 +263,7 @@ pub fn parse_iteminfo_tracked(py: Python<'_>, data: &[u8]) -> PyResult<Py<PyAny>
 ///
 /// `header`: on 2.06+ the row names live in `iteminfo.staticinfoheader`, so
 /// pass it to match patches by name (without it every 2.06 row is nameless and
-/// every patch resolves to `None`; audit H-01).
+/// every patch resolves to `None`).
 #[pyfunction]
 #[pyo3(signature = (vanilla_bytes, patches, header=None))]
 pub fn inspect_legacy_patches(
@@ -281,8 +281,8 @@ pub fn inspect_legacy_patches(
     }).transpose()?;
 
     // Parse vanilla once, recording (string_key, span_start, span_end, ranges)
-    // per item. First occurrence wins on duplicate string_keys (none expected
-    // in 1.05 but cheaper than panicking).
+    // per item. First occurrence wins on duplicate string_keys (none expected,
+    // but cheaper than panicking).
     let mut offset = 0;
     let mut entries: Vec<(String, usize, usize, Vec<FieldRange>)> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
@@ -375,7 +375,7 @@ pub fn serialize_iteminfo(py: Python<'_>, items: &Bound<'_, PyList>) -> PyResult
 /// Serialize items to a 2.06 pair: `(body, header)`. The header is rebuilt
 /// from each item's `key` and `string_key` with fresh offsets and sizes, so a
 /// length-changing edit and a renamed `string_key` both survive, which
-/// `serialize_iteminfo` (body only) cannot do on 2.06 (audit H-02).
+/// `serialize_iteminfo` (body only) cannot do on 2.06.
 #[pyfunction]
 pub fn serialize_iteminfo_with_header(py: Python<'_>, items: &Bound<'_, PyList>) -> PyResult<Py<PyAny>> {
     let mut body = Vec::new();
@@ -413,8 +413,8 @@ pub fn serialize_iteminfo_impl(items: &Bound<'_, PyList>) -> PyResult<Vec<u8>> {
 /// [`wr_item`], then parse the written row back: it must read as one item
 /// that consumes exactly its own bytes. A conditional field out of step with
 /// the fields that gate it (`unk_pre_gimmick_visual` after editing
-/// `equip_type_info` / `item_type`, audit H-12) or a wrong-length value used
-/// to produce a row that only failed on the next parse.
+/// `equip_type_info` / `item_type`) or a wrong-length value would otherwise
+/// produce a row that fails only on the next parse.
 fn wr_item_checked(buf: &mut Vec<u8>, item: &Bound<'_, PyAny>) -> PyResult<()> {
     let start = buf.len();
     wr_item(buf, item)?;
@@ -486,11 +486,10 @@ pub fn wr_papgt_from_dict(d: &Bound<'_, PyDict>) -> PyResult<Vec<u8>> {
         let group_name_offset: u32 = get(ed, "group_name_offset")?;
         let pack_meta_checksum: u32 = get(ed, "pack_meta_checksum")?;
 
-        // Write the name (plus its NUL) at its stored offset. Names used to
-        // overwrite each other silently when two offsets overlapped, and one
-        // huge offset allocated that much (audit H-05): a slot may be shared
-        // only by identical names, and an offset has to stay within reach of
-        // the names given.
+        // Write the name (plus its NUL) at its stored offset. A slot may be
+        // shared only by identical names, so overlapping offsets cannot
+        // silently overwrite a name, and an offset has to stay within reach
+        // of the names given, so a huge one cannot allocate that much.
         if group_name.as_bytes().contains(&0) {
             return Err(PyValueError::new_err(format!("group name {group_name:?} contains a NUL byte")));
         }
@@ -784,7 +783,7 @@ pub fn wr_pamt_from_dict(d: &Bound<'_, PyDict>) -> PyResult<Vec<u8>> {
     };
 
     // Recompute the header checksum: the dict's stored one goes stale on any
-    // edit and parse always validates it (audit H-03). An unedited PAMT still
+    // edit and parse always validates it. An unedited PAMT still
     // round-trips byte for byte, its stored checksum being the right one.
     let _ = checksum;
     pamt.to_bytes_with_checksum()
@@ -1606,9 +1605,8 @@ pub fn serialize_skillinfo(
             offset: get(d, "offset")?,
         });
     }
-    // `None` is a pre-2.06 table; a missing key used to fall through to the
-    // pre-2.06 layout too, so a dict without it wrote a 2.06 table in the old
-    // shape (audit H-19).
+    // `None` is a pre-2.06 table. A missing key is an error rather than the
+    // pre-2.06 layout, which would write a 2.06 table in the old shape.
     let row_indices: Option<Vec<u32>> = match data.get_item("row_indices")? {
         Some(v) if !v.is_none() => Some(v.extract()?),
         Some(_) => None,
@@ -1724,7 +1722,7 @@ pub fn write_save_with_nonce(
 ///   - `toc`: dict with `prefix_zero, toc_count, stream_size, entries[]`.
 ///
 /// Per-object decoding (turning a TOC entry's data slice into items, stats,
-/// quests, etc.) is the next layer and is not done here.
+/// quests, etc.) is `decode_save_body_blocks`, not this function.
 #[pyfunction]
 pub fn parse_save_body_from_bytes(py: Python<'_>, body: &[u8]) -> PyResult<Py<PyAny>> {
     let parsed = crate::save::Body::parse(body)
@@ -2009,7 +2007,7 @@ fn save_to_py_dict<'py>(py: Python<'py>, save: &crate::save::Save) -> PyResult<P
 // ── Registration ───────────────────────────────────────────────────────────
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    // Version self-check (audit H-15): `PARSER_TARGET` is the game patch this
+    // Version self-check: `PARSER_TARGET` is the game patch this
     // build's parsers target, `(major, minor, min_patch)` in paver numbering.
     // A stale wheel shows up as a target older than the install's paver.
     {

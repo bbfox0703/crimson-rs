@@ -1,14 +1,12 @@
 // Dead-code / unused-import lints are only meaningful on the full
-// surface (`c_abi` + `python`). Each consumer feature uses a different
-// slice of the core: the pack writer (PAZ/PAMT/PAPGT builders, trie
-// builder, skill writers) is reached only from the `python` facade,
-// the paver gate only from `c_abi`, and the bare-default build reaches
-// neither. Every partial build would therefore warn about code the
-// other feature uses — notably `cargo build --release --features c_abi`,
-// the build downstream links. Silence those two lints everywhere except
-// the full-surface build, where the strict clippy gate in
-// `.github/workflows/ci.yml` (`--all-targets --features c_abi,python
-// -- -D warnings`) still fails on genuinely dead code.
+// surface (`c_abi` + `python`). Each consumer feature reaches a different
+// slice of the core, and the bare-default build reaches neither, so every
+// partial build would warn about code the other feature uses — notably
+// `cargo build --release --features c_abi`, the build downstream links.
+// Silence those two lints everywhere except the full-surface build, where
+// the strict clippy gate in `.github/workflows/ci.yml` (`--all-targets
+// --features c_abi,python -- -D warnings`) still fails on genuinely dead
+// code.
 #![cfg_attr(
     not(all(feature = "python", feature = "c_abi")),
     allow(dead_code, unused_imports)
@@ -141,8 +139,8 @@ mod tests {
 
     #[test]
     fn test_full_roundtrip() {
-        // The live install's table (it used to read whatever export_for_ce.py
-        // last left in out\, possibly another version; audit I-08).
+        // The live install's table, not a local export, so the round-trip
+        // runs on the version that is installed.
         let Some(data) = gamedata_layout::extract_bin(&gamedata_layout::body("iteminfo")) else {
             return;
         };
@@ -264,7 +262,7 @@ mod tests {
     }
 
     /// Roundtrip every paloc file of one language **as it sits on disk**.
-    /// Pre-2.01 that is one blob; 2.01+ it is 39 per-namespace files, and
+    /// Pre-2.01 that is one blob; 2.01+ it is one file per namespace, and
     /// each has to come back byte-identical on its own — the merged blob
     /// `gamedata_layout::paloc_bytes` builds is a re-serialisation, so
     /// checking that instead would only prove self-consistency.
@@ -328,10 +326,9 @@ mod tests {
         };
         let (fallback, total) = run_skill_roundtrip("live game install", &pabgh, &pabgb);
         // The raw fallback keeps an entry's bytes but drops its buff fields,
-        // so a schema drift inside `BuffData` still round-trips. 2.04 to
-        // 2.05.01 left ~14% on the fallback (303-304 of ~2,160); 2.06's
-        // inline conditions pushed it to 78% (1,683 of 2,163) with every test
-        // green until the parser learned them (308 of 2,163). Fail past 20%.
+        // so a schema drift inside `BuffData` still round-trips and every
+        // other test stays green. A parser that matches the patch leaves
+        // about 14% of entries on the fallback; fail past 20%.
         assert!(
             fallback * 5 <= total,
             "skill raw fallback on {fallback} of {total} entries (over 20%): BuffData drift?"
@@ -412,9 +409,7 @@ mod tests {
     /// Skill round-trip on the versions in the parser's 2.04+ entry layout,
     /// from the game-data fixtures in `crimson-rs-private` (`gamedata/<ver>/`,
     /// see `test_fixtures::gamedata_dir`): 2.04 (= 2.04.08), 2.05.01 (= 2.05)
-    /// and 2.06. Skips a version whose fixture is missing. It used to read a
-    /// local version archive on `X:`, and before that a `G:` folder of old
-    /// installs that no longer exists (audit C-18).
+    /// and 2.06. Skips a version whose fixture is missing.
     #[test]
     fn test_skill_roundtrip_cross_version() {
         for version in ["2.04", "2.05.01", "2.06"] {
@@ -762,11 +757,10 @@ mod tests {
     /// if any `trailing_pad` byte is left over, since under the rule every
     /// such byte is a marker.
     ///
-    /// It also checks a VALUE, which a byte-identical round-trip cannot (the
-    /// 1.16 lesson): with the markers left in place, a mercenary's
-    /// `_currentHp` behind absent lists read as numbers like
-    /// 1,134,700,311,674,881 — its low bytes were the markers. Decoded
-    /// properly, every one is a u32-range stat.
+    /// It also checks a VALUE, which a byte-identical round-trip cannot: a
+    /// walk that misses the markers reads a mercenary's `_currentHp` behind
+    /// absent lists as numbers like 1,134,700,311,674,881 — its low bytes
+    /// are the markers. Decoded properly, every one is a u32-range stat.
     #[test]
     fn test_save_body_absent_markers_every_live_save() {
         use crate::save::{Body, FieldValue, ObjectBlock, Save, ScalarValue};
@@ -872,12 +866,11 @@ mod tests {
     /// Per-class `trailing_pad` census over every live save, oldest first,
     /// printed as a `pad/blocks` matrix. `test_save_body_decode_all_blocks`
     /// prints only the total, and that total moves with save *content*
-    /// (`FieldNPCSaveData` alone swings 228 ↔ 233 between saves), so when it
-    /// shifts on a new patch, compare a pre-patch save with a post-patch
+    /// (`FieldNPCSaveData` alone swings by a handful between saves), so when
+    /// it shifts on a new patch, compare a pre-patch save with a post-patch
     /// re-save of the same playthrough here before suspecting a new trailing
     /// field: real drift shows up as a class that pads in the new save and
-    /// never did before. On 2.02 the 2.01 slot0 and its 2.02 re-save slot102
-    /// matched class-for-class (242/1,168 each).
+    /// never did before.
     #[test]
     #[ignore]
     fn _probe_save_trailing_pad_census() {
@@ -978,7 +971,7 @@ mod tests {
 
     /// [`collect_all_saves`] plus every `save.save` in the private fixtures
     /// (`test_fixtures::saves_dir`), so the encoder round-trips also run where
-    /// the fixtures are present and no game is installed (audit I-05).
+    /// the fixtures are present and no game is installed.
     fn collect_saves_with_fixtures() -> Vec<(std::path::PathBuf, Vec<u8>)> {
         fn walk(dir: &std::path::Path, out: &mut Vec<(std::path::PathBuf, Vec<u8>)>) {
             let Ok(entries) = std::fs::read_dir(dir) else { return };
@@ -1043,10 +1036,9 @@ mod tests {
     /// the original.
     ///
     /// This test checks sizes only. Byte identity of a no-op re-encode is
-    /// asserted by `test_save_encoder_refuses_undecoded_bytes`, the
-    /// FactionSaveData relocation tests and the C ABI clone-then-remove
-    /// tests, on the saves they read; `test_save_body_full_roundtrip`
-    /// checks that the encoder is idempotent on every save.
+    /// asserted by the byte-identity round-trip tests on the saves they
+    /// read; `test_save_body_full_roundtrip` checks that the encoder is
+    /// idempotent on every save.
     #[test]
     fn test_save_body_block_roundtrip_per_block() {
         use crate::save::{Body, Save, encode_top_level_block};
@@ -1192,10 +1184,8 @@ mod tests {
     /// keep the body length, and a second write must equal the first.
     /// The encoder writes every wrapper's `payload_offset` as its own
     /// wrapper end, which is what the game writes in the saves the
-    /// byte-identity tests read (`test_save_encoder_refuses_undecoded_bytes`,
-    /// the FactionSaveData relocation tests, the C ABI clone-then-remove
-    /// tests); a save with any other stored offset would differ on the
-    /// first write and match from the second on.
+    /// byte-identity tests read; a save with any other stored offset would
+    /// differ on the first write and match from the second on.
     ///
     /// This proves the encoder is a deterministic structural inverse of
     /// the decoder — the property length-changing edits need.
@@ -1262,11 +1252,10 @@ mod tests {
         }
     }
 
-    /// The encoder must refuse a block the decoder did not fully explain
-    /// (audit F-01). Changing one absence-marker byte in block 7 of the 1.10
-    /// fixture leaves 809 undecoded bytes; `Body::write` used to return `Ok`
-    /// with a body 809 bytes short. The untouched body still re-encodes byte
-    /// for byte.
+    /// The encoder must refuse a block the decoder did not fully explain,
+    /// rather than return a body short by the undecoded bytes. Changing one
+    /// absence-marker byte in block 7 of the 1.10 fixture leaves 809
+    /// undecoded bytes. The untouched body still re-encodes byte for byte.
     #[test]
     fn test_save_encoder_refuses_undecoded_bytes() {
         let Some(bytes) = crate::test_fixtures::save("1.10/save.save") else {
@@ -1292,15 +1281,15 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData, "{err}");
     }
 
-    /// Regression for the save-loader length-change crash
+    /// Guards against the save-loader length-change crash
     /// (docs/save-loader-length-change-crash.md). A non-empty
     /// `_reviveQuestList` with no `01 01 01 01 01` trailer must decode (via the
     /// `prefix_00xx0100_notrailer` dynamic-array variant) so the following
-    /// `_factionNodeApplySkillList` object_list is parsed as a field. Before the
-    /// fix the forward walk broke at `_reviveQuestList`, dumping that object_list
+    /// `_factionNodeApplySkillList` object_list is parsed as a field. Otherwise
+    /// the forward walk breaks at `_reviveQuestList` and dumps that object_list
     /// — wrapper `payload_offset` and all — into `trailing_pad`; the encoder
-    /// wrote it verbatim, so on a length-changing edit the offset went stale and
-    /// the game's loader crashed on the dangling pointer.
+    /// writes it verbatim, so a length-changing edit leaves the offset stale and
+    /// the game's loader crashes on the dangling pointer.
     #[test]
     fn test_faction_revive_quest_no_trailer_relocates() {
         use crate::save::{Body, FieldKind, FieldValue, Save, encode_top_level_block};
@@ -1385,7 +1374,7 @@ mod tests {
     }
 
     /// Companion to the above for the `_reviveQuestList` header variants the
-    /// decoder still can't parse (`00 00 01 00` / `00 01 01 00`): their
+    /// decoder cannot parse (`00 00 01 00` / `00 01 01 00`): their
     /// `_factionNodeApplySkillList` stays in `trailing_pad`, but the encoder's
     /// self-referential relocation pass must still move its wrapper
     /// `payload_offset` when the block shifts. `engine-natural/before` carries
@@ -1440,8 +1429,8 @@ mod tests {
     /// Compare the `ContentsMiscSaveData` block between two saves
     /// (default: slot104 = 1.09, slot107 = 1.10). Dumps each field's
     /// decode kind + object_list count/variant, and the leading bytes of
-    /// any undecoded region. Used to RE the 1.10 `_contentsNpcSchedule`
-    /// drift.
+    /// any undecoded region, for narrowing down a schema drift in that
+    /// block.
     ///
     /// ```text
     /// cargo test --lib --features c_abi _probe_contents_misc_drift -- --ignored --nocapture
@@ -1525,9 +1514,9 @@ mod tests {
     }
 }
 
-/// The 2.06 `_with_header` parsers of the name-only bridges (audit D-01): with
-/// a 2.06 header they must return every row it lists. The anchor scan they
-/// used before dropped mission 2,444, stage 3,198, gimmick 140 and quest 1 row.
+/// The 2.06 `_with_header` parsers of the name-only bridges: with a 2.06
+/// header they must return every row it lists, which an anchor scan of the
+/// body does not.
 #[cfg(all(test, feature = "c_abi"))]
 mod with_header_tests {
     use crate::binary::gamedata_layout::{body, extract_bin, header};

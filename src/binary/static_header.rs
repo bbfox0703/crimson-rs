@@ -114,7 +114,7 @@ pub fn detect_named_header(
 /// consume the header and tile the body, the first whose header keys all
 /// equal the keys opening their body rows. A short header can parse under
 /// more than one pair (2.06 `autospawnfilterinfo` passes `(2, 1)` and
-/// `(1, 2)`); the keys settle it instead of list order (audit B-08).
+/// `(1, 2)`); the keys settle it instead of list order.
 pub fn detect_named_pair<'h>(hdr: &'h [u8], body: &[u8]) -> Option<(usize, usize, Vec<HeaderRow<'h>>)> {
     WIDTHS.iter().find_map(|&(cw, kw)| {
         let rows = parse_named_header(hdr, cw, kw)?;
@@ -179,8 +179,8 @@ pub fn to_legacy_layout(body: &[u8], header: &[u8]) -> Option<LegacyTable> {
         let row = body.get(r.range())?;
         let key = row.get(..key_width)?;
         // The header and the row each carry the key; the rebuild keeps the
-        // row's, so a disagreement would be written back silently (audit
-        // B-06 / C-09). Keys wider than 8 bytes compare their low 8.
+        // row's, so a disagreement is refused rather than silently written
+        // back. Keys wider than 8 bytes compare their low 8.
         if read_uint(key) != r.key {
             return None;
         }
@@ -217,8 +217,8 @@ pub fn from_legacy_layout(
     key_width: usize,
     indices: &[u32],
 ) -> Option<(Vec<u8>, Vec<u8>)> {
-    // `count_width` past 8 panicked in the `to_le_bytes()[..count_width]`
-    // below (audit B-09).
+    // A `count_width` past 8 would panic in the `to_le_bytes()[..count_width]`
+    // below.
     if !(1..=8).contains(&count_width) || !(1..=12).contains(&key_width) {
         return None;
     }
@@ -237,8 +237,8 @@ pub fn from_legacy_layout(
     let mut new_body = Vec::with_capacity(body.len());
     let mut new_header = (count as u64).to_le_bytes()[..count_width].to_vec();
     for (i, &start) in offsets.iter().enumerate() {
-        // Next larger offset by binary search (a linear scan per row was
-        // O(n^2) on a 53,000-row table).
+        // Next larger offset by binary search: a linear scan per row is
+        // O(n^2), and the largest tables run to tens of thousands of rows.
         let end = sorted
             .get(sorted.partition_point(|&o| o <= start))
             .copied()
@@ -292,7 +292,7 @@ mod tests {
     use super::*;
 
     /// With the body at hand the keys pick the width pair; a body whose key
-    /// disagrees with every parse yields nothing (audit B-08).
+    /// disagrees with every parse yields nothing.
     #[test]
     fn detect_named_pair_checks_keys() {
         let mut body = vec![0x40];
@@ -305,7 +305,7 @@ mod tests {
     }
 
     /// A row whose body key disagrees with its header key is not a valid
-    /// 2.06 pair (audit B-06 / C-09).
+    /// 2.06 pair.
     #[test]
     fn key_mismatch_between_header_and_row_is_refused() {
         let mut body = vec![0x10, 0x00];
@@ -318,7 +318,7 @@ mod tests {
     }
 
     /// Widths out of range are refused instead of panicking on the
-    /// `to_le_bytes()[..count_width]` slice (audit B-09).
+    /// `to_le_bytes()[..count_width]` slice.
     #[test]
     fn from_legacy_layout_refuses_bad_widths() {
         assert!(from_legacy_layout(&[], &[0u8; 9], 9, 4, &[]).is_none());

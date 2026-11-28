@@ -95,8 +95,8 @@ pub struct PackMetaFile {
 
 impl PackMetaFile {
     /// Decode the flags. A compression nibble of 5..=15 or a crypto nibble of
-    /// 4..=15 is an error: reading it as "none" turned format drift into
-    /// garbage output instead of a failure (audit A-05).
+    /// 4..=15 is an error: reading it as "none" would turn format drift into
+    /// garbage output instead of a failure.
     fn from_raw(raw: PackMetaFileRaw) -> io::Result<Self> {
         let raw_compression = raw.flags & 0x0F;
         let raw_crypto = raw.flags >> 4;
@@ -252,7 +252,7 @@ impl PackMeta {
         let dir_count = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
         offset += 4;
         // A count from the file can reserve at most what the remaining bytes
-        // could hold (16 B per directory), not 64 GiB (audit A-02).
+        // could hold (16 B per directory), not 64 GiB.
         let mut raw_directories = Vec::with_capacity(dir_count.min((data.len() - offset) / 16));
         for _ in 0..dir_count {
             raw_directories.push(PackMetaDirectory::read_from(data, &mut offset)?);
@@ -356,7 +356,7 @@ impl PackMeta {
                 }
 
                 let chunk = chunk_map[&(raw_file.chunk_id as u32)];
-                // u64: the u32 sum wrapped in release builds (audit A-08).
+                // u64: a u32 sum can wrap in release builds.
                 if u64::from(raw_file.chunk_offset) + u64::from(raw_file.compressed_size) > u64::from(chunk.size) {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -504,7 +504,7 @@ mod tests {
         }
     }
 
-    /// Unknown compression / crypto nibbles are errors, not "none" (A-05).
+    /// Unknown compression / crypto nibbles are errors, not "none".
     #[test]
     fn unknown_file_flags_are_errors() {
         assert_eq!(PackMetaFile::from_raw(raw(0x32)).unwrap().crypto, CryptoType::ChaCha20);

@@ -127,8 +127,7 @@ impl Save {
 
         let uncomp_size = header.uncompressed_size() as usize;
         // The header's size is untrusted: lz4_flex zero-fills that many bytes
-        // before decoding, so refuse a size the payload cannot expand to
-        // (audit F-05).
+        // before decoding, so refuse a size the payload cannot expand to.
         if uncomp_size > crate::binary::paz::lz4_max_output(compressed.len()) {
             return Err(SaveError::DecompressSizeMismatch {
                 expected: header.uncompressed_size(),

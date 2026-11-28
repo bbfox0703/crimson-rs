@@ -54,7 +54,7 @@ pub(crate) fn game_root() -> PathBuf {
 /// fresh checkout) this reports the newest layout — the callers all bail
 /// out on the missing PAMT before the answer matters. An install that is
 /// there but unreadable, or that has none of the known layouts, panics: on a
-/// new patch that is drift to fix, not "no install" to skip (audit I-02).
+/// new patch that is drift to fix, not "no install" to skip.
 fn resolved() -> &'static Layout {
     static CACHE: OnceLock<usize> = OnceLock::new();
     let idx = *CACHE.get_or_init(|| {
@@ -112,7 +112,7 @@ pub(crate) fn extract_dlc_bin(dlc: &str, name: &str) -> Option<Vec<u8>> {
 /// `None` only when the install (no `0008/0.pamt`) or the file is absent. A
 /// PAMT that does not parse, a missing static-info directory or a failed
 /// extraction panics instead, so drift fails the test rather than reading as
-/// "not installed" (audit I-02).
+/// "not installed".
 fn extract_bin_from(root: &std::path::Path, name: &str) -> Option<Vec<u8>> {
     let group_dir = root.join("0008");
     let pamt_path = group_dir.join("0.pamt");
@@ -156,7 +156,8 @@ fn extract_bin_from(root: &std::path::Path, name: &str) -> Option<Vec<u8>> {
 const PALOC_ROOT: &str = "gamedata/stringtable/binary__";
 
 /// Where one language's paloc file(s) live: the archive directory plus
-/// every filename in it, sorted. One entry pre-2.01, 39 from 2.01 on.
+/// every filename in it, sorted. One entry pre-2.01, one per namespace from
+/// 2.01 on.
 /// `None` when the group's PAMT or the language is absent.
 pub(crate) fn paloc_files(group: &str, lang: &str) -> Option<(String, Vec<String>)> {
     let pamt_bytes = std::fs::read(game_root().join(group).join("0.pamt")).ok()?;
@@ -182,8 +183,8 @@ pub(crate) fn paloc_files(group: &str, lang: &str) -> Option<(String, Vec<String
 }
 
 /// The extracted bytes of each paloc file for one language, as they sit on
-/// disk — one blob pre-2.01, 39 from 2.01 on, each inside the LZ4
-/// container from 2.03 on. Paired with the filename so a failure can name
+/// disk — one blob pre-2.01, one per namespace from 2.01 on, each inside the
+/// LZ4 container from 2.03 on. Paired with the filename so a failure can name
 /// it.
 ///
 /// Use this over [`paloc_bytes`] when the test is about the on-disk bytes

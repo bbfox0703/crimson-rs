@@ -32,12 +32,12 @@
 //! ## Round-trip caveats
 //!
 //! - Blocks with `undecoded_ranges` are NOT round-trippable — those bytes
-//!   were never captured by the decoder. The 1.06 test saves have zero
-//!   undecoded bytes (enforced by `test_save_body_decode_all_blocks`), so
-//!   this only matters if a future game patch drifts the format.
+//!   were never captured by the decoder. Game-written saves decode with
+//!   zero undecoded bytes (enforced by `test_save_body_decode_all_blocks`),
+//!   so this matters only after format drift.
 //! - Non-inline locators (where the child payload sits outside the
-//!   wrapper's immediate `[wrapper_end..)` range) are NOT supported in
-//!   B.1; the round-trip test would catch them. None observed in 1.06.
+//!   wrapper's immediate `[wrapper_end..)` range) are NOT re-emitted;
+//!   [`check_fully_decoded`] refuses them. No game-written save has one.
 
 use std::io;
 
@@ -49,9 +49,7 @@ use super::object::{
 
 /// Refuse a block the decoder did not fully explain. The encoder rebuilds a
 /// block from its decoded fields alone, so bytes the decoder could not place
-/// would silently disappear from the re-emitted body (audit F-01: one changed
-/// absence-marker byte left 809 undecoded bytes, and `Body::write` returned
-/// `Ok` with a body 809 bytes short). Checked recursively:
+/// would silently disappear from the re-emitted body. Checked recursively:
 /// - `undecoded_ranges` (bytes no decoder placed),
 /// - `Unknown` fields (nothing to re-emit),
 /// - placeholder list elements (wrapper only: their child payload failed to
@@ -60,8 +58,8 @@ use super::object::{
 ///   after its wrapper; the decoder counts a payload found elsewhere as
 ///   decoded, so it never shows up in `undecoded_ranges`).
 ///
-/// Every game-written save decodes with none of these (0 of 30 fixture and
-/// live saves), so this only stops a re-encode after format drift.
+/// Game-written saves decode with none of these, so this stops a re-encode
+/// only after format drift.
 fn check_fully_decoded(block: &ObjectBlock) -> Result<(), String> {
     if let Some((s, e)) = block.undecoded_ranges.first() {
         let total: usize = block.undecoded_ranges.iter().map(|(s, e)| e - s).sum();
@@ -114,7 +112,7 @@ fn carries_pad(block: &ObjectBlock) -> bool {
 /// The encoder lays the data section out as the TOC's blocks back to back,
 /// from the end of the TOC to `stream_size`. A save whose blocks overlap,
 /// leave gaps or stop short of `stream_size` would lose those bytes on
-/// re-encode (audit F-11); every save measured (30) is contiguous.
+/// re-encode; every game-written save measured is contiguous.
 fn check_contiguous_layout(body: &Body) -> Result<(), String> {
     let entries = &body.toc.entries;
     let mut next = body.schema.schema_end + 12 + entries.len() * 20;
@@ -526,9 +524,9 @@ fn encode_locator_field(
     // We need the child mask + mbc to emit the wrapper. The decoder always
     // populates them on the child block (when child is Some). For empty
     // locators (child = None), we have no mask bytes to emit — that would
-    // produce truncated output. Surface this loudly: if it happens on a
-    // real save, we need to add a separate "wrapper-only mask" field to
-    // FieldValue::Locator (none observed in 1.06).
+    // produce truncated output. Surface this loudly: a real save that hits
+    // it would need a separate "wrapper-only mask" field on
+    // FieldValue::Locator; no game-written save has one.
     let child_block = child.as_deref().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -568,7 +566,7 @@ fn encode_locator_field(
 
     // Inline child payload? The decoder records it (payload_start ==
     // wrapper_end); a non-inline child's payload lives elsewhere in the
-    // body and is not re-emitted here. This used to be inferred from the
+    // body and is not re-emitted here. The recorded flag decides, not the
     // field's decoded byte range, which a field built from scratch (the
     // element-template builder) doesn't have.
     if *inline_child {

@@ -36,22 +36,20 @@ pub enum ScalarValue {
     F32(f32),
     F64(f64),
     /// `float3` (12 bytes, 3 × f32). Used pervasively for positions
-    /// (`_spawnPosition`, `_deadPosition`, …). ~58k occurrences in the
-    /// live 1.07 sample save.
+    /// (`_spawnPosition`, `_deadPosition`, …).
     F32x3([f32; 3]),
     /// `float4` / `quaternion` (16 bytes, 4 × f32). Used for rotations
     /// and 4-vec data.
     F32x4([f32; 4]),
     /// `uint4` (16 bytes, 4 × u32). Used as a 128-bit UUID
-    /// (`SceneObjectUuid` etc.). ~11k occurrences in the live sample.
+    /// (`SceneObjectUuid` etc.).
     U32x4([u32; 4]),
     /// Anything we couldn't bucket into a primitive or known composite
     /// (non-power-of-2 size, or unrecognized type name with a weird
-    /// size). `Transform` (40 B) currently lands here — schema is
-    /// known (position 3×f32 + rotation 4×f32 + scale 3×f32) but the
-    /// byte ordering hasn't been verified against a written-then-read
-    /// round-trip yet, so the conservative `Bytes` fallback preserves
-    /// the raw payload.
+    /// size). `Transform` (40 B) lands here — its schema is known
+    /// (position 3×f32 + rotation 4×f32 + scale 3×f32) but its byte
+    /// ordering is not established, so the conservative `Bytes` fallback
+    /// preserves the raw payload.
     Bytes(Vec<u8>),
 }
 
@@ -155,7 +153,7 @@ pub enum FieldValue {
     /// specific header (the slice the decoder consumed before walking
     /// elements). Holding it verbatim makes round-trip trivial and lets
     /// the encoder patch only the count bytes when an element is
-    /// inserted / removed (Phase B.2).
+    /// inserted / removed.
     ObjectList {
         count: u32,
         header_variant: &'static str,
@@ -209,13 +207,12 @@ pub struct DecodedField {
 /// Whether an absent field of this `meta_kind` is written as a one-byte
 /// `0x01` absence marker: dynamic arrays (3) and object lists (6 / 7).
 ///
-/// Measured 2026-09-18 on all 12 live saves (written by game 1.10 through
-/// 2.03, 118k–135k objects and 170k–181k markers each): under this rule
-/// every object's field walk ends exactly on its boundary, with no bytes
-/// left over. The walk without it misread every field that follows such an
-/// absent field, and hid the markers in list-header variants, dynamic-array
-/// trailers and `trailing_pad`. Absent inline bytes (1) are not marked —
-/// adding kind 1 to the rule breaks ~60k objects per save.
+/// Under this rule every object's field walk in a game-written save ends
+/// exactly on its boundary, with no bytes left over. A walk without it
+/// misreads every field that follows such an absent field, and hides the
+/// markers in list-header variants, dynamic-array trailers and
+/// `trailing_pad`. Absent inline bytes (1) are not marked — adding kind 1 to
+/// the rule breaks tens of thousands of objects per save.
 pub(crate) fn absent_kind_has_marker(meta_kind: u16) -> bool {
     matches!(meta_kind, 3 | 6 | 7)
 }
@@ -236,21 +233,20 @@ pub struct ObjectBlock {
     pub mask_bytes: Vec<u8>,
     /// For top-level blocks: the `u32` immediately after the mask. For
     /// inline locator children / object_list elements: the `u32` at the
-    /// start of the inline payload (which the decoder used to call
-    /// "reserved_u32"). Either way the encoder writes it back at the
-    /// same offset.
+    /// start of the inline payload. Either way the encoder writes it back
+    /// at the same offset.
     pub reserved_u32: u32,
     pub fields: Vec<DecodedField>,
     /// Trailer bytes between the end of the forward walk and the start
     /// of the reverse-peeled tail (or the end of the block, when no
     /// reverse pass ran). The schema doesn't describe this region; the
     /// engine writes 1..N bytes there in some blocks and the original
-    /// Python parser leaves them as undecoded too. We capture the bytes
-    /// here so a future writer can round-trip them.
+    /// Python parser leaves them as undecoded too. The bytes are captured
+    /// here so the encoder round-trips them.
     ///
     /// Observed shapes:
-    ///   - 232 blocks have exactly 1 byte (FieldNPCSaveData + 6 other classes).
-    ///   - 1 block (MercenaryClanSaveData) has 3 bytes of `01 01 01`.
+    ///   - exactly 1 byte (FieldNPCSaveData and a few other classes).
+    ///   - 3 bytes of `01 01 01` (MercenaryClanSaveData).
     ///
     /// Empty `Vec` when no such trailer exists for this block. The
     /// per-class census is `_probe_save_trailing_pad_census` (listed in
@@ -289,11 +285,11 @@ pub(crate) fn decode_scalar(data: &[u8], field: &FieldDef) -> ScalarValue {
 
 /// Decode a scalar from raw LE bytes given just its declared type name +
 /// byte size. Same heuristic as [`decode_scalar`] but callable without a
-/// full [`FieldDef`] — used by the c_abi mutation surface (Phase B.2)
-/// when synthesizing a `ScalarValue` for a newly-present field.
+/// full [`FieldDef`] — used by the c_abi mutation surface when
+/// synthesizing a `ScalarValue` for a newly-present field.
 pub fn scalar_from_bytes(data: &[u8], type_name: &str, size: usize) -> ScalarValue {
-    // Callers check the length, but one path could hand over a short slice
-    // (audit F-12): keep it as raw bytes rather than index past it or read 0.
+    // A slice of the wrong length stays raw bytes rather than being indexed
+    // past its end or read as 0.
     if data.len() != size {
         return ScalarValue::Bytes(data.to_vec());
     }
@@ -304,10 +300,9 @@ pub fn scalar_from_bytes(data: &[u8], type_name: &str, size: usize) -> ScalarVal
         return ScalarValue::Bool(data[0]);
     }
     // ── Composite vector / quaternion scalars (12 / 16 bytes) ──
-    // These cover ~70k field occurrences in a live 1.07 save where the
-    // previous fallback path emitted opaque `Bytes`. See
-    // `_probe_save_composite_types` in `src/c_abi/character_info.rs`
-    // for the survey that drove this list.
+    // Common in saves (positions, rotations, UUIDs); without these arms they
+    // would decode as opaque `Bytes`. `_probe_save_composite_types` in
+    // `src/c_abi/character_info.rs` surveys which composites a save holds.
     if lower == "float3" && size == 12 && data.len() == 12 {
         return ScalarValue::F32x3([
             f32::from_le_bytes([data[0], data[1], data[2], data[3]]),
@@ -363,7 +358,7 @@ mod scalar_from_bytes_tests {
     use super::*;
 
     /// A slice of the wrong length stays raw bytes instead of panicking on
-    /// `data[0]` or reading as 0 (audit F-12).
+    /// `data[0]` or reading as 0.
     #[test]
     fn wrong_length_is_kept_as_bytes() {
         assert!(matches!(scalar_from_bytes(&[], "bool", 1), ScalarValue::Bytes(b) if b.is_empty()));
@@ -434,8 +429,8 @@ mod scalar_from_bytes_tests {
 
     #[test]
     fn transform_still_falls_through_to_bytes() {
-        // 40-byte Transform — schema known (3+4+3 f32) but layout
-        // verification deferred; current behaviour preserves bytes.
+        // 40-byte Transform — schema known (3+4+3 f32) but its byte
+        // ordering is not established, so the bytes are preserved.
         let bytes = vec![0u8; 40];
         match scalar_from_bytes(&bytes, "Transform", 40) {
             ScalarValue::Bytes(b) => assert_eq!(b.len(), 40),
@@ -445,8 +440,8 @@ mod scalar_from_bytes_tests {
 
     #[test]
     fn primitive_scalars_unchanged() {
-        // Regression guard — the new composite branches must NOT shadow
-        // the primitive `float`/`int*`/`uint*` paths.
+        // The composite branches must NOT shadow the primitive
+        // `float`/`int*`/`uint*` paths.
         assert!(matches!(
             scalar_from_bytes(&[0x00, 0x00, 0x80, 0x3f], "float", 4),
             ScalarValue::F32(x) if x == 1.0
@@ -463,10 +458,10 @@ mod scalar_from_bytes_tests {
 
     #[test]
     fn bool_preserves_raw_byte_round_trip() {
-        // Regression: the game stores `true` as BOTH 0x01 and 0xFF in the
-        // same save (e.g. `_isNewMark` is 0xFF, most other flags are 0x01).
-        // Collapsing to a Rust `bool` and re-emitting a canonical 0x01
-        // corrupted the 0xFF ones — a round-trip violation that produces a
+        // The game stores `true` as BOTH 0x01 and 0xFF in the same save
+        // (e.g. `_isNewMark` is 0xFF, most other flags are 0x01).
+        // Collapsing to a Rust `bool` and re-emitting a canonical 0x01 would
+        // corrupt the 0xFF ones — a round-trip violation that produces a
         // save the game's loader rejects after any length-changing edit.
         // The exact byte must survive decode -> encode unchanged.
         for raw in [0x00u8, 0x01, 0xff] {

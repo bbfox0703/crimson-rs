@@ -37,9 +37,8 @@ impl<'a> BinaryRead<'a> for CString<'a> {
         match std::str::from_utf8(bytes) {
             Ok(s) => Ok(CString { length, data: s.into(), raw: None }),
             // A non-UTF-8 string keeps a lossy copy for display and its raw
-            // bytes for the write-back. The copy used to be `Box::leak`ed to
-            // get a `&'a str`, which a long-running C# host never got back,
-            // once per load (audit A-16 / C-19).
+            // bytes for the write-back. The copy is owned by this value, so a
+            // long-running host that loads many tables leaks nothing.
             Err(_) => Ok(CString {
                 length,
                 data: String::from_utf8_lossy(bytes).into_owned().into(),
@@ -158,9 +157,9 @@ impl<'a, T: BinaryRead<'a>> BinaryRead<'a> for CArray<T> {
             ));
         }
         // `count <= remaining` bounds the element count, not the memory: a
-        // large `T` would still reserve remaining x size_of::<T>() (audit
-        // A-11). Reserve what the remaining bytes could hold and let a real
-        // count grow past it.
+        // large `T` would still reserve remaining x size_of::<T>(). Reserve
+        // what the remaining bytes could hold and let a real count grow past
+        // it.
         let mut items = Vec::with_capacity(count.min(remaining / std::mem::size_of::<T>().max(1)));
         for _ in 0..count {
             items.push(T::read_from(data, offset)?);
@@ -222,10 +221,10 @@ impl<'a, T: BinaryReadTracked<'a>> BinaryReadTracked<'a> for CArray<T> {
 
 // ── Presence flags ──────────────────────────────────────────────────────────
 
-/// A presence byte must be 0 or 1. Any other value used to read as "present"
-/// and write back as 1, so a drifted field was guessed at instead of failing,
-/// and the round-trip changed the byte (audit A-10 / C-10). Real data uses 0
-/// and 1 only (all of 2.06 base and DLC iteminfo).
+/// A presence byte must be 0 or 1. Any other value is an error: reading it as
+/// "present" and writing back 1 would guess at a drifted field instead of
+/// failing, and the round-trip would change the byte. Real data uses 0 and 1
+/// alone.
 fn presence_flag(flag: u8, what: &str, at: usize) -> io::Result<bool> {
     match flag {
         0 => Ok(false),
@@ -238,7 +237,7 @@ fn presence_flag(flag: u8, what: &str, at: usize) -> io::Result<bool> {
 }
 
 /// A flagged array that says "present" and then holds no elements would write
-/// back as the lone `0x00`, changing the bytes (audit A-10).
+/// back as the lone `0x00`, changing the bytes.
 fn flagged_array_not_empty<T>(items: &[T], at: usize) -> io::Result<()> {
     if items.is_empty() {
         return Err(io::Error::new(
@@ -511,7 +510,7 @@ mod cstring_tests {
     use super::*;
 
     /// A non-UTF-8 string reads as an owned lossy copy (nothing leaked) and
-    /// writes back its original bytes (audit A-16 / C-19).
+    /// writes back its original bytes.
     #[test]
     fn non_utf8_is_owned_and_round_trips() {
         let mut data = 3u32.to_le_bytes().to_vec();

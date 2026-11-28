@@ -66,8 +66,9 @@ pub struct Body {
 impl Body {
     /// Parse the schema + TOC portion of a decompressed save body.
     ///
-    /// The body's data section is **not** decoded by this call; that's the
-    /// next layer. Errors are structural (bad magic, truncated header).
+    /// The body's data section is **not** decoded by this call; that is
+    /// [`Body::decode_blocks`]. Errors are structural (bad magic, truncated
+    /// header).
     pub fn parse(raw: &[u8]) -> io::Result<Self> {
         if raw.len() < PREFIX_SIZE {
             return Err(io::Error::new(

@@ -54,9 +54,9 @@ pub fn derive_key(version: u16) -> Option<[u8; 32]> {
 /// same operation for a stream cipher.
 ///
 /// Errors when the 32-bit block counter would pass 2^32 inside `buf`: the
-/// cipher panicked there, and the game's behaviour at that boundary is not
+/// cipher would panic there, and the game's behaviour at that boundary is not
 /// known. The stored counter is random, so for a ~2 MB save this is about one
-/// write in 150,000 (audit F-06).
+/// write in 150,000.
 pub fn chacha20_xor(buf: &mut [u8], key: &[u8; 32], nonce16: &[u8; 16]) -> std::io::Result<()> {
     let initial_counter = u32::from_le_bytes(nonce16[0..4].try_into().unwrap());
     let nonce12: [u8; 12] = nonce16[4..16].try_into().unwrap();
@@ -135,7 +135,7 @@ mod tests {
     }
 
     /// A counter that would pass 2^32 inside the buffer is an error, not a
-    /// panic (audit F-06 / A-06).
+    /// panic.
     #[test]
     fn counter_overflow_is_an_error() {
         let key = [7u8; 32];

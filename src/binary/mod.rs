@@ -132,10 +132,10 @@ macro_rules! binary_struct {
 //
 // A field may carry an optional `=> <cond>` clause, meaning it is only present
 // on disk when `<cond>` (an expression over the *earlier* fields of the same
-// struct) is true. Used for patch drifts where Pearl Abyss gates a field on a
-// sibling value — e.g. Crimson Desert 1.12's `unk_pre_gimmick_visual`, present
-// only for equipment / gem items. The condition is evaluated **only in the read
-// path** (where the prior fields are in scope as locals); a conditional field is
+// struct) is true. Used where the game gates a field on a sibling value, e.g.
+// ItemInfo's `unk_pre_gimmick_visual`, present for equipment / gem items alone.
+// The condition is evaluated **only in the read path** (where the prior
+// fields are in scope as locals); a conditional field is
 // stored as `Option<T>` so write / to_py / from_py drive off `Option` presence
 // and never need to re-evaluate the condition (which keeps the write path from
 // having to reference siblings through `self`).
