@@ -15,7 +15,7 @@
 //!     u32 name_len,
 //!     u8 name[name_len], // ASCII identifier, e.g. "Faction_Graymane"
 //!     u32 key,           // matches PABGH key (2.04 moved it after the name)
-//!     [u8; 3]  (zero on every row),
+//!     [u8; 3]  (zero on 130 of 135 rows; bytes 1-2 hold 1..3 on five, e.g. Faction_Graymane),
 //!     u16 faction_group_key,          // factiongroup, e.g. 16965 FactionGroup_Graymane
 //!     u16 faction_relation_group_key, // factionrelationgroup, e.g. 16963 Graymane
 //!     u32 (1 on most rows),
@@ -77,8 +77,11 @@ pub const FACTION_GROUP_PALOC_LO: u32 = 0x214;
 /// Parse `faction.pabgb` using its `.pabgh` index (or a 2.06
 /// `.staticinfobody` with its `.staticinfoheader`).
 ///
-/// Returns entries in PABGH on-disk order. Skips any row whose body is
-/// too short or whose body key disagrees with the PABGH key.
+/// Returns entries in PABGH on-disk order. Skips any row whose body key
+/// disagrees with the PABGH key. The group keys sit at fixed offsets, so a row
+/// too short to hold both means the layout moved: the whole table then reads
+/// as empty (the C ABI loader returns `BODY_PARSE`) instead of reporting
+/// group 0, which reads as "no group".
 pub fn parse_faction_info_lossy(pabgb: &[u8], pabgh: &[u8]) -> Vec<FactionInfoEntry> {
     // 2.06 moved row names into the header; rebuild the pre-2.06 layout.
     let (pabgb, pabgh) = crate::binary::static_header::legacy_pair(pabgb, pabgh);
@@ -96,17 +99,15 @@ pub fn parse_faction_info_lossy(pabgb: &[u8], pabgh: &[u8]) -> Vec<FactionInfoEn
         if head.key != entry.key || !(1..=128).contains(&head.name.len()) {
             continue;
         }
-        // `[u8; 3]` (zero), then `u16 faction_group_key`, `u16 faction_relation_group_key`.
-        let u16_at = |at: usize| {
-            body.get(head.body_at + at..head.body_at + at + 2)
-                .map(|b| u16::from_le_bytes([b[0], b[1]]))
-                .unwrap_or(0)
+        // `[u8; 3]`, then `u16 faction_group_key`, `u16 faction_relation_group_key`.
+        let Some(&[_, _, _, g0, g1, r0, r1]) = body.get(head.body_at..head.body_at + 7) else {
+            return Vec::new();
         };
         out.push(FactionInfoEntry {
             key: head.key,
             name: head.name.to_owned(),
-            group_key: u16_at(3),
-            relation_group_key: u16_at(5),
+            group_key: u16::from_le_bytes([g0, g1]),
+            relation_group_key: u16::from_le_bytes([r0, r1]),
         });
     }
     out
