@@ -37,7 +37,7 @@ pub use object::{
 #[cfg(feature = "c_abi")]
 pub(crate) use decoder::decode_one_list_element_bytes;
 #[cfg(feature = "c_abi")]
-pub(crate) use encoder::encode_scalar;
+pub(crate) use encoder::{blocks_fully_decoded, encode_scalar};
 #[cfg(feature = "c_abi")]
 pub(crate) use schema::{FieldDef, TypeDef};
 #[cfg(feature = "c_abi")]
@@ -66,8 +66,9 @@ pub struct Body {
 impl Body {
     /// Parse the schema + TOC portion of a decompressed save body.
     ///
-    /// The body's data section is **not** decoded by this call; that's the
-    /// next layer. Errors are structural (bad magic, truncated header).
+    /// The body's data section is **not** decoded by this call; that is
+    /// [`Body::decode_blocks`]. Errors are structural (bad magic, truncated
+    /// header).
     pub fn parse(raw: &[u8]) -> io::Result<Self> {
         if raw.len() < PREFIX_SIZE {
             return Err(io::Error::new(
@@ -109,10 +110,6 @@ impl Body {
     /// byte-for-byte. For mutated blocks (after a length-changing edit)
     /// the data section grows / shrinks accordingly and TOC offsets +
     /// `stream_size` reflect the new layout.
-    ///
-    /// `allow(dead_code)` until Phase B.2 wires a C ABI consumer; the
-    /// golden round-trip tests exercise this path via `cfg(test)` code.
-    #[allow(dead_code)]
     pub fn write(&self, raw: &[u8], blocks: &[ObjectBlock]) -> io::Result<Vec<u8>> {
         if raw.len() < self.schema.schema_end {
             return Err(io::Error::new(

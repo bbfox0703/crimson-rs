@@ -62,6 +62,11 @@ pub fn parse_named_header(
         let len = u32::from_le_bytes(hdr.get(at..at + 4)?.try_into().ok()?) as usize;
         at += 4;
         let name = std::str::from_utf8(hdr.get(at..at.checked_add(len)?)?).ok()?;
+        // A NUL would cut the name short for a C caller while the reported
+        // length covers all of it; no real row name has one.
+        if name.contains('\0') {
+            return None;
+        }
         at += len;
         let offset = u32::from_le_bytes(hdr.get(at..at + 4)?.try_into().ok()?);
         let size = u32::from_le_bytes(hdr.get(at + 4..at + 8)?.try_into().ok()?);
@@ -71,8 +76,10 @@ pub fn parse_named_header(
     (at == hdr.len()).then_some(rows)
 }
 
-/// The count and key widths 2.06 uses, most common first.
-const WIDTHS: [(usize, usize); 12] = [
+/// Every count width (1, 2, 4) with every key width (1, 2, 4, 8, 12) that
+/// 2.06 tables use, the common pairs first. Ambiguous parses are settled by
+/// row packing and, with the body at hand, by the keys.
+const WIDTHS: [(usize, usize); 15] = [
     (2, 4),
     (2, 2),
     (4, 4),
@@ -85,6 +92,9 @@ const WIDTHS: [(usize, usize); 12] = [
     (1, 4),
     (4, 1),
     (2, 8),
+    (1, 8),
+    (1, 12),
+    (4, 12),
 ];
 
 /// Parse a 2.06 header whose widths are not known in advance: the first
@@ -97,6 +107,23 @@ pub fn detect_named_header(
     WIDTHS.iter().find_map(|&(cw, kw)| {
         let rows = parse_named_header(hdr, cw, kw)?;
         rows_are_packed(&rows, body_len).then_some((cw, kw, rows))
+    })
+}
+
+/// [`detect_named_header`] with the body at hand: among the width pairs that
+/// consume the header and tile the body, the first whose header keys all
+/// equal the keys opening their body rows. A short header can parse under
+/// more than one pair (2.06 `autospawnfilterinfo` passes `(2, 1)` and
+/// `(1, 2)`); the keys settle it instead of list order.
+pub fn detect_named_pair<'h>(hdr: &'h [u8], body: &[u8]) -> Option<(usize, usize, Vec<HeaderRow<'h>>)> {
+    WIDTHS.iter().find_map(|&(cw, kw)| {
+        let rows = parse_named_header(hdr, cw, kw)?;
+        if !rows_are_packed(&rows, body.len()) {
+            return None;
+        }
+        rows.iter()
+            .all(|r| body.get(r.offset as usize..r.offset as usize + kw).is_some_and(|k| read_uint(k) == r.key))
+            .then_some((cw, kw, rows))
     })
 }
 
@@ -144,13 +171,19 @@ pub struct LegacyTable {
 /// `None` when `header` is not a 2.06 header for `body` (an older install, for
 /// which the parsers need no help) or a row is too short for its key and index.
 pub fn to_legacy_layout(body: &[u8], header: &[u8]) -> Option<LegacyTable> {
-    let (count_width, key_width, rows) = detect_named_header(header, body.len())?;
+    let (count_width, key_width, rows) = detect_named_pair(header, body)?;
     let mut new_body = Vec::with_capacity(body.len() + header.len());
     let mut new_header = Vec::with_capacity(count_width + rows.len() * (key_width + 4));
     new_header.extend_from_slice(&(rows.len() as u64).to_le_bytes()[..count_width]);
     for r in &rows {
         let row = body.get(r.range())?;
         let key = row.get(..key_width)?;
+        // The header and the row each carry the key; the rebuild keeps the
+        // row's, so a disagreement is refused rather than silently written
+        // back. Keys wider than 8 bytes compare their low 8.
+        if read_uint(key) != r.key {
+            return None;
+        }
         let rest = row.get(key_width + 4..)?;
         new_header.extend_from_slice(key);
         new_header.extend_from_slice(&(new_body.len() as u32).to_le_bytes());
@@ -165,7 +198,7 @@ pub fn to_legacy_layout(body: &[u8], header: &[u8]) -> Option<LegacyTable> {
 /// The row indices of a 2.06 table, in header order (for
 /// [`from_legacy_layout`]). `None` when it is not a 2.06 pair.
 pub fn row_indices(body: &[u8], header: &[u8]) -> Option<Vec<u32>> {
-    let (_, kw, rows) = detect_named_header(header, body.len())?;
+    let (_, kw, rows) = detect_named_pair(header, body)?;
     rows.iter()
         .map(|r| read_body_row(body.get(r.range())?, kw).map(|b| b.index))
         .collect()
@@ -184,8 +217,13 @@ pub fn from_legacy_layout(
     key_width: usize,
     indices: &[u32],
 ) -> Option<(Vec<u8>, Vec<u8>)> {
+    // A `count_width` past 8 would panic in the `to_le_bytes()[..count_width]`
+    // below.
+    if !(1..=8).contains(&count_width) || !(1..=12).contains(&key_width) {
+        return None;
+    }
     let count = read_uint(header.get(..count_width)?) as usize;
-    if header.len() != count_width + count * (key_width + 4) || indices.len() != count {
+    if header.len() != count_width + count.checked_mul(key_width + 4)? || indices.len() != count {
         return None;
     }
     let offsets: Vec<usize> = (0..count)
@@ -199,9 +237,10 @@ pub fn from_legacy_layout(
     let mut new_body = Vec::with_capacity(body.len());
     let mut new_header = (count as u64).to_le_bytes()[..count_width].to_vec();
     for (i, &start) in offsets.iter().enumerate() {
+        // Next larger offset by binary search: a linear scan per row is
+        // O(n^2), and the largest tables run to tens of thousands of rows.
         let end = sorted
-            .iter()
-            .find(|&&o| o > start)
+            .get(sorted.partition_point(|&o| o <= start))
             .copied()
             .unwrap_or(body.len());
         let row = body.get(start..end)?;
@@ -223,6 +262,18 @@ pub fn from_legacy_layout(
     Some((new_body, new_header))
 }
 
+/// The `(key, name)` of every row a 2.06 header lists, in header order. This
+/// is the table's authoritative key list, so a name-only bridge reads it
+/// instead of anchor-scanning the body. `None` when `header` is not a 2.06
+/// header for `body`, or when its keys are wider than a `u32`.
+pub fn header_row_names(body: &[u8], header: &[u8]) -> Option<Vec<(u32, String)>> {
+    let (_, key_width, rows) = detect_named_pair(header, body)?;
+    if key_width > 4 {
+        return None;
+    }
+    Some(rows.iter().map(|r| (r.key as u32, r.name.to_owned())).collect())
+}
+
 /// Parsers that take `(body, header)` call this first: a 2.06 pair comes back
 /// rebuilt in the pre-2.06 layout, anything else unchanged.
 pub fn legacy_pair<'a>(
@@ -239,6 +290,40 @@ pub fn legacy_pair<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// With the body at hand the keys pick the width pair; a body whose key
+    /// disagrees with every parse yields nothing.
+    #[test]
+    fn detect_named_pair_checks_keys() {
+        let mut body = vec![0x40];
+        body.extend_from_slice(&0u32.to_le_bytes());
+        body.push(9);
+        let h = header(2, 1, &[(0x40, "A", 0, 6)]);
+        assert_eq!(detect_named_pair(&h, &body).map(|(c, k, _)| (c, k)), Some((2, 1)));
+        body[0] = 0x41;
+        assert!(detect_named_pair(&h, &body).is_none());
+    }
+
+    /// A row whose body key disagrees with its header key is not a valid
+    /// 2.06 pair.
+    #[test]
+    fn key_mismatch_between_header_and_row_is_refused() {
+        let mut body = vec![0x10, 0x00];
+        body.extend_from_slice(&0u32.to_le_bytes());
+        body.push(1);
+        let good = header(2, 2, &[(0x10, "A", 0, 7)]);
+        assert!(to_legacy_layout(&body, &good).is_some());
+        let bad = header(2, 2, &[(0x11, "A", 0, 7)]);
+        assert!(to_legacy_layout(&body, &bad).is_none());
+    }
+
+    /// Widths out of range are refused instead of panicking on the
+    /// `to_le_bytes()[..count_width]` slice.
+    #[test]
+    fn from_legacy_layout_refuses_bad_widths() {
+        assert!(from_legacy_layout(&[], &[0u8; 9], 9, 4, &[]).is_none());
+        assert!(from_legacy_layout(&[], &[0u8; 2], 2, 13, &[]).is_none());
+    }
 
     #[test]
     fn rebuilds_the_legacy_layout() {
@@ -262,6 +347,48 @@ mod tests {
         assert_eq!(idx, [0, 1]);
         let (b2, h2) = from_legacy_layout(&t.body, &t.header, 2, 2, &idx).unwrap();
         assert_eq!((b2, h2), (body, h));
+    }
+
+    /// Every width pair in `WIDTHS` is detected from a one-row pair.
+    #[test]
+    fn detects_every_width_pair() {
+        for &(cw, kw) in &WIDTHS {
+            let mut body = vec![0u8; kw];
+            body[0] = 0x31;
+            body.extend_from_slice(&0u32.to_le_bytes());
+            body.push(7);
+            let h = header(cw, kw, &[(0x31, "Row", 0, body.len() as u32)]);
+            let (c, k, rows) = detect_named_pair(&h, &body).unwrap_or_else(|| panic!("({cw}, {kw}) not detected"));
+            assert_eq!((c, k), (cw, kw));
+            assert_eq!((rows[0].key, rows[0].name), (0x31, "Row"));
+            let row = read_body_row(&body, kw).unwrap();
+            assert_eq!((row.key, row.index, row.rest), (0x31, 0, &[7u8][..]));
+        }
+    }
+
+    /// Rows must tile the body in order, and names must be NUL-free UTF-8.
+    #[test]
+    fn refuses_gaps_overlaps_and_bad_names() {
+        let mut body = vec![0x10, 0x00];
+        body.extend_from_slice(&0u32.to_le_bytes());
+        body.push(1);
+        body.extend_from_slice(&[0x20, 0x00]);
+        body.extend_from_slice(&1u32.to_le_bytes());
+        body.push(2);
+        let ok = header(2, 2, &[(0x10, "A", 0, 7), (0x20, "B", 7, 7)]);
+        assert!(detect_named_pair(&ok, &body).is_some());
+        let gap = header(2, 2, &[(0x10, "A", 0, 6), (0x20, "B", 7, 7)]);
+        assert!(detect_named_pair(&gap, &body).is_none(), "gap");
+        let overlap = header(2, 2, &[(0x10, "A", 0, 8), (0x20, "B", 7, 7)]);
+        assert!(detect_named_pair(&overlap, &body).is_none(), "overlap");
+        let short = header(2, 2, &[(0x10, "A", 0, 7), (0x20, "B", 7, 6)]);
+        assert!(detect_named_pair(&short, &body).is_none(), "rows stop short of the body");
+        let nul = header(2, 2, &[(0x10, "A\0", 0, 7), (0x20, "B", 7, 7)]);
+        assert!(parse_named_header(&nul, 2, 2).is_none(), "NUL in a name");
+        let mut lying = ok.clone();
+        lying[0] = 3;
+        assert!(parse_named_header(&lying, 2, 2).is_none(), "count larger than the rows");
+        assert!(read_body_row(&body[..5], 2).is_none(), "row shorter than key + index");
     }
 
     fn header(count_width: usize, key_width: usize, rows: &[(u64, &str, u32, u32)]) -> Vec<u8> {

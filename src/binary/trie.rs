@@ -11,6 +11,17 @@ pub enum TrieEncoding {
     RelativeParent,
 }
 
+/// Longest parent chain a name may have. Real names are a handful of
+/// segments deep; this only stops a crafted loop or chain.
+const MAX_TRIE_DEPTH: usize = 4096;
+/// Longest name a chain may resolve to. Real archive paths are a few hundred
+/// bytes at most.
+const MAX_TRIE_STRING: usize = 4096;
+/// Intermediate nodes are cached only up to this length (directory prefixes
+/// are short), so cache memory stays a small multiple of the buffer even for
+/// a crafted deep chain.
+const MAX_CACHED_PREFIX: usize = 512;
+
 /// Trie-encoded string buffer used by PAMT files.
 ///
 /// Each entry at a given offset consists of:
@@ -93,44 +104,71 @@ impl TrieStringBuffer {
         }
     }
 
+    /// The full string at `offset`: its ancestors' parts, root first, then
+    /// its own. Walks the parent chain in a loop rather than recursively, so a
+    /// crafted buffer cannot overflow the stack: a parent that
+    /// points back at itself (possible in the absolute encoding), a chain
+    /// longer than the buffer could hold (every node takes at least 2 bytes)
+    /// or than [`MAX_TRIE_DEPTH`], or a name over [`MAX_TRIE_STRING`] is an
+    /// error.
     pub fn get_string(&mut self, offset: i32) -> io::Result<String> {
         if offset == -1 {
             return Ok(String::new());
         }
-
         if let Some(cached) = self.cache.get(&offset) {
             return Ok(cached.clone());
         }
 
-        let (next_offset, len_at) = self.read_parent(offset)?;
-        let string_length = *self.data.get(len_at).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                format!(
-                    "trie offset {} out of bounds (buf len {})",
-                    offset,
-                    self.data.len()
-                ),
-            )
-        })? as usize;
-        let start = len_at + 1;
+        let max_chain = (self.data.len() / 2 + 1).min(MAX_TRIE_DEPTH);
+        let mut chain: Vec<(i32, String)> = Vec::new();
+        let mut prefix = String::new();
+        let mut cur = offset;
+        while cur != -1 {
+            if let Some(cached) = self.cache.get(&cur) {
+                prefix = cached.clone();
+                break;
+            }
+            if chain.len() >= max_chain {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("trie parent chain from offset {offset} loops or runs past the buffer"),
+                ));
+            }
+            let (next_offset, len_at) = self.read_parent(cur)?;
+            let string_length = *self.data.get(len_at).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    format!("trie offset {} out of bounds (buf len {})", cur, self.data.len()),
+                )
+            })? as usize;
+            let start = len_at + 1;
+            let part = self.data.get(start..start + string_length).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::UnexpectedEof, "trie string data out of bounds")
+            })?;
+            let part = std::str::from_utf8(part)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
+                .to_string();
+            chain.push((cur, part));
+            cur = next_offset;
+        }
 
-        if start + string_length > self.data.len() {
+        let total = prefix.len() + chain.iter().map(|(_, p)| p.len()).sum::<usize>();
+        if total > MAX_TRIE_STRING {
             return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "trie string data out of bounds",
+                io::ErrorKind::InvalidData,
+                format!("trie name at offset {offset} is {total} bytes long"),
             ));
         }
 
-        // Copy the string data to avoid borrow conflict with recursive call
-        let string_part = std::str::from_utf8(&self.data[start..start + string_length])
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
-            .to_string();
-
-        let parent = self.get_string(next_offset)?;
-        let value = parent + &string_part;
-
-        self.cache.insert(offset, value.clone());
+        // Rebuild from the root side, caching the short prefixes on the way
+        // and the requested name itself.
+        let mut value = prefix;
+        for (node, part) in chain.into_iter().rev() {
+            value.push_str(&part);
+            if node == offset || value.len() <= MAX_CACHED_PREFIX {
+                self.cache.insert(node, value.clone());
+            }
+        }
         Ok(value)
     }
 
@@ -398,6 +436,46 @@ mod tests {
         buf.extend_from_slice(b"hello"); // data
         let mut trie = TrieStringBuffer::new(buf);
         assert_eq!(trie.get_string(0).unwrap(), "hello");
+    }
+
+    /// A parent that points back at itself, or a long chain, is an error, not
+    /// a recursion that overflows the stack and aborts the process.
+    #[test]
+    fn test_trie_parent_loop_is_an_error() {
+        // Absolute encoding: the node at 0 names itself as its parent.
+        let mut buf = 0i32.to_le_bytes().to_vec();
+        buf.push(1);
+        buf.push(b'a');
+        let err = TrieStringBuffer::new(buf).get_string(0).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
+
+        // Two nodes naming each other.
+        let mut buf = 6i32.to_le_bytes().to_vec();
+        buf.extend_from_slice(&[1, b'a']);
+        buf.extend_from_slice(&0i32.to_le_bytes());
+        buf.extend_from_slice(&[1, b'b']);
+        assert!(TrieStringBuffer::new(buf).get_string(0).is_err());
+    }
+
+    /// A chain as deep as allowed resolves without recursion; one link more
+    /// is an error, not a stack overflow.
+    #[test]
+    fn test_trie_deep_chain_resolves() {
+        let build = |depth: usize| {
+            let mut buf = Vec::with_capacity(depth * 6);
+            let mut parent = -1i32;
+            for _ in 0..depth {
+                let at = buf.len() as i32;
+                buf.extend_from_slice(&parent.to_le_bytes());
+                buf.extend_from_slice(&[1, b'x']);
+                parent = at;
+            }
+            (buf, parent)
+        };
+        let (buf, leaf) = build(MAX_TRIE_DEPTH);
+        assert_eq!(TrieStringBuffer::new(buf).get_string(leaf).unwrap().len(), MAX_TRIE_DEPTH);
+        let (buf, leaf) = build(MAX_TRIE_DEPTH + 1);
+        assert!(TrieStringBuffer::new(buf).get_string(leaf).is_err());
     }
 
     #[test]

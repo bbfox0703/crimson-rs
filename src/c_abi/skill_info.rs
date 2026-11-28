@@ -1,9 +1,9 @@
 //! `skill.pabgb` + `skill.pabgh` bridge — C ABI surface.
 //!
 //! Parses an in-memory skill data pair (after PAZ extraction from group
-//! `0008`, directory `gamedata/binary__/client/bin/`) and exposes the
+//! `0008`, the static-info directory `gamedata/binarystaticinfo__/bin`) and exposes the
 //! single primitive the Save Editor needs: map a `SkillKey (u32)` to its
-//! entry name (a BString-shape ASCII identifier like `"PowerStrike"` or
+//! entry name (an ASCII identifier like `"PowerStrike"` or
 //! `"BatPunch"`). The caller then prefixes the name into a PALOC lookup
 //! (e.g. `"SkillName_PowerStrike"`) to obtain a localized display name —
 //! exactly the same two-hop pattern that [`super::iteminfo`] uses for
@@ -19,8 +19,8 @@
 //! parse once, retains only the pair, and drops the rest. Same trade as
 //! [`super::iteminfo`].
 //!
-//! Memory cost: ~250 skills on 1.06 × ~20 bytes per name ≈ 5 KB resident
-//! plus HashMap overhead. Negligible compared to the iteminfo bridge.
+//! Memory cost: a few thousand skills × ~20 bytes per name, tens of KB
+//! plus HashMap overhead.
 
 use std::collections::HashMap;
 use std::io;
@@ -33,7 +33,6 @@ use crate::skill_info::SkillData;
 /// Opaque handle exposing lean per-skill lookups against the loaded
 /// `skill.pabgb` + `skill.pabgh` pair. The full `SkillData` parse runs
 /// once; only `(key, name)` is retained.
-#[repr(C)]
 pub struct CrimsonSkillInfoHandle {
     by_key: HashMap<u32, String>,
     /// `(key, name)` in on-disk PABGH order so the caller can enumerate
@@ -48,12 +47,11 @@ impl CrimsonSkillInfoHandle {
         let data = SkillData::parse(pabgh, pabgb)?;
         let mut entries: Vec<(u32, String)> = Vec::with_capacity(data.entries.len());
         for entry in &data.entries {
-            // `name_bytes` is the BString-shape entry name. Internal
+            // `name_bytes` is the entry name (`u32 len + bytes`). Internal
             // names are ASCII by convention (`"PowerStrike"`, etc.);
-            // `from_utf8_lossy` is defensive — a non-UTF-8 byte in a
-            // future format wouldn't crash the bridge, it would just
-            // surface as `U+FFFD` in the returned string. The caller
-            // would notice and we'd revisit.
+            // `from_utf8_lossy` is defensive — a non-UTF-8 byte does not
+            // fail the load, it surfaces as `U+FFFD` in the returned
+            // string.
             let name = String::from_utf8_lossy(&entry.name_bytes).into_owned();
             entries.push((entry.key, name));
         }
@@ -308,7 +306,7 @@ mod tests {
     //! Synthesizing skill bytes from scratch is impractical (the buff
     //! tail-size probe needs realistic type_id values across the full
     //! 0..=119 range) so we rely on round-tripping the real bytes through
-    //! PAZ extraction + the new C ABI.
+    //! PAZ extraction + the C ABI.
     //!
     //! Coverage for the C ABI's error paths (NULL_ARG, BODY_PARSE on
     //! garbage, OUT_OF_RANGE, NOT_FOUND) uses synthetic inputs that
@@ -395,8 +393,7 @@ mod tests {
             unsafe { crimson_skillinfo_entry_count(handle, &mut count) },
             error::OK
         );
-        // 1.05 / 1.06 land somewhere around 250–300 skills. Just assert
-        // plausibly populated; pinning a specific count would break on
+        // Just assert plausibly populated; pinning a specific count would break on
         // every patch.
         assert!(count > 100, "expected >100 skills, got {count}");
 

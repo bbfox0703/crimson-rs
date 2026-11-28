@@ -1,3 +1,5 @@
+use std::io;
+
 use chacha20_crate::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
 
 use super::checksum;
@@ -17,7 +19,11 @@ const PACK_ENTRY_BASE_KEY: [u8; 32] = [
 /// The nonce is derived from the filename (after the last '/') checksum,
 /// and the key is derived by XOR-ing the base key with the nonce and
 /// the XOR of the 3 encrypt_info bytes.
-pub fn decrypt_pack_entry(data: &[u8], group_encrypt_info: &[u8; 3], entry_path: &str) -> Vec<u8> {
+///
+/// Errors when the 32-bit block counter, which starts at the filename's hash,
+/// would pass 2^32 inside `data`: the cipher would panic there, and how the
+/// game handles that boundary is not known.
+pub fn decrypt_pack_entry(data: &[u8], group_encrypt_info: &[u8; 3], entry_path: &str) -> io::Result<Vec<u8>> {
     let filename = entry_path.rsplit('/').next().unwrap_or(entry_path);
     let counter = checksum::calculate_checksum(filename.as_bytes());
 
@@ -44,11 +50,40 @@ pub fn decrypt_pack_entry(data: &[u8], group_encrypt_info: &[u8; 3], entry_path:
     cipher.seek(initial_counter as u64 * 64);
 
     let mut output = data.to_vec();
-    cipher.apply_keystream(&mut output);
-    output
+    cipher.try_apply_keystream(&mut output).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "ChaCha20 32-bit block counter would pass 2^32 within this data",
+            )
+        })?;
+    Ok(output)
 }
 
 /// Encrypt a pack entry using ChaCha20 (same operation as decrypt for a stream cipher).
-pub fn encrypt_pack_entry(data: &[u8], group_encrypt_info: &[u8; 3], entry_path: &str) -> Vec<u8> {
+pub fn encrypt_pack_entry(data: &[u8], group_encrypt_info: &[u8; 3], entry_path: &str) -> io::Result<Vec<u8>> {
     decrypt_pack_entry(data, group_encrypt_info, entry_path)
+}
+
+#[cfg(test)]
+mod tests {
+    /// Regression vector for the pack-entry cipher (key derivation from the
+    /// group's encrypt_info and the filename hash, then ChaCha20). It pins
+    /// the output that extraction from the live install agrees with; any
+    /// change to the derivation breaks it.
+    #[test]
+    fn pack_entry_known_answer() {
+        let out = super::decrypt_pack_entry(b"crimson-rs chacha20 kat", &[2, 14, 97], "gamedata/ui/icon.dds").unwrap();
+        assert_eq!(
+            out,
+            [
+                0x40, 0xe0, 0xcd, 0x2b, 0x1b, 0x83, 0xf3, 0x72, 0x25, 0x6e, 0xc7, 0x7d, 0x6d, 0x5e, 0x91, 0x44, 0x7c, 0x72,
+                0x65, 0xbb, 0x40, 0x2b, 0xa9,
+            ]
+        );
+        // Encryption is the same operation: it round-trips.
+        let back = super::encrypt_pack_entry(&out, &[2, 14, 97], "gamedata/ui/icon.dds").unwrap();
+        assert_eq!(back, b"crimson-rs chacha20 kat");
+        // Only the filename after the last '/' feeds the nonce.
+        assert_eq!(super::decrypt_pack_entry(b"crimson-rs chacha20 kat", &[2, 14, 97], "other/icon.dds").unwrap(), out);
+    }
 }

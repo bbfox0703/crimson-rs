@@ -1,10 +1,7 @@
 //! Save body encoder — the structural inverse of [`super::decoder`].
 //!
-//! Phase B.1 ships only the encoder + golden tests; no in-crate caller
-//! reaches into these functions yet (B.2 adds the C ABI wrappers). The
-//! `#![allow(dead_code)]` below holds the door open without polluting
-//! individual items.
-#![allow(dead_code)]
+//! Reached from the C ABI's length-changing edits and deferred batches
+//! through [`super::Body::write`].
 //!
 //! Takes a decoded `ObjectBlock` tree and re-emits the byte sequence the
 //! decoder would have parsed. With the decoder's full set of preservation
@@ -16,10 +13,9 @@
 //! Body::parse(raw) -> blocks  -> Body::write(blocks) == raw
 //! ```
 //!
-//! This is the foundation for length-changing edits (PR B). For Phase B.1
-//! the only consumer is the round-trip golden test in `lib.rs`; later
-//! phases add a C ABI surface that lets callers mutate list shape (add /
-//! remove elements) and re-emit through the same encoder.
+//! This holds as long as every wrapper's stored `payload_offset` equals its
+//! wrapper end, since the encoder recomputes that value (it is what the game
+//! writes in every save the byte-identity tests read).
 //!
 //! ## Field-walk ordering
 //!
@@ -36,12 +32,12 @@
 //! ## Round-trip caveats
 //!
 //! - Blocks with `undecoded_ranges` are NOT round-trippable — those bytes
-//!   were never captured by the decoder. The 1.06 test saves have zero
-//!   undecoded bytes (enforced by `test_save_body_decode_all_blocks`), so
-//!   this only matters if a future game patch drifts the format.
+//!   were never captured by the decoder. Game-written saves decode with
+//!   zero undecoded bytes (enforced by `test_save_body_decode_all_blocks`),
+//!   so this matters only after format drift.
 //! - Non-inline locators (where the child payload sits outside the
-//!   wrapper's immediate `[wrapper_end..)` range) are NOT supported in
-//!   B.1; the round-trip test would catch them. None observed in 1.06.
+//!   wrapper's immediate `[wrapper_end..)` range) are NOT re-emitted;
+//!   [`check_fully_decoded`] refuses them. No game-written save has one.
 
 use std::io;
 
@@ -50,6 +46,100 @@ use super::object::{
     ABSENT_MARKER, DecodedField, FieldKind, FieldValue, ObjectBlock, ObjectLocatorWrapper,
     ScalarValue,
 };
+
+/// Refuse a block the decoder did not fully explain. The encoder rebuilds a
+/// block from its decoded fields alone, so bytes the decoder could not place
+/// would silently disappear from the re-emitted body. Checked recursively:
+/// - `undecoded_ranges` (bytes no decoder placed),
+/// - `Unknown` fields (nothing to re-emit),
+/// - placeholder list elements (wrapper only: their child payload failed to
+///   decode, and re-emitting them would write an empty child),
+/// - non-inline locator children (the encoder re-emits a child only right
+///   after its wrapper; the decoder counts a payload found elsewhere as
+///   decoded, so it never shows up in `undecoded_ranges`).
+///
+/// Game-written saves decode with none of these, so this stops a re-encode
+/// only after format drift.
+fn check_fully_decoded(block: &ObjectBlock) -> Result<(), String> {
+    if let Some((s, e)) = block.undecoded_ranges.first() {
+        let total: usize = block.undecoded_ranges.iter().map(|(s, e)| e - s).sum();
+        return Err(format!("{total} undecoded bytes (first at {s}..{e})"));
+    }
+    for f in &block.fields {
+        if f.kind == FieldKind::Unknown {
+            return Err(format!("field {} ({}) was not decoded", f.field_index, f.name));
+        }
+        match &f.value {
+            FieldValue::Locator { child: Some(c), inline_child, .. } => {
+                if !inline_child {
+                    return Err(format!(
+                        "field {} ({}) has a locator child away from its wrapper",
+                        f.field_index, f.name
+                    ));
+                }
+                check_fully_decoded(c).map_err(|why| format!("{}.{why}", f.name))?;
+            }
+            FieldValue::ObjectList { elements, .. } => {
+                for (j, el) in elements.iter().enumerate() {
+                    if el.mask_bytes.is_empty() && el.fields.is_empty() {
+                        return Err(format!("{}[{j}] is a placeholder (its payload did not decode)", f.name));
+                    }
+                    check_fully_decoded(el).map_err(|why| format!("{}[{j}].{why}", f.name))?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Does `block` (or a block nested in it) carry pad bytes that could hide an
+/// offset? Pad is written back verbatim and relocated only by the block's own
+/// shift, so an offset inside it goes stale when the block's length changes.
+/// A wrapper prefix of one `0x01` byte, which every game-written locator
+/// with a prefix has, cannot hold an offset and does not count.
+fn carries_pad(block: &ObjectBlock) -> bool {
+    !block.trailing_pad.is_empty()
+        || block.fields.iter().any(|f| match &f.value {
+            FieldValue::Locator { wrapper_prefix, child, .. } => {
+                !matches!(wrapper_prefix.as_slice(), [] | [1]) || child.as_deref().is_some_and(carries_pad)
+            }
+            FieldValue::ObjectList { elements, .. } => elements.iter().any(carries_pad),
+            _ => false,
+        })
+}
+
+/// The encoder lays the data section out as the TOC's blocks back to back,
+/// from the end of the TOC to `stream_size`. A save whose blocks overlap,
+/// leave gaps or stop short of `stream_size` would lose those bytes on
+/// re-encode; every game-written save measured is contiguous.
+fn check_contiguous_layout(body: &Body) -> Result<(), String> {
+    let entries = &body.toc.entries;
+    let mut next = body.schema.schema_end + 12 + entries.len() * 20;
+    for e in entries {
+        if e.data_offset as usize != next {
+            return Err(format!(
+                "TOC entry {} starts at {} where the previous block ended at {next}",
+                e.index, e.data_offset
+            ));
+        }
+        next += e.data_size as usize;
+    }
+    if next != body.toc.stream_size as usize {
+        return Err(format!("blocks end at {next}, stream_size says {}", body.toc.stream_size));
+    }
+    Ok(())
+}
+
+/// [`check_fully_decoded`] over a whole decoded tree, for callers that need
+/// to know a re-decode explained every byte (the C ABI's post-commit check).
+#[cfg_attr(not(feature = "c_abi"), allow(dead_code))]
+pub(crate) fn blocks_fully_decoded(blocks: &[ObjectBlock]) -> Result<(), String> {
+    for (i, block) in blocks.iter().enumerate() {
+        check_fully_decoded(block).map_err(|why| format!("block {i} ({}): {why}", block.class_name))?;
+    }
+    Ok(())
+}
 
 /// Encode a single top-level TOC block back to bytes, treating
 /// `block_data_offset` as the absolute body offset where this block
@@ -164,6 +254,17 @@ pub fn encode_body(
             ),
         ));
     }
+    for (i, block) in blocks.iter().enumerate() {
+        check_fully_decoded(block).map_err(|why| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("block {i} ({}): {why}; refusing to re-encode it", block.class_name),
+            )
+        })?;
+    }
+    check_contiguous_layout(body).map_err(|why| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("{why}; refusing to re-encode the body"))
+    })?;
 
     // Encode each block first so we know its size. To compute the
     // absolute body offset to pass each `encode_top_level_block` call,
@@ -186,8 +287,22 @@ pub fn encode_body(
     // position. For unmodified blocks this is correct; for moved blocks
     // we'll patch in pass 2.
     let mut block_bytes: Vec<Vec<u8>> = Vec::with_capacity(blocks.len());
-    for block in blocks {
-        block_bytes.push(encode_top_level_block(block, block.data_offset)?);
+    for (i, block) in blocks.iter().enumerate() {
+        let bytes = encode_top_level_block(block, block.data_offset)?;
+        // A block that only moves keeps its pad in place relative to itself,
+        // and the relocation pass fixes the shift. One whose length changed
+        // has moved bytes inside it, which the pass cannot follow. Game-written
+        // saves carry no such pad, so this only refuses a block after drift.
+        if bytes.len() != block.data_size as usize && carries_pad(block) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "block {i} ({}) changed length and carries pad bytes that may hold an offset; refusing to re-encode it",
+                    block.class_name
+                ),
+            ));
+        }
+        block_bytes.push(bytes);
     }
 
     // Recompute data_offset for each block, accumulating from data_start.
@@ -409,9 +524,9 @@ fn encode_locator_field(
     // We need the child mask + mbc to emit the wrapper. The decoder always
     // populates them on the child block (when child is Some). For empty
     // locators (child = None), we have no mask bytes to emit — that would
-    // produce truncated output. Surface this loudly: if it happens on a
-    // real save, we need to add a separate "wrapper-only mask" field to
-    // FieldValue::Locator (none observed in 1.06).
+    // produce truncated output. Surface this loudly: a real save that hits
+    // it would need a separate "wrapper-only mask" field on
+    // FieldValue::Locator; no game-written save has one.
     let child_block = child.as_deref().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -451,7 +566,7 @@ fn encode_locator_field(
 
     // Inline child payload? The decoder records it (payload_start ==
     // wrapper_end); a non-inline child's payload lives elsewhere in the
-    // body and is not re-emitted here. This used to be inferred from the
+    // body and is not re-emitted here. The recorded flag decides, not the
     // field's decoded byte range, which a field built from scratch (the
     // element-template builder) doesn't have.
     if *inline_child {
@@ -600,4 +715,78 @@ fn write_u16(out: &mut Vec<u8>, v: u16) {
 #[inline]
 fn write_u32(out: &mut Vec<u8>, v: u32) {
     out.extend_from_slice(&v.to_le_bytes());
+}
+
+#[cfg(test)]
+mod pad_tests {
+    use crate::save::{Body, Save};
+
+    /// Every fixture save re-encodes, unedited, to its exact bytes. The
+    /// fixtures stay put while live saves change with play, so this holds on
+    /// any machine that has the private repo, game installed or not.
+    #[test]
+    fn fixture_saves_reencode_byte_identical() {
+        let mut checked = 0;
+        for rel in [
+            "1.09/save.save",
+            "1.10/save.save",
+            "1.10/broken_save_after_length_change/base_sample/save.save",
+            "1.10/broken_save_after_length_change/add_2_sugar_in_game/save.save",
+        ] {
+            let Some(data) = crate::test_fixtures::save(rel) else {
+                continue;
+            };
+            let save = Save::parse(&data).unwrap();
+            let body = Body::parse(&save.body).unwrap();
+            let blocks = body.decode_blocks(&save.body);
+            let out = body.write(&save.body, &blocks).unwrap_or_else(|e| panic!("{rel}: {e}"));
+            assert!(out == save.body, "{rel}: no-op re-encode changed the body");
+            checked += 1;
+        }
+        eprintln!("{checked} fixture saves re-encoded byte for byte");
+    }
+
+    /// The length-change crash fixture was written by an editor that did not
+    /// relocate two self-referential payload offsets after growing a list.
+    /// Re-encoding it rewrites exactly those two, each 241 bytes further on,
+    /// and leaves every other byte alone.
+    #[test]
+    fn crash_fixture_reencode_fixes_its_two_stale_offsets() {
+        let rel = "1.10/broken_save_after_length_change/use_editor_add_sugar/save.save";
+        let Some(data) = crate::test_fixtures::save(rel) else {
+            return;
+        };
+        let save = Save::parse(&data).unwrap();
+        let body = Body::parse(&save.body).unwrap();
+        let out = body.write(&save.body, &body.decode_blocks(&save.body)).unwrap();
+        assert_eq!(out.len(), save.body.len());
+        let differ: Vec<usize> = (0..out.len()).filter(|&i| out[i] != save.body[i]).collect();
+        // Two offsets, each changed in its low two bytes.
+        assert_eq!(differ.len(), 4, "{differ:?}");
+        for at in [differ[0], differ[2]] {
+            let read = |b: &[u8]| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+            assert_eq!(read(&out) - read(&save.body), 241, "offset at {at}");
+        }
+    }
+
+    /// A block that changed length while carrying pad is refused.
+    #[test]
+    fn length_change_with_pad_is_refused() {
+        let Some(data) = crate::test_fixtures::save("1.10/save.save") else {
+            return;
+        };
+        let save = Save::parse(&data).unwrap();
+        let body = Body::parse(&save.body).unwrap();
+        let mut blocks = body.decode_blocks(&save.body);
+        assert!(body.write(&save.body, &blocks).is_ok(), "unedited body encodes");
+
+        // Four bytes of pad change the block's length, as an edit would.
+        blocks[0].trailing_pad = vec![0; 4];
+        let err = body.write(&save.body, &blocks).unwrap_err();
+        assert!(err.to_string().contains("carries pad"), "{err}");
+
+        // Back to no pad, the body encodes again.
+        blocks[0].trailing_pad.clear();
+        assert!(body.write(&save.body, &blocks).is_ok());
+    }
 }

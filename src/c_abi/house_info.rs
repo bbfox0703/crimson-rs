@@ -3,7 +3,6 @@
 //! Resolves save-side `HouseKey (u16-widened-u32)` to the row's
 //! template internal name (`"DefaultHouse_Lv1"` etc.). Name-only,
 //! mirrors [`super::store_info`] / [`super::faction_node_info`].
-//! 4 rows in 1.07.
 
 use std::collections::HashMap;
 use std::ffi::CStr;
@@ -13,7 +12,6 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use super::error;
 use crate::house_info::parse_house_info_lossy;
 
-#[repr(C)]
 pub struct CrimsonHouseInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,
@@ -34,6 +32,8 @@ impl CrimsonHouseInfoHandle {
     }
 }
 
+/// Load the table from its body / header file pair on disk.
+///
 /// # Safety
 /// Both path arguments must be NUL-terminated UTF-8 strings.
 /// `out_handle` must be non-null.
@@ -65,12 +65,17 @@ pub unsafe extern "C" fn crimson_house_info_load_from_file(
             Err(_) => return error::IO,
         };
         let handle = CrimsonHouseInfoHandle::from_bytes(&pabgb, &pabgh);
+        if let Err(code) = crate::c_abi::check_rows(&pabgb, Some(&pabgh[..]), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
     .unwrap_or(error::PANIC)
 }
 
+/// Load the table from body and header bytes already in memory.
+///
 /// # Safety
 /// Both `pabgb` and `pabgh` must point to `*_len` readable bytes (may be
 /// null iff length is 0). `out_handle` must be non-null.
@@ -101,12 +106,17 @@ pub unsafe extern "C" fn crimson_house_info_load_from_bytes(
             unsafe { std::slice::from_raw_parts(pabgh, pabgh_len) }
         };
         let handle = CrimsonHouseInfoHandle::from_bytes(pabgb_slice, pabgh_slice);
+        if let Err(code) = crate::c_abi::check_rows(pabgb_slice, Some(pabgh_slice), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
     .unwrap_or(error::PANIC)
 }
 
+/// Free a handle returned by either loader.
+///
 /// # Safety
 /// `handle` must be null or a pointer previously returned by one of the
 /// loaders and not yet freed.
@@ -120,6 +130,8 @@ pub unsafe extern "C" fn crimson_house_info_free(handle: *mut CrimsonHouseInfoHa
     }
 }
 
+/// Number of rows in the handle.
+///
 /// # Safety
 /// `handle` must be live; `out_count` must be non-null.
 #[unsafe(no_mangle)]
@@ -138,6 +150,8 @@ pub unsafe extern "C" fn crimson_house_info_entry_count(
     .unwrap_or(error::PANIC)
 }
 
+/// Copy a row's name, by key, into `buf` (two-call sizing).
+///
 /// # Safety
 /// `handle` and `required` must be non-null; `buf` may be null iff
 /// `buf_len == 0`.
@@ -166,6 +180,8 @@ pub unsafe extern "C" fn crimson_house_info_lookup_string_key(
     .unwrap_or(error::PANIC)
 }
 
+/// Row `idx`'s key, and its name into `buf` (two-call sizing).
+///
 /// # Safety
 /// `handle`, `out_key`, and `required` must be non-null; `buf` may be
 /// null iff `buf_len == 0`.

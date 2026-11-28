@@ -1,8 +1,7 @@
 //! `gameadviceinfo.pabgb` bridge — C ABI surface.
 //!
 //! Resolves save-side `GameAdviceInfoKey (u32)` to template names
-//! (`"Advice_Control_Move"`, …). Name-only; PALOC chain deferred.
-//! 461 rows in 1.07.
+//! (`"Advice_Control_Move"`, …). Name-only; no PALOC title chain.
 
 crate::impl_name_only_bridge! {
     handle = CrimsonGameAdviceInfoHandle,
@@ -107,7 +106,7 @@ mod tests {
             unsafe { crimson_game_advice_info_entry_count(sh, &mut count) },
             error::OK
         );
-        assert_eq!(count, 482); // 2.04 (478 in 2.00-2.03, 472 in 1.12-1.18, 470 in 1.10/1.11)
+        assert_eq!(count, 482);
         for &(key, expected) in KNOWN {
             let mut req: usize = 0;
             assert_eq!(

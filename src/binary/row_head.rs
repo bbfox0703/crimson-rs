@@ -1,8 +1,8 @@
 //! The opening of a static-info table row.
 //!
-//! Through 2.03 a named row opened `[key][u32 len][name]`. 2.04 swapped the two
-//! in every such table: `[u32 len][name][key]`, with the key still as wide as
-//! the table's `.staticinfoheader` makes it (1, 2 or 4 bytes).
+//! A named row opens `[u32 len][name][key]`, with the key as wide as the
+//! table's `.staticinfoheader` makes it (1, 2, 4, 8 or 12 bytes; `key` holds
+//! the low four bytes of a wider one, and no caller passes one).
 
 /// A decoded row head, and where the row carries on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,7 +30,8 @@ pub fn read_row_head(row: &[u8], key_width: usize) -> Option<RowHead<'_>> {
 }
 
 /// The byte set a row name uses: ASCII word characters and spaces, or any UTF-8
-/// high byte (1.05 added Ⅲ/Ⅳ/Ⅵ). For scanners, which also validate the UTF-8.
+/// high byte (names carry Roman numerals such as Ⅲ). For scanners, which also
+/// validate the UTF-8.
 pub fn is_row_name_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_' || b == b' ' || b >= 0x80
 }

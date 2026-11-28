@@ -31,11 +31,13 @@ When the iteminfo parser cannot read the current patch, `items.jsonl` holds
 only keys; `--props-bin <dir>` then supplies them from an archived version
 (`<dir>/iteminfo.staticinfobody` plus `<dir>/<dlc>/iteminfo.<dlc>.staticinfobody`),
 matched by item key. Base rows win over DLC rows for the same key, as in
-the game's own key array.
+the game's own key array. The archived tables are read with the installed
+`crimson_rs`, which reads the newest layout only: `<prev>` must be a version
+that build still parses, i.e. the last patch, before the parser moves on.
 
 Usage:
     python scripts/update_ce_table.py --ct "D:/Github/My-Cheat-Tables/Crimson Desert/CrimsonDesert.CT"
-        [--out out] [--props-bin "X:/Crimson Desert/gamedata-bin/2.05"]
+        [--out out] [--props-bin "<archive>/<prev>"]
         [--game-dir PATH] [--dry-run]
 """
 
@@ -44,6 +46,7 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import json
+import os
 import re
 import shutil
 import sys
@@ -171,7 +174,12 @@ def props_from_bin(root: Path) -> dict[int, tuple[int, int, int | None]]:
         for r in crimson_rs.parse_iteminfo_from_bytes(data):
             out.setdefault(
                 r["key"],
-                (r["max_stack_count"], r["inventory_info_list"][0], r.get("item_importance_kind")),
+                (
+                    r["max_stack_count"],
+                    # Guarded as on the other path: a list can be empty.
+                    r["inventory_info_list"][0] if r["inventory_info_list"] else 0,
+                    r.get("item_importance_kind"),
+                ),
             )
     if not out:
         sys.exit(f"--props-bin: no iteminfo table found under {root}")
@@ -179,10 +187,17 @@ def props_from_bin(root: Path) -> dict[int, tuple[int, int, int | None]]:
 
 
 def read_paver(game_dir: str | None) -> str:
-    candidates = [game_dir] if game_dir else [
-        r"D:\SteamLibrary\steamapps\common\Crimson Desert",
-        r"C:\Program Files (x86)\Steam\steamapps\common\Crimson Desert",
-    ]
+    if game_dir:
+        candidates = [game_dir]
+    else:
+        # The shared install lookup; gamedata_layout needs crimson_rs, which
+        # this script otherwise loads only for --props-bin.
+        try:
+            from gamedata_layout import game_dir_candidates
+            candidates = game_dir_candidates()
+        except ImportError:
+            env_root = os.environ.get("CRIMSON_GAME_ROOT")
+            candidates = [env_root] if env_root else []
     for g in candidates:
         try:
             b = (Path(g) / "meta" / "0.paver").read_bytes()

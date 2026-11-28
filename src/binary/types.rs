@@ -10,11 +10,17 @@ use super::{
 #[derive(Debug, PartialEq)]
 pub struct CString<'a> {
     pub length: u32,
-    pub data: &'a str,
+    pub data: std::borrow::Cow<'a, str>,
     raw: Option<&'a [u8]>,
 }
 
 impl<'a> CString<'a> {
+    /// The text: borrowed from the table, or a lossy copy owned by this value
+    /// when the bytes are not UTF-8.
+    pub fn as_str(&self) -> &str {
+        &self.data
+    }
+
     /// Return the original bytes (preserves non-UTF-8 data for roundtrip).
     pub fn as_bytes(&self) -> &[u8] {
         self.raw.unwrap_or(self.data.as_bytes())
@@ -29,16 +35,15 @@ impl<'a> BinaryRead<'a> for CString<'a> {
         let bytes = &data[*offset..*offset + len];
         *offset += len;
         match std::str::from_utf8(bytes) {
-            Ok(s) => Ok(CString { length, data: s, raw: None }),
-            Err(_) => {
-                let lossy = String::from_utf8_lossy(bytes);
-                // Leak the lossy string so we get a &'a str.
-                // This is acceptable because pabgb data lives for
-                // the duration of parsing and the leaked strings
-                // are tiny (item names / descriptions).
-                let leaked: &'a str = Box::leak(lossy.into_owned().into_boxed_str());
-                Ok(CString { length, data: leaked, raw: Some(bytes) })
-            }
+            Ok(s) => Ok(CString { length, data: s.into(), raw: None }),
+            // A non-UTF-8 string keeps a lossy copy for display and its raw
+            // bytes for the write-back. The copy is owned by this value, so a
+            // long-running host that loads many tables leaks nothing.
+            Err(_) => Ok(CString {
+                length,
+                data: String::from_utf8_lossy(bytes).into_owned().into(),
+                raw: Some(bytes),
+            }),
         }
     }
 }
@@ -82,12 +87,12 @@ impl<'a> BinaryReadTracked<'a> for CString<'a> {
             ty: "CString",
         });
         match std::str::from_utf8(bytes) {
-            Ok(s) => Ok(CString { length, data: s, raw: None }),
-            Err(_) => {
-                let lossy = String::from_utf8_lossy(bytes);
-                let leaked: &'a str = Box::leak(lossy.into_owned().into_boxed_str());
-                Ok(CString { length, data: leaked, raw: Some(bytes) })
-            }
+            Ok(s) => Ok(CString { length, data: s.into(), raw: None }),
+            Err(_) => Ok(CString {
+                length,
+                data: String::from_utf8_lossy(bytes).into_owned().into(),
+                raw: Some(bytes),
+            }),
         }
     }
 }
@@ -151,7 +156,11 @@ impl<'a, T: BinaryRead<'a>> BinaryRead<'a> for CArray<T> {
                 ),
             ));
         }
-        let mut items = Vec::with_capacity(count);
+        // `count <= remaining` bounds the element count, not the memory: a
+        // large `T` would still reserve remaining x size_of::<T>(). Reserve
+        // what the remaining bytes could hold and let a real count grow past
+        // it.
+        let mut items = Vec::with_capacity(count.min(remaining / std::mem::size_of::<T>().max(1)));
         for _ in 0..count {
             items.push(T::read_from(data, offset)?);
         }
@@ -200,7 +209,7 @@ impl<'a, T: BinaryReadTracked<'a>> BinaryReadTracked<'a> for CArray<T> {
             ));
         }
 
-        let mut items = Vec::with_capacity(count);
+        let mut items = Vec::with_capacity(count.min(remaining / std::mem::size_of::<T>().max(1)));
         for i in 0..count {
             let saved = push_index(path, i);
             items.push(T::read_tracked(data, offset, path, ranges)?);
@@ -208,6 +217,35 @@ impl<'a, T: BinaryReadTracked<'a>> BinaryReadTracked<'a> for CArray<T> {
         }
         Ok(CArray { items })
     }
+}
+
+// ── Presence flags ──────────────────────────────────────────────────────────
+
+/// A presence byte must be 0 or 1. Any other value is an error: reading it as
+/// "present" and writing back 1 would guess at a drifted field instead of
+/// failing, and the round-trip would change the byte. Real data uses 0 and 1
+/// alone.
+fn presence_flag(flag: u8, what: &str, at: usize) -> io::Result<bool> {
+    match flag {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{what}: presence byte {flag:#04x} at offset {at} (expected 0 or 1)"),
+        )),
+    }
+}
+
+/// A flagged array that says "present" and then holds no elements would write
+/// back as the lone `0x00`, changing the bytes.
+fn flagged_array_not_empty<T>(items: &[T], at: usize) -> io::Result<()> {
+    if items.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("CFlaggedArray at offset {at}: flag 1 with count 0"),
+        ));
+    }
+    Ok(())
 }
 
 // ── CFlaggedArray ───────────────────────────────────────────────────────────
@@ -221,10 +259,12 @@ pub struct CFlaggedArray<T> {
 
 impl<'a, T: BinaryRead<'a>> BinaryRead<'a> for CFlaggedArray<T> {
     fn read_from(data: &'a [u8], offset: &mut usize) -> io::Result<Self> {
-        if u8::read_from(data, offset)? == 0 {
+        let at = *offset;
+        if !presence_flag(u8::read_from(data, offset)?, "CFlaggedArray", at)? {
             return Ok(CFlaggedArray { items: Vec::new() });
         }
         let CArray { items } = CArray::read_from(data, offset)?;
+        flagged_array_not_empty(&items, at)?;
         Ok(CFlaggedArray { items })
     }
 }
@@ -262,10 +302,11 @@ impl<'a, T: BinaryReadTracked<'a>> BinaryReadTracked<'a> for CFlaggedArray<T> {
         });
         pop_path(path, saved);
 
-        if flag == 0 {
+        if !presence_flag(flag, "CFlaggedArray", tag_start)? {
             return Ok(CFlaggedArray { items: Vec::new() });
         }
         let CArray { items } = CArray::read_tracked(data, offset, path, ranges)?;
+        flagged_array_not_empty(&items, tag_start)?;
         Ok(CFlaggedArray { items })
     }
 }
@@ -279,8 +320,9 @@ pub struct COptional<T> {
 
 impl<'a, T: BinaryRead<'a>> BinaryRead<'a> for COptional<T> {
     fn read_from(data: &'a [u8], offset: &mut usize) -> io::Result<Self> {
+        let at = *offset;
         let flag = u8::read_from(data, offset)?;
-        let value = if flag != 0 {
+        let value = if presence_flag(flag, "COptional", at)? {
             Some(T::read_from(data, offset)?)
         } else {
             None
@@ -320,7 +362,7 @@ impl<'a, T: BinaryReadTracked<'a>> BinaryReadTracked<'a> for COptional<T> {
         });
         pop_path(path, saved);
 
-        let value = if flag != 0 {
+        let value = if presence_flag(flag, "COptional", tag_start)? {
             Some(T::read_tracked(data, offset, path, ranges)?)
         } else {
             None
@@ -405,7 +447,7 @@ impl<'a> BinaryRead<'a> for OptLocalizableString<'a> {
             return Ok(OptLocalizableString {
                 category,
                 index: 0,
-                default: CString { length: 0, data: "", raw: None },
+                default: CString { length: 0, data: "".into(), raw: None },
             });
         }
         let index = u64::read_from(data, offset)?;
@@ -443,7 +485,7 @@ impl<'a> BinaryReadTracked<'a> for OptLocalizableString<'a> {
             return Ok(OptLocalizableString {
                 category,
                 index: 0,
-                default: CString { length: 0, data: "", raw: None },
+                default: CString { length: 0, data: "".into(), raw: None },
             });
         }
 
@@ -460,5 +502,30 @@ impl<'a> BinaryReadTracked<'a> for OptLocalizableString<'a> {
             index,
             default,
         })
+    }
+}
+
+#[cfg(test)]
+mod cstring_tests {
+    use super::*;
+
+    /// A non-UTF-8 string reads as an owned lossy copy (nothing leaked) and
+    /// writes back its original bytes.
+    #[test]
+    fn non_utf8_is_owned_and_round_trips() {
+        let mut data = 3u32.to_le_bytes().to_vec();
+        data.extend_from_slice(&[b'a', 0xFF, b'b']);
+        let mut off = 0;
+        let s = CString::read_from(&data, &mut off).unwrap();
+        assert_eq!(s.as_str(), "a\u{FFFD}b");
+        assert!(matches!(s.data, std::borrow::Cow::Owned(_)));
+        let mut out = Vec::new();
+        s.write_to(&mut out).unwrap();
+        assert_eq!(out, data);
+
+        let mut ok = 2u32.to_le_bytes().to_vec();
+        ok.extend_from_slice(b"hi");
+        let mut off = 0;
+        assert!(matches!(CString::read_from(&ok, &mut off).unwrap().data, std::borrow::Cow::Borrowed("hi")));
     }
 }

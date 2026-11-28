@@ -26,7 +26,7 @@ pub struct Save {
 #[derive(Debug)]
 pub enum SaveError {
     Io(io::Error),
-    /// File is too small to hold a header + at least one body byte.
+    /// File is too small to hold the header.
     TooSmall { len: usize, need: usize },
     /// Magic at offset 0 is not `b"SAVE"`.
     BadMagic([u8; 4]),
@@ -121,11 +121,19 @@ impl Save {
         // ChaCha20 decrypt in place. After this `compressed` holds the
         // post-decryption (pre-decompression) blob.
         let mut compressed = file_bytes[PAYLOAD_OFFSET..payload_end].to_vec();
-        chacha20_xor(&mut compressed, &key, &nonce);
+        chacha20_xor(&mut compressed, &key, &nonce)?;
 
         let hmac_ok = verify_hmac(&key, &compressed, &stored_hmac);
 
         let uncomp_size = header.uncompressed_size() as usize;
+        // The header's size is untrusted: lz4_flex zero-fills that many bytes
+        // before decoding, so refuse a size the payload cannot expand to.
+        if uncomp_size > crate::binary::paz::lz4_max_output(compressed.len()) {
+            return Err(SaveError::DecompressSizeMismatch {
+                expected: header.uncompressed_size(),
+                actual: 0,
+            });
+        }
         let body = lz4_flex::block::decompress(&compressed, uncomp_size)
             .map_err(SaveError::Lz4)?;
 
@@ -147,19 +155,21 @@ impl Save {
     /// (magic, version, flags, the two padding regions) are preserved
     /// from the in-memory header.
     ///
-    /// For byte-perfect round-trip of an unmodified save, pass the
-    /// original header's `nonce()` here.
+    /// Pass the original header's `nonce()` to keep the nonce. The file
+    /// still differs from the game's, because lz4_flex compresses
+    /// differently, but it decodes back to the same body.
     pub fn write_with_nonce(&self, nonce: [u8; NONCE_LEN]) -> Result<Vec<u8>, SaveError> {
         let key = derive_key(self.header.version())
             .ok_or(SaveError::UnsupportedVersion(self.header.version()))?;
 
-        // LZ4 block compression. Use the same high-compression level as
-        // the Python writer (compression=9, store_size=False).
+        // LZ4 block compression with lz4_flex's standard compressor (no
+        // size prefix). Its output differs from the game's compressor;
+        // only the decompressed body is the same.
         let compressed = lz4_flex::block::compress(&self.body);
 
         let tag = hmac_sha256(&key, &compressed);
         let mut encrypted = compressed.clone();
-        chacha20_xor(&mut encrypted, &key, &nonce);
+        chacha20_xor(&mut encrypted, &key, &nonce)?;
 
         let mut header = self.header.clone();
         header.set_uncompressed_size(self.body.len() as u32);

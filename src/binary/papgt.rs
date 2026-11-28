@@ -1,6 +1,5 @@
 use std::io::{self, Write};
 
-#[allow(unused_imports)]
 use super::trie::read_cstring;
 use super::{BinaryRead, BinaryWrite, check_remaining};
 use crate::binary_struct;
@@ -88,7 +87,7 @@ pub const PAPGT_TRAILER_SIZE: usize = 64;
 /// [u8; 64] trailer
 /// ```
 ///
-/// There is no Jenkins checksum any more. The trailer is high-entropy and no
+/// This layout has no Jenkins checksum. The trailer is high-entropy and no
 /// plain hash of the body, and `meta/0.papk` sits next to it, so it is treated
 /// as a signature: it is carried verbatim, and it cannot be recomputed here.
 /// Told apart from the older layout by its section lengths adding up exactly.
@@ -168,10 +167,24 @@ impl PackGroupTreeMeta {
 
         // Read group names buffer: i32 length prefix + data
         check_remaining(data, offset, 4)?;
-        let buf_len = i32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
+        // A negative i32 is an error: cast to usize it would be huge, and its
+        // bounds check could wrap and then panic in the slice.
+        let buf_len = usize::try_from(i32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()))
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "negative PAPGT name buffer length"))?;
         offset += 4;
         check_remaining(data, offset, buf_len)?;
         let group_names_buffer = data[offset..offset + buf_len].to_vec();
+        // The name buffer ends the checksummed layout. Bytes after it would
+        // pass the checksum but be dropped by `to_bytes`, so they are an
+        // error rather than lost on write-back. (The signed layout's length
+        // is checked by `is_signed_layout`.)
+        let end = offset + buf_len;
+        if trailer.is_none() && end != data.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{} bytes after the PAPGT name buffer", data.len() - end),
+            ));
+        }
 
         // Resolve group names
         let mut entries = Vec::with_capacity(raw_entries.len());
@@ -198,13 +211,24 @@ impl PackGroupTreeMeta {
     ///
     /// A 2.04+ PAPGT keeps its old [`Self::trailer`], which no longer matches
     /// the edited entries; whether the game accepts that is not established.
+    ///
+    /// Errors on a name with a NUL byte (the buffer is
+    /// NUL-separated, so it would split the name) or when the entry count
+    /// would pass the u8 the header stores it in.
     pub fn add_entry(
         &mut self,
         group_name: &str,
         pack_meta_checksum: u32,
         is_optional: u8,
         language: u16,
-    ) {
+    ) -> io::Result<()> {
+        if group_name.as_bytes().contains(&0) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "group name contains a NUL byte"));
+        }
+        let replacing = self.entries.iter().any(|e| e.group_name == group_name);
+        if !replacing && self.entries.len() >= u8::MAX as usize {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "a PAPGT holds at most 255 groups"));
+        }
         // Remove existing entry with the same group name (if any)
         self.entries.retain(|e| e.group_name != group_name);
 
@@ -237,6 +261,7 @@ impl PackGroupTreeMeta {
         );
 
         self.header.entry_count = self.entries.len() as u8;
+        Ok(())
     }
 
     /// Serialize back to bytes (roundtrip).
@@ -288,6 +313,15 @@ impl PackGroupTreeMeta {
 mod tests {
     use super::*;
 
+    /// A negative name-buffer length in the old layout is an error, not a
+    /// wrapped bounds check that then panics.
+    #[test]
+    fn negative_name_buffer_length_is_an_error() {
+        let mut data = vec![0u8; 12]; // old layout: header with 0 entries
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        let _ = PackGroupTreeMeta::parse(&data); // must not panic
+    }
+
     fn signed_papgt() -> Vec<u8> {
         let mut data = vec![0xc9, 0x16, 2, 2];
         for (name_offset, checksum) in [(0u32, 0x11u32), (5, 0x22)] {
@@ -316,17 +350,31 @@ mod tests {
     #[test]
     fn signed_layout_survives_add_entry() {
         let mut papgt = PackGroupTreeMeta::parse(&signed_papgt()).unwrap();
-        papgt.add_entry("0036", 0x33, 0, LanguageType::ALL);
+        papgt.add_entry("0036", 0x33, 0, LanguageType::ALL).unwrap();
         let reparsed = PackGroupTreeMeta::parse(&papgt.to_bytes().unwrap()).unwrap();
         assert_eq!(reparsed.entries.len(), 3);
         assert_eq!(reparsed.entries[0].group_name, "0036");
         assert_eq!(reparsed.entries[2].group_name, "0001");
     }
 
+    /// Extra bytes after the name buffer pass the checksum but would be
+    /// dropped on write-back, so they are refused.
+    #[test]
+    fn checksummed_layout_refuses_trailing_bytes() {
+        let mut papgt = PackGroupTreeMeta::new();
+        papgt.add_entry("0000", 0x11, 0, LanguageType::ALL).unwrap();
+        let mut data = papgt.to_bytes().unwrap();
+        data.push(0x7A);
+        let sum = checksum::calculate_checksum(&data[12..]);
+        data[4..8].copy_from_slice(&sum.to_le_bytes());
+        let err = PackGroupTreeMeta::parse(&data).unwrap_err();
+        assert!(err.to_string().contains("after the PAPGT name buffer"), "{err}");
+    }
+
     #[test]
     fn checksummed_layout_roundtrips() {
         let mut papgt = PackGroupTreeMeta::new();
-        papgt.add_entry("0000", 0x11, 0, LanguageType::ALL);
+        papgt.add_entry("0000", 0x11, 0, LanguageType::ALL).unwrap();
         let data = papgt.to_bytes().unwrap();
         let reparsed = PackGroupTreeMeta::parse(&data).unwrap();
         assert_eq!(reparsed.trailer, None);

@@ -5,7 +5,7 @@
 //! its slots are the mesh's sub-meshes in order, the last slot's
 //! `tail_name` is the `.pac` path, and the row key is the Jenkins
 //! [`calculate_checksum`](crate::crypto::checksum::calculate_checksum) of
-//! that path in lower case (1,703 / 1,703 rows on 2.06). An item names
+//! that path in lower case. An item names
 //! *character prefabs*, and a prefab is a scene file that lists the `.pac`
 //! meshes it is built from. So the join is:
 //!
@@ -24,26 +24,23 @@
 //! Two loaders build the join:
 //!
 //! - `crimson_item_part_prefab_load_from_{bytes,file}_with_prefab_pamt`
-//!   (2026-11-27) reads the prefabs from the caller's character PAMT and
-//!   follows the chain above. On 2.06 it resolves 909 of the 917
-//!   `is_dyeable` items.
-//! - `crimson_item_part_prefab_load_from_{bytes,file}` (the original)
+//!   reads the prefabs from the caller's character PAMT and follows the
+//!   chain above. It resolves nearly every `is_dyeable` item.
+//! - `crimson_item_part_prefab_load_from_{bytes,file}` (the name join)
 //!   matches the prefab *name* against a row's `prefab_name`, which is the
-//!   mesh's **first sub-mesh** name. It resolves 70 dyeable items on 2.06,
-//!   and five of those to the wrong mesh (sub-mesh names repeat across
-//!   meshes: spear 1001163 lands on a horse-saddle hook). Kept for
-//!   compatibility.
+//!   mesh's **first sub-mesh** name. It resolves a small share of the
+//!   dyeable items, and some of those to the wrong mesh (sub-mesh names
+//!   repeat across meshes). Kept for compatibility.
 //!
 //! ## Body variants
 //!
 //! Each `merged_prefab_visual_list` element is one body variant, tagged
 //! with the tribe / genders that wear it (`tribe_gender_list`, e.g.
-//! `player_1`, `human_female`, `bosshuman_male`). On 2.06, 526 dyeable
-//! items have more than one variant with dye rows; 512 of them offer the
-//! same dye slot numbers in every variant. In the other 14 the variants
-//! differ (usually a male mesh offering more numbers than a female or boss
-//! one), and 9 items name a dye slot number with different default
-//! materials in different variants. The save keeps one dye list per item,
+//! `player_1`, `human_female`, `bosshuman_male`). Most dyeable items with
+//! several variants offer the same dye slot numbers in every variant. In a
+//! few the variants differ (usually a male mesh offering more numbers than
+//! a female or boss one), and some name a dye slot number with different
+//! default materials in different variants. The save keeps one dye list per item,
 //! so the item-level lookups take an optional tribe / gender filter and
 //! union every matching variant (all variants when the filter is null).
 //!
@@ -53,8 +50,7 @@
 //! items (`iteminfo.dlc_01` + `stringinfo.dlc_01` from `dlc/dlc_01/0008`,
 //! prefabs from `dlc/dlc_01/0009`). The DLC ships no dye rows of its own:
 //! `partprefabdyeslotinfo.dlc_01` is empty and the base table already
-//! holds the DLC meshes' rows. On 2.06 the merge adds 89 items, 82 of the
-//! 85 DLC-only dyeable ones among them. Skipping it (no DLC) changes
+//! holds the DLC meshes' rows. Skipping it (no DLC) changes
 //! nothing, and a failed merge leaves the handle untouched.
 //!
 //! ## Input requirements
@@ -87,7 +83,6 @@ struct ItemPrefabVariant {
 
 /// Opaque handle exposing precomputed `ItemKey → Vec<PartPrefabKey>`
 /// lookups.
-#[repr(C)]
 pub struct CrimsonItemPartPrefabHandle {
     /// Joined map. Keys are item keys; values are the list of
     /// part-prefab keys resolvable for that item, in
@@ -122,7 +117,8 @@ pub(crate) fn part_prefab_key_for_pac(pac_path: &str) -> u32 {
 /// The `.pac` paths a character `.prefab` references, in file order. The
 /// prefab is a reflection-serialized scene; every string in it is
 /// `[u32 len][len bytes]`, and the mesh references are the ones ending in
-/// `.pac`.
+/// `.pac` (any case). A `\` separator is turned into `/`, the form the row
+/// key's checksum is taken over.
 pub(crate) fn prefab_pac_paths(prefab: &[u8]) -> Vec<String> {
     let mut out = Vec::new();
     let mut i = 0;
@@ -130,10 +126,10 @@ pub(crate) fn prefab_pac_paths(prefab: &[u8]) -> Vec<String> {
         let len = u32::from_le_bytes(len_bytes.try_into().unwrap()) as usize;
         if (5..=1024).contains(&len)
             && let Some(s) = prefab.get(i + 4..i + 4 + len)
-            && s.ends_with(b".pac")
+            && s[len - 4..].eq_ignore_ascii_case(b".pac")
             && s.iter().all(u8::is_ascii_graphic)
         {
-            out.push(String::from_utf8_lossy(s).into_owned());
+            out.push(String::from_utf8_lossy(s).replace('\\', "/"));
             i += 4 + len;
         } else {
             i += 1;
@@ -169,10 +165,15 @@ impl PrefabArchive {
         Ok(PrefabArchive { group_dir, meta, by_stem })
     }
 
-    /// The `.pac` paths of prefab `name`, or `None` when the group has no
-    /// such prefab or it cannot be extracted.
-    fn pac_paths(&self, name: &str) -> Option<Vec<String>> {
-        let &(di, fi) = self.by_stem.get(&name.to_ascii_lowercase())?;
+    /// The `.pac` paths of prefab `name`: `Ok(None)` when the group has no
+    /// such prefab, `Err` when it has one that cannot be extracted. Kept
+    /// apart so an unreadable prefab never reads as "no prefab", gets cached
+    /// for every item using it, or lets a DLC merge fall back to a
+    /// same-named base prefab.
+    fn pac_paths(&self, name: &str) -> io::Result<Option<Vec<String>>> {
+        let Some(&(di, fi)) = self.by_stem.get(&name.to_ascii_lowercase()) else {
+            return Ok(None);
+        };
         let d = &self.meta.directories[di];
         let bytes = crate::binary::paz::extract_file(
             &self.group_dir,
@@ -180,28 +181,44 @@ impl PrefabArchive {
             &d.path,
             &self.meta.header.encrypt_info.encrypt_info,
         )
-        .ok()?;
-        Some(prefab_pac_paths(&bytes))
+        .map_err(|e| io::Error::new(e.kind(), format!("prefab {name}: {e}")))?;
+        Ok(Some(prefab_pac_paths(&bytes)))
     }
 }
 
 /// How a handle turns an item prefab name into row keys.
 enum Resolver {
-    /// The original join: prefab name == a row's `prefab_name`.
+    /// The name join: prefab name == a row's `prefab_name`.
     Names(HashMap<String, u32>),
     /// The prefab join, over these archives in order (a merged DLC's first).
     Prefabs(Vec<PrefabArchive>),
 }
 
 impl Resolver {
-    fn keys(&self, name: &str, rows: &HashMap<u32, PartPrefabDyeSlotInfoEntry>) -> Vec<u32> {
+    /// Row keys for prefab `name`. A prefab that exists but cannot be
+    /// extracted is recorded in `failure` (first one kept) and resolves to
+    /// nothing; the load then fails with it.
+    fn keys(
+        &self,
+        name: &str,
+        rows: &HashMap<u32, PartPrefabDyeSlotInfoEntry>,
+        failure: &mut Option<io::Error>,
+    ) -> Vec<u32> {
         match self {
             Resolver::Names(by_name) => by_name.get(name).copied().into_iter().collect(),
-            Resolver::Prefabs(archives) => archives
-                .iter()
-                .find_map(|a| a.pac_paths(name))
-                .map(|paths| pac_keys(&paths, rows))
-                .unwrap_or_default(),
+            Resolver::Prefabs(archives) => {
+                for a in archives {
+                    match a.pac_paths(name) {
+                        Ok(Some(paths)) => return pac_keys(&paths, rows),
+                        Ok(None) => {}
+                        Err(e) => {
+                            failure.get_or_insert(e);
+                            return Vec::new();
+                        }
+                    }
+                }
+                Vec::new()
+            }
         }
     }
 }
@@ -216,8 +233,8 @@ fn pac_keys(paths: &[String], rows: &HashMap<u32, PartPrefabDyeSlotInfoEntry>) -
 }
 
 /// Add a stringinfo body's entries to `strings`; an existing hash keeps
-/// its value (`stringinfo.dlc_01` agrees with the base on all 33,855
-/// shared hashes on 2.06).
+/// its value (`stringinfo.dlc_01` agrees with the base on the hashes they
+/// share).
 fn add_strings(strings: &mut HashMap<u32, String>, stringinfo_pabgb: &[u8]) -> io::Result<()> {
     for e in crate::string_info::StringInfoData::parse_pabgb(stringinfo_pabgb)? {
         strings.entry(e.hash).or_insert(e.value);
@@ -271,7 +288,7 @@ fn join_items(
 }
 
 impl CrimsonItemPartPrefabHandle {
-    /// The original join: an item prefab name matches a row whose
+    /// The name join: an item prefab name matches a row whose
     /// `prefab_name` (first sub-mesh name) equals it.
     fn from_bytes(
         iteminfo_pabgb: &[u8],
@@ -315,9 +332,18 @@ impl CrimsonItemPartPrefabHandle {
     ) -> io::Result<Self> {
         let mut strings: HashMap<u32, String> = HashMap::new();
         add_strings(&mut strings, stringinfo_pabgb)?;
-        let rows: HashMap<u32, PartPrefabDyeSlotInfoEntry> =
-            rows.into_iter().map(|e| (e.key, e)).collect();
-        let items = join_items(iteminfo_pabgb, &strings, |name| resolver.keys(name, &rows))?;
+        // First row wins for a duplicate key, as in the slot-info handle, so
+        // the two answer from the same row.
+        let mut by_key: HashMap<u32, PartPrefabDyeSlotInfoEntry> = HashMap::with_capacity(rows.len());
+        for e in rows {
+            by_key.entry(e.key).or_insert(e);
+        }
+        let rows = by_key;
+        let mut failure = None;
+        let items = join_items(iteminfo_pabgb, &strings, |name| resolver.keys(name, &rows, &mut failure))?;
+        if let Some(e) = failure {
+            return Err(e);
+        }
         let mut h = CrimsonItemPartPrefabHandle {
             part_prefab_keys_by_item: HashMap::new(),
             prefab_names_by_item: HashMap::new(),
@@ -366,20 +392,29 @@ impl CrimsonItemPartPrefabHandle {
         let items = {
             let (rows, resolver) = (&self.rows, &self.resolver);
             let dlc = prefabs.as_ref().filter(|_| matches!(resolver, Resolver::Prefabs(_)));
-            join_items(iteminfo_pabgb, &strings, |name| {
-                match dlc.and_then(|d| d.pac_paths(name)) {
-                    Some(paths) => pac_keys(&paths, rows),
-                    None => resolver.keys(name, rows),
+            let mut failure = None;
+            let items = join_items(iteminfo_pabgb, &strings, |name| {
+                match dlc.map(|d| d.pac_paths(name)).transpose() {
+                    Ok(Some(Some(paths))) => pac_keys(&paths, rows),
+                    Ok(_) => resolver.keys(name, rows, &mut failure),
+                    Err(e) => {
+                        failure.get_or_insert(e);
+                        Vec::new()
+                    }
                 }
-            })?
+            })?;
+            if let Some(e) = failure {
+                return Err(e);
+            }
+            items
         };
         // Commit.
         self.dlc_count += 1;
         let source = self.dlc_count;
         let mut added = 0u32;
         for (key, variants) in items {
-            // On 2.06 the 6,907 shared items join identically from either
-            // table, so keeping the base join changes no answer.
+            // Items both tables carry join identically from either table,
+            // so keeping the base join changes no answer.
             if self.variants_by_item.contains_key(&key) {
                 continue;
             }
@@ -456,7 +491,7 @@ impl CrimsonItemPartPrefabHandle {
 
 // ── Load / free ────────────────────────────────────────────────────────────
 
-/// Parse the three required tables from disk (the original name join;
+/// Parse the three required tables from disk (the name join;
 /// prefer [`crimson_item_part_prefab_load_from_file_with_prefab_pamt`],
 /// see the module docs).
 ///
@@ -568,7 +603,10 @@ pub unsafe extern "C" fn crimson_item_part_prefab_load_from_bytes(
 
 /// Open the character PAMT for the prefab loaders. `NOT_FOUND` when it
 /// lists no `.prefab` file (the caller passed another group).
-fn open_prefab_archive(prefab_pamt_path: *const c_char) -> Result<PrefabArchive, i32> {
+///
+/// # Safety
+/// `prefab_pamt_path` must be a NUL-terminated string.
+unsafe fn open_prefab_archive(prefab_pamt_path: *const c_char) -> Result<PrefabArchive, i32> {
     let s = unsafe { CStr::from_ptr(prefab_pamt_path) }
         .to_str()
         .map_err(|_| error::INVALID_PATH)?;
@@ -582,7 +620,7 @@ fn open_prefab_archive(prefab_pamt_path: *const c_char) -> Result<PrefabArchive,
     Ok(archive)
 }
 
-/// Build the join through the character prefabs (the 2026-11-27 join; see
+/// Build the join through the character prefabs (the prefab join; see
 /// the module docs). Same three tables as
 /// [`crimson_item_part_prefab_load_from_bytes`], plus the path of the PAZ
 /// group `0.pamt` that holds the character `.prefab` files (0009 on 2.06,
@@ -631,7 +669,7 @@ pub unsafe extern "C" fn crimson_item_part_prefab_load_from_bytes_with_prefab_pa
                 unsafe { std::slice::from_raw_parts(p, n) }
             }
         };
-        let archive = match open_prefab_archive(prefab_pamt_path) {
+        let archive = match unsafe { open_prefab_archive(prefab_pamt_path) } {
             Ok(a) => a,
             Err(rc) => return rc,
         };
@@ -688,7 +726,7 @@ pub unsafe extern "C" fn crimson_item_part_prefab_load_from_file_with_prefab_pam
                 Err(_) => return error::IO,
             };
         }
-        let archive = match open_prefab_archive(prefab_pamt_path) {
+        let archive = match unsafe { open_prefab_archive(prefab_pamt_path) } {
             Ok(a) => a,
             Err(rc) => return rc,
         };
@@ -711,12 +749,12 @@ pub unsafe extern "C" fn crimson_item_part_prefab_load_from_file_with_prefab_pam
 /// for a handle from a `_with_prefab_pamt` loader, the DLC's character
 /// PAMT (`<install>/dlc/<name>/0009/0.pamt`). DLC prefabs are tried first,
 /// then the base ones, so a DLC item can wear a base prefab. The dye rows
-/// stay the base table's (`partprefabdyeslotinfo.dlc_01` is empty on 2.06;
-/// the base table already holds the DLC meshes' rows).
+/// stay the base table's (`partprefabdyeslotinfo.dlc_01` is empty; the
+/// base table already holds the DLC meshes' rows).
 ///
 /// Adds the items the handle has no rows for; an item it already resolves
-/// keeps its base join (the 6,907 items both tables carry join identically
-/// on 2.06). `*out_added` = items added (82 on 2.06).
+/// keeps its base join (items both tables carry join identically).
+/// `*out_added` = items added.
 ///
 /// **Optional.** Without the DLC installed (Steam installs `dlc/dlc_01` only
 /// for owners) skip this call: every function works on the base items. An
@@ -756,10 +794,12 @@ pub unsafe extern "C" fn crimson_item_part_prefab_merge_dlc_from_bytes(
         let h = unsafe { &mut *handle };
         let it = unsafe { super::slice_from_raw_or_empty(iteminfo_pabgb, iteminfo_pabgb_len) };
         let si = unsafe { super::slice_from_raw_or_empty(stringinfo_pabgb, stringinfo_pabgb_len) };
-        let archive = if dlc_prefab_pamt_path.is_null() {
+        // A name-join handle has no prefab archive to extend, so its path is
+        // not even opened.
+        let archive = if dlc_prefab_pamt_path.is_null() || matches!(h.resolver, Resolver::Names(_)) {
             None
         } else {
-            match open_prefab_archive(dlc_prefab_pamt_path) {
+            match unsafe { open_prefab_archive(dlc_prefab_pamt_path) } {
                 Ok(a) => Some(a),
                 Err(rc) => return rc,
             }
@@ -835,6 +875,7 @@ pub unsafe extern "C" fn crimson_item_part_prefab_resolved_item_count(
     if handle.is_null() || out_count.is_null() {
         return error::NULL_ARG;
     }
+    unsafe { *out_count = 0 };
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &*handle };
         unsafe { *out_count = h.part_prefab_keys_by_item.len() as u32 };
@@ -857,6 +898,7 @@ pub unsafe extern "C" fn crimson_item_part_prefab_lookup_count(
     if handle.is_null() || out_count.is_null() {
         return error::NULL_ARG;
     }
+    unsafe { *out_count = 0 };
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &*handle };
         match h.part_prefab_keys_by_item.get(&item_key) {
@@ -955,7 +997,10 @@ pub unsafe extern "C" fn crimson_item_part_prefab_lookup_prefab_name_at(
 
 /// The optional tribe / gender filter of the item-level dye lookups.
 /// `Ok(None)` for a null pointer.
-fn tribe_gender_arg<'a>(tribe_gender: *const c_char) -> Result<Option<&'a str>, i32> {
+///
+/// # Safety
+/// `tribe_gender` must be null or a NUL-terminated string that outlives `'a`.
+unsafe fn tribe_gender_arg<'a>(tribe_gender: *const c_char) -> Result<Option<&'a str>, i32> {
     if tribe_gender.is_null() {
         return Ok(None);
     }
@@ -994,7 +1039,7 @@ pub unsafe extern "C" fn crimson_item_part_prefab_lookup_dye_slot_bits(
     unsafe { *out_bits = 0 };
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &*handle };
-        let tg = match tribe_gender_arg(tribe_gender) {
+        let tg = match unsafe { tribe_gender_arg(tribe_gender) } {
             Ok(t) => t,
             Err(rc) => return rc,
         };
@@ -1010,9 +1055,9 @@ pub unsafe extern "C" fn crimson_item_part_prefab_lookup_dye_slot_bits(
 /// Every dye slot number a material channel of the item's rows carries
 /// (`mat_indices`), whether or not the current mask enables it: a superset
 /// of [`crimson_item_part_prefab_lookup_dye_slot_bits`]. Saves written
-/// before 2.01 hold `_dyeSlotNo` values in this set but outside the 2.06
-/// masks (1.10 fixture: 200914 slot 3, 2111103 slot 2, 103023 slot 1), so
-/// an editor should keep such elements rather than treat them as invalid.
+/// before 2.01 hold `_dyeSlotNo` values in this set but outside the
+/// current masks, so an editor should keep such elements rather than
+/// treat them as invalid.
 /// Same arguments and return codes as `lookup_dye_slot_bits`.
 ///
 /// # Safety
@@ -1030,7 +1075,7 @@ pub unsafe extern "C" fn crimson_item_part_prefab_lookup_channel_dye_slot_bits(
     unsafe { *out_bits = 0 };
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &*handle };
-        let tg = match tribe_gender_arg(tribe_gender) {
+        let tg = match unsafe { tribe_gender_arg(tribe_gender) } {
             Ok(t) => t,
             Err(rc) => return rc,
         };
@@ -1045,7 +1090,7 @@ pub unsafe extern "C" fn crimson_item_part_prefab_lookup_channel_dye_slot_bits(
 
 /// Default material name of dye slot number `dye_slot_no` on an item: the
 /// first non-empty name over its rows, in variant then mesh order. Variants
-/// can disagree (9 items on 2.06); pass `tribe_gender` to pick one. Writes
+/// can disagree; pass `tribe_gender` to pick one. Writes
 /// `""` when the number is used but no channel names a material. Two-call
 /// pattern.
 ///
@@ -1074,7 +1119,7 @@ pub unsafe extern "C" fn crimson_item_part_prefab_lookup_dye_slot_material(
     unsafe { *required = 0 };
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &*handle };
-        let tg = match tribe_gender_arg(tribe_gender) {
+        let tg = match unsafe { tribe_gender_arg(tribe_gender) } {
             Ok(t) => t,
             Err(rc) => return rc,
         };
@@ -1104,18 +1149,15 @@ pub unsafe extern "C" fn crimson_item_part_prefab_lookup_dye_slot_material(
 /// and MUST NOT be reassigned. Add new states with the next free
 /// integer; never reuse a retired one.
 pub mod resolve_dye_slot_count_source {
-    /// Slot count came from a direct
-    /// `(item_key → partprefab[0] → slot_count)` chain. The
-    /// `out_slot_count` value is authoritative.
+    /// `out_slot_count` is the number of dye slot numbers the item
+    /// offers: the bits set in the union of its rows' dye slot masks.
     pub const DIRECT: u32 = 0;
     /// `item_key` has no entry in the `item_part_prefab` join — its
-    /// mesh prefab(s) aren't in `partprefabdyeslotinfo`. Typically a
-    /// body-type variant (goblin / dwarf / tribe mesh) that shares
-    /// the human male's dye-slot layout but isn't itself listed.
-    /// 76% of `is_dyeable=1` items hit this in 1.07 (387/507).
-    /// With a handle from the `_with_prefab_pamt` loaders, 8 of the 917
-    /// 2.06 dyeable items hit this (909 resolve).
-    /// Editor should fall back to a curated default (e.g. the
+    /// mesh prefab(s) aren't in `partprefabdyeslotinfo`. With a name-join
+    /// handle this is common, typically a body-type variant (goblin /
+    /// dwarf / tribe mesh) that shares the human male's dye-slot layout
+    /// but isn't itself listed; with a handle from the `_with_prefab_pamt`
+    /// loaders it is rare. Editor should fall back to a curated default (e.g. the
     /// human-male equip-slot prefab's slot count) or display
     /// "unknown" with a warning. `out_slot_count` is 0.
     pub const NOT_RESOLVED_NO_PARTPREFAB: u32 = 1;
@@ -1128,26 +1170,23 @@ pub mod resolve_dye_slot_count_source {
     pub const NOT_RESOLVED_NO_SLOT_INFO: u32 = 2;
 }
 
-/// One-shot "how many dye slots does this item have?" — chains the
-/// existing `item_part_prefab` join and `partprefabdyeslotinfo`
-/// lookups into a single call. Saves the C# editor from orchestrating
-/// the 3-call sequence
-/// (`lookup_count` → `lookup_key_at(0)` →
-/// `crimson_part_prefab_dye_slot_info_lookup_slot_count`) for every
-/// dyeable item it surfaces.
+/// One-shot "how many dye slots does this item have?": the number of
+/// `_dyeSlotNo` values the item offers, i.e. the bits set in the union of
+/// [`crimson_part_prefab_dye_slot_info_lookup_dye_slot_bits`] over every
+/// row key the join gives the item (all body variants and meshes). For
+/// the numbers themselves, which need not be contiguous, use
+/// [`crimson_item_part_prefab_lookup_dye_slot_bits`]; this count is its
+/// popcount when both handles come from the same install. A row's
+/// `slot_count` counts its mesh's sub-meshes, not dye slots, and is not
+/// this number.
 ///
-/// **Resolution policy**: always uses `partprefab[0]` — the first
-/// resolved prefab in iteminfo's `prefab_data_list` traversal order.
-/// Multi-prefab items (rare — mainly mesh variants) typically share a
-/// dye-slot layout across all variants; if a future use case needs
-/// per-variant resolution, switch to the manual chain via
-/// [`crimson_item_part_prefab_lookup_key_at`].
+/// [`crimson_part_prefab_dye_slot_info_lookup_dye_slot_bits`]: super::part_prefab_dye_slot_info::crimson_part_prefab_dye_slot_info_lookup_dye_slot_bits
 ///
 /// **Return shape**: always returns `OK` (or `NULL_ARG` / `PANIC` for
 /// fatal call errors). The "did it resolve?" question is communicated
 /// via `out_resolve_source`:
 ///
-/// - `DIRECT` (0): `out_slot_count` is authoritative.
+/// - `DIRECT` (0): `out_slot_count` is the item's dye slot count.
 /// - `NOT_RESOLVED_NO_PARTPREFAB` (1): item has no partprefab mapping;
 ///   editor should fall back to a default or display "unknown".
 /// - `NOT_RESOLVED_NO_SLOT_INFO` (2): partprefab present but missing
@@ -1181,45 +1220,42 @@ pub unsafe extern "C" fn crimson_item_part_prefab_resolve_dye_slot_count(
     catch_unwind(AssertUnwindSafe(|| {
         let ipp = unsafe { &*item_part_prefab_handle };
 
-        // Step 1: ItemKey → partprefab[0].
+        // Step 1: ItemKey → every prefab row key of the item.
         let Some(prefab_keys) = ipp.part_prefab_keys_by_item.get(&item_key) else {
             return error::OK; // NOT_RESOLVED_NO_PARTPREFAB (already written)
         };
-        let Some(&pp_key) = prefab_keys.first() else {
-            // Empty Vec wouldn't be in the map (the join drops empties),
-            // but guard defensively.
-            return error::OK;
-        };
 
-        // Step 2: PartPrefabKey → slot_count via the slot-info bridge.
-        let mut count: u32 = 0;
-        let rc = unsafe {
-            super::part_prefab_dye_slot_info::crimson_part_prefab_dye_slot_info_lookup_slot_count(
-                slot_info_handle,
-                pp_key,
-                &mut count,
-            )
-        };
-        match rc {
-            x if x == error::OK => {
-                unsafe {
-                    *out_slot_count = count;
-                    *out_resolve_source = resolve_dye_slot_count_source::DIRECT;
+        // Step 2: OR the dye slot bits of the rows the slot-info table has.
+        let mut bits = 0u32;
+        let mut found = false;
+        for &pp_key in prefab_keys {
+            let mut row_bits = 0u32;
+            let rc = unsafe {
+                super::part_prefab_dye_slot_info::crimson_part_prefab_dye_slot_info_lookup_dye_slot_bits(
+                    slot_info_handle,
+                    pp_key,
+                    &mut row_bits,
+                )
+            };
+            match rc {
+                x if x == error::OK => {
+                    bits |= row_bits;
+                    found = true;
                 }
-                error::OK
+                x if x == error::NOT_FOUND => {}
+                // PANIC / NULL_ARG from the slot-info bridge: don't swallow it.
+                other => return other,
             }
-            x if x == error::NOT_FOUND => {
-                unsafe {
-                    *out_resolve_source =
-                        resolve_dye_slot_count_source::NOT_RESOLVED_NO_SLOT_INFO;
-                }
-                error::OK
-            }
-            // Pass through any other error (PANIC / NULL_ARG from the
-            // slot-info bridge — shouldn't happen given our guards, but
-            // don't swallow it silently).
-            other => other,
         }
+        unsafe {
+            if found {
+                *out_slot_count = bits.count_ones();
+                *out_resolve_source = resolve_dye_slot_count_source::DIRECT;
+            } else {
+                *out_resolve_source = resolve_dye_slot_count_source::NOT_RESOLVED_NO_SLOT_INFO;
+            }
+        }
+        error::OK
     }))
     .unwrap_or(error::PANIC)
 }
@@ -1324,8 +1360,8 @@ mod tests {
             unsafe { crimson_item_part_prefab_resolved_item_count(h, &mut resolved_items) },
             error::OK
         );
-        // Probe pass observed ~120 items with at least one resolvable
-        // key — assert ≥50 to leave headroom for cross-version drift.
+        // A floor well under the name join's real count, leaving headroom
+        // for patch drift.
         assert!(
             resolved_items >= 50,
             "expected ≥50 items with partprefab keys, got {resolved_items}"
@@ -1339,23 +1375,12 @@ mod tests {
         );
         assert_eq!(c, 0);
 
-        // Enumerate the first 5 resolved items and pin invariants:
-        // each item's keys + names must be non-empty and same length;
-        // every returned partprefab key must round-trip its prefab_name.
-        // This guards against accidental desync between the two
-        // parallel HashMap entries.
-        // We have to read the entries through the public lookups; do a
-        // brute scan for items with resolved keys by trying a known
-        // dyeable item from the linkage probe.
-        // Marni_Devotee_PlateArmor_Helm (item_key=14510) showed 0 partprefab
-        // hits in the v3 probe — none of its 5 body-type variants live
-        // in partprefabdyeslotinfo. So instead, find any item that has
-        // a resolved keys by scanning known partprefab prefab_name
-        // candidates that DO appear in iteminfo (per the v3 probe's
-        // 50 direct-hit count).
-        //
-        // Simpler: iterate item_keys 1..50000 looking for any with a
-        // resolved count. Cap the scan to avoid pathological runtime.
+        // Pin invariants on a resolved item: its keys + names must be
+        // non-empty and the same length, and every returned partprefab key
+        // must round-trip its prefab_name. This guards against desync
+        // between the two parallel HashMap entries.
+        // The handle has no enumeration, so scan a capped item-key range
+        // for the first item with a resolved count.
         let mut found_item: Option<u32> = None;
         for k in 1..200000u32 {
             let mut n: u32 = 0;
@@ -1462,11 +1487,9 @@ mod tests {
 
     /// Live test for the dye-slot-count wrapper. Walks the
     /// resolved-items set, asserts every directly-resolved item gives
-    /// a non-zero slot count in [1, 8]. Also pins:
-    /// - NOT_RESOLVED_NO_PARTPREFAB for an unknown item key.
-    /// - DIRECT resolution chains through both bridges correctly
-    ///   (slot count matches a manual `lookup_key_at(0)` →
-    ///   `lookup_slot_count` chain).
+    /// a count of at most 12 that equals the popcount of its dye slot
+    /// bits. Also pins NOT_RESOLVED_NO_PARTPREFAB for an unknown item key
+    /// and the three dye slots of 121013.
     #[test]
     fn c_abi_item_part_prefab_resolve_dye_slot_count_live() {
         use super::super::part_prefab_dye_slot_info::*;
@@ -1557,36 +1580,36 @@ mod tests {
             wrapper_source, resolve_dye_slot_count_source::DIRECT,
             "resolved item should report DIRECT",
         );
-        // Slot counts are positive small ints — typical range 1..=16
-        // observed in 1.07 (some equipment has many independently-dyeable
-        // parts). 32 is a generous defensive cap to flag schema drift.
-        assert!(
-            (1..=32).contains(&wrapper_count),
-            "slot_count {wrapper_count} out of plausible range [1, 32] for item {item}",
-        );
+        // A dye slot number is one of the 12 mask flags (2.01+), so the
+        // count is at most 12; an item whose meshes have no dyeable channel
+        // offers none.
+        assert!(wrapper_count <= 12, "dye slot count {wrapper_count} > 12 for item {item}");
 
-        // Manual chain: lookup_key_at(0) → lookup_slot_count.
-        let mut manual_pp: u32 = 0;
-        assert_eq!(
-            unsafe { crimson_item_part_prefab_lookup_key_at(ipp_handle, item, 0, &mut manual_pp) },
-            error::OK,
-        );
-        let mut manual_count: u32 = 0;
+        // The count is the popcount of the item's dye slot bits.
+        let dye_bits = |k: u32| {
+            let mut b = 0u32;
+            let rc = unsafe { crimson_item_part_prefab_lookup_dye_slot_bits(ipp_handle, k, ptr::null(), &mut b) };
+            (rc, b)
+        };
+        assert_eq!(dye_bits(item).1.count_ones(), wrapper_count, "item {item}");
+
+        // 121013: one mesh row with one sub-mesh (`slot_count` 1) but three
+        // dye slots, so the count cannot come from `slot_count`.
+        let mut c121013 = 0u32;
+        let mut s121013 = 99u32;
         assert_eq!(
             unsafe {
-                crimson_part_prefab_dye_slot_info_lookup_slot_count(
-                    slot_handle, manual_pp, &mut manual_count,
+                crimson_item_part_prefab_resolve_dye_slot_count(
+                    ipp_handle, slot_handle, 121_013, &mut c121013, &mut s121013,
                 )
             },
             error::OK,
         );
-        // The wrapper must agree with the manual chain.
-        assert_eq!(
-            wrapper_count, manual_count,
-            "wrapper and manual chain disagree on slot_count for item {item}",
-        );
+        if s121013 == resolve_dye_slot_count_source::DIRECT {
+            assert_eq!(c121013, 3, "121013 has three dye slots");
+        }
 
-        // Full sweep: every resolved item should give DIRECT + [1, 8] count.
+        // Full sweep: every resolved item gives DIRECT and its popcount.
         let mut direct_count = 0u32;
         let mut not_resolved_no_partprefab = 0u32;
         let mut not_resolved_no_slot_info = 0u32;
@@ -1612,10 +1635,8 @@ mod tests {
             );
             match s {
                 x if x == resolve_dye_slot_count_source::DIRECT => {
-                    assert!(
-                        (1..=32).contains(&c),
-                        "item {k} slot_count {c} out of plausible range [1, 32]",
-                    );
+                    assert!(c <= 12, "item {k} dye slot count {c} > 12");
+                    assert_eq!(dye_bits(k).1.count_ones(), c, "item {k}");
                     direct_count += 1;
                 }
                 x if x == resolve_dye_slot_count_source::NOT_RESOLVED_NO_PARTPREFAB => {
@@ -1631,10 +1652,8 @@ mod tests {
             "resolve_dye_slot_count sweep: direct={direct_count}, \
              no_partprefab={not_resolved_no_partprefab}, no_slot_info={not_resolved_no_slot_info}",
         );
-        // 1.07 baseline: ~45 items in the 1..1_000_000 key range
-        // resolve directly. Allow ≥30 for cross-version drift and to
-        // keep the test stable when Pearl Abyss reshuffles item-key
-        // ranges. The sibling `c_abi_item_part_prefab_live` test
+        // A floor under the real count, so the test stays stable across
+        // patch drift and item-key reshuffles. The sibling `c_abi_item_part_prefab_live` test
         // pins the broader `resolved_items >= 50` invariant via
         // `crimson_item_part_prefab_resolved_item_count`, which
         // doesn't rely on a key-range scan.
@@ -1829,7 +1848,10 @@ mod tests {
             let used = elements
                 .iter()
                 .map(|e| save_scalar(e, "_dyeSlotNo").unwrap_or(0))
-                .fold(0u32, |a, n| a | (1 << n));
+                .fold(0u32, |a, n| {
+                    let bit = u32::try_from(n).ok().and_then(|n| 1u32.checked_shl(n));
+                    a | bit.unwrap_or_else(|| panic!("_dyeSlotNo {n} out of range"))
+                });
             let offered = keys.iter().filter_map(|k| rows.get(k)).fold(0, |a, r| a | r.dye_slot_bits());
             assert_eq!(used & !offered, 0, "item {item}: _dyeSlotNo outside the prefab's dye slots");
             resolved.insert(item, (keys.clone(), used));
@@ -1945,9 +1967,16 @@ mod tests {
         blob.push(b'y');
         blob.extend(s("character/model/a/b_ub.pac_xml"));
         blob.extend(s("character/model/a/b_lb.pac"));
+        blob.extend(s("character/model/a/B_HD.PAC"));
+        blob.extend(s("character\\model\\a\\b_ft.pac"));
         assert_eq!(
             prefab_pac_paths(&blob),
-            ["character/model/a/b_ub.pac", "character/model/a/b_lb.pac"]
+            [
+                "character/model/a/b_ub.pac",
+                "character/model/a/b_lb.pac",
+                "character/model/a/B_HD.PAC",
+                "character/model/a/b_ft.pac",
+            ]
         );
         assert!(prefab_pac_paths(&[]).is_empty());
         assert!(prefab_pac_paths(&[5, 0, 0]).is_empty());
@@ -1957,7 +1986,6 @@ mod tests {
     /// and the prefab-join handle built through the C ABI.
     struct LivePrefabJoin {
         item_b: Vec<u8>,
-        rows: Vec<crate::part_prefab_dye_slot_info::PartPrefabDyeSlotInfoEntry>,
         h: *mut CrimsonItemPartPrefabHandle,
     }
 
@@ -1996,8 +2024,7 @@ mod tests {
             )
         };
         assert_eq!(rc, error::OK);
-        let rows = crate::part_prefab_dye_slot_info::parse_part_prefab_dye_slot_info_lossy(&pp_b, &pp_h);
-        Some(LivePrefabJoin { item_b, rows, h })
+        Some(LivePrefabJoin { item_b, h })
     }
 
     fn keys_of(h: *const CrimsonItemPartPrefabHandle, item: u32) -> Vec<u32> {
@@ -2050,12 +2077,18 @@ mod tests {
     /// checksum of its path (the last slot's `tail_name`).
     #[test]
     fn part_prefab_key_is_the_pac_path_checksum_live() {
-        let Some(j) = live_prefab_join() else {
+        // Only the 0008 table is needed, not the 0009 prefabs or the join.
+        let (Some(pp_b), Some(pp_h)) = (
+            gamedata_layout::extract_bin(&gamedata_layout::body("partprefabdyeslotinfo")),
+            gamedata_layout::extract_bin(&gamedata_layout::header("partprefabdyeslotinfo")),
+        ) else {
             eprintln!("skipping: no game install");
             return;
         };
-        assert!(j.rows.len() > 1000);
-        for r in &j.rows {
+        let rows = crate::part_prefab_dye_slot_info::parse_part_prefab_dye_slot_info_lossy(&pp_b, &pp_h);
+        let listed = crate::binary::static_header::detect_named_pair(&pp_h, &pp_b).expect("2.06 header").2.len();
+        assert_eq!(rows.len(), listed, "every row the header lists parses");
+        for r in &rows {
             let pac = &r.slots.last().expect("row has slots").tail_name;
             assert!(pac.ends_with(".pac"), "{:08x}: last tail {pac:?}", r.key);
             assert_eq!(part_prefab_key_for_pac(pac), r.key, "{pac}");
@@ -2090,7 +2123,7 @@ mod tests {
         // 9102 Hernand ceremonial guard armor: cd_phm_00_ub_00_0374.
         assert_eq!(keys_of(h, 9102), [0xe3634591, 0xed21cd67, 0x30ffb974, 0x86db33f9, 0xbd4d4886]);
         assert_eq!(bits_of(h, 9102, None), (error::OK, 0b0010_1100_1101));
-        // The name join sent this spear to a horse-saddle hook mesh.
+        // The name join sends this spear to a horse-saddle hook mesh.
         assert_eq!(
             keys_of(h, 1001163),
             [part_prefab_key_for_pac("character/model/1_pc/1_phm/weapon/2_twohandweapon/cd_phm_02_spear_0029.pac")]
@@ -2107,7 +2140,7 @@ mod tests {
         assert_eq!(material_of(h, u32::MAX, None, 0), Err(error::NOT_FOUND));
         assert_eq!(bits_of(h, u32::MAX, None), (error::NOT_FOUND, 0));
 
-        // Coverage: is_dyeable items with at least one row (909 / 917 on 2.06).
+        // Coverage: at least 98% of is_dyeable items have a row.
         let (mut dyeable, mut resolved) = (0u32, 0u32);
         let mut off = 0;
         while off < j.item_b.len() {
@@ -2117,6 +2150,7 @@ mod tests {
                 resolved += u32::from(bits_of(h, it.key.0, None).0 == error::OK);
             }
         }
+        println!("prefab coverage: {resolved} of {dyeable} dyeable items resolve");
         assert!(dyeable >= 900, "dyeable {dyeable}");
         assert!(resolved * 100 >= dyeable * 98, "resolved {resolved} / {dyeable}");
     }
@@ -2176,7 +2210,7 @@ mod tests {
         }
     }
 
-    /// The 1.10 fixtures hold dyed body-type armor the name join could not
+    /// The 1.10 fixtures hold dyed body-type armor the name join cannot
     /// resolve (200914, 1000313, 2111103, 103023). Through the prefab join
     /// every `_dyeSlotNo` they carry is one of the item's channel numbers on
     /// live 2.06; three of them are numbers whose 2.06 mask bit is clear.
@@ -2205,7 +2239,10 @@ mod tests {
             let used = elements
                 .iter()
                 .map(|e| save_scalar(e, "_dyeSlotNo").unwrap_or(0))
-                .fold(0u32, |a, n| a | (1 << n));
+                .fold(0u32, |a, n| {
+                    let bit = u32::try_from(n).ok().and_then(|n| 1u32.checked_shl(n));
+                    a | bit.unwrap_or_else(|| panic!("_dyeSlotNo {n} out of range"))
+                });
             let (rc, offered) = bits_of(j.h, item, None);
             assert_eq!(rc, error::OK, "item {item} does not resolve");
             let mut channels = 0u32;
@@ -2217,7 +2254,7 @@ mod tests {
             assert_eq!(used & !channels, 0, "item {item}: used {used:b}, channels {channels:b}");
             used_by_item.insert(item, used & !offered);
         }
-        // The numbers 1.10 wrote that the 2.06 masks no longer enable.
+        // The numbers 1.10 wrote that the 2.06 masks do not enable.
         let mut outside: Vec<(u32, u32)> = used_by_item.into_iter().collect();
         outside.sort_unstable();
         assert_eq!(

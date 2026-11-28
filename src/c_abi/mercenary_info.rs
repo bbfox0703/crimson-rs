@@ -6,12 +6,12 @@
 //! per-save instance ID — the editor's "Rename Mercenary" UI uses this
 //! bridge to surface the template lineage cleanly.
 //!
-//! Mirrors [`super::faction_node_info`] in shape — name-only, **no
-//! `lookup_display_name` function**, no PALOC chain probed yet.
+//! Name-only: **no `lookup_display_name` function** and no PALOC
+//! chain.
 //!
-//! 18 rows in 1.07. PABGH is a NEW variant: `u16 count + (u8 key, u32 offset)*`
-//! (5-byte entries). See `src/mercenary_info/mod.rs` for byte-level
-//! schema notes.
+//! The pre-2.06 PABGH is a variant of its own:
+//! `u16 count + (u8 key, u32 offset)*` (5-byte entries). See
+//! `src/mercenary_info/mod.rs` for byte-level schema notes.
 
 use std::collections::HashMap;
 use std::ffi::CStr;
@@ -23,7 +23,6 @@ use crate::mercenary_info::parse_mercenary_info_lossy;
 
 /// Opaque handle exposing `(MercenaryKey, internal_name)` lookups
 /// against the loaded `mercenaryinfo.pabgb` + `.pabgh` pair.
-#[repr(C)]
 pub struct CrimsonMercenaryInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,
@@ -79,6 +78,9 @@ pub unsafe extern "C" fn crimson_mercenary_info_load_from_file(
             Err(_) => return error::IO,
         };
         let handle = CrimsonMercenaryInfoHandle::from_bytes(&pabgb, &pabgh);
+        if let Err(code) = crate::c_abi::check_rows(&pabgb, Some(&pabgh[..]), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -117,6 +119,9 @@ pub unsafe extern "C" fn crimson_mercenary_info_load_from_bytes(
             unsafe { std::slice::from_raw_parts(pabgh, pabgh_len) }
         };
         let handle = CrimsonMercenaryInfoHandle::from_bytes(pabgb_slice, pabgh_slice);
+        if let Err(code) = crate::c_abi::check_rows(pabgb_slice, Some(pabgh_slice), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))

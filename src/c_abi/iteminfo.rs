@@ -1,18 +1,16 @@
 //! `iteminfo.pabgb` bridge — C ABI surface.
 //!
 //! Parses an in-memory `iteminfo.pabgb` blob (after PAZ extraction
-//! from group `0008`, directory `gamedata/binary__/client/bin/`) and
+//! from group `0008`, the static-info directory `gamedata/binarystaticinfo__/bin`) and
 //! exposes a single primitive the downstream editor needs: map an
 //! `ItemKey (u32)` to its `string_key (String)`. The string key then
 //! feeds into the PALOC catalog from [`super::paloc`] to yield a
 //! localized display name.
 //!
-//! Memory cost: ~6,400 items in 1.06 × ~30 bytes per string key ≈
-//! 200 KB resident plus HashMap overhead. The full `ItemInfo` parse
-//! runs once at load time, but only the `(key, string_key)` pair is
-//! retained — the other 100+ fields are dropped. A future PR can
-//! expose richer queries (icon path, item description, …) without
-//! reshaping this handle.
+//! The full `ItemInfo` parse runs once at load time; the handle keeps the
+//! `(key, string_key)` map plus per-key indexes (max stack, icon, the
+//! mission links both ways, socket caps, allowed gems, the canonical gem
+//! set and the summary struct). The rest of each row is dropped.
 
 use std::collections::HashMap;
 use std::io;
@@ -34,11 +32,12 @@ pub const CRIMSON_ITEMINFO_FLAG_IS_BLOCKED: u32 = 1 << 0;
 pub const CRIMSON_ITEMINFO_FLAG_IS_DYEABLE: u32 = 1 << 1;
 pub const CRIMSON_ITEMINFO_FLAG_IS_DESTROY_WHEN_BROKEN: u32 = 1 << 2;
 pub const CRIMSON_ITEMINFO_FLAG_IS_HOUSING_ONLY: u32 = 1 << 3;
-/// Added in Crimson Desert 1.08. Set on every weapon / armor /
-/// accessory / tool-slot tool (949 of 6,314 items). See
-/// `src/item_info/item.rs` for the value-distribution analysis behind
-/// the naming guess.
+/// Set on every weapon / armor / accessory / tool-slot tool. The name is
+/// a guess from the value distribution; see `src/item_info/item.rs`.
 pub const CRIMSON_ITEMINFO_FLAG_IS_EQUIP_QUICK_SLOT_VISIBLE: u32 = 1 << 4;
+/// Set when `item_importance_kind == 0`. The field is a three-valued byte
+/// that took over from an "is important" boolean: 0 is the boolean's 1, 2 is
+/// its 0, and the rare value 1 counts as not important.
 pub const CRIMSON_ITEMINFO_FLAG_IS_IMPORTANT_ITEM: u32 = 1 << 5;
 pub const CRIMSON_ITEMINFO_FLAG_IS_SHIELD_ITEM: u32 = 1 << 6;
 pub const CRIMSON_ITEMINFO_FLAG_IS_TOWER_SHIELD_ITEM: u32 = 1 << 7;
@@ -84,8 +83,8 @@ fn pack_iteminfo_flags(item: &ItemInfo) -> u32 {
         item.is_equip_quick_slot_visible,
         CRIMSON_ITEMINFO_FLAG_IS_EQUIP_QUICK_SLOT_VISIBLE
     );
-    // 2.04 replaced the boolean with a three-valued byte: 0 is what used to
-    // read "important".
+    // A three-valued byte, not a boolean: 0 means "important"
+    // (see CRIMSON_ITEMINFO_FLAG_IS_IMPORTANT_ITEM).
     if item.item_importance_kind == 0 {
         f |= CRIMSON_ITEMINFO_FLAG_IS_IMPORTANT_ITEM;
     }
@@ -170,8 +169,9 @@ fn pack_iteminfo_flags(item: &ItemInfo) -> u32 {
 // `crimson_iteminfo_lookup_summary` populates this struct from the cached
 // per-key metadata. Field ordering picks the largest scalars first so the
 // repr(C) layout has no implicit padding mid-struct; the trailing
-// `_reserved: [u8; 5]` brings the size up to a clean 72 bytes
-// (`size_of::<CrimsonItemInfoSummary>()` is asserted in the unit tests).
+// `_reserved: u8` ends the fields at 76 bytes and the u64 alignment pads
+// the struct to 80. The size, the alignment and every field's offset are
+// asserted at build time below.
 //
 // The summary intentionally omits variable-length data (string_key,
 // icon_path full string, the various Lists). Callers that need those
@@ -198,6 +198,9 @@ pub struct CrimsonItemInfoSummary {
     pub max_endurance: u16,
     pub item_type: u8,
     pub item_tier: u8,
+    /// Always 0: the current iteminfo has no such field. The slot stays for
+    /// ABI stability, and `crimson_iteminfo_lookup_quick_slot_index` still
+    /// returns `OK`.
     pub quick_slot_index: u8,
     pub item_charge_type: u8,
     pub usable_alert_type: u8,
@@ -214,18 +217,44 @@ const _: () = {
     // Layout under repr(C):
     //   3×u64 + 9×u32 + 4×u16 + 8×u8 = 24+36+8+8 = 76 bytes raw,
     //   rounded up to 80 by the u64 alignment requirement (the trailing
-    //   `_reserved: u8` sits at offset 71; bytes 72..79 are pad bytes
+    //   `_reserved: u8` sits at offset 75; bytes 76..79 are pad bytes
     //   the compiler adds to make the struct's total size a multiple
     //   of its 8-byte alignment).
     assert!(std::mem::size_of::<CrimsonItemInfoSummary>() == 80);
     assert!(std::mem::align_of::<CrimsonItemInfoSummary>() == 8);
+    // Every field's offset, so a reorder that keeps the size (swapping two
+    // u32s, say) breaks the build instead of C#'s reads.
+    use std::mem::offset_of;
+    type S = CrimsonItemInfoSummary;
+    assert!(offset_of!(S, max_stack_count) == 0);
+    assert!(offset_of!(S, cooltime) == 8);
+    assert!(offset_of!(S, respawn_time_seconds) == 16);
+    assert!(offset_of!(S, key) == 24);
+    assert!(offset_of!(S, flags) == 28);
+    assert!(offset_of!(S, icon_path_hash) == 32);
+    assert!(offset_of!(S, equip_type_info) == 36);
+    assert!(offset_of!(S, equipable_hash) == 40);
+    assert!(offset_of!(S, equipable_level) == 44);
+    assert!(offset_of!(S, knowledge_info) == 48);
+    assert!(offset_of!(S, material_key) == 52);
+    assert!(offset_of!(S, gimmick_info) == 56);
+    assert!(offset_of!(S, category_info) == 60);
+    assert!(offset_of!(S, inventory_info) == 62);
+    assert!(offset_of!(S, minimum_extract_enchant_level) == 64);
+    assert!(offset_of!(S, max_endurance) == 66);
+    assert!(offset_of!(S, item_type) == 68);
+    assert!(offset_of!(S, item_tier) == 69);
+    assert!(offset_of!(S, quick_slot_index) == 70);
+    assert!(offset_of!(S, item_charge_type) == 71);
+    assert!(offset_of!(S, usable_alert_type) == 72);
+    assert!(offset_of!(S, knowledge_obtain_type) == 73);
+    assert!(offset_of!(S, apply_drop_stat_type) == 74);
+    assert!(offset_of!(S, _reserved) == 75);
 };
 
 /// Opaque handle exposing lean per-item lookups against the loaded
-/// iteminfo: the `string_key` (internal id) and the `max_stack_count`
-/// (stack cap). The full ItemInfo parse runs once; only the bits the
-/// downstream editor needs are retained.
-#[repr(C)]
+/// iteminfo. The full ItemInfo parse runs once; the handle keeps the
+/// per-key indexes in its fields and drops the rest of each row.
 pub struct CrimsonItemInfoHandle {
     by_key: HashMap<u32, String>,
     max_stack_by_key: HashMap<u32, u64>,
@@ -241,11 +270,10 @@ pub struct CrimsonItemInfoHandle {
     /// of the challenge that rewards them; regular items leave this
     /// field at 0 and don't show up in the map.
     ///
-    /// Verified across the live 1.07 install: 141 items carry a
-    /// non-zero value, all 141 missions they point at have internal
-    /// names matching `Challenge_SealedArtifact_*`. The mapping is
-    /// **1:1** (no mission is the target of more than one artifact),
-    /// so the reverse map below is a clean inverse.
+    /// The missions they point at are the `Challenge_SealedArtifact_*`
+    /// ones. The mapping is **1:1** (no mission is the target of more
+    /// than one artifact; the live test pins it), so the reverse map
+    /// below is a clean inverse.
     look_detail_mission_by_key: HashMap<u32, u32>,
     /// Inverse of `look_detail_mission_by_key`: mission_key → item_key.
     /// Lets the editor answer "which artifact starts THIS challenge?"
@@ -253,8 +281,8 @@ pub struct CrimsonItemInfoHandle {
     /// triggers them — they're started by other means (e.g. dialogue,
     /// kill counters, geographic discovery).
     ///
-    /// **Invariant**: the iteminfo's forward map is verified 1:1 in
-    /// 1.07, so this inverse is unambiguous.
+    /// **Invariant**: the forward map is 1:1, so this inverse is
+    /// unambiguous; if a patch breaks that, the lowest ItemKey wins.
     artifact_by_mission: HashMap<u32, u32>,
     /// Per-item gamedata socket caps:
     /// `(use_socket, socket_valid_count)`.
@@ -270,8 +298,9 @@ pub struct CrimsonItemInfoHandle {
     /// from `iteminfo.pabgb`, field `socket_valid_count` and
     /// `use_socket`).
     socket_caps_by_key: HashMap<u32, (u8, u8)>,
-    /// Per-item allowed-gem itemkey list (from
-    /// `DropDefaultData::socket_item_list`). Only items with a
+    /// Per-item allowed-gem itemkey list: the de-duplicated union of
+    /// `DropDefaultData::socket_item_list` and
+    /// `add_socket_material_item_list`. Only items with a
     /// non-empty list are inserted — non-socket items have empty
     /// lists and don't show up here, so the editor surfaces "no
     /// allowed gems" as `count = 0`. The list preserves on-disk
@@ -280,9 +309,8 @@ pub struct CrimsonItemInfoHandle {
     /// The "canonical gem set" — sorted-ascending list of every
     /// itemkey whose iteminfo row has `item_type == 74` AND
     /// `category_info == CategoryKey(2501)`. This is the gamedata's
-    /// own definition of a gem (verified against the user's slot104
-    /// reference set — all 43 observed gems match this rule; the
-    /// two host items 1000316/1002285 do not).
+    /// own definition of a gem: every gem in the reference save
+    /// matches it, and the gem-host items do not.
     ///
     /// **Why not "union of all socket_item_list"?** Because
     /// `DropDefaultData::socket_item_list` is the per-weapon
@@ -380,15 +408,14 @@ impl CrimsonItemInfoHandle {
                     material_key: item.material_key,
                     gimmick_info: item.gimmick_info.0,
                     category_info: item.category_info.0,
-                    // 1.16 relocated `inventory_info` to the item end and
-                    // widened it to 8 slots; slot 0 is byte-for-byte the value
-                    // this field carried pre-1.16, so the ABI is unchanged.
+                    // `inventory_info_list` holds up to 12 slots; slot 0 is
+                    // the value the ABI's scalar field reports.
                     inventory_info: item.inventory_info_list[0],
                     minimum_extract_enchant_level: item.minimum_extract_enchant_level,
                     max_endurance: item.max_endurance,
                     item_type: item.item_type,
                     item_tier: item.item_tier,
-                    // Removed from iteminfo in 2.04; kept in the ABI struct.
+                    // iteminfo has no such field; the ABI struct keeps the slot.
                     quick_slot_index: 0,
                     item_charge_type: item.item_charge_type,
                     usable_alert_type: item.usable_alert_type,
@@ -428,8 +455,8 @@ impl CrimsonItemInfoHandle {
             // allow list, often used for vendor/crafting display) and
             // `add_socket_material_item_list` (the broader set of
             // gem-shaped materials the item's socket slot will accept
-            // at insertion time — captures gems missed by the
-            // explicit list, including 1002979 "爆走的力量審判").
+            // at insertion time — captures gems the explicit list
+            // misses).
             // Insertion-order is preserved via Vec; duplicates are
             // de-duplicated with a tracking set so the per-weapon
             // enumeration stays clean.
@@ -450,8 +477,8 @@ impl CrimsonItemInfoHandle {
             if !union.is_empty() {
                 socket_allowed_gems_by_key.insert(item.key.0, union);
             }
-            // Gem classifier: verified across the user's 43-gem
-            // slot104 reference set. Both fields must match.
+            // Gem classifier (see `canonical_gem_list`): both fields
+            // must match.
             if item.item_type == 74 && item.category_info.0 == 2501 {
                 canonical_gems_set.insert(item.key.0);
             }
@@ -470,21 +497,15 @@ impl CrimsonItemInfoHandle {
         // Canonical gem set is the (item_type=74, category=2501) bucket
         // — collected during the parse loop above.
         let canonical_gem_list: Vec<u32> = canonical_gems_set.into_iter().collect();
-        // Inverse of look_detail_mission_by_key. The forward map is
-        // verified 1:1 against the live 1.07 install, so this inverse
-        // is unambiguous; if a future patch broke the 1:1 invariant
-        // we'd silently overwrite earlier entries — surface a warning
-        // in that case so we know to revisit the schema.
-        let mut artifact_by_mission: HashMap<u32, u32> =
-            HashMap::with_capacity(look_detail_mission_by_key.len());
-        for (&item_key, &mission_key) in &look_detail_mission_by_key {
-            if artifact_by_mission.insert(mission_key, item_key).is_some() {
-                eprintln!(
-                    "warn: look_detail_mission_info 1:1 invariant broken — \
-                     mission {mission_key} pointed at by multiple artifacts; \
-                     keeping last-write-wins"
-                );
-            }
+        // Inverse of look_detail_mission_by_key, which is 1:1 (the live test
+        // pins it). Should a patch break that, the lowest ItemKey wins, so the
+        // result is deterministic, and the DLL reports nothing on stderr.
+        let mut pairs: Vec<(u32, u32)> =
+            look_detail_mission_by_key.iter().map(|(&item, &mission)| (item, mission)).collect();
+        pairs.sort_unstable();
+        let mut artifact_by_mission: HashMap<u32, u32> = HashMap::with_capacity(pairs.len());
+        for (item_key, mission_key) in pairs {
+            artifact_by_mission.entry(mission_key).or_insert(item_key);
         }
         Ok(CrimsonItemInfoHandle {
             by_key,
@@ -535,7 +556,10 @@ pub unsafe extern "C" fn crimson_iteminfo_load_from_file(
             Err(_) => return error::IO,
         };
         // 2.06+: item names live in the `.staticinfoheader` next to the body.
-        let header = super::sibling_header(path_str);
+        let header = match super::sibling_header(path_str) {
+            Ok(h) => h,
+            Err(_) => return error::IO,
+        };
         let handle = match CrimsonItemInfoHandle::from_parts(&bytes, header.as_deref()) {
             Ok(h) => h,
             Err(_) => return error::BODY_PARSE,
@@ -546,8 +570,9 @@ pub unsafe extern "C" fn crimson_iteminfo_load_from_file(
     .unwrap_or(error::PANIC)
 }
 
-/// Parse iteminfo bytes already in memory (preferred — the editor pulls
-/// them through PAZ extraction first).
+/// Parse iteminfo bytes already in memory. On 2.06+ the row names live in
+/// the `.staticinfoheader`: use `crimson_iteminfo_load_from_bytes_with_header`,
+/// or every name lookup returns `NOT_FOUND`.
 ///
 /// # Safety
 /// `data` must point to `data_len` readable bytes; `out_handle` must
@@ -674,7 +699,9 @@ pub unsafe extern "C" fn crimson_iteminfo_entry_count(
 /// - Allocate, call again to receive the bytes and `OK`.
 ///
 /// Returns `NOT_FOUND` when `item_key` doesn't match any item in the
-/// loaded table.
+/// loaded table, or when the item has no name: a 2.06 table loaded without
+/// its `.staticinfoheader` holds every row nameless. Load 2.06 tables with
+/// `crimson_iteminfo_load_from_bytes_with_header`.
 ///
 /// # Safety
 /// `handle` and `required` must be non-null; `buf` may be null iff
@@ -696,7 +723,7 @@ pub unsafe extern "C" fn crimson_iteminfo_lookup_string_key(
     unsafe { *required = 0 };
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &*handle };
-        let Some(name) = h.by_key.get(&item_key) else {
+        let Some(name) = h.by_key.get(&item_key).filter(|n| !n.is_empty()) else {
             return error::NOT_FOUND;
         };
         let needed = name.len() + 1;
@@ -825,9 +852,9 @@ pub unsafe extern "C" fn crimson_iteminfo_lookup_look_detail_mission_info(
 /// and PALOC, the editor can also tell the user "you already own /
 /// have used the artifact for this challenge".
 ///
-/// **Coverage**: 141 missions in 1.07 — all named
-/// `Challenge_SealedArtifact_*`. Returns `NOT_FOUND` for the
-/// remaining ~3,900 missions; those are challenges that start by
+/// **Coverage**: the missions found here are the
+/// `Challenge_SealedArtifact_*` ones. Returns `NOT_FOUND` for every
+/// other mission; those are challenges that start by
 /// other triggers (dialogue, kills, exploration) and need no
 /// artifact. The editor uses this to gate the "Sealed Artifact
 /// required" badge.
@@ -909,7 +936,8 @@ pub unsafe extern "C" fn crimson_iteminfo_lookup_socket_caps(
 }
 
 /// Check whether `gem_key` is in `item_key`'s gamedata-defined
-/// allowed-gem list (`DropDefaultData::socket_item_list`). Writes
+/// allowed-gem list (`DropDefaultData::socket_item_list` plus the items of
+/// `add_socket_material_item_list`, duplicates dropped). Writes
 /// `*out_allowed` as 1 if allowed, 0 if not.
 ///
 /// **Advisory only**: returns `OK` in both the allowed and
@@ -988,8 +1016,8 @@ pub unsafe extern "C" fn crimson_iteminfo_socket_allowed_gem_count(
 }
 
 /// Read the allowed-gem itemkey at insertion index `idx` for
-/// `item_key`. Order matches `DropDefaultData::socket_item_list` on
-/// disk so enumerations are deterministic.
+/// `item_key`. Order is `socket_item_list` on disk, then the new items of
+/// `add_socket_material_item_list`, so enumerations are deterministic.
 ///
 /// Returns `NOT_FOUND` when `item_key` is missing from iteminfo,
 /// `OUT_OF_RANGE` when `idx >= allowed_gem_count(item_key)`,
@@ -1027,9 +1055,9 @@ pub unsafe extern "C" fn crimson_iteminfo_socket_allowed_gem_at(
 
 // ── Canonical gem set (the gem-picker dropdown source) ─────────────────────
 //
-// The "canonical gem set" = sorted-ascending union of every item's
-// `socket_item_list`. Every itemkey that ANY weapon accepts as a gem
-// is a gem by this definition. Computed once at handle-load time,
+// The "canonical gem set" = every itemkey whose row has `item_type == 74`
+// and `category_info == 2501`, sorted ascending (see the handle field for
+// why not the union of the socket lists). Computed once at handle-load time,
 // available as a flat enumeration so the C# editor can drive a
 // gem-picker dropdown without reinventing the gem catalog itself.
 //
@@ -1040,8 +1068,8 @@ pub unsafe extern "C" fn crimson_iteminfo_socket_allowed_gem_at(
 // - Or skip it entirely and let the user enter any u32 itemkey for
 //   CE-style freeform mode (the save format and runtime accept it).
 
-/// Number of itemkeys in the canonical gem set (sorted-ascending
-/// union of every item's `socket_item_list`).
+/// Number of itemkeys in the canonical gem set (`item_type == 74` and
+/// `category_info == 2501`, sorted ascending).
 ///
 /// Returns `OK` (always — empty iteminfo just gives 0).
 ///
@@ -1306,7 +1334,7 @@ mod tests {
     //! Skip cleanly when no Steam install is present. Synthesizing
     //! `iteminfo.pabgb` from scratch is impractical (each item is
     //! ~600 B with 100+ fields) so we rely on round-tripping the
-    //! real bytes through PAZ extraction + the new C ABI.
+    //! real bytes through PAZ extraction + the C ABI.
     //!
     //! Coverage for the C ABI's error paths (NULL_ARG, BODY_PARSE on
     //! garbage, OUT_OF_RANGE, NOT_FOUND) uses synthetic inputs that
@@ -1396,7 +1424,7 @@ mod tests {
             unsafe { crimson_iteminfo_entry_count(handle, &mut count) },
             error::OK
         );
-        // 1.05 had ~6,236; 1.06 has ~6,400. Just assert plausibly populated.
+        // The count moves per patch; just assert the table is populated.
         assert!(count > 5_000, "expected >5k items, got {count}");
 
         // ── Round-trip: pick entry 0, then look up its string_key by
@@ -1864,17 +1892,13 @@ mod tests {
     /// Diagnostic — surveys the artifact ↔ challenge mapping carried
     /// by `iteminfo.look_detail_mission_info`. Resolves item display
     /// names (via PALOC `(itemkey<<32)|0x70`) and mission internal
-    /// names (via missioninfo) so we can see the actual mapping data
-    /// and decide what to ship as an API surface.
-    ///
-    /// What we want to learn from this probe:
-    ///   - How many items carry a non-zero look_detail_mission_info?
-    ///   - What naming pattern do those mission internal_names have
-    ///     (e.g. "Challenge_*", "Catalog_*", "Mission_*Artifact*")?
-    ///   - Is the mapping 1:1 (one artifact per mission) or 1:N
-    ///     (multiple artifacts can start the same challenge)?
-    ///   - What fraction of missions have NO artifact pointing at them
-    ///     (those are challenges that start by other triggers)?
+    /// names (via missioninfo) and reports:
+    ///   - how many items carry a non-zero look_detail_mission_info;
+    ///   - the naming pattern of the missions they point at;
+    ///   - whether the mapping is 1:1 or 1:N (several artifacts
+    ///     starting the same challenge);
+    ///   - how many missions have NO artifact pointing at them
+    ///     (challenges that start by other triggers).
     #[test]
     #[ignore = "investigation only — artifact ↔ catalog-challenge mapping survey"]
     fn _probe_artifact_challenge_mapping() {
@@ -2032,12 +2056,9 @@ mod tests {
         }
     }
 
-    /// Diagnostic — dumps the iteminfo fields for known gem itemkeys
-    /// to figure out which field reliably marks something as a gem.
-    /// Items investigated: 1002979 (爆走的力量審判, durability gem
-    /// the user verified), 1002972/3/4 (the gem trio in 嘟嘟鳥盔甲),
-    /// 1002815 + 1002848 (no-durability gems in the same armor),
-    /// 1000316 (one of the host items, for contrast).
+    /// Diagnostic — dumps the iteminfo fields for known gem itemkeys,
+    /// plus host items for contrast, to show which fields mark
+    /// something as a gem.
     #[test]
     #[ignore = "investigation only — find the iteminfo field that classifies a gem"]
     fn _probe_iteminfo_gem_classification() {
@@ -2105,9 +2126,9 @@ mod tests {
     }
 
     /// Live-install test for the canonical gem-set ABIs. Confirms the
-    /// list is non-empty, strictly sorted ascending, every entry
-    /// appears in at least one weapon's allowed-gem list, and the 43
-    /// gem itemkeys we observed in slot104's saves are all present.
+    /// list is non-empty and strictly sorted ascending, that it covers
+    /// (almost) every entry of the per-weapon allowed-gem lists, and that
+    /// the gem itemkeys pinned from the slot104 reference save are all present.
     /// Also dumps the first 20 entries for visibility.
     #[test]
     fn c_abi_iteminfo_canonical_gem_set_live() {
@@ -2160,10 +2181,9 @@ mod tests {
             error::OUT_OF_RANGE
         );
 
-        // Cross-check: pin the 43 gem itemkeys observed in slot104's
-        // saves — every one of them MUST be in the canonical set.
-        // (If a future patch drops a gem from all allowed lists, the
-        // canonical set would shrink — this test surfaces that.)
+        // Cross-check: every gem itemkey the slot104 reference save holds
+        // MUST be in the canonical set; a patch that reclassifies one of
+        // them fails here.
         const SLOT104_GEMS: &[u32] = &[
             1001426, 1002467, 1002499, 1002509, 1002523, 1002539, 1002548, 1002552,
             1002554, 1002569, 1002580, 1002751, 1002785, 1002791, 1002794, 1002796,
@@ -2234,14 +2254,10 @@ mod tests {
     }
 
     /// Validates the artifact ↔ challenge bidirectional mapping is
-    /// 1:1 and round-trips correctly. The phase-3 probe
-    /// `_probe_artifact_challenge_mapping` confirmed:
-    /// - 141 items carry a non-zero `look_detail_mission_info`
-    /// - All 141 missions they point at are `Challenge_SealedArtifact_*`
-    /// - Mapping is 1:1 (no mission target by >1 artifact)
-    ///
-    /// This test asserts the same invariants via the C ABI surface
-    /// and pins a handful of (item, mission) tuples from the probe.
+    /// 1:1 (no mission targeted by more than one artifact) and
+    /// round-trips correctly through the C ABI surface, and pins a
+    /// handful of (item, mission) tuples taken from
+    /// `_probe_artifact_challenge_mapping`.
     /// Pinned tuples catch both schema regression (parser misses the
     /// field) and Pearl Abyss rebinding (an artifact is reassigned to
     /// a different challenge).
@@ -2358,8 +2374,7 @@ mod tests {
 
     /// Validates the full editor-side pipeline for the gem-picker:
     /// `canonical_gem_count/_at → iteminfo string_key → PALOC display
-    /// name at lo32=0x70`. Asserts every one of the 190 canonical
-    /// gems resolves to a non-empty display name (so the C# editor
+    /// name at lo32=0x70`. Asserts every canonical gem resolves to a non-empty display name (so the C# editor
     /// can build the entire gem-picker dropdown end-to-end at startup
     /// without any hardcoded mapping).
     ///
@@ -2491,10 +2506,10 @@ mod tests {
         }
     }
 
-    // ── Static-metadata lookup tests (Option A + Option B) ────────────────
+    // ── Static-metadata lookup tests ──────────────────────────────────────
     //
     // Pin the granular flag / scalar getters and the one-shot summary
-    // struct against two known items in 1.08:
+    // struct against two known items:
     //   - Pyeonjeon_Arrow (key=2200): a consumable arrow with
     //     item_type=0, item_tier=0, and is_equip_quick_slot_visible=0
     //     (it's a quiver/consumable, not equipment).
@@ -2538,19 +2553,17 @@ mod tests {
             unsafe { crimson_iteminfo_lookup_flags(handle, 2200, &mut flags) },
             error::OK
         );
-        // The ammo item_type has been remapped twice: Pyeonjeon_Arrow read 0
-        // through 1.12, 23 in 1.13–1.15, and 0 again in 1.16. item_tier / flags
-        // below are unchanged across all three, which is what confirms the field
-        // is still correctly aligned (a game-side enum change, not a parse
-        // drift). `quick_slot_index` read 1 through 2.03; iteminfo dropped the
-        // field in 2.04 and the ABI reports 0.
+        // The ammo item_type is a game-side enum the game has remapped between
+        // patches; when it moves while item_tier / flags hold, the enum changed,
+        // not the parse alignment. `quick_slot_index` is always 0 (iteminfo
+        // has no such field).
         assert_eq!(
             item_type, 0,
             "Pyeonjeon_Arrow item_type drifted (0 in ≤1.12, 23 in 1.13–1.15, 0 in 1.16)"
         );
         assert_eq!(item_tier, 0, "Pyeonjeon_Arrow item_tier drifted");
         assert_eq!(qs_idx, 0, "quick_slot_index is gone from 2.04 iteminfo");
-        // Consumable arrow — should NOT be on the new equip-quick-bar
+        // Consumable arrow — should NOT be on the equip-quick-bar
         // (only weapons / armor / accessories / tool-slot tools are).
         assert_eq!(
             flags & CRIMSON_ITEMINFO_FLAG_IS_EQUIP_QUICK_SLOT_VISIBLE,
@@ -2573,7 +2586,7 @@ mod tests {
             error::OK
         );
         assert_eq!(item_type, 24, "Marni helm item_type drifted (was 24 in 1.08)");
-        // Equipment — must have the new 1.08 quick-slot-visible bit set.
+        // Equipment — must have the quick-slot-visible bit set.
         assert!(
             flags & CRIMSON_ITEMINFO_FLAG_IS_EQUIP_QUICK_SLOT_VISIBLE != 0,
             "Marni helm missing IS_EQUIP_QUICK_SLOT_VISIBLE; flags=0x{flags:08x}",
@@ -2629,11 +2642,9 @@ mod tests {
         );
         assert_eq!(summary.max_stack_count, max_stack);
 
-        // ── Cross-check: count of items with IS_EQUIP_QUICK_SLOT_VISIBLE.
-        // Was 949 on 1.08/1.09; 1.10 adds one more equip item → 950.
-        // 1.18's single new item (key 1005446, a cloak) is equipment → 1006.
-        // A regression here flags either a parser bug or a game-content
-        // drift large enough to need re-validation.
+        // ── Cross-check: count of items with IS_EQUIP_QUICK_SLOT_VISIBLE,
+        // pinned to the current patch. A change flags either a parser bug
+        // or new equipment that needs re-validation.
         let mut count = 0u32;
         assert_eq!(
             unsafe { crimson_iteminfo_entry_count(handle, &mut count) },
@@ -2671,7 +2682,7 @@ mod tests {
         unsafe { crimson_iteminfo_free(handle) };
     }
 
-    /// NULL_ARG coverage for the new static-metadata getters.
+    /// NULL_ARG coverage for the static-metadata getters.
     #[test]
     fn c_abi_iteminfo_static_lookups_null_args() {
         // Pass null handle on each getter and verify NULL_ARG comes back

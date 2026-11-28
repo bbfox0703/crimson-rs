@@ -1,26 +1,25 @@
 //! `partprefabdyeslotinfo.pabgb` parser — PABGH-indexed.
 //!
 //! Resolves `PartPrefabKey (u32)` — the gamedata key identifying a
-//! dyeable prefab (an item's wearable mesh). Replaces the PyQt5
-//! reference editor's hand-maintained `dye_slot_counts.json` with
-//! gamedata-driven slot counts so the C# editor doesn't drift when
-//! Pearl Abyss adds new dyeable gear.
+//! dyeable prefab (an item's wearable mesh). Gives gamedata-driven slot
+//! counts in place of a hand-maintained list, so the C# editor doesn't
+//! drift when Pearl Abyss adds new dyeable gear.
 //!
-//! Row counts drift per patch (1,105 in 1.07; 1,111 in 1.10/1.11;
-//! **968 in 1.12** after −143 rows were removed). The cross-reference
+//! Row counts drift per patch. The cross-reference
 //! between an `_itemKey` and its `_partPrefabKey` is NOT in this
-//! file — that bridge lives in `iteminfo.pabgb` (joined via
-//! `stringinfo.pabgb`; see [`crate::c_abi::item_part_prefab`]).
+//! file: an item reaches its rows through its `.prefab` meshes, and the
+//! row key is the checksum of the mesh's lower-case `.pac` path (see
+//! [`crate::c_abi::item_part_prefab`]).
 //!
-//! Schema (every row of the live 2.05 table walks it exactly):
+//! Schema (pre-2.06 body; 2.06 rows are rebuilt into it by
+//! `static_header::legacy_pair`):
 //!
 //! ```text
 //! Row {
-//!     CString row_name,         // empty through 2.04.08, set on every row
-//!                               //   from 2.05
+//!     CString row_name,         // may be empty (it was through 2.04.08)
 //!     u32 key,                  // matches PABGH key
 //!     u8 pad,                   // = 00
-//!     u32 slot_count,           // 1..N (N reaches 36 in 1.12 for vehicle meshes)
+//!     u32 slot_count,           // 1..N (vehicle meshes have the most)
 //!     CString row_prefab_name,  // e.g. "cd_phm_00_lb_00_0054"
 //!     Slot[slot_count] {
 //!         u8 mat_indices[3],         // dye slot number per material channel
@@ -28,8 +27,7 @@
 //!         CString material_a,        // 3 material names (often empty)
 //!         CString material_b,
 //!         CString material_c,
-//!         u8 mask[12],               // one flag per dye slot number; before
-//!                                    //   2.01, 3 bytes, one per channel
+//!         u8 mask[12],               // one flag per dye slot number
 //!         u8 marker,                 // 0xFF, not stored
 //!         u32 extra_layer_count,     // see `PartPrefabDyeSlot::extra_layers`
 //!         ExtraLayer[extra_layer_count],
@@ -39,54 +37,31 @@
 //! }
 //! ```
 //!
-//! ## Cross-version layout drift (1.12, 2.01, 2.04, 2.05)
-//!
-//! 1.12 inserted the `u8 + u32` field per slot. 2.01 widened `mask` from
-//! 3 bytes to 12, in **both** the slot and the extra layer — the only
-//! schema change 2.01 made to anything crimson-rs parses. 2.04 only touched
-//! the row's opening: these rows have no name, so the table-wide key/name
-//! swap puts the empty name's zero length ahead of the key (the old `pad[5]`
-//! was that length plus the one pad byte). Of the 1,637 keys common to 2.03
-//! and 2.04, 1,623 rows are byte-identical after undoing that swap, and the
-//! slots are untouched. 2.05 gave all 1,700 rows a name (on 270 of them the
-//! same string as `row_prefab_name`). Nothing after the key moved.
+//! ## Mask
 //!
 //! The parser reads the current layout only, and requires a row to walk
-//! its body exactly. A future patch that drifts the per-slot layout fails
-//! that and the row drops out — the lossy safety net.
+//! its body exactly. A patch that drifts the per-slot layout fails that
+//! and the row drops out — the lossy safety net. Layout history is in
+//! `docs/validated-patches.md`, the mask's in `docs/dye-editor-scope.md`.
 //!
-//! The 12-byte width is pinned by a tandem walk against the kept 2.00
-//! binary (`gamedata-bin/2.00/partprefabdyeslotinfo.pabgb`): reading 2.00
-//! at `mask_len = 3` and 2.01 at `mask_len = 12`, **1,613 of the 1,620
-//! carried-over rows have every non-mask field byte-identical** across
-//! the two versions, and the 7 that don't differ only by ordinary content
-//! (3 changed `slot_count`, 4 changed a material name or `mat_indices`).
-//! Nothing else in the record moved.
-//!
-//! **The contents were re-keyed, not extended.** Before 2.01 the three
-//! mask bytes were one flag per material channel. From 2.01 the twelve are
-//! one flag per **dye slot number**, the value each channel carries in
-//! `mat_indices` (0..12, `0xFF` for an unused channel):
+//! The twelve mask bytes are one flag per **dye slot number**, the value
+//! each channel carries in `mat_indices` (0..12, `0xFF` for an unused
+//! channel):
 //!
 //! ```text
-//! mask_2_01[mat_indices[ch]] |= mask_2_00[ch]     for ch in 0..3
 //! active(ch) = mat_indices[ch] != 0xFF && mask[mat_indices[ch]] != 0
 //! ```
 //!
-//! The first line reproduces 6,228 of the 6,552 slots that kept their
-//! `mat_indices` from 2.00 to 2.01; 317 of the other 324 only gained bits
-//! (more channels dyeable), 7 lost one. Every set bit on live 2.01 and
-//! 2.06 is one of the slot's `mat_indices`. The dye slot numbers are what
-//! the save's `ItemDyeSaveData._dyeSlotNo` stores: in the 1.10 fixture
-//! save, `cd_phm_00_hand_0011` (one slot, `mat_indices` 1/2/0) carries
-//! three dye entries numbered 0, 1 and 2. The earlier "four groups of three"
-//! reading was the numbers 0..11 split in threes; there are no groups. See
+//! Every set bit is one of the slot's `mat_indices`. The dye slot numbers
+//! are what the save's `ItemDyeSaveData._dyeSlotNo` stores: a one-slot
+//! prefab whose `mat_indices` are 1/2/0 carries three dye entries numbered
+//! 0, 1 and 2. The numbers do not form groups. See
 //! [`PartPrefabDyeSlot::active_channels`] and
 //! [`PartPrefabDyeSlotInfoEntry::dye_slot_bits`].
 //!
-//! For the v1 dye editor we only consume `(key, prefab_name, slot_count)`.
-//! The per-slot material list (a v2 task) lets us also render the
-//! "default material per slot" suggestions in the dye UI.
+//! The bridge exposes the whole row: `(key, prefab_name, slot_count)`, the
+//! per-slot default materials, `mat_indices`, the mask and its decoded dye
+//! slot bits, and the extra layers.
 //!
 //! Each `CString` is `[u32 len][len bytes]` with NO trailing NUL.
 
@@ -113,29 +88,21 @@ pub struct PartPrefabDyeSlot {
     /// `mat_indices` entry is the dye slot number of a material channel
     /// (0xFF = no channel), so channel `ch` is active when
     /// `mask[mat_indices[ch]] == 1` ([`Self::active_channels`]). These
-    /// numbers are the save's `_dyeSlotNo`.
-    ///
-    /// Before 2.01 the field was 3 bytes, one per material channel. 2.01
-    /// re-keyed it by dye slot number: `mask[mat_indices[ch]] |= old[ch]`
-    /// reproduces 6,228 of the 6,552 comparable 2.01 slots exactly, and
-    /// 317 of the other 324 only gained bits. There are no "four groups of
-    /// three"; that reading was a coincidence of the numbers 0..11.
+    /// numbers are the save's `_dyeSlotNo`. The numbers do not form groups.
     pub mask: [u8; 12],
     /// For non-final slots: the next sub-prefab internal name. For
     /// the LAST slot in a row: the full `.pac` asset path for the
     /// prefab as a whole.
     pub tail_name: String,
-    /// 1.13: additional material/dye layers for this slot. The 5-byte
-    /// per-slot field that 1.12 blindly padded (`u8 0xFF` + `u32`) is
-    /// actually `marker + extra_layer_count`; 1.12's count is always 0,
-    /// but 1.13's "expanded dyeable" gear (new cloaks / shields / quivers
-    /// / the skullknight set) sets it to 1, adding a second dye layer
-    /// here. Empty on 1.07-1.12 rows. Surfaced through the
+    /// Additional material/dye layers for this slot, counted by the
+    /// per-slot `marker + extra_layer_count` field. Most slots have none;
+    /// "expanded dyeable" gear (cloaks, shields, quivers, …) has one, a
+    /// second dye layer. Surfaced through the
     /// `crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_*` C ABI.
     pub extra_layers: Vec<DyeExtraLayer>,
 }
 
-/// 1.13: a secondary material/dye layer inside a [`PartPrefabDyeSlot`]
+/// A secondary material/dye layer inside a [`PartPrefabDyeSlot`]
 /// (see `PartPrefabDyeSlot::extra_layers`). Same shape as the slot's
 /// primary layer minus the mesh tail: three default-material names, the
 /// mask bytes, and a trailing flag byte. Surfaced through the
@@ -144,30 +111,28 @@ pub struct PartPrefabDyeSlot {
 pub struct DyeExtraLayer {
     /// Three default-material names for this extra layer (e.g. the
     /// `"leather"` layer paired with the primary `"cloth"` layer on the
-    /// new dyeable cloaks).
+    /// dyeable cloaks).
     pub default_materials: [String; 3],
     /// Mask bytes for the extra layer, indexed by dye slot number like the
     /// primary slot `mask` (the layer's channels use the owning slot's
-    /// `mat_indices`; the 2.01 re-encode reproduces all 18 extra layers
-    /// common to 2.00 and 2.01 that way).
+    /// `mat_indices`).
     pub mask: [u8; 12],
-    /// Trailing flag byte (0/1 observed; exact meaning not yet RE'd).
+    /// Trailing flag byte; meaning unknown. Its values are not limited to
+    /// 0/1 (and are not 0), so don't validate it as a 0/1 flag.
     pub flag: u8,
 }
 
 /// One parsed `partprefabdyeslotinfo` row.
 #[derive(Debug, Clone)]
 pub struct PartPrefabDyeSlotInfoEntry {
-    /// `PartPrefabKey` as stored in the prefab cross-reference (which
-    /// itself sits in `iteminfo.pabgb` — not yet bridged).
+    /// `PartPrefabKey`: the Jenkins checksum of the mesh's `.pac` path in
+    /// lower case (the last slot's `tail_name`).
     pub key: u32,
     /// Prefab internal name (e.g. `"cd_phm_00_lb_00_0054"`,
     /// `"cd_phw_00_vest_belt_0137_00"`).
     pub prefab_name: String,
     /// Per-slot detail. `slots.len()` == the `slot_count` u32 in the
-    /// row header. Replaces the PyQt5 editor's hand-maintained
-    /// `dye_slot_counts.json` value for this prefab and adds the
-    /// per-slot default-material info the JSON didn't carry.
+    /// row header.
     pub slots: Vec<PartPrefabDyeSlot>,
 }
 
@@ -192,10 +157,10 @@ impl PartPrefabDyeSlotInfoEntry {
 
     /// Every dye slot number a material channel of the prefab carries
     /// (`mat_indices` entries other than [`NO_DYE_SLOT`]), dyeable or not:
-    /// a superset of [`Self::dye_slot_bits`]. Saves written before 2.01 hold
-    /// `_dyeSlotNo` values whose mask bit 2.06 no longer sets (1.10 item
-    /// 200914 has slot 3 on a channel `[4, 3, 3]` that only enables 4);
-    /// they are still channel numbers.
+    /// a superset of [`Self::dye_slot_bits`]. Older saves hold `_dyeSlotNo`
+    /// values whose mask bit the current table no longer sets (e.g. slot 3
+    /// on a channel `[4, 3, 3]` that only enables 4); they are still
+    /// channel numbers.
     pub fn channel_dye_slot_bits(&self) -> u32 {
         self.slots
             .iter()
@@ -209,8 +174,7 @@ impl PartPrefabDyeSlotInfoEntry {
     /// `mat_indices` entry is `dye_slot_no`. `Some("")` when channels use
     /// the number but none of them names a material; `None` when no channel
     /// uses it. Within a row every channel that shares a number shares its
-    /// material name (no exception on live 2.01 or 2.06), so "first" does
-    /// not pick between candidates.
+    /// material name, so "first" does not pick between candidates.
     pub fn dye_slot_material(&self, dye_slot_no: u8) -> Option<&str> {
         let mut used = false;
         for s in &self.slots {
@@ -249,15 +213,14 @@ impl PartPrefabDyeSlot {
 
     /// The 12-byte mask as bits: bit `n` set when dye slot number `n` is
     /// dyeable on this slot. Every set bit is one of the slot's
-    /// `mat_indices` (no exception on live 2.01 or 2.06).
+    /// `mat_indices`.
     pub fn dye_slot_bits(&self) -> u32 {
         mask_bits(&self.mask)
     }
 
     /// Per-channel active flags, one byte (0 or 1) per material channel:
     /// channel `ch` is dyeable when it has a dye slot number `n` and
-    /// `mask[n]` is set. This is what the 3-byte mask meant before 2.01.
-    /// Two channels that share a number share the flag.
+    /// `mask[n]` is set. Two channels that share a number share the flag.
     pub fn active_channels(&self) -> [u8; 3] {
         std::array::from_fn(|ch| {
             u8::from(
@@ -277,7 +240,7 @@ impl DyeExtraLayer {
     }
 }
 
-/// Read the 12 mask bytes (see "Cross-version layout drift").
+/// Read the 12 mask bytes (see the module's "Mask" section).
 fn read_mask(body: &[u8], cursor: &mut usize) -> Option<[u8; 12]> {
     let mask: [u8; 12] = body.get(*cursor..*cursor + 12)?.try_into().ok()?;
     *cursor += 12;
@@ -323,16 +286,16 @@ fn parse_slot(body: &[u8], cursor: &mut usize) -> Option<PartPrefabDyeSlot> {
 
     let mask = read_mask(body, cursor)?;
 
-    // 1.12 introduced a per-slot `u8 marker (0xFF) + u32` here. What
-    // looked like a uniform `(0xFF, 0)` 5-byte pad in 1.12 is actually
-    // `marker + extra_layer_count`: 1.12's count is always 0, but
-    // 1.13's "expanded dyeable" gear sets it to 1, adding a second
-    // material/dye layer inline (RE'd 2026-07-04 via
-    // `scripts/decode_dyeslot_113.py`).
+    // `u8 marker (0xFF) + u32 extra_layer_count`, then that many extra
+    // material/dye layers inline.
     if *cursor + 5 > body.len() {
         return None;
     }
-    // body[*cursor] is the 0xFF marker; not stored.
+    // The 0xFF marker is not stored, but checked: a constant byte is the
+    // cheapest place to notice a layout that moved without changing length.
+    if body[*cursor] != 0xFF {
+        return None;
+    }
     let extra_count = u32::from_le_bytes([
         body[*cursor + 1],
         body[*cursor + 2],
@@ -340,7 +303,7 @@ fn parse_slot(body: &[u8], cursor: &mut usize) -> Option<PartPrefabDyeSlot> {
         body[*cursor + 4],
     ]) as usize;
     *cursor += 5;
-    // Plausibility cap — only 0 and 1 observed.
+    // Plausibility cap — real counts are 0 or 1.
     if extra_count > 8 {
         return None;
     }
@@ -381,12 +344,15 @@ fn try_parse_row(body: &[u8], expected_key: u32) -> Option<PartPrefabDyeSlotInfo
     if head.key != expected_key {
         return None;
     }
-    // Head, then 1 pad + u32 slot_count + CString prefab_name.
+    // Head, then 1 zero pad + u32 slot_count + CString prefab_name.
+    if body.get(head.body_at) != Some(&0) {
+        return None;
+    }
     let count_bytes = body.get(head.body_at + 1..head.body_at + 5)?;
     let slot_count =
         u32::from_le_bytes([count_bytes[0], count_bytes[1], count_bytes[2], count_bytes[3]]);
-    // Plausibility cap — 64 covers everything observed through 1.12
-    // (peak 36 for vehicle/robot meshes).
+    // Plausibility cap — the largest prefab seen (vehicle/robot meshes)
+    // has 36 slots.
     if slot_count == 0 || slot_count > 64 {
         return None;
     }
@@ -443,19 +409,14 @@ pub fn parse_part_prefab_dye_slot_info_lossy(
 #[cfg(test)]
 mod tests {
     //! Live-install integration test. Pins the row count + a handful
-    //! of (key, prefab_name, slot_count) tuples from the phase-2 probe
-    //! dump so a future patch breaking the row layout is caught
-    //! immediately. Skips cleanly when no game install is present.
+    //! of (key, prefab_name, slot_count) tuples so a patch breaking the
+    //! row layout is caught. Skips cleanly when no game install is present.
 
     use crate::binary::gamedata_layout;
     use super::*;
     use std::path::PathBuf;
 
-    /// (key, expected prefab_name, expected slot_count). Verified on the
-    /// live 1.12 install (2026-06-19). The first three carry over
-    /// unchanged from the 2026-05-16 1.07 probe pass (cross-version
-    /// stable); the last three replace 1.07 keys that 1.12 removed (part
-    /// of the −143-row drop, 1,111 → 968).
+    /// (key, expected prefab_name, expected slot_count).
     const KNOWN: &[(u32, &str, u32)] = &[
         (0xc7bbaada, "cd_phm_00_lb_00_0054", 1),
         (0xfbad5654, "cd_phm_00_hel_0057_02_inside", 2),
@@ -523,7 +484,7 @@ mod tests {
             pabgb.len()
         );
         // Every indexed row must walk the layout exactly; the lossy parser
-        // drops any that doesn't (2.04 ships 1,704).
+        // drops any that doesn't.
         // 2.06 headers carry names and sizes; count rows on the rebuilt index.
         let (_, legacy_header) = crate::binary::static_header::legacy_pair(&pabgb, &pabgh);
         assert_eq!(
@@ -560,12 +521,10 @@ mod tests {
         println!("slot_count histogram: {hist:?}");
         let count_1 = entries.iter().filter(|e| e.slot_count() == 1).count();
         // `slot_count == 1` must stay the modal bucket. The share itself
-        // drifts with content — it was comfortably over 1/4 through 1.17 but
-        // 1.18's 65 new rows pushed it to 399/1,619 (24.6%), so a fixed
-        // fraction is the wrong shape of check. Being the mode is what
-        // actually encodes "right-skewed", and a record-schema drift (the
-        // failure mode this guards, see the 1.12 / 1.13 notes above) scatters
-        // slot_count instead of merely shifting its share.
+        // drifts with content (it sits near 1/4), so a fixed fraction is
+        // the wrong shape of check. Being the mode is what encodes
+        // "right-skewed", and a record-schema drift (the failure mode this
+        // guards) scatters slot_count instead of merely shifting its share.
         let modal = hist.iter().max_by_key(|&(_, n)| *n).map(|(k, n)| (*k, *n));
         assert_eq!(
             modal,
@@ -574,8 +533,8 @@ mod tests {
             entries.len(),
         );
 
-        // Cap check — peak observed slot_count is 36 (1.12 vehicle/robot
-        // meshes); 1.07-1.11 peaked near 30. 64 is the defensive ceiling.
+        // Cap check — the largest prefab seen has 36 slots (vehicle/robot
+        // meshes); 64 is the defensive ceiling.
         let max = entries.iter().map(|e| e.slot_count()).max().unwrap_or(0);
         assert!(
             max <= 64,
@@ -619,12 +578,11 @@ mod tests {
             "expected at least one cloth/leather/metal material in vest row's slots",
         );
 
-        // 1.13: the "expanded dyeable equipment" gear gained a second per-slot
-        // dye layer. Key 0x54534e48 (cd_phm_00_cloak_0054_01_01_01) was dropped
-        // entirely under the pre-1.13 blind-5-byte-pad model; verify it now
-        // parses AND that one of its slots carries an extra layer whose
-        // materials include "leather" (paired with the primary "cloth" layer).
-        // Guarded so non-1.13 installs (where the key is absent) don't fail.
+        // "Expanded dyeable" gear carries a second per-slot dye layer: key
+        // 0x54534e48 (cd_phm_00_cloak_0054_01_01_01) must parse AND one of
+        // its slots must carry an extra layer whose materials include
+        // "leather" (paired with the primary "cloth" layer). Guarded so an
+        // install without the key doesn't fail.
         if let Some(cloak) = entries.iter().find(|e| e.key == 0x54534e48) {
             let extra_leather = cloak.slots.iter().any(|s| {
                 s.extra_layers

@@ -1,13 +1,16 @@
-
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 
 import crimson_rs
+from crimson_rs._pack_safety import TRAILER_WARNING, backup_papgt
 
 
-def validate_and_update(game_dir: str) -> None:
+def validate_and_update(game_dir: str, dry_run: bool = False) -> None:
+    """Compare each group's ``0.pamt`` checksum with its ``0.papgt`` entry and
+    rewrite the entries that differ, **in place** (a timestamped backup of
+    ``0.papgt`` is written first). ``dry_run`` only reports."""
     game_path = Path(game_dir)
     if not game_path.is_dir():
         print(f"Error: '{game_dir}' is not a directory")
@@ -67,19 +70,26 @@ def validate_and_update(game_dir: str) -> None:
 
     print(f"\nValidated: {validated}, Updated: {updated}, Skipped: {skipped}")
 
-    if updated > 0:
-        crimson_rs.write_papgt_file(papgt, str(papgt_path))
-        print(f"Wrote updated papgt to {papgt_path}")
-    else:
+    if updated == 0:
         print("All checksums match, no update needed.")
+        return
+    if dry_run:
+        print(f"Dry run: {papgt_path} left unchanged.")
+        return
+    if papgt.get("_trailer"):
+        print(TRAILER_WARNING)
+    backup_papgt(papgt_path)
+    crimson_rs.write_papgt_file(papgt, str(papgt_path))
+    print(f"Wrote updated papgt to {papgt_path}")
 
 
 def main() -> None:
-    if len(sys.argv) != 2:
-        print("Usage: python -m crimson_rs.validate_game_dir <game_directory>")
+    args = [a for a in sys.argv[1:] if a != "--dry-run"]
+    if len(args) != 1:
+        print("Usage: python -m crimson_rs.validate_game_dir [--dry-run] <game_directory>")
         sys.exit(1)
 
-    validate_and_update(sys.argv[1])
+    validate_and_update(args[0], dry_run="--dry-run" in sys.argv[1:])
 
 
 if __name__ == "__main__":

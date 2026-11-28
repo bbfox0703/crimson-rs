@@ -1,4 +1,4 @@
-//! Jenkins "hashlittle2" hash with custom constant 0xDEBA1DCD.
+//! Jenkins "hashlittle" hash with custom constant 0xDEBA1DCD.
 //!
 //! This is used by the Crimson Desert file formats for checksum validation
 //! of .papgt and .pamt files, as well as directory name verification.

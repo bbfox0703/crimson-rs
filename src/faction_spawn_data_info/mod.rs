@@ -4,17 +4,16 @@
 //! by save-side fields that carry a "faction spawn" reference (a
 //! per-location spawn manifest naming an NPC, a guard kit, or a
 //! mercenary mix). Rows are named after the spawn theme + location,
-//! e.g. `FactionSpawn_GlenbrightManor_Grace_ReedDevil`. Roughly 117
-//! rows in 1.07.
+//! e.g. `FactionSpawn_GlenbrightManor_Grace_ReedDevil`.
 //!
-//! Schema (verified against the live 1.07 install via the
-//! `_probe_faction_pabgh_shapes` ignored probe):
+//! Schema (pre-2.06 body layout; the `_probe_faction_pabgh_shapes`
+//! ignored probe dumps it):
 //!
 //! ```text
 //! Row {
 //!     u32 name_len,
 //!     u8 name[name_len], // ASCII identifier
-//!     u32 key,           // matches PABGH key (2.04 moved it after the name)
+//!     u32 key,           // matches PABGH key
 //!     [...variable body — spawn manifest the bridge does not consume]
 //! }
 //! ```
@@ -22,7 +21,7 @@
 //! PABGH layout matches the standard `u16 count + (u32 key, u32 offset)*`.
 //!
 //! **PALOC chain**: none — same situation as [`crate::faction_node_info`].
-//! The exhaustive probe at `_probe_faction_paloc_chains` surfaced only
+//! The `_probe_faction_paloc_chains` probe finds only
 //! coincidental collisions with iteminfo / character / skill keys
 //! sharing the small u32 hi32 space. The bridge mirrors
 //! [`crate::sub_level_info`] / [`crate::quest_gauge_info`] in shape:
@@ -76,7 +75,6 @@ mod tests {
 
     use crate::binary::gamedata_layout;
     use super::*;
-    use std::path::PathBuf;
 
     /// (FactionSpawnDataKey, expected internal_name).
     const KNOWN: &[(u32, &str)] = &[
@@ -84,45 +82,12 @@ mod tests {
     ];
 
     fn find_table_bytes() -> Option<(Vec<u8>, Vec<u8>)> {
-        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
-            });
-        let pamt_path = game_root.join("0008").join("0.pamt");
-        if !pamt_path.is_file() {
-            return None;
-        }
-        let pamt_bytes = std::fs::read(&pamt_path).ok()?;
-        let pamt = crate::binary::pamt::PackMeta::parse(&pamt_bytes, None).ok()?;
-        let dir = pamt
-            .directories
-            .iter()
-            .find(|d| d.path == gamedata_layout::bin_dir())?;
-        let pabgb_file = dir
-            .files
-            .iter()
-            .find(|f| f.name == gamedata_layout::body("factionspawndatainfo"))?;
-        let pabgh_file = dir
-            .files
-            .iter()
-            .find(|f| f.name == gamedata_layout::header("factionspawndatainfo"))?;
-        let group_dir = game_root.join("0008");
-        let pabgb = crate::binary::paz::extract_file(
-            &group_dir,
-            pabgb_file,
-            gamedata_layout::bin_dir(),
-            &pamt.header.encrypt_info.encrypt_info,
-        )
-        .ok()?;
-        let pabgh = crate::binary::paz::extract_file(
-            &group_dir,
-            pabgh_file,
-            gamedata_layout::bin_dir(),
-            &pamt.header.encrypt_info.encrypt_info,
-        )
-        .ok()?;
-        Some((pabgb, pabgh))
+        // None only when the install (or the table) is absent; an install
+        // that is there but unreadable fails the test.
+        Some((
+            gamedata_layout::extract_bin(&gamedata_layout::body("factionspawndatainfo"))?,
+            gamedata_layout::extract_bin(&gamedata_layout::header("factionspawndatainfo"))?,
+        ))
     }
 
     #[test]

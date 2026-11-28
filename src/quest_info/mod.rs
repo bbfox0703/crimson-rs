@@ -1,8 +1,8 @@
 //! `questinfo.pabgb` parser — anchor-scan based.
 //!
 //! Sibling of [`crate::mission_info`]. Same architecture and same row
-//! head shape (`[u32 name_len][name_bytes][u32 key][...body]`; 2.04 moved
-//! the key after the name).
+//! head shape (`[u32 name_len][name_bytes][u32 key][...body]` in the
+//! legacy layout).
 //!
 //! Pearl Abyss's terminology assignment is the inverse of what the
 //! English UI shows:
@@ -28,7 +28,7 @@ pub struct QuestInfoEntry {
     /// `_questStateList[N]._questKey`).
     pub key: u32,
     /// ASCII internal name (e.g. `"Quest_Node_Her_RootFort_Normal"`).
-    /// Feeds the PALOC u64 lookup chain via `hashlittle2(name) << 32 |
+    /// Feeds the PALOC u64 lookup chain via `hashlittle(name) << 32 |
     /// lo32`.
     pub name: String,
 }
@@ -37,10 +37,9 @@ pub struct QuestInfoEntry {
 ///
 /// Sibling of [`crate::stage_info::parse_stage_info_via_pabgh`]; same
 /// `[u32 count][(u32 key, u32 offset)*]` PABGH shape. Bypasses the
-/// anchor-scan's `_`-in-name requirement that silently drops the two
-/// no-underscore quest rows the game ships in 1.08 (`LevelSequencerSpawn`
-/// and `StartGame`), returning the in-game-authoritative 1,019 entries
-/// instead of the anchor-scan's 1,018.
+/// anchor-scan's `_`-in-name requirement, which drops no-underscore
+/// quest rows such as `StartGame`, so it returns every row the index
+/// lists.
 pub fn parse_quest_info_via_pabgh(pabgh: &[u8], pabgb: &[u8]) -> Vec<QuestInfoEntry> {
     // 2.06 moved row names into the header; rebuild the pre-2.06 layout.
     let (pabgb, pabgh) = crate::binary::static_header::legacy_pair(pabgb, pabgh);
@@ -81,25 +80,26 @@ pub fn parse_quest_info_via_pabgh(pabgh: &[u8], pabgb: &[u8]) -> Vec<QuestInfoEn
     entries
 }
 
-/// 2.06+: row names live in the `.staticinfoheader`, so the body alone no
-/// longer carries them. Rebuilds the pre-2.06 layout from both and scans that;
-/// a pre-2.06 pair (or a header that is not the 2.06 shape) scans `data` as is.
+/// 2.06+: row names live in the `.staticinfoheader`, which lists every row,
+/// so with a 2.06 header the rows come from it, in header order (the anchor
+/// scan drops rows its key and name rules do not expect). A pre-2.06
+/// pair, or a header that is not the 2.06 shape, falls back to scanning `data`.
 pub fn parse_quest_info_lossy_with_header(data: &[u8], header: &[u8]) -> Vec<QuestInfoEntry> {
-    match crate::binary::static_header::to_legacy_layout(data, header) {
-        Some(t) => parse_quest_info_lossy(&t.body),
+    match crate::binary::static_header::header_row_names(data, header) {
+        Some(rows) => rows.into_iter().map(|(key, name)| QuestInfoEntry { key, name }).collect(),
         None => parse_quest_info_lossy(data),
     }
 }
 
 /// Lossy anchor-scan parse of an in-memory `questinfo.pabgb` blob.
 ///
-/// Kept for callers that can't supply the `.pabgh` index. Under-counts
-/// by 1 row in 1.08 (the anchor-scan's `_`-in-name validation drops
-/// the no-underscore entries `LevelSequencerSpawn` and `StartGame`).
+/// For callers that can't supply the `.pabgh` index. Under-counts: the
+/// anchor-scan's `_`-in-name validation drops no-underscore rows such
+/// as `StartGame`.
 /// Prefer [`parse_quest_info_via_pabgh`] when both files are available.
 ///
 /// See [`crate::mission_info::parse_mission_info_lossy`] for the
-/// validation rules — identical here.
+/// validation rules; this scanner adds a 3-byte name floor.
 pub fn parse_quest_info_lossy(data: &[u8]) -> Vec<QuestInfoEntry> {
     let mut entries = Vec::new();
     let mut cursor = 0;
@@ -120,7 +120,7 @@ fn scan_next_anchor(data: &[u8], from: usize) -> Option<usize> {
     let mut o = from;
     while o + 12 < n {
         let slen = u32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]) as usize;
-        // Length, name, key, then the 0x00 that opens every 2.04 row body —
+        // Length, name, key, then the 0x00 that opens every legacy-layout row body —
         // the byte that rejects most body strings followed by a small number.
         if (3..=128).contains(&slen) && o + 9 + slen <= n && data[o + 8 + slen] == 0 {
             let bytes = &data[o + 4..o + 4 + slen];
@@ -130,10 +130,10 @@ fn scan_next_anchor(data: &[u8], from: usize) -> Option<usize> {
                 data[o + 6 + slen],
                 data[o + 7 + slen],
             ]);
-            // Same `_` requirement as mission_info — every real
-            // Quest_*/Challenge_* row has it, body-byte noise mostly doesn't.
-            // The noise that does (5 on 2.04: `_N`, `o_`, ...) is two bytes
-            // long, hence the 3-byte floor; the shortest real name is 8.
+            // Same `_` requirement as mission_info — real Quest_*/Challenge_*
+            // rows have it, body-byte noise mostly doesn't. The noise that
+            // does (`_N`, `o_`, ...) is two bytes long, hence the 3-byte
+            // floor; real names are far longer.
             if key != 0
                 && (key >> 24) == 0
                 && bytes.contains(&b'_')
@@ -169,10 +169,10 @@ mod tests {
         gamedata_layout::extract_bin(&gamedata_layout::body("questinfo"))
     }
 
-    /// 2.06+: the row names live here. Empty when absent (an older install
-    /// needs none, and `parse_quest_info_lossy_with_header` then scans the body alone).
+    /// The 2.06 `.staticinfoheader` beside the body (it holds the row
+    /// names); panics when the install has the body but not the header.
     fn find_questinfo_header() -> Vec<u8> {
-        gamedata_layout::extract_bin(&gamedata_layout::header("questinfo")).unwrap_or_default()
+        gamedata_layout::extract_bin(&gamedata_layout::header("questinfo")).expect("the 2.06 header next to the table body (install present but header missing: drift?)")
     }
 
     #[test]
@@ -183,11 +183,10 @@ mod tests {
         };
         let entries = parse_quest_info_lossy_with_header(&data, &find_questinfo_header());
         println!("parsed {} questinfo entries from {} bytes", entries.len(), data.len());
-        assert!(
-            entries.len() > 200,
-            "expected >200 quest entries, got {}",
-            entries.len()
-        );
+        // Every row the 2.06 header lists parses; a floor would let most of
+        // the table go missing unnoticed.
+        let listed = crate::binary::static_header::detect_named_pair(&find_questinfo_header(), &data).expect("2.06 header").2.len();
+        assert_eq!(entries.len(), listed, "rows parsed vs rows the header lists");
         let by_key: std::collections::HashMap<u32, &str> =
             entries.iter().map(|e| (e.key, e.name.as_str())).collect();
         for &(key, expected) in KNOWN {

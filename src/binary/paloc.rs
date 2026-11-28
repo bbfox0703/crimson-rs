@@ -5,9 +5,8 @@ use super::{BinaryRead, BinaryWrite, CString, check_remaining};
 
 // ── 2.03 container ─────────────────────────────────────────────────────────
 //
-// Up to 2.02 a `.paloc` file is the bare entry list (below). Crimson Desert
-// 2.03 wraps every one — all 39 namespace files of all 15 languages — in a
-// fixed 0x200-byte header followed by a single LZ4 block:
+// Up to 2.02 a `.paloc` file is the bare entry list (below). From 2.03 every
+// one is wrapped in a fixed 0x200-byte header followed by a single LZ4 block:
 //
 //     0x000  "paloc"   magic, 5 bytes
 //     0x005  u32       0 on every 2.03 file
@@ -16,14 +15,14 @@ use super::{BinaryRead, BinaryWrite, CString, check_remaining};
 //     0x011  zeros     up to 0x200
 //     0x200  LZ4 block decompresses to the pre-2.03 entry list, byte for byte
 //
-// The compression moved into the file: the PAMT now stores these entries
+// The compression is inside the file: the PAMT stores these entries
 // uncompressed (`compression` 0). A bare entry list starts with a u64
 // `unk_id`, never the magic, so the two layouts cannot be confused.
 //
 // Pearl Abyss's compressor is not lz4_flex's (re-compressing reproduces
-// only 21 of the 585 2.03 blocks), so a wrapped file roundtrips through
-// its decompressed body, not its compressed bytes — the same contract the
-// save format has.
+// few of the game's blocks), so a wrapped file roundtrips through its
+// decompressed body, not its compressed bytes — the same contract the save
+// format has.
 
 /// Magic that opens a 2.03+ paloc container.
 pub const CONTAINER_MAGIC: &[u8; 5] = b"paloc";
@@ -204,10 +203,9 @@ impl<'a> LocalizationFile<'a> {
         Ok(LocalizationFile { entries })
     }
 
-    /// Inverse of [`parse`](Self::parse). Currently exercised only by the
-    /// roundtrip tests in `lib.rs`; the Python wrapper inlines its own
-    /// serialiser in `python.rs::serialize_paloc_impl` because it works
-    /// from a `PyList` of dicts rather than a borrowed `LocalizationFile`.
+    /// Inverse of [`parse`](Self::parse). The Python wrapper has its own
+    /// serialiser (`serialize_paloc_impl`) because it works from a `PyList`
+    /// of dicts rather than a borrowed `LocalizationFile`.
     #[allow(dead_code)]
     pub fn to_bytes(&self) -> io::Result<Vec<u8>> {
         let mut buf = Vec::new();

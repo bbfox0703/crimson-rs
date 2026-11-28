@@ -29,15 +29,7 @@ from pathlib import Path
 
 import crimson_rs
 
-from gamedata_layout import resolve_bin_layout
-
-
-GAME_DIR_CANDIDATES = [
-    r"D:\SteamLibrary\steamapps\common\Crimson Desert",
-    r"F:\SteamLibrary\steamapps\common\Crimson Desert",
-    r"E:\SteamLibrary\steamapps\common\Crimson Desert",
-    r"C:\Program Files (x86)\Steam\steamapps\common\Crimson Desert",
-]
+from gamedata_layout import find_game_dir, resolve_bin_layout
 
 
 # (table_label, pabgh_filename, pabgb_filename | None for pabgh-only,
@@ -75,10 +67,20 @@ PABGH_TABLES = [
     ("reserveslot",                         "reserveslot.pabgh",                  "reserveslot.pabgb",                  None),
     ("regioninfo",                          "regioninfo.pabgh",                   "regioninfo.pabgb",                   None),
     ("itemgroupinfo",                       "itemgroupinfo.pabgh",                "itemgroupinfo.pabgb",                None),
+    ("faction",                             "faction.pabgh",                      "faction.pabgb",                      None),
+    ("stringinfo",                          "stringinfo.pabgh",                   "stringinfo.pabgb",                   None),
 ]
 
+# Also dumped from every installed DLC (`<install>/dlc/<dlc>/0008`), as
+# `<table>.<dlc>.txt`: every table above plus iteminfo, whose base keys live
+# in `data/keys-<ver>.txt`. A DLC table is its own row set (its row index is
+# not the row's position), and a layout drift can show only in a DLC table
+# (a list that is empty on every base row hides it), so these are diffed like
+# the base ones.
+DLC_EXTRA_TABLES = ["iteminfo"]
+
 # Tables with PABGH backing (questinfo / stageinfo use the u32-count
-# variant, picked up by parse_pabgh_keys above). The c_abi bridges for
+# variant, picked up by parse_pabgh_keys). The c_abi bridges for
 # these still anchor-scan PABGB at runtime — but for the cross-version
 # snapshot we just want the in-game key list, which the PABGH delivers
 # without the bridge's body-validation extras.
@@ -95,21 +97,17 @@ PABGB_GROUP = "0008"
 # table entry onto it.
 
 
-def find_game_dir(explicit: str | None) -> str:
-    if explicit:
-        if not Path(explicit).is_dir():
-            sys.exit(f"--game-dir not found: {explicit}")
-        return explicit
-    for c in GAME_DIR_CANDIDATES:
-        if Path(c).is_dir():
-            return c
-    sys.exit("Game install not found. Pass --game-dir.")
+# Count / key width pairs of a 2.06 header, as `WIDTHS` in
+# src/binary/static_header.rs lists them.
+NAMED_WIDTHS = [
+    (2, 4), (2, 2), (4, 4), (2, 1), (4, 8), (2, 12), (1, 1), (4, 2),
+    (1, 2), (1, 4), (4, 1), (2, 8), (1, 8), (1, 12), (4, 12),
+]
 
 
 def parse_pabgh_keys(pabgh: bytes) -> list[int] | None:
     """Auto-detect PABGH shape and return keys in appearance order
-    (= in-game iteration order). Two count widths and three key widths
-    are supported:
+    (= in-game iteration order). Pre-2.06 shapes:
 
       - u16 count + (u32 key, u32 offset)*   — most niche tables
       - u16 count + (u16 key, u32 offset)*   — storeinfo, regioninfo, …
@@ -117,27 +115,36 @@ def parse_pabgh_keys(pabgh: bytes) -> list[int] | None:
       - u32 count + (u32 key, u32 offset)*   — questinfo, stageinfo
 
     2.06 moved every row name into the header, which now holds
-    ``count + (key, u32 name len, name, u32 offset, u32 size)*`` with the same
-    count and key widths; that shape is tried first.
+    ``count + (key, u32 name len, name, u32 offset, u32 size)*`` with count
+    width 1, 2 or 4 and key width 1, 2, 4, 8 or 12 (``NAMED_WIDTHS``, the
+    same pairs and order as the Rust reader); that shape is tried first.
 
     Returns None if no shape fits exactly. Empty tables (count = 0) are
     fine: the function returns an empty list."""
     if len(pabgh) < 2:
         return None
-    for cw in (2, 4):
-        for kw in (4, 2, 1):
-            n = int.from_bytes(pabgh[:cw], "little")
-            at, keys = cw, []
-            try:
-                for _ in range(n):
-                    keys.append(int.from_bytes(pabgh[at:at + kw], "little"))
-                    name_len = struct.unpack_from("<I", pabgh, at + kw)[0]
-                    at += kw + 4 + name_len + 8
-            except struct.error:
-                continue
-            if at == len(pabgh) and len(pabgh) > cw + 8 * n:
-                return keys
-    # u32-count variant — only the questinfo / stageinfo shape so far.
+    # The width pairs `src/binary/static_header.rs` tries, in its order: the
+    # first that consumes the header exactly with rows tiling the body in
+    # order (each offset where the previous row ended) wins.
+    for cw, kw in NAMED_WIDTHS:
+        if len(pabgh) < cw:
+            continue
+        n = int.from_bytes(pabgh[:cw], "little")
+        at, keys, next_off = cw, [], 0
+        try:
+            for _ in range(n):
+                keys.append(int.from_bytes(pabgh[at:at + kw], "little"))
+                name_len = struct.unpack_from("<I", pabgh, at + kw)[0]
+                off, size = struct.unpack_from("<II", pabgh, at + kw + 4 + name_len)
+                if off != next_off:
+                    raise struct.error("rows not packed")
+                next_off = off + size
+                at += kw + 4 + name_len + 8
+        except struct.error:
+            continue
+        if at == len(pabgh) and len(pabgh) > cw + 8 * n:
+            return keys
+    # u32-count variant: the questinfo / stageinfo shape.
     if len(pabgh) >= 4:
         count32 = struct.unpack_from("<I", pabgh, 0)[0]
         if 4 + 8 * count32 == len(pabgh):
@@ -179,7 +186,12 @@ def _resolved(layout, name: str) -> str:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--game-dir", help="Crimson Desert install path")
-    ap.add_argument("--version", default="1.08", help="version label for the output dir (default: 1.08)")
+    ap.add_argument(
+        "--version",
+        required=True,
+        help="version label for the output dir, e.g. 2.06 (required, so a bare run cannot "
+        "overwrite a committed snapshot)",
+    )
     ap.add_argument("--out", help="output directory (default: <repo>/data/gamedata-keys-<version>)")
     args = ap.parse_args()
 
@@ -208,8 +220,8 @@ def main() -> None:
             # parse_pabgh_keys above to add the new shape — silently
             # falling back to pabgb anchor-scan inflates counts via false
             # positives (the bridges' per-table validation rules are
-            # what makes anchor-scan precise) and that asymmetry has
-            # surprised us before.
+            # what makes anchor-scan precise), so an unknown shape is
+            # reported instead.
             print(f"  {label:<35} <pabgh shape unknown — extend parse_pabgh_keys>")
             summary.append((label, None, "shape unknown"))
             continue
@@ -233,6 +245,27 @@ def main() -> None:
         write_keys(out_path, keys)
         print(f"  {label:<35} {len(keys):>6} keys  (pabgh u32cnt) -> {out_path.name}")
         summary.append((label, len(keys), "pabgh u32cnt"))
+
+    dlc_root = Path(game) / "dlc"
+    dlcs = sorted(d.name for d in dlc_root.iterdir() if (d / PABGB_GROUP / "0.pamt").is_file()) if dlc_root.is_dir() else []
+    labels = [t[0] for t in PABGH_TABLES] + [t[0] for t in PABGH_TABLES_U32_COUNT] + DLC_EXTRA_TABLES
+    for dlc in dlcs:
+        dlc_game = str(dlc_root / dlc)
+        dlc_layout = resolve_bin_layout(dlc_game)
+        for label in labels:
+            name = f"{label}.{dlc}"
+            pabgh = extract_safe(dlc_game, PABGB_GROUP, dlc_layout.dir, dlc_layout.header(name))
+            if pabgh is None:
+                continue  # the DLC ships only the tables it changes
+            keys = parse_pabgh_keys(pabgh)
+            if keys is None:
+                print(f"  {name:<35} <pabgh shape unknown — extend parse_pabgh_keys>")
+                summary.append((name, None, "shape unknown"))
+                continue
+            out_path = out_dir / f"{name}.txt"
+            write_keys(out_path, keys)
+            print(f"  {name:<35} {len(keys):>6} keys  (pabgh) -> {out_path.name}")
+            summary.append((name, len(keys), "pabgh"))
 
     print("-" * 80)
     total = sum(c or 0 for _, c, _ in summary)

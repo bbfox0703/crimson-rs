@@ -6,13 +6,13 @@
 //! `lookup_display_name` function is exposed** because SubLevel rows
 //! don't have PALOC entries at any namespace.
 //!
-//! The probe pass that confirmed zero PALOC chain went through:
+//! What the PALOC probe sees:
 //!
 //! - Pattern A (raw key) hits at `lo32 ∈ {0x402f1, 0x802f1, 0xc02f1}`
 //!   return generic UI tooltip strings ("Unavailable during combat.",
 //!   "Cannot be used at the moment.") that share the small hi32 with
 //!   our row keys by coincidence — not real localizations.
-//! - hashlittle2(name) hash-hop probe: zero hits at any namespace.
+//! - hashlittle(name) hash-hop probe: zero hits at any namespace.
 //!
 //! The localized UI label a player sees (e.g. "Demenissian Reputation")
 //! is composed at runtime from the row's prefix
@@ -22,7 +22,7 @@
 //! directly in its resolved-name column, same pattern as QuestGauge.
 //!
 //! See `docs/save-editor-keys-plan.md` §8 for the rationale and the
-//! probe that confirmed no PALOC chain.
+//! probe behind it.
 
 use std::collections::HashMap;
 use std::os::raw::c_char;
@@ -33,7 +33,6 @@ use crate::sub_level_info::parse_sub_level_info_lossy;
 
 /// Opaque handle exposing `(SubLevelKey, internal_name)` lookups
 /// against the loaded `sublevelinfo.pabgb`.
-#[repr(C)]
 pub struct CrimsonSubLevelInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,
@@ -87,8 +86,14 @@ pub unsafe extern "C" fn crimson_sublevelinfo_load_from_file(
             Err(_) => return error::IO,
         };
         // 2.06+: row names live in the `.staticinfoheader` next to the body.
-        let header = super::sibling_header(path_str);
+        let header = match super::sibling_header(path_str) {
+            Ok(h) => h,
+            Err(_) => return error::IO,
+        };
         let handle = CrimsonSubLevelInfoHandle::from_bytes(&bytes, header.as_deref());
+        if let Err(code) = crate::c_abi::check_rows(&bytes, header.as_deref(), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -120,6 +125,9 @@ pub unsafe extern "C" fn crimson_sublevelinfo_load_from_bytes(
             unsafe { std::slice::from_raw_parts(data, data_len) }
         };
         let handle = CrimsonSubLevelInfoHandle::from_bytes(slice, None);
+        if let Err(code) = crate::c_abi::check_rows(slice, None, handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -129,7 +137,9 @@ pub unsafe extern "C" fn crimson_sublevelinfo_load_from_bytes(
 /// Parse in-memory `sublevelinfo` bytes together with the table's
 /// `.staticinfoheader`. Required from 2.06, where row names moved out of the
 /// body into the header: `crimson_sublevelinfo_load_from_bytes` on a 2.06 body finds
-/// no rows. On an older install the header is not needed and is ignored.
+/// no rows, and returns `BODY_PARSE` for it. A header that is not the 2.06 shape
+/// or does not match the body is `BODY_PARSE` too (the parsers read the latest
+/// patch only).
 ///
 /// # Safety
 /// `data` / `header` must point to `data_len` / `header_len` readable bytes
@@ -161,6 +171,9 @@ pub unsafe extern "C" fn crimson_sublevelinfo_load_from_bytes_with_header(
             unsafe { std::slice::from_raw_parts(header, header_len) }
         };
         let handle = CrimsonSubLevelInfoHandle::from_bytes(slice, Some(header));
+        if let Err(code) = crate::c_abi::check_rows(slice, Some(header), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -212,8 +225,8 @@ pub unsafe extern "C" fn crimson_sublevelinfo_entry_count(
 /// Returns `NOT_FOUND` when `sub_level_key` isn't in the table.
 ///
 /// **No `lookup_display_name` analogue exists for this bridge** —
-/// SubLevel rows have no PALOC entries (confirmed by exhaustive
-/// scan, see `docs/save-editor-keys-plan.md` §8). The internal name
+/// SubLevel rows have no PALOC entries (an exhaustive scan finds
+/// none, see `docs/save-editor-keys-plan.md` §8). The internal name
 /// is the only resolution surface.
 ///
 /// # Safety

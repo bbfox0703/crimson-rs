@@ -30,12 +30,10 @@ table is the base `iteminfo.staticinfoheader` in order (indices 0..N-1),
 followed by each DLC's `iteminfo.<dlc>.staticinfoheader` rows whose keys the
 base lacks, in that header's order; keys a DLC overrides keep their base
 slot. The header also gives every row's offset, so no anchor scan is needed.
-Verified on 2.05: the in-memory key array matched this row for row, and a
-DLC item placed in-game (1004792 Clams, 651st DLC-only row) showed index
-7068 + 650 = 7718. `keys.txt` (a CE dump) is then only a cross-check: a
-mismatch is reported, and the header order is still used.
+`keys.txt` (a CE dump) is then only a cross-check: a mismatch is reported,
+and the header order is still used.
 
-`--order keys` restores the older behaviour: keys.txt *is* the order and
+With `--order keys`, keys.txt *is* the order and
 each key is anchored in the base binary (base table only); with
 `--keys ''` it falls back to lossy parsing of the binary alone.
 """
@@ -52,15 +50,7 @@ from typing import NamedTuple
 
 import crimson_rs
 
-from gamedata_layout import GAMEDATA_GROUP, discover_paloc_targets, resolve_bin_layout
-
-
-GAME_DIR_CANDIDATES = [
-    r"D:\SteamLibrary\steamapps\common\Crimson Desert",
-    r"F:\SteamLibrary\steamapps\common\Crimson Desert",
-    r"E:\SteamLibrary\steamapps\common\Crimson Desert",
-    r"C:\Program Files (x86)\Steam\steamapps\common\Crimson Desert",
-]
+from gamedata_layout import GAMEDATA_GROUP, discover_paloc_targets, find_game_dir, resolve_bin_layout
 
 
 # Localization groups that may host the paloc files. Patches occasionally
@@ -82,20 +72,6 @@ OUTPUT_LANG_SUFFIX = {
     "cht":    "zh-tw",
     "chs":    "zh-cn",
 }
-
-
-def find_game_dir(explicit: str | None) -> str:
-    if explicit:
-        if not Path(explicit).is_dir():
-            sys.exit(f"--game-dir not found: {explicit}")
-        return explicit
-    for c in GAME_DIR_CANDIDATES:
-        if Path(c).is_dir():
-            return c
-    sys.exit(
-        "Game install not found. Pass --game-dir, or edit GAME_DIR_CANDIDATES "
-        "in this script."
-    )
 
 
 def _is_ident_byte(b: int) -> bool:
@@ -330,7 +306,6 @@ def export_iteminfo_lossy(game_dir: str, out_dir: Path) -> list[dict]:
         )
     print(f"  -> {skip_path.name}")
     return items
-
 
 
 # ── Header mode (default): CE index = base header rows, then DLC-only rows ──
@@ -603,9 +578,9 @@ def export_paloc(
                 item_names[sid >> 32] = e["string_value"]
         if failed == len(fnames):
             continue
-        # Through 2.05.01 a DLC's item names lived in its own PALOC; 2.06 moved
-        # them into the base game's (all 1,311 dlc_01 items, every language),
-        # so a DLC PALOC without item names is no longer an error.
+        # Through 2.05.01 a DLC's item names live in its own PALOC; from 2.06
+        # they are in the base game's, so a DLC PALOC without item names is
+        # not an error.
         out[lang] = item_names
         summary.append((lang, group, len(fnames), n_entries))
 

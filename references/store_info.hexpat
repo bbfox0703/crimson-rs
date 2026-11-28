@@ -7,6 +7,12 @@ import std.mem;
 
 // ============================================================
 // storeinfo.pabgb — Crimson Desert Store Data
+// LAYOUT: pre-2.04. Rows open [u16 key][u32 len][name]; 2.04 moved the
+// key after the name, and 2.06 moved the name into storeinfo.staticinfoheader
+// (body rows open [key][u32 row index]) and inlined 760 conditions. Do not
+// run this on a 2.04+ file without updating it.
+// `BString` below is u32 len + bytes with no NUL, which the repo's Rules
+// call `CString`.
 // ============================================================
 // Derived from C++ ClassLoader serialization.
 // field_e discriminates the store variant:

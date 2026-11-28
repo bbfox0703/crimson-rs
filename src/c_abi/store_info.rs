@@ -3,13 +3,13 @@
 //! Resolves save-side `StoreKey (u16-widened-u32)` to the row's
 //! template internal name (e.g. `"Store_Her_General"`,
 //! `"Store_BlackMarket"`). Mirrors [`super::faction_relation_group_info`]
-//! in shape — name-only, **no `lookup_display_name` function**. The
-//! exhaustive PALOC probe pattern that produced the QuestGauge / SubLevel
-//! / Faction bridges hasn't been re-run for storeinfo yet; the
+//! in shape — name-only, **no `lookup_display_name` function**. No
+//! exhaustive PALOC probe covers storeinfo (as one does the QuestGauge /
+//! SubLevel / Faction tables); the
 //! save-layer's stable identifier is the internal template name, which
 //! is what the Save Editor surfaces in its store browser.
 //!
-//! 292 rows in 1.07. PABGH layout is the same custom 6-byte
+//! The pre-2.06 PABGH layout is the same custom 6-byte
 //! `(u16 key, u32 offset)*` shape used by `factionrelationgroup`. See
 //! `src/store_info/mod.rs` for byte-level schema notes.
 
@@ -23,7 +23,6 @@ use crate::store_info::parse_store_info_lossy;
 
 /// Opaque handle exposing `(StoreKey, internal_name)` lookups against
 /// the loaded `storeinfo.pabgb` + `.pabgh` pair.
-#[repr(C)]
 pub struct CrimsonStoreInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,
@@ -79,6 +78,9 @@ pub unsafe extern "C" fn crimson_store_info_load_from_file(
             Err(_) => return error::IO,
         };
         let handle = CrimsonStoreInfoHandle::from_bytes(&pabgb, &pabgh);
+        if let Err(code) = crate::c_abi::check_rows(&pabgb, Some(&pabgh[..]), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -117,6 +119,9 @@ pub unsafe extern "C" fn crimson_store_info_load_from_bytes(
             unsafe { std::slice::from_raw_parts(pabgh, pabgh_len) }
         };
         let handle = CrimsonStoreInfoHandle::from_bytes(pabgb_slice, pabgh_slice);
+        if let Err(code) = crate::c_abi::check_rows(pabgb_slice, Some(pabgh_slice), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))

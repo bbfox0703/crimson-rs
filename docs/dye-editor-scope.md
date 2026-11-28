@@ -339,9 +339,10 @@ Before 2.01 the three bytes were the per-channel flags `active(ch)`.
    reads 0). Its colour applies to every channel, on every slot of the
    prefab, whose `mat_indices` entry is that number. The numbers an item
    offers are the union of its prefab's masks (`..._lookup_dye_slot_bits`).
-   `..._lookup_slot_count` counts sub-meshes, not dye slots, and so does
-   `crimson_item_part_prefab_resolve_dye_slot_count`. The dye slot count
-   is the popcount of the union.
+   `..._lookup_slot_count` counts sub-meshes, not dye slots. The dye slot
+   count is the popcount of the union, which is what
+   `crimson_item_part_prefab_resolve_dye_slot_count` returns since
+   2026-11-28 (before that it returned the first row's sub-mesh count).
 
 **Confirmed on a 2.06 save (2026-11-27).** The name join reached only
 two dyed fixture items. Through the prefab join ("Item → mesh join
@@ -364,7 +365,7 @@ two dyed fixture items. Through the prefab join ("Item → mesh join
 | `crimson_part_prefab_dye_slot_info_lookup_slot_dye_slot_bits(handle, prefab_key, slot_idx, *out_bits)` | The slot's mask as a `u32` bitset (bit `n` = dye slot `n`). |
 | `crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_dye_slot_bits(handle, prefab_key, slot_idx, layer_idx, *out_bits)` | Same for a 1.13 extra layer. |
 | `crimson_part_prefab_dye_slot_info_lookup_dye_slot_bits(handle, prefab_key, *out_bits)` | Union over the prefab's slots and extra layers: the `_dyeSlotNo` values to offer. |
-| `crimson_part_prefab_dye_slot_info_lookup_dye_slot_material(handle, prefab_key, dye_slot_no, buf, buf_len, *required)` | Default material name of a dye slot number (`""` if unnamed; `OUT_OF_RANGE` if no channel uses it). |
+| `crimson_part_prefab_dye_slot_info_lookup_dye_slot_material(handle, prefab_key, uint32_t dye_slot_no, buf, buf_len, *required)` | Default material name of a dye slot number (`""` if unnamed; `OUT_OF_RANGE` if no channel uses it or the number is over 255). |
 
 Rust: `PartPrefabDyeSlot::{active_channels, dye_slot_bits, channel_dye_slot}`,
 `DyeExtraLayer::dye_slot_bits`,
@@ -492,7 +493,7 @@ owners.
 | `crimson_item_part_prefab_load_from_file_with_prefab_pamt(4 table paths, prefab_pamt_path, *out)` | Same, from files. |
 | `crimson_item_part_prefab_lookup_dye_slot_bits(h, item_key, tribe_gender, *out_bits)` | Union of the dye slot bits of the item's rows: the `_dyeSlotNo` values to offer. `tribe_gender` is nullable (`"player_1"`, ...). `NOT_FOUND` if no rows or no variant lists `tribe_gender`. |
 | `crimson_item_part_prefab_lookup_channel_dye_slot_bits(h, item_key, tribe_gender, *out_bits)` | Union of every channel number (`mat_indices`), dyeable or not. A superset of the above: numbers a save may carry from an older patch. |
-| `crimson_item_part_prefab_lookup_dye_slot_material(h, item_key, tribe_gender, dye_slot_no, buf, len, *required)` | Default material of a number over the selected rows (first non-empty, variant then mesh order). `""` if unnamed, `OUT_OF_RANGE` if unused. |
+| `crimson_item_part_prefab_lookup_dye_slot_material(h, item_key, tribe_gender, uint8_t dye_slot_no, buf, len, *required)` | Default material of a number over the selected rows (first non-empty, variant then mesh order). `""` if unnamed, `OUT_OF_RANGE` if unused. **`dye_slot_no` is a byte here but a `uint32_t` in the slot-info function of the same name**: declare it `byte` in C#, since a `uint` declaration leaves the callee reading only the low 8 bits (256 would read as 0). |
 | `crimson_item_part_prefab_merge_dlc_from_bytes(h, iteminfo_dlc, len, stringinfo_dlc, len, dlc_prefab_pamt_path /*nullable*/, *out_added)` | Optional DLC merge (above). Atomic: an error changes nothing. |
 | `crimson_item_part_prefab_lookup_source(h, item_key, *out_source)` | 0 = base, `n` = the `n`-th merged DLC; `NOT_FOUND` if the item has no rows. |
 
@@ -593,7 +594,7 @@ cannot show who uses them. Display names: all three `Dem` rows read
 | Function | Purpose |
 |---|---|
 | `crimson_part_prefab_dye_texture_pallete_load_from_file` / `_load_from_bytes` / `_free` | Standard. |
-| `crimson_part_prefab_dye_texture_pallete_entry_count(handle, *out_count)` | Total palette rows (11 in 1.07). |
+| `crimson_part_prefab_dye_texture_pallete_entry_count(handle, *out_count)` | Total palette rows (11 on 2.06). |
 | `crimson_part_prefab_dye_texture_pallete_lookup_sub_count(handle, palette_key, *out_count)` | Number of sub-records inside `palette_key`. |
 | `crimson_part_prefab_dye_texture_pallete_lookup_sub_material_name(handle, palette_key, sub_idx, buf, ...)` | Material name. |
 | `_lookup_sub_icon_path` / `_lookup_sub_texture_path` / `_lookup_sub_variant_name` | Per-field strings. |
@@ -605,21 +606,26 @@ cannot show who uses them. Display names: all three `Dem` rows read
 | Function | Purpose |
 |---|---|
 | `crimson_part_prefab_dye_slot_info_load_from_file` / `_load_from_bytes` / `_free` | Standard. |
-| `crimson_part_prefab_dye_slot_info_entry_count(handle, *out_count)` | Total prefabs (1,105 in 1.07). |
-| `crimson_part_prefab_dye_slot_info_lookup_slot_count(handle, prefab_key, *out_count)` | **Direct replacement for `dye_slot_counts.json[item_id]`** once the `_itemKey → _partPrefabKey` linkage is in place. |
+| `crimson_part_prefab_dye_slot_info_entry_count(handle, *out_count)` | Total mesh rows (1,703 on 2.06). |
+| `crimson_part_prefab_dye_slot_info_lookup_slot_count(handle, prefab_key, *out_count)` | Number of slots (sub-meshes) of the mesh row. **Not** the dye slot count: that is the popcount of `..._lookup_dye_slot_bits` (the two agree on 392 of 1,703 2.06 rows). |
 | `crimson_part_prefab_dye_slot_info_lookup_prefab_name(handle, prefab_key, buf, ...)` | Prefab internal name. |
 | `crimson_part_prefab_dye_slot_info_lookup_slot_default_material(handle, prefab_key, slot_idx, mat_idx, buf, ...)` | Per-slot default material (`mat_idx ∈ {0,1,2}`). |
 | `crimson_part_prefab_dye_slot_info_lookup_slot_tail_name(handle, prefab_key, slot_idx, buf, ...)` | Next-prefab / `.pac` path. |
 | `crimson_part_prefab_dye_slot_info_lookup_slot_mat_indices(handle, prefab_key, slot_idx, out_indices[3])` | Raw 3-byte indices. |
 | `crimson_part_prefab_dye_slot_info_lookup_slot_mask(handle, prefab_key, slot_idx, out_mask[3])` | First 3 mask bytes — the legacy shape. **Wrong meaning on 2.01+**: these are the flags of dye slots 0..2, not of the slot's channels. Use `..._lookup_slot_active_channels` (same shape) for the per-channel flags. Kept unchanged because widening it in place would overrun every existing caller's buffer. |
-| `crimson_part_prefab_dye_slot_info_lookup_slot_mask_full(handle, prefab_key, slot_idx, buf, buf_len, *required)` | **The whole mask** (12 bytes on 2.01+, 3 on 1.07-2.00), sized-buffer style: call with `buf_len = 0` to learn the width, then again with the buffer. Returns `BUFFER_TOO_SMALL` rather than truncating if the field is wider than the buffer, so a future widening surfaces instead of silently degrading. Prefer this over the 3-byte getter. |
+| `crimson_part_prefab_dye_slot_info_lookup_slot_mask_full(handle, prefab_key, slot_idx, buf, buf_len, *required)` | **The whole mask** (12 bytes; the parser reads 2.01+ only), sized-buffer style: call with `buf_len = 0` to learn the width, then again with the buffer. Returns `BUFFER_TOO_SMALL` rather than truncating if the field is wider than the buffer, so a future widening surfaces instead of silently degrading. Prefer this over the 3-byte getter. |
 | `crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_mask_full(handle, prefab_key, slot_idx, layer_idx, buf, buf_len, *required)` | Same, for a 1.13 extra dye layer's mask. |
+| `..._lookup_slot_extra_layer_count` / `..._lookup_slot_extra_layer_material` / `..._lookup_slot_extra_layer_mask` / `..._lookup_slot_extra_layer_flag` | The 1.13 extra (second) dye layer of a slot: layer count (0 on most slots, 1 on the expanded dyeable gear), the default material per channel, the first 3 mask bytes (a partial read, like `..._lookup_slot_mask`), and the trailing flag byte (meaning not established). |
 | `..._lookup_slot_active_channels` / `..._lookup_slot_dye_slot_bits` / `..._lookup_slot_extra_layer_dye_slot_bits` / `..._lookup_dye_slot_bits` / `..._lookup_dye_slot_material` | Decoded dye slot numbers (2026-11-27); see "Dye slot numbers (2.01+)". |
 | `crimson_part_prefab_dye_slot_info_get_entry_key(handle, idx, *out_key)` | Enumerate keys. |
 
 All bridges return `NULL_ARG` / `NOT_FOUND` / `OUT_OF_RANGE` /
 `BUFFER_TOO_SMALL` / `PANIC` per the standard `c_abi/mod.rs::error`
-codes. Live-install integration tests pin the row counts and a
+codes. The loaders also return `IO` / `INVALID_PATH` (file loaders) and
+`BODY_PARSE` (a header that does not match its body, or a table that
+yields no rows), and `crimson_dye_color_group_info_palette_knowledge_at`
+returns `UNSUPPORTED_VERSION` for a pre-2.06 record or a condition it
+does not decode. Live-install integration tests pin the row counts and a
 handful of `(key → value)` invariants per table; they skip cleanly
 when the game install isn't present.
 
@@ -674,22 +680,25 @@ communicated via `out_resolve_source`:
 
 | Constant | Value | Meaning |
 |---|---:|---|
-| `DIRECT` | 0 | `out_slot_count` is authoritative — chained both bridges cleanly. |
+| `DIRECT` | 0 | `out_slot_count` is the item's dye slot count (see the 2026-11-28 note below). |
 | `NOT_RESOLVED_NO_PARTPREFAB` | 1 | Item has no partprefab mapping; editor should fall back to a curated default (e.g. the human-male equip-slot prefab's slot count) or show "unknown". 76% of 1.07 `is_dyeable=1` items hit this — they're body-type variants (goblin / dwarf / tribe meshes) that share the human male's dye-slot layout but aren't listed in `partprefabdyeslotinfo`. `out_slot_count = 0`. **2026-11-27:** those items are not unlisted; the name join missed their meshes. With a `_with_prefab_pamt` handle 8 of 917 dyeable 2.06 items hit this. |
 | `NOT_RESOLVED_NO_SLOT_INFO` | 2 | Partprefab present but missing from the slot-info table. Shouldn't happen given how the join is built — defensive guard for cross-version safety. `out_slot_count = 0`. |
 
-**Resolution policy**: always uses `partprefab[0]` (first resolved
-prefab in iteminfo's `prefab_data_list` traversal order). Multi-prefab
-items usually share a dye-slot layout across variants; if per-variant
-resolution is needed later, drop back to the manual chain via
-`crimson_item_part_prefab_lookup_key_at`.
+**2026-11-28: what the count is.** As shipped, the wrapper returned the
+first row's `slot_count`, which counts that mesh's sub-meshes, not dye
+slots; on 2.06 the two agree on only 392 of 1,703 rows (item 121013: one
+row, one sub-mesh, three dye slots; audit E-01). It now returns the number
+of `_dyeSlotNo` values the item offers: the bits set in the union of
+`..._lookup_dye_slot_bits` over every row key the join gives the item,
+i.e. the popcount of `crimson_item_part_prefab_lookup_dye_slot_bits`. The
+numbers need not be contiguous, so a slot picker needs that bitset, not
+just the count.
 
 Live regression `c_abi_item_part_prefab_resolve_dye_slot_count_live`
 pins:
-- ≥30 items resolve via DIRECT in the 1..1M key range (1.07: 45)
-- All resolved slot counts in `1..=32` (plausible range; 1.07
-  observed max is 16)
-- Wrapper output agrees with the manual chain on every resolved item
+- ≥30 items resolve via DIRECT in the 1..1M key range (2.06: 59)
+- Every resolved count equals the popcount of the item's dye slot bits,
+  at most 12 (one flag per dye slot number); 121013 gives 3
 - Unknown key → `OK + NOT_RESOLVED_NO_PARTPREFAB`
 - No `NOT_RESOLVED_NO_PARTPREFAB` leakage when iterating items
   with a known partprefab mapping (defensive branch-logic check)
@@ -701,7 +710,8 @@ var rc = crimson_item_part_prefab_resolve_dye_slot_count(
     ippHandle, slotInfoHandle, itemKey,
     out uint slotCount, out uint source);
 if (source == 0 /* DIRECT */) {
-    // slotCount is the answer — render slot picker with that many entries
+    // slotCount = how many dye slots; the slot numbers themselves come from
+    // crimson_item_part_prefab_lookup_dye_slot_bits (they need not be 0..n-1)
 } else {
     // Fallback path: either curated default or "unknown" UI
 }

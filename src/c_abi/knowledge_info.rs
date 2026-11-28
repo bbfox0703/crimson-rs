@@ -2,21 +2,19 @@
 //!
 //! Sibling of [`super::mission_info`] / [`super::quest_info`] /
 //! [`super::stage_info`]. Same resolution chain (`KnowledgeKey → name
-//! → hashlittle2 → u64 PALOC key → display title`).
+//! → hashlittle → u64 PALOC key → display title`).
 //!
-//! The editor's earlier hypothesis (status.md item #6) was that
-//! KnowledgeKey wouldn't resolve through PALOC. The
-//! [`super::checksum`]-based probe disproved that — 29,330 PALOC
-//! hits across multiple namespaces when every `Knowledge_*` name in
-//! `knowledgeinfo.pabgb` was hashed. So the same one-shot bridge
-//! shape applies.
+//! Knowledge names resolve through PALOC like the others: hashing every
+//! `Knowledge_*` name in `knowledgeinfo.pabgb` with the
+//! [`super::checksum`] hash hits PALOC entries across several
+//! namespaces, so the same one-shot bridge shape applies.
 //!
 //! Default `lo32 = 0x490` (1168) for knowledge titles. Caller passes
 //! a different byte if they want the description (0x491) or one of
 //! the secondary text variants.
 //!
-//! Notable distinction from the mission/quest/stage family: the
-//! editor side has been thinking of KnowledgeKey through a 4-level
+//! Notable distinction from the mission/quest/stage family: knowledge
+//! also sits in a 4-level
 //! categorical hierarchy (Creatures > Terrestrial > Amphibians >
 //! Burrowing Salamander), which is **NOT** what this bridge
 //! surfaces. The hierarchy lives in `knowledgegroupinfo.pabgb` as a
@@ -24,8 +22,8 @@
 //! `lo32=0x92/0x93` with tiny hi32 values that are group IDs, not
 //! hashes). The leaf knowledge row's PALOC title is a name in its
 //! own right (often the same string as the wiki leaf, sometimes a
-//! richer phrase). The category breadcrumb is a separate concern —
-//! see "Future enhancement" below.
+//! richer phrase). The category breadcrumb is a separate concern this
+//! bridge does not cover.
 
 use std::collections::HashMap;
 use std::os::raw::c_char;
@@ -39,7 +37,6 @@ use crate::knowledge_info::parse_knowledge_info_lossy;
 
 /// Opaque handle exposing `(KnowledgeKey, internal_name)` lookups
 /// against the loaded `knowledgeinfo.pabgb`.
-#[repr(C)]
 pub struct CrimsonKnowledgeInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,
@@ -112,8 +109,14 @@ pub unsafe extern "C" fn crimson_knowledgeinfo_load_from_file(
             Err(_) => return error::IO,
         };
         // 2.06+: row names live in the `.staticinfoheader` next to the body.
-        let header = super::sibling_header(path_str);
+        let header = match super::sibling_header(path_str) {
+            Ok(h) => h,
+            Err(_) => return error::IO,
+        };
         let handle = CrimsonKnowledgeInfoHandle::from_bytes(&bytes, header.as_deref());
+        if let Err(code) = crate::c_abi::check_rows(&bytes, header.as_deref(), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -145,6 +148,9 @@ pub unsafe extern "C" fn crimson_knowledgeinfo_load_from_bytes(
             unsafe { std::slice::from_raw_parts(data, data_len) }
         };
         let handle = CrimsonKnowledgeInfoHandle::from_bytes(slice, None);
+        if let Err(code) = crate::c_abi::check_rows(slice, None, handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -154,7 +160,9 @@ pub unsafe extern "C" fn crimson_knowledgeinfo_load_from_bytes(
 /// Parse in-memory `knowledgeinfo` bytes together with the table's
 /// `.staticinfoheader`. Required from 2.06, where row names moved out of the
 /// body into the header: `crimson_knowledgeinfo_load_from_bytes` on a 2.06 body finds
-/// no rows. On an older install the header is not needed and is ignored.
+/// no rows, and returns `BODY_PARSE` for it. A header that is not the 2.06 shape
+/// or does not match the body is `BODY_PARSE` too (the parsers read the latest
+/// patch only).
 ///
 /// # Safety
 /// `data` / `header` must point to `data_len` / `header_len` readable bytes
@@ -186,6 +194,9 @@ pub unsafe extern "C" fn crimson_knowledgeinfo_load_from_bytes_with_header(
             unsafe { std::slice::from_raw_parts(header, header_len) }
         };
         let handle = CrimsonKnowledgeInfoHandle::from_bytes(slice, Some(header));
+        if let Err(code) = crate::c_abi::check_rows(slice, Some(header), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -313,9 +324,9 @@ pub unsafe extern "C" fn crimson_knowledgeinfo_entry_source(
 // ── Display-name lookup (production — one-shot chain) ──────────────────────
 
 /// One-shot title resolution: chain `KnowledgeKey → internal name →
-/// hashlittle2 → PALOC u64 key → localized string`.
+/// hashlittle → PALOC u64 key → localized string`.
 ///
-/// Common `lo32_namespace` values for knowledge rows (confirmed by
+/// Common `lo32_namespace` values for knowledge rows (from
 /// the probe in `docs/save-editor-keys-plan.md`):
 /// - `0x490` (1168) — knowledge entry title (the typical case;
 ///   every row resolves at this byte)
@@ -426,7 +437,7 @@ mod tests {
     //! `localizationstring_eng.paloc`.
     //!
     //! Five `(KnowledgeKey, internal_name, lo32, display_title)`
-    //! tuples verified by probing the live install. Includes one row
+    //! tuples read from the live install. Includes one row
     //! (`Knowledge_Node_Dem_Ruins_0007`) tested at both 0x490 (title)
     //! and 0x491 (description) to pin the namespace argument as
     //! load-bearing.

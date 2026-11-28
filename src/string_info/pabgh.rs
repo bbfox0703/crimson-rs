@@ -2,23 +2,22 @@
 //!
 //! Layout: `count + count × (u32 hash, u32 offset_into_pabgb)`.
 //!
-//! The `count` prefix is `u16` in observed game builds (Crimson Desert
-//! 1.06 has 30,206 entries — fits in u16) but the GameMods Python loader
-//! auto-detects a `u32` fallback by checking whether `2 + count * 8`
+//! The `count` prefix is `u16` in observed game builds, but the GameMods
+//! Python loader auto-detects a `u32` fallback by checking whether `2 + count * 8`
 //! equals the file size. We mirror that: parse as `u16` first, fall back
 //! to `u32` on size mismatch. `write_pabgh` emits whichever width round-
 //! trips the original file (recorded on the [`StringInfoIndex`] returned
 //! by `parse_pabgh`).
 //!
-//! Pairs with [`super::pabgb`]: each entry's `offset` is a byte offset
-//! into the matching `stringinfo.pabgb`, where the record at that offset
-//! carries the same `hash` u32 (after the 4-byte zero since 2.04).
-
-// Index helpers are exercised by `string_info::tests::live_pair_roundtrip`
-// and the synthetic pair test; the `c_abi` bridge intentionally ignores
-// the pabgh side (every pabgb entry is self-describing). Match the
-// `item_info` precedent and silence dead-code warnings file-wide.
-#![allow(dead_code)]
+//! Pairs with [`super::StringInfoData`]: each entry's `offset` is a byte
+//! offset into the matching `stringinfo.pabgb`, where the record at that
+//! offset carries the same `hash` u32 (after the 4-byte zero in the legacy
+//! layout, first in the 2.06 layout).
+// The writers and the full-table readers are round-trip support that the
+// tests exercise; the c_abi bridge reads no pabgh, since every pabgb entry is
+// self-describing. Outside tests they are dead, so dead code is allowed
+// there; the test build lints the module in full.
+#![cfg_attr(not(test), allow(dead_code))]
 
 use std::io;
 
@@ -73,8 +72,8 @@ pub fn parse_pabgh(data: &[u8]) -> io::Result<StringInfoIndex> {
     if data.len() >= 2 {
         let mut offset = 0usize;
         let count16 = u16::read_from(data, &mut offset)? as usize;
-        let needed = 2 + count16 * 8;
-        if needed == data.len() {
+        let needed = count16.checked_mul(8).and_then(|n| n.checked_add(2));
+        if needed == Some(data.len()) {
             let entries = read_entries(data, offset, count16)?;
             return Ok(StringInfoIndex { entries, count_width: CountWidth::U16, named: false });
         }
@@ -83,8 +82,9 @@ pub fn parse_pabgh(data: &[u8]) -> io::Result<StringInfoIndex> {
     if data.len() >= 4 {
         let mut offset = 0usize;
         let count32 = u32::read_from(data, &mut offset)? as usize;
-        let needed = 4 + count32 * 8;
-        if needed == data.len() {
+        // Checked so a huge count cannot wrap on a 32-bit target and pass.
+        let needed = count32.checked_mul(8).and_then(|n| n.checked_add(4));
+        if needed == Some(data.len()) {
             let entries = read_entries(data, offset, count32)?;
             return Ok(StringInfoIndex { entries, count_width: CountWidth::U32, named: false });
         }

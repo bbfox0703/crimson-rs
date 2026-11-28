@@ -14,20 +14,16 @@
 //! `0.pamt`. Once extracted, the bytes get fed straight into
 //! [`super::paloc::crimson_paloc_load_from_bytes`].
 //!
-//! Partial-compression entries (`is_partial`) ARE supported: the bulk
-//! of `0012/ui/texture/icon/` lives in that layout (header(128) +
-//! LZ4-with-prefix-dict, or identity when LZ4 declined). Some other
-//! 1.06 subtrees (notably `0012/ui/texture/image/worldmap/` SDFs and
-//! large mesh assets in 0009/0015) use an additional chunked variant
-//! the decoder doesn't yet understand — those still surface as
-//! `BODY_PARSE`, the same code as any other PAZ extraction failure.
+//! Partial-compression entries (`is_partial`) are supported, including the
+//! per-mip variant the worldmap SDFs use (`crate::binary::paz`); a file the
+//! decoder still cannot read surfaces as `BODY_PARSE`, the same code as any
+//! other extraction failure.
 //!
-//! Not exposed here (future PR if needed):
+//! Not exposed here:
 //! - Full PAMT enumeration across every directory in one call.
 //!   [`crimson_paz_list_dir`] covers per-directory listing — chain it
-//!   with the directory-name list a caller already has (or wants to
-//!   discover via a future top-level enumerator) for a full walk.
-//! - Batch extraction (avoid re-parsing PAMT N times).
+//!   with the directory-name list a caller already has for a full walk.
+//! - Batch extraction (each call re-parses the PAMT).
 
 use std::ffi::CStr;
 use std::os::raw::c_char;
@@ -38,26 +34,22 @@ use super::error;
 use crate::binary::pamt::PackMeta;
 use crate::binary::paz;
 
-/// NPC-portrait filename prefixes Pearl Abyss has shipped across 1.05 /
-/// 1.06 / 1.07. Each entry maps a (lowercase, ASCII) filename prefix to
-/// a one-line note explaining what that bucket contains — useful when
-/// reading the source, useless at runtime (the note is dropped).
+/// NPC-portrait filename prefixes (lowercase ASCII), matched
+/// case-insensitively by [`is_npc_portrait_name`]. Each prefix is one
+/// bucket of the game's portrait taxonomy:
 ///
-/// The split reflects the actual game-side taxonomy, surfaced by
-/// scanning every PAMT in a 1.07 install:
-///
-/// - `cd_portraitimage_character_` — 1.05 / 1.06 named-NPC bucket.
-///   Gone in 1.07; kept here for cross-version compat.
-/// - `cd_portraitimage_chracter_` — 1.07 named-NPC bucket. The typo
-///   ("chracter") is shipped — Demian / Kliff / Oongka all live under
-///   it. Keep both spellings.
+/// - `cd_portraitimage_character_` — named-NPC bucket of the older
+///   installs; kept so those still list.
+/// - `cd_portraitimage_chracter_` — named-NPC bucket of the newer
+///   installs. The typo ("chracter") is shipped — Demian / Kliff /
+///   Oongka all live under it. Keep both spellings.
 /// - `cd_portraitimage_nhm_` — Hernandese NPCs (soldiers, sheriffs,
-///   wandering mercenaries, tournament champions). 62 entries in 1.07.
+///   wandering mercenaries, tournament champions).
 /// - `cd_portraitimage_nom_` — Omeyan NPCs (Tomaso soldiers,
-///   mercenaries). 10 entries in 1.07.
+///   mercenaries).
 /// - `cd_portraitimage_muscan_` — One-off `muscan_boss` portrait.
 /// - `cd_mercenary_portrait_` — Recruitable mercenary companions
-///   (NPCs the player can hire). 76 entries in 1.07.
+///   (NPCs the player can hire).
 ///
 /// Explicitly excluded — these are "portrait-like" but NOT NPC head-
 /// shots, so they don't belong in this list: `cd_portraitimage_animal_`,
@@ -127,10 +119,10 @@ fn is_npc_portrait_name(name: &str) -> bool {
 /// - `BUFFER_TOO_SMALL` when `out_buf_len < required`. `*out_required`
 ///   carries the needed size.
 /// - `NOT_FOUND` when `directory` or `file_name` isn't in the PAMT.
-/// - `IO` when the PAMT or `.paz` chunk can't be read from disk.
-/// - `BODY_PARSE` when the PAMT bytes don't parse, or extraction
-///   fails downstream (bad checksum, unsupported crypto, partial-
-///   compression file, decompression error).
+/// - `IO` when the PAMT can't be read from disk.
+/// - `BODY_PARSE` when the PAMT bytes don't parse, or extraction fails
+///   downstream: a missing or short `.paz`, bad checksum, unsupported
+///   crypto, decompression error.
 /// - `NULL_ARG` on any null pointer; `INVALID_PATH` on bad UTF-8.
 ///
 /// # Safety
@@ -205,10 +197,10 @@ pub unsafe extern "C" fn crimson_paz_extract_file(
             &pamt.header.encrypt_info.encrypt_info,
         ) {
             Ok(b) => b,
-            // Both io::Error variants from extract_file mean "couldn't
-            // get the bytes" — surface as BODY_PARSE for now (the
-            // user-visible difference between "missing crypto support"
-            // and "bad checksum" isn't actionable at the editor level).
+            // An extract_file error means "couldn't get the bytes";
+            // surface it as BODY_PARSE (the user-visible difference
+            // between "missing crypto support" and "bad checksum" isn't
+            // actionable at the editor level).
             Err(_) => return error::BODY_PARSE,
         };
 
@@ -231,12 +223,12 @@ pub unsafe extern "C" fn crimson_paz_extract_file(
 /// files under `ui/texture/image/portraitimage/` (named-story NPCs,
 /// anonymous Hernandese / Omeyan NPCs, boss portraits) plus
 /// `ui/texture/image/portraitimage/` and adjacent folders for
-/// recruitable mercenaries. Pearl Abyss reorganised this naming
-/// non-trivially across patches — see [`NPC_PORTRAIT_PREFIXES`] for
-/// the full per-bucket breakdown the filter accepts.
+/// recruitable mercenaries. The naming differs across patches — see
+/// [`NPC_PORTRAIT_PREFIXES`] for the full per-bucket breakdown the
+/// filter accepts.
 ///
 /// `pamt_path` is the absolute path to `0.pamt` inside a group folder
-/// (in 1.06 / 1.07 the portraits live under `0012/`). The function
+/// (the portraits live under `0012/`). The function
 /// filters by filename — not directory — so it tolerates Pearl Abyss
 /// moving paths around in future patches. NUL-terminated UTF-8.
 ///
@@ -270,7 +262,7 @@ pub unsafe extern "C" fn crimson_paz_extract_file(
 ///   non-zero `out_buf_len`); `INVALID_PATH` on bad UTF-8.
 ///
 /// Note: this is a one-shot scan — each call reparses the PAMT. For
-/// 0012's 751 KB PAMT that's fast (a few ms) but not free. Callers
+/// a large PAMT like 0012's that's fast (a few ms) but not free. Callers
 /// that need repeated access should cache the returned list themselves.
 ///
 /// # Safety
@@ -350,7 +342,6 @@ pub unsafe extern "C" fn crimson_paz_list_npc_portraits(
             return error::BUFFER_TOO_SMALL;
         }
 
-        // Fill the caller's buffer.
         let mut cursor: usize = 0;
         for path in &entries {
             unsafe {
@@ -369,7 +360,7 @@ pub unsafe extern "C" fn crimson_paz_list_npc_portraits(
 /// file in a PAMT directory.
 ///
 /// Layout is `repr(C)` and stable. Filenames are NUL-padded UTF-8 in
-/// a fixed 256-byte buffer; longest names observed in 1.07 PAMTs are
+/// a fixed 256-byte buffer; the longest names seen in the PAMTs are
 /// ~72 chars (the `worldmapimage_skill_knowledge_*` family in
 /// `0012/`), so 256 is comfortable headroom. The `name_truncated`
 /// flag (widened to u32 for layout) is set if the underlying PAMT
@@ -425,7 +416,7 @@ fn fill_name_buf(buf: &mut [u8; 256], name: &str) -> bool {
 ///
 /// 1. Call `crimson_paz_list_dir(pamt_path = "…/0015/0.pamt",
 ///    directory = "leveldata/rootlevel/terrain/color")` to enumerate
-///    the 785 terrain color tiles.
+///    the terrain color tiles.
 /// 2. For each entry, call `crimson_paz_extract_file` with
 ///    `(pamt_path, directory, entry.name)` to pull the DDS bytes.
 /// 3. Decode + cache locally; composite client-side.
@@ -445,8 +436,8 @@ fn fill_name_buf(buf: &mut [u8; 256], name: &str) -> bool {
 /// - Allocate `*out_count_entries` records, call again. Returns `OK`
 ///   on success.
 ///
-/// **Note**: each call re-parses the PAMT (no caching). For 0012's
-/// 751 KB PAMT that's a few ms; cheap but not free. Callers walking
+/// **Note**: each call re-parses the PAMT (no caching). For a large
+/// PAMT like 0012's that's a few ms; cheap but not free. Callers walking
 /// many directories from the same PAMT may want to add their own
 /// outer cache.
 ///
@@ -549,7 +540,7 @@ mod tests {
             .unwrap_or_else(|| {
                 PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
             });
-        // Group 0020 hosts the English PALOC in 1.06.
+        // Group 0020 hosts the English PALOC.
         let p = game_root.join("0020").join("0.pamt");
         p.is_file().then_some(p)
     }
@@ -600,8 +591,8 @@ mod tests {
             return;
         };
         let pamt = CString::new(pamt_path.to_str().unwrap()).unwrap();
-        // One blob per language through 2.00; 2.01 split it into 39
-        // per-namespace files. Extract whatever the install ships and sum —
+        // One blob per language through 2.00, per-namespace files from
+        // 2.01 on. Extract whatever the install ships and sum —
         // the whole-language total is what the >10k assertion is about.
         let Some((dir_path, names)) = gamedata_layout::paloc_files("0020", "eng") else {
             panic!("no English paloc in 0020/0.pamt");
@@ -690,7 +681,7 @@ mod tests {
         assert_eq!(rc, error::IO);
     }
 
-    /// End-to-end check that the C ABI now extracts partial-compressed
+    /// End-to-end check that the C ABI extracts partial-compressed
     /// icons (the bulk of `0012/ui/texture/icon/`). Picks one of the
     /// LZ4-compressed entries (so we exercise the prefix-dict decoder,
     /// not just the identity case) and validates the standard DDS magic.
@@ -711,9 +702,8 @@ mod tests {
         }
         // Pick a partial DDS where compressed_size < uncompressed_size
         // (real LZ4 work, not the identity fast path). Use a font atlas
-        // from 0012/ui/fonts/imagefont/ — every entry there is partial
-        // compressed in 1.06 and they're small enough to keep the test
-        // quick.
+        // from 0012/ui/fonts/imagefont/ — the entries there are partial
+        // compressed and small enough to keep the test quick.
         let pamt_bytes = std::fs::read(&pamt_path).expect("read 0.pamt");
         let pamt = PackMeta::parse(&pamt_bytes, None).expect("parse 0.pamt");
         let mut pick: Option<(String, String, u32, u32)> = None;
@@ -772,7 +762,7 @@ mod tests {
 
     #[test]
     fn portrait_filter_matches_expected() {
-        // All six recognised prefixes (real filenames from 1.07's 0012 PAMT).
+        // Each recognised prefix (real filenames from the 0012 PAMT).
         assert!(is_npc_portrait_name("cd_portraitimage_chracter_demian.dds"));
         assert!(is_npc_portrait_name("cd_portraitimage_chracter_kliff.dds"));
         assert!(is_npc_portrait_name(
@@ -783,7 +773,7 @@ mod tests {
         ));
         assert!(is_npc_portrait_name("cd_portraitimage_muscan_boss.dds"));
         assert!(is_npc_portrait_name("cd_mercenary_portrait_54632.dds"));
-        // 1.06 legacy spelling — still accepted for cross-version compat.
+        // The older installs' spelling is accepted too.
         assert!(is_npc_portrait_name("cd_portraitimage_character_ogre_xxx.dds"));
 
         // Case insensitivity — both prefix and suffix.
@@ -872,14 +862,11 @@ mod tests {
     }
 
     /// Live-install probe: 0012/0.pamt should expose >100 NPC portrait
-    /// DDS entries — in 1.07 the breakdown is 62 NHM, 10 NOM, 3
-    /// `chracter`, 1 muscan, 76 mercenary (152 total); 1.06 lands in
-    /// the same ballpark. Verifies the listing shape end-to-end and
-    /// that at least one entry round-trips through
-    /// `crimson_paz_extract_file` to a valid DDS (or surfaces
-    /// `BODY_PARSE` cleanly — partial-compression chunked variants the
-    /// decoder doesn't yet understand are a known limitation, not a
-    /// regression).
+    /// DDS entries. Verifies the listing shape end-to-end and that at
+    /// least one entry round-trips through `crimson_paz_extract_file`
+    /// to a valid DDS (or surfaces `BODY_PARSE` cleanly — a
+    /// partial-compression variant the decoder cannot read is a
+    /// limitation, not a listing bug).
     #[test]
     fn c_abi_paz_list_npc_portraits_live() {
         let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
@@ -918,10 +905,10 @@ mod tests {
         }
 
         // Probe extraction on the first entry. We don't *require* it to
-        // succeed: the partial-compression chunked variant referenced
-        // in the module docs is a known TODO. We DO require it to
-        // surface as one of {OK, BODY_PARSE} — never as IO or NOT_FOUND
-        // (which would mean the listing emitted a fake path).
+        // succeed: a partial-compression variant the decoder cannot
+        // read surfaces as BODY_PARSE. We DO require it to surface as
+        // one of {OK, BODY_PARSE} — never as IO or NOT_FOUND (which
+        // would mean the listing emitted a fake path).
         let probe = &entries[0];
         let (dir_str, name_str) = probe
             .rsplit_once('/')
@@ -954,7 +941,7 @@ mod tests {
     /// see at a glance whether Pearl Abyss has reorganised NPC asset
     /// naming. Used as the "On a new game patch" diagnostic referenced
     /// by `scripts/CLAUDE.md` — run with `--nocapture` and compare
-    /// against the known 1.07 taxonomy in [`NPC_PORTRAIT_PREFIXES`].
+    /// against the taxonomy in [`NPC_PORTRAIT_PREFIXES`].
     ///
     /// `#[ignore]` so it doesn't run in the default test suite — this
     /// is investigative tooling, not a regression gate.
@@ -1010,8 +997,8 @@ mod tests {
             if !hits.is_empty() {
                 eprintln!("group {group}: {} portrait-like hit(s)", hits.len());
                 // Bucket by (directory, three-segment prefix) so we
-                // see distinct naming conventions, not 600 individual
-                // files. E.g. "cd_portraitimage_nhm" or
+                // see distinct naming conventions, not one line per
+                // file. E.g. "cd_portraitimage_nhm" or
                 // "cd_mercenary_portrait".
                 use std::collections::BTreeMap;
                 let mut buckets: BTreeMap<(String, String), usize> = BTreeMap::new();
@@ -1161,10 +1148,9 @@ mod tests {
         std::str::from_utf8(&e.name[..len]).unwrap()
     }
 
-    /// Live: the 0015 terrain color directory must hold exactly 785
-    /// tiles in 1.07 — that's the world-map basemap working set. Pins
-    /// the per-tile size invariants too (uncompressed = 174,904 bytes,
-    /// not partial-compressed).
+    /// Live: the 0015 terrain color directory holds the world-map
+    /// basemap working set (at least 700 tiles). Pins the tile naming
+    /// and that the dominant uncompressed tile size is 174,904 bytes.
     #[test]
     fn c_abi_paz_list_dir_terrain_color_live() {
         let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
@@ -1233,7 +1219,7 @@ mod tests {
         let pamt_c = CString::new(pamt_path.to_str().unwrap()).unwrap();
         let dir_c = CString::new("leveldata/rootlevel/terrain/global").unwrap();
         let entries = list_dir_via_abi(&pamt_c, &dir_c).expect("list");
-        // 6 files in 1.07: global_colormap.dds + 5 region/tint maps.
+        // global_colormap.dds plus the region/tint maps.
         assert!(entries.len() >= 4, "expected ≥4 global terrain files, got {}", entries.len());
         let colormap = entries.iter()
             .find(|e| entry_name(e) == "global_colormap.dds")

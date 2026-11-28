@@ -155,7 +155,7 @@ inject just that gate's `KnowledgeKey` instead of bulk.
 ### Why the hash → name decode isn't pinned
 
 PA's `HashCode32` algorithm doesn't match any standard hash the probe
-tried (Jenkins hashlittle / hashlittle2 with seeds `0x00000000`,
+tried (Jenkins hashlittle / hashlittle with seeds `0x00000000`,
 `0xdeadbeef`, `0xdeba1dcd`, `0xfeedbabe`, `0x12345678`, `0x9e3779b9`,
 `0xbadc0ffe`, `0xcafef00d`, `0xc0debabe`, `0xffffffff`; plus FNV-1a,
 SDBM, DJB2, CRC32-IEEE) against any of:

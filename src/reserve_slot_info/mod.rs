@@ -1,14 +1,13 @@
 //! `reserveslot.pabgb` parser — standard PABGH (u32-key).
 //!
 //! Resolves `ReserveSlotKey (u32)` — equip-reserve / hot-slot template
-//! IDs (`ArrowItem`, `BulletItem`, `BombItem`, …). 27 rows in 1.07.
+//! IDs (`ArrowItem`, `BulletItem`, `BombItem`, …).
 //! Save references these from the hot-slot UI's reserve-slot
 //! assignments. Each row body also carries an inline Korean (Hangul)
-//! display string, which a PALOC chain could surface in a follow-on
-//! session.
+//! display string, which this parser does not read.
 //!
 //! Standard `u16 count + (u32 key, u32 offset)*` PABGH. Body:
-//! `[u32 name_len][name][u32 key]` (2.04 swapped key and name).
+//! `[u32 name_len][name][u32 key]`.
 
 use crate::binary::row_head::read_row_head;
 
@@ -49,7 +48,6 @@ pub fn parse_reserve_slot_info_lossy(
 mod tests {
     use crate::binary::gamedata_layout;
     use super::*;
-    use std::path::PathBuf;
 
     const KNOWN: &[(u32, &str)] = &[
         (1000000, "ArrowItem"),
@@ -58,37 +56,12 @@ mod tests {
     ];
 
     fn find_table_bytes() -> Option<(Vec<u8>, Vec<u8>)> {
-        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
-            });
-        let pamt_path = game_root.join("0008").join("0.pamt");
-        if !pamt_path.is_file() {
-            return None;
-        }
-        let pamt_bytes = std::fs::read(&pamt_path).ok()?;
-        let pamt = crate::binary::pamt::PackMeta::parse(&pamt_bytes, None).ok()?;
-        let dir = pamt
-            .directories
-            .iter()
-            .find(|d| d.path == gamedata_layout::bin_dir())?;
-        let group_dir = game_root.join("0008");
-        let pabgb = crate::binary::paz::extract_file(
-            &group_dir,
-            dir.files.iter().find(|f| f.name == gamedata_layout::body("reserveslot"))?,
-            gamedata_layout::bin_dir(),
-            &pamt.header.encrypt_info.encrypt_info,
-        )
-        .ok()?;
-        let pabgh = crate::binary::paz::extract_file(
-            &group_dir,
-            dir.files.iter().find(|f| f.name == gamedata_layout::header("reserveslot"))?,
-            gamedata_layout::bin_dir(),
-            &pamt.header.encrypt_info.encrypt_info,
-        )
-        .ok()?;
-        Some((pabgb, pabgh))
+        // None only when the install (or the table) is absent; an install
+        // that is there but unreadable fails the test.
+        Some((
+            gamedata_layout::extract_bin(&gamedata_layout::body("reserveslot"))?,
+            gamedata_layout::extract_bin(&gamedata_layout::header("reserveslot"))?,
+        ))
     }
 
     #[test]

@@ -7,17 +7,18 @@
 //! - `crimson_global_game_event_info_lookup_string_key` — internal
 //!   template name (e.g. `"Drought_Varnian"`). Universal coverage.
 //! - `crimson_global_game_event_info_lookup_group_key` — the
-//!   `GlobalGameEventGroupKey` cross-reference (1 of 7 distinct
-//!   values: `WeatherEventGroup`, `FactionBlockEventGroup`, …).
+//!   `GlobalGameEventGroupKey` cross-reference (a
+//!   `globalgameeventgroup` row: `WeatherEventGroup`,
+//!   `FactionBlockEventGroup`, …).
 //!   Universal coverage.
 //! - `crimson_global_game_event_info_lookup_paloc_key` — the 64-bit
 //!   PALOC localization key (in `(hi32 = event_key, lo32 = namespace)`
 //!   form) that resolves the event's localized display name through
 //!   the existing PALOC bridge. Returns `0` for rows that lack the
 //!   embedded `PalocStringRef` (the `RoyalSupply` + `FactionBlockEvent_*`
-//!   groups — ~24 of 103 rows in 1.07).
+//!   groups).
 //!
-//! 103 rows in 1.07. **NOT** macro-generated (unlike most niche
+//! **NOT** macro-generated (unlike most niche
 //! bridges) because the additional `group_key` + `paloc_key` lookups
 //! need per-entry data beyond the `(key, name)` pair the macro
 //! supports.
@@ -35,7 +36,6 @@ use crate::global_game_event_info::{
 ///
 /// - `by_key`: `u32 key → entry index in `entries`` for O(1) lookups.
 /// - `entries`: preserved on-disk order, used by `get_entry`.
-#[repr(C)]
 pub struct CrimsonGlobalGameEventInfoHandle {
     by_key: std::collections::HashMap<u32, usize>,
     entries: Vec<GlobalGameEventInfoEntry>,
@@ -92,6 +92,9 @@ pub unsafe extern "C" fn crimson_global_game_event_info_load_from_file(
             Err(_) => return error::IO,
         };
         let handle = CrimsonGlobalGameEventInfoHandle::from_bytes(&pabgb, &pabgh);
+        if let Err(code) = crate::c_abi::check_rows(&pabgb, Some(&pabgh[..]), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -125,6 +128,9 @@ pub unsafe extern "C" fn crimson_global_game_event_info_load_from_bytes(
         let pabgb_slice = unsafe { super::slice_from_raw_or_empty(pabgb, pabgb_len) };
         let pabgh_slice = unsafe { super::slice_from_raw_or_empty(pabgh, pabgh_len) };
         let handle = CrimsonGlobalGameEventInfoHandle::from_bytes(pabgb_slice, pabgh_slice);
+        if let Err(code) = crate::c_abi::check_rows(pabgb_slice, Some(pabgh_slice), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -207,9 +213,9 @@ pub unsafe extern "C" fn crimson_global_game_event_info_lookup_string_key(
 }
 
 /// Look up the `GlobalGameEventGroupKey` for a given event key.
-/// Universal across all 103 rows in 1.07 — the returned value is one
-/// of 7 distinct group keys that the editor can resolve through the
-/// existing `crimson_global_game_event_group_info_*` bridge.
+/// Every row carries one: a `globalgameeventgroup` key, which
+/// the editor can resolve through the existing
+/// `crimson_global_game_event_group_info_*` bridge.
 ///
 /// Returns `NOT_FOUND` when the event key isn't in the table.
 ///
@@ -239,13 +245,13 @@ pub unsafe extern "C" fn crimson_global_game_event_info_lookup_group_key(
 /// Look up the 64-bit PALOC key for a given event's localized display
 /// name. Returns `0` (via `*out_paloc_key`) for rows whose body lacks
 /// the embedded `PalocStringRef` (the `RoyalSupply` and
-/// `FactionBlockEvent_*` groups in 1.07 — ~24 of 103 rows). The caller
-/// should treat 0 as "no localized name available" and fall back to
-/// the internal-name surface.
+/// `FactionBlockEvent_*` groups). The caller should treat 0 as "no
+/// localized name available" and fall back to the internal-name surface.
 ///
 /// When present, the key has the standard PALOC shape
-/// `(hi32 = event_key) << 32 | lo32 = namespace`, suitable for direct
-/// lookup through `crimson_paloc_lookup_string_key`.
+/// `(hi32 = event_key) << 32 | lo32 = namespace`. To look it up, format
+/// it as a decimal string and pass that to `crimson_paloc_lookup`, which
+/// takes the string key, not a `u64`.
 ///
 /// Returns `NOT_FOUND` when the event key isn't in the table
 /// (distinct from a present-but-zero PALOC key, which returns `OK`
@@ -335,7 +341,7 @@ mod tests {
         (0x4258, 0x4240, 72_945_724_555_969),
         (0x426b, 0x4240, 73_027_328_934_593),
         (0x426c, 0x4240, 73_031_623_901_889),
-        // 2.00 split RoyalSupply (0x424a) into four per-faction rows.
+        // RoyalSupply has one row per faction.
         (0x4308, 0x4241, 0), // RoyalSupply_Her — paloc absent
         (0x4309, 0x4241, 0), // RoyalSupply_Dem — paloc absent
         (0x430a, 0x4241, 0), // RoyalSupply_Del — paloc absent
@@ -421,7 +427,7 @@ mod tests {
             unsafe { crimson_global_game_event_info_entry_count(sh, &mut count) },
             error::OK,
         );
-        assert_eq!(count, 191); // 2.00 (was 188 in 1.08-1.18)
+        assert_eq!(count, 191);
         for &(key, expected) in KNOWN {
             let mut req: usize = 0;
             assert_eq!(
@@ -452,7 +458,7 @@ mod tests {
         unsafe { crimson_global_game_event_info_free(sh) };
     }
 
-    /// Pin the new `group_key` + `paloc_key` lookups against the
+    /// Pin the `group_key` + `paloc_key` lookups against the
     /// live install. Skips when the game install isn't present.
     #[test]
     fn c_abi_global_game_event_info_body_fields_live() {
@@ -484,8 +490,8 @@ mod tests {
         unsafe { crimson_global_game_event_info_free(sh) };
     }
 
-    /// Lookups must return NOT_FOUND for an unknown key without
-    /// touching the out-parameters' previous values.
+    /// Lookups return NOT_FOUND for an unknown key and zero the
+    /// out-parameter first.
     #[test]
     fn c_abi_global_game_event_info_not_found() {
         let Some(sh) = load_handle() else {
@@ -514,8 +520,8 @@ mod tests {
 
     #[test]
     fn c_abi_global_game_event_info_null_args() {
-        // Every required pointer null → NULL_ARG. Sample the new
-        // lookups.
+        // Every required pointer null → NULL_ARG. Sample the group /
+        // PALOC-key lookups.
         let mut out_u32: u32 = 0;
         let rc = unsafe {
             crimson_global_game_event_info_lookup_group_key(

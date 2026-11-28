@@ -9,10 +9,10 @@
 # (CrimsonAtomtic) can ship `crimson_rs.dll` next to its .exe and have
 # it load on any 64-bit Windows machine with no prerequisite installer.
 #
-# Only applies to the MSVC target. The Python wheel CI in
-# `.github/workflows/build.yml` uses `x86_64-pc-windows-gnu` and is
-# unaffected; Python wheels load inside the Python interpreter which
-# already provides a CRT, so static-linking there would just bloat
-# the wheel for no benefit.
+# Only applies to the MSVC target, so it also applies to a local
+# `maturin develop` on MSVC (the wheel then carries its own CRT too, a
+# little larger but harmless). The windows-gnu wheel workflow this comment
+# used to mention (`build.yml`) was removed on 2026-08-09; nothing else
+# builds a Windows target today.
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]

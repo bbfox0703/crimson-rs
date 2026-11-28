@@ -4,45 +4,44 @@
 //! save-side fields that carry a "faction node" reference (a
 //! per-location entry in the faction system; e.g. encampments, manors,
 //! tribe hubs). Rows are named after the location they tag,
-//! `Node_Her_Temporary_Camp`, `Node_Her_HernandCastle`, ... Roughly
-//! 1,158 rows in 1.07.
+//! `Node_Her_Temporary_Camp`, `Node_Her_HernandCastle`, ...
 //!
-//! ## The player-facing name: a KnowledgeKey (2026-11-27)
+//! ## The player-facing name: a KnowledgeKey
 //!
 //! Every row names a `knowledgeinfo` row — the node's map / discovery entry
-//! (`Knowledge_Node_Her_HernandCastle`; 1,014 of 1,120 are `"Knowledge_" +` the
-//! node name, the rest differ) — and that knowledge's title is the place name
-//! the game shows: PALOC `(hashlittle2(knowledge name) << 32) | 0x490`, as the
+//! (`Knowledge_Node_Her_HernandCastle`; usually `"Knowledge_" +` the node
+//! name, but not always) — and that knowledge's title is the place name
+//! the game shows: PALOC `(hashlittle(knowledge name) << 32) | 0x490`, as the
 //! `knowledge_info` bridge resolves it. `Node_Her_HernandCastle` → "Hernand
 //! Castle", `Node_Her_GreymaneCamp` → "Howling Hill", `Node_Her_GlenbrightFarm`
-//! → "Glenbright Farm"; all 1,120 nodes have a title in all 15 languages.
+//! → "Glenbright Farm".
 //!
-//! The key is a `u32` at a fixed place after the row key: byte 11 on 2.04
-//! through 2.05.01 ([`KNOWLEDGE_AT_PRE_2_06`]) and byte 8 of the row after
+//! The key is a `u32` at a fixed place after the row key: byte 11 in the
+//! pre-2.06 layout ([`KNOWLEDGE_AT_PRE_2_06`]) and byte 8 of the row after
 //! `[key][u32 row index]` on 2.06 ([`KNOWLEDGE_AT_2_06`]): 2.06 narrowed the
 //! leading `u32 1/2/3` (node kind) to a `u16` and dropped a zero byte, so
-//! `01 00 00 00 00 78 00` became `01 00 78 00`. Pinned on all 1,120 rows of 2.04,
-//! 2.04.08, 2.05, 2.05.01 and 2.06: always a knowledge key, the same per node.
+//! `01 00 00 00 00 78 00` became `01 00 78 00`. The value is always a
+//! knowledge key.
 //!
 //! **No owning faction or region field was found.** Faction keys do turn up in
 //! rows, but the `faction` and `factionnode` key ranges overlap (the sibling-node
 //! list of `Node_Her_HernandCastle` reads as `Faction_Grace`,
 //! `Faction_RegleGoblin`, … when matched against the wrong table), and the rest
 //! sit inside inlined conditions (`CheckFactionKey(...)`). The node's knowledge
-//! belongs to one `KnowledgeGroup_Topography_<Region>_<Area>` group for 576 of
-//! the 1,120 nodes (Hernand, Demeniss, Delesyian, CrimsonDesert, Kweiden) and
-//! to none for the rest, so that is not a complete region either. The name
-//! prefix (`Node_Her_`, `Node_Dem_`, …) is a convention, not a field.
+//! belongs to one `KnowledgeGroup_Topography_<Region>_<Area>` group for about
+//! half the nodes and to none for the rest, so that is not a complete region
+//! either. The name prefix (`Node_Her_`, `Node_Dem_`, …) is a convention, not
+//! a field.
 //!
-//! Schema (verified against the live 1.07 install via the
-//! `_probe_faction_pabgh_shapes` ignored probe in
-//! [`src/c_abi/character_info.rs`](../c_abi/character_info.rs)):
+//! Schema (pre-2.06 body layout; the `_probe_faction_pabgh_shapes` ignored
+//! probe in [`src/c_abi/character_info.rs`](../c_abi/character_info.rs)
+//! dumps it):
 //!
 //! ```text
 //! Row {
 //!     u32 name_len,
 //!     u8 name[name_len], // ASCII identifier, e.g. "Node_Her_Temporary_Camp"
-//!     u32 key,          // matches PABGH key (2.04 moved it after the name)
+//!     u32 key,          // matches PABGH key
 //!     [...variable body — 200..800 bytes of position / sibling-node
 //!      references that this bridge does not consume]
 //! }
@@ -51,14 +50,13 @@
 //! PABGH layout matches the standard `u16 count + (u32 key, u32 offset)*`
 //! used by `skill.pabgh` (re-used here via [`crate::skill_info::parse_pabgh`]).
 //!
-//! **PALOC chain**: none. The exhaustive probe in
-//! `_probe_faction_paloc_chains` scanned every plausible namespace at
-//! both identity and hashlittle2 hash-hop and returned only
-//! coincidental collisions with iteminfo / character / skill keys at
-//! `lo32 = 0x70 / 0x30 / 0x200` — no real localized faction-node names
-//! exist. The bridge mirrors [`crate::sub_level_info`] / [`crate::quest_gauge_info`]
-//! in shape: **no `lookup_display_name` surface**, the internal name
-//! is the only resolution.
+//! **PALOC chain**: none keyed by the node itself. Every plausible
+//! namespace, at both identity and hashlittle hash-hop, holds only
+//! coincidental collisions with the item / character / gimmick display
+//! namespaces at `lo32 = 0x70 / 0x30 / 0x200` (the
+//! `_probe_faction_paloc_chains` probe scans them). The place name comes
+//! through the row's knowledge key instead (above), which
+//! `crimson_factionnode_lookup_display_name` resolves.
 
 use crate::binary::row_head::read_row_head;
 
@@ -74,8 +72,8 @@ pub struct FactionNodeInfoEntry {
     pub knowledge_key: u32,
 }
 
-/// Where the node's `KnowledgeKey` sits on 2.04 through 2.05.01: bytes after
-/// the row key.
+/// Where the node's `KnowledgeKey` sits in a pre-2.06 row: bytes after the
+/// row key.
 pub const KNOWLEDGE_AT_PRE_2_06: usize = 11;
 /// Where it sits on 2.06: bytes after the row's `[key][u32 row index]`.
 pub const KNOWLEDGE_AT_2_06: usize = 8;
@@ -130,57 +128,28 @@ pub fn parse_faction_node_info_lossy(
 #[cfg(test)]
 mod tests {
     //! Live-install integration test against the real
-    //! `factionnode.pabgb` + `.pabgh`. Pins a handful of mappings from
-    //! the 2026-05-16 RE pass so a future patch changing the row layout
-    //! or PABGH header shape is caught immediately. Skips cleanly when
-    //! the game install isn't present.
+    //! `factionnode.pabgb` + `.pabgh`. Pins a handful of mappings so a
+    //! patch changing the row layout or PABGH header shape is caught.
+    //! Skips cleanly when the game install isn't present.
 
     use crate::binary::gamedata_layout;
     use super::*;
-    use std::path::PathBuf;
 
     /// (FactionNodeKey, expected internal_name). Taken from the
     /// `_probe_faction_pabgh_shapes` output — these are the first
-    /// entries by on-disk PABGH order. The 1.07 file has 1,158 rows.
+    /// entries by on-disk PABGH order.
     const KNOWN: &[(u32, &str)] = &[
         (1000401, "Node_Her_Temporary_Camp"),
         (1000044, "Node_Her_HernandCastle"),
     ];
 
     fn find_table_bytes(stem: &str) -> Option<(Vec<u8>, Vec<u8>)> {
-        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
-            });
-        let pamt_path = game_root.join("0008").join("0.pamt");
-        if !pamt_path.is_file() {
-            return None;
-        }
-        let pamt_bytes = std::fs::read(&pamt_path).ok()?;
-        let pamt = crate::binary::pamt::PackMeta::parse(&pamt_bytes, None).ok()?;
-        let dir = pamt
-            .directories
-            .iter()
-            .find(|d| d.path == gamedata_layout::bin_dir())?;
-        let pabgb_file = dir.files.iter().find(|f| f.name == format!("{stem}.pabgb"))?;
-        let pabgh_file = dir.files.iter().find(|f| f.name == format!("{stem}.pabgh"))?;
-        let group_dir = game_root.join("0008");
-        let pabgb = crate::binary::paz::extract_file(
-            &group_dir,
-            pabgb_file,
-            gamedata_layout::bin_dir(),
-            &pamt.header.encrypt_info.encrypt_info,
-        )
-        .ok()?;
-        let pabgh = crate::binary::paz::extract_file(
-            &group_dir,
-            pabgh_file,
-            gamedata_layout::bin_dir(),
-            &pamt.header.encrypt_info.encrypt_info,
-        )
-        .ok()?;
-        Some((pabgb, pabgh))
+        // None only when the install (or the table) is absent; an install
+        // that is there but unreadable fails the test.
+        Some((
+            gamedata_layout::extract_bin(&gamedata_layout::body(stem))?,
+            gamedata_layout::extract_bin(&gamedata_layout::header(stem))?,
+        ))
     }
 
     #[test]

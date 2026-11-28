@@ -1,7 +1,7 @@
 //! `stageinfo.pabgb` bridge — C ABI surface.
 //!
 //! Sibling of [`super::mission_info`] and [`super::quest_info`]. Same
-//! resolution chain (`StageKey → name → hashlittle2 → u64 PALOC key
+//! resolution chain (`StageKey → name → hashlittle → u64 PALOC key
 //! → display title`).
 //!
 //! Highest-volume bridge in the family: ~46k StageKey instances in a
@@ -27,7 +27,6 @@ use crate::stage_info::{parse_stage_info_lossy, parse_stage_info_via_pabgh};
 
 /// Opaque handle exposing `(StageKey, internal_name)` lookups against
 /// the loaded `stageinfo.pabgb`.
-#[repr(C)]
 pub struct CrimsonStageInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,
@@ -71,11 +70,10 @@ impl CrimsonStageInfoHandle {
 
 /// Parse `stageinfo.pabgb` from disk via the anchor-scan path.
 ///
-/// Under-counts by ~1,400 rows in 1.08 (legitimate `LevelSequencerSpawn_UUID_…,…`
+/// Without a sibling `.staticinfoheader` it under-counts (legitimate `LevelSequencerSpawn_UUID_…,…`
 /// names contain commas, which the anchor-scan body validation rejects).
 /// **Prefer [`crimson_stageinfo_load_from_file_with_pabgh`]** when both
-/// files are available — it returns the in-game-authoritative key set
-/// (51,037 on 1.08 vs 49,634 from this path).
+/// files are available — it returns the in-game-authoritative key set.
 ///
 /// # Safety
 /// `path` must be a NUL-terminated UTF-8 string. `out_handle` must be
@@ -99,8 +97,14 @@ pub unsafe extern "C" fn crimson_stageinfo_load_from_file(
             Err(_) => return error::IO,
         };
         // 2.06+: row names live in the `.staticinfoheader` next to the body.
-        let header = super::sibling_header(path_str);
+        let header = match super::sibling_header(path_str) {
+            Ok(h) => h,
+            Err(_) => return error::IO,
+        };
         let handle = CrimsonStageInfoHandle::from_bytes(&bytes, header.as_deref());
+        if let Err(code) = crate::c_abi::check_rows(&bytes, header.as_deref(), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -109,7 +113,7 @@ pub unsafe extern "C" fn crimson_stageinfo_load_from_file(
 
 /// Parse stageinfo bytes already in memory via the anchor-scan path.
 ///
-/// Under-counts by ~1,400 rows in 1.08 (see
+/// Under-counts rows whose names contain commas (see
 /// [`crimson_stageinfo_load_from_file`] for details). **Prefer
 /// [`crimson_stageinfo_load_from_bytes_with_pabgh`]** for the
 /// authoritative key set.
@@ -137,6 +141,9 @@ pub unsafe extern "C" fn crimson_stageinfo_load_from_bytes(
             unsafe { std::slice::from_raw_parts(data, data_len) }
         };
         let handle = CrimsonStageInfoHandle::from_bytes(slice, None);
+        if let Err(code) = crate::c_abi::check_rows(slice, None, handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -146,7 +153,9 @@ pub unsafe extern "C" fn crimson_stageinfo_load_from_bytes(
 /// Parse in-memory `stageinfo` bytes together with the table's
 /// `.staticinfoheader`. Required from 2.06, where row names moved out of the
 /// body into the header: `crimson_stageinfo_load_from_bytes` on a 2.06 body finds
-/// no rows. On an older install the header is not needed and is ignored.
+/// no rows, and returns `BODY_PARSE` for it. A header that is not the 2.06 shape
+/// or does not match the body is `BODY_PARSE` too (the parsers read the latest
+/// patch only).
 ///
 /// # Safety
 /// `data` / `header` must point to `data_len` / `header_len` readable bytes
@@ -178,6 +187,9 @@ pub unsafe extern "C" fn crimson_stageinfo_load_from_bytes_with_header(
             unsafe { std::slice::from_raw_parts(header, header_len) }
         };
         let handle = CrimsonStageInfoHandle::from_bytes(slice, Some(header));
+        if let Err(code) = crate::c_abi::check_rows(slice, Some(header), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -188,7 +200,7 @@ pub unsafe extern "C" fn crimson_stageinfo_load_from_bytes_with_header(
 /// **recommended** path.
 ///
 /// Uses the PABGH `[u32 count][(u32 key, u32 offset)*]` index for the
-/// in-game-authoritative key list (51,037 on 1.08), then reads the
+/// in-game-authoritative key list, then reads the
 /// `[u32 slen][slen bytes][u32 key_repeat]` row head at each offset
 /// from PABGB. Returns the same entries the in-game iterator does —
 /// no body-byte validation rejecting legitimate rows.
@@ -224,6 +236,9 @@ pub unsafe extern "C" fn crimson_stageinfo_load_from_file_with_pabgh(
             Err(_) => return error::IO,
         };
         let handle = CrimsonStageInfoHandle::from_pabgh_and_pabgb(&pabgh, &pabgb);
+        if let Err(code) = crate::c_abi::check_rows(&pabgb, Some(&pabgh[..]), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -268,6 +283,9 @@ pub unsafe extern "C" fn crimson_stageinfo_load_from_bytes_with_pabgh(
             unsafe { std::slice::from_raw_parts(pabgh_ptr, pabgh_len) }
         };
         let handle = CrimsonStageInfoHandle::from_pabgh_and_pabgb(pabgh, pabgb);
+        if let Err(code) = crate::c_abi::check_rows(pabgb, Some(pabgh), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -347,7 +365,7 @@ pub unsafe extern "C" fn crimson_stageinfo_lookup_string_key(
 // ── Display-name lookup (production — one-shot chain) ──────────────────────
 
 /// One-shot title resolution: chain `StageKey → internal name →
-/// hashlittle2 → PALOC u64 key → localized string`.
+/// hashlittle → PALOC u64 key → localized string`.
 ///
 /// Common `lo32_namespace` values for stageinfo rows:
 /// - `0x101` (257) — stage title (the typical case)
@@ -560,7 +578,7 @@ mod tests {
             unsafe { crimson_stageinfo_entry_count(sh, &mut count) },
             error::OK
         );
-        // ~57k on 1.06; pin to >10k for plausibility across patches.
+        // The table holds tens of thousands of rows; pin to >10k for plausibility across patches.
         assert!(count > 10_000, "expected >10k stages, got {count}");
 
         // PALOC bootstrap.
@@ -647,9 +665,9 @@ mod tests {
     }
 
     /// PABGH-driven loader: returns the in-game-authoritative key set,
-    /// which on 1.08 is 51,037 — strictly more than the anchor-scan path
-    /// (49,634 on 1.08, missing the `LevelSequencerSpawn_UUID_…,…` rows
-    /// whose names contain commas).
+    /// at least as large as the anchor-scan path's, which misses the
+    /// `LevelSequencerSpawn_UUID_…,…` rows
+    /// whose names contain commas.
     #[test]
     fn c_abi_stageinfo_with_pabgh_count_matches_pabgh_authoritative() {
         let Some(pamt_path) = find_pamt() else {
@@ -707,7 +725,7 @@ mod tests {
 
         // Spot-check a row with a comma-bearing name that anchor-scan drops.
         // `LevelSequencerSpawn_UUID_2910822923,1591218726,1006787795,0` is the
-        // first such row in 1.08 (key=1047476).
+        // such a row (key=1047476).
         let key = 1_047_476u32;
         let mut req: usize = 0;
         let rc_anchor = unsafe {
@@ -716,8 +734,12 @@ mod tests {
         let rc_pabgh = unsafe {
             crimson_stageinfo_lookup_string_key(pabgh_h, key, ptr::null_mut(), 0, &mut req)
         };
-        // Anchor-scan should miss it; PABGH should find it.
-        assert_eq!(rc_anchor, error::NOT_FOUND);
+        // PABGH finds it. A 2.06 header lists the row, so `_with_header` finds
+        // it too; the anchor scan of a pre-2.06 body still drops it.
+        let header_lists_rows =
+            crate::binary::static_header::header_row_names(&stage_pabgb, &stage_pabgb_header).is_some();
+        let expect_anchor = if header_lists_rows { error::BUFFER_TOO_SMALL } else { error::NOT_FOUND };
+        assert_eq!(rc_anchor, expect_anchor);
         assert_eq!(rc_pabgh, error::BUFFER_TOO_SMALL);
 
         unsafe { crimson_stageinfo_free(anchor_h) };

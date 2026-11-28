@@ -1,13 +1,10 @@
 //! `knowledgeinfo.pabgb` parser — anchor-scan based.
 //!
 //! Sibling of [`crate::mission_info`] / [`crate::quest_info`] /
-//! [`crate::stage_info`]. Same row head shape (`[u32 name_len][name]
-//! [u32 key][u8 0x00]...` since 2.04 moved the key), **same hash hop
-//! pattern** — contrary to the editor's earlier hypothesis (status.md
-//! item #6) that KnowledgeKey wouldn't resolve through PALOC, it does.
-//! The probe (recorded in `docs/save-editor-keys-plan.md`) found
-//! 29,330 PALOC hits across multiple namespaces when every
-//! `Knowledge_*` name in this file was hashed.
+//! [`crate::stage_info`]. Same legacy row head shape (`[u32 name_len][name]
+//! [u32 key][u8 0x00]...`), **same hash hop pattern**: hashed
+//! `Knowledge_*` names resolve through PALOC across several namespaces
+//! (the probe is recorded in `docs/save-editor-keys-plan.md`).
 //!
 //! Common PALOC namespace bytes for knowledge rows:
 //! - `lo32 = 0x490` (1168) — knowledge entry **title** (one per row)
@@ -21,17 +18,15 @@
 //! `Knowledge_Node_Dem_Ruins_0007`, `Knowledge_Demian_Plate_Boots_V`,
 //! `Knowledge_AbyssRuins_Dem_0020`, `Knowledge_Hp`).
 //!
-//! ## Two-namespace split (status.md §834 finding)
+//! ## Two namespaces
 //!
-//! The editor noted that **small KnowledgeKey values (1, 2, 4, 7, 51)
-//! sit at PALOC 0x93 as knowledge *category* names** ("Various Combat
-//! Skills", "Fundamentals of Cooking"), while large-numbered keys
-//! don't appear there. The categorization lives in
-//! `knowledgegroupinfo.pabgb` as integer category IDs (e.g.
-//! Creatures=4, Terrestrial Creatures=104, Amphibians=1045 at
-//! `lo32=0x92/0x93`). That's a separate bridge concern — this parser
-//! and its bridge surface the *leaf* knowledge rows; the category
-//! rollup would be a future enhancement on top.
+//! Small integers at PALOC `lo32 = 0x92 / 0x93` are knowledge **group**
+//! names ("Various Combat Skills", "Fundamentals of Cooking"): their hi32
+//! is a literal group ID from `knowledgegroupinfo.pabgb` (e.g.
+//! Creatures=4, Terrestrial Creatures=104, Amphibians=1045), not a
+//! hashed name. This parser and its bridge surface the *leaf* knowledge
+//! rows, whose titles use the hash hop at `lo32 = 0x490`; the group
+//! rollup is not parsed.
 
 use crate::binary::row_head::{is_row_name_byte, read_row_head};
 
@@ -42,28 +37,28 @@ pub struct KnowledgeInfoEntry {
     /// `_knowledgeStateList[N]._key`).
     pub key: u32,
     /// ASCII internal name (e.g. `"Knowledge_Node_Dem_Ruins_0007"`).
-    /// Feeds the PALOC u64 lookup chain via `hashlittle2(name) << 32
+    /// Feeds the PALOC u64 lookup chain via `hashlittle(name) << 32
     /// | lo32`.
     pub name: String,
 }
 
-/// 2.06+: row names live in the `.staticinfoheader`, so the body alone no
-/// longer carries them. Rebuilds the pre-2.06 layout from both and scans that;
-/// a pre-2.06 pair (or a header that is not the 2.06 shape) scans `data` as is.
+/// 2.06+: row names live in the `.staticinfoheader`, which lists every row,
+/// so with a 2.06 header the rows come from it, in header order (the anchor
+/// scan drops rows its key and name rules do not expect). A pre-2.06
+/// pair, or a header that is not the 2.06 shape, falls back to scanning `data`.
 pub fn parse_knowledge_info_lossy_with_header(data: &[u8], header: &[u8]) -> Vec<KnowledgeInfoEntry> {
-    match crate::binary::static_header::to_legacy_layout(data, header) {
-        Some(t) => parse_knowledge_info_lossy(&t.body),
+    match crate::binary::static_header::header_row_names(data, header) {
+        Some(rows) => rows.into_iter().map(|(key, name)| KnowledgeInfoEntry { key, name }).collect(),
         None => parse_knowledge_info_lossy(data),
     }
 }
 
 /// Lossy anchor-scan parse of an in-memory `knowledgeinfo.pabgb` blob.
 ///
-/// Uses the tightened validator that the quest_gauge_info parser
-/// pioneered (first byte ASCII letter + must contain at least one
-/// `_`). All real `Knowledge_*` names satisfy both rules, so the
-/// strictness doesn't cost real entries; it just suppresses
-/// body-byte false-positives.
+/// Uses the tightened validator of the quest_gauge_info parser (first
+/// byte an ASCII letter, at least one `_`). Real `Knowledge_*` names
+/// satisfy both rules, so the strictness doesn't cost real entries; it
+/// suppresses body-byte false-positives.
 pub fn parse_knowledge_info_lossy(data: &[u8]) -> Vec<KnowledgeInfoEntry> {
     let mut entries = Vec::new();
     let mut cursor = 0;
@@ -84,7 +79,7 @@ fn scan_next_anchor(data: &[u8], from: usize) -> Option<usize> {
     let mut o = from;
     while o + 12 < n {
         let slen = u32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]) as usize;
-        // Length, name, key, then the 0x00 that opens every 2.04 row body —
+        // Length, name, key, then the 0x00 that opens every legacy-layout row body —
         // the byte that rejects most body strings followed by a small number.
         if (2..=128).contains(&slen) && o + 9 + slen <= n && data[o + 8 + slen] == 0 {
             let bytes = &data[o + 4..o + 4 + slen];
@@ -97,10 +92,8 @@ fn scan_next_anchor(data: &[u8], from: usize) -> Option<usize> {
             // Knowledge rows mostly use hi-byte=0 (regular knowledge IDs)
             // but a chunk use hi-byte=0x7F for the auto-unlock / recipe
             // category — e.g. `0x7FFFFD9F → "Knowledge_Recipe_Jerky"`,
-            // `0x7FFFFDAE → "Knowledge_Colette"`. The handoff bundle had
-            // 215 of these flagged as unresolved before the cap got
-            // widened. `< 0x80` covers them plus headroom and excludes
-            // 0x80+ body-byte noise.
+            // `0x7FFFFDAE → "Knowledge_Colette"`. `< 0x80` covers them
+            // plus headroom and excludes 0x80+ body-byte noise.
             if key != 0
                 && (key >> 24) < 0x80
                 && bytes[0].is_ascii_alphabetic()
@@ -127,9 +120,8 @@ mod tests {
     use crate::binary::gamedata_layout;
     use super::*;
 
-    /// (KnowledgeKey, expected internal_name) — five rows verified
-    /// against the live install. Each was independently hash-matched
-    /// to a PALOC title (see the bridge tests).
+    /// (KnowledgeKey, expected internal_name), covering both key hi-byte
+    /// categories and the apostrophe name.
     const KNOWN: &[(u32, &str)] = &[
         // hi-byte=0 — regular knowledge entries
         (1_000_424, "Knowledge_Hp"),
@@ -137,12 +129,11 @@ mod tests {
         (1_002_294, "Knowledge_Node_Dem_HiddenCave"),
         (1_002_763, "Knowledge_AbyssRuins_Dem_0020"),
         (1_004_037, "Knowledge_Demian_Plate_Boots_V"),
-        // Regression for CrimsonAtomtic editor issue #2:
         // hi-byte=0x7F — auto-unlock / recipe / named-NPC knowledge.
         (0x7fff_fd9f, "Knowledge_Recipe_Jerky"),
         (0x7fff_fda0, "Knowledge_Recipe_Jerky_Pieces"),
         (0x7fff_fdae, "Knowledge_Colette"),
-        // The one name with an apostrophe (2.05.01, 2.06).
+        // The name with an apostrophe.
         (1_000_535, "Knowledge_King's_Tomb_Cave"),
     ];
 
@@ -150,10 +141,10 @@ mod tests {
         gamedata_layout::extract_bin(&gamedata_layout::body("knowledgeinfo"))
     }
 
-    /// 2.06+: the row names live here. Empty when absent (an older install
-    /// needs none, and `parse_knowledge_info_lossy_with_header` then scans the body alone).
+    /// The 2.06 `.staticinfoheader` beside the body (it holds the row
+    /// names); panics when the install has the body but not the header.
     fn find_knowledge_header() -> Vec<u8> {
-        gamedata_layout::extract_bin(&gamedata_layout::header("knowledgeinfo")).unwrap_or_default()
+        gamedata_layout::extract_bin(&gamedata_layout::header("knowledgeinfo")).expect("the 2.06 header next to the table body (install present but header missing: drift?)")
     }
 
     #[test]
@@ -168,12 +159,10 @@ mod tests {
             entries.len(),
             data.len()
         );
-        // 1.06 has ~5,400 knowledge rows. Pin to >1000 for plausibility.
-        assert!(
-            entries.len() > 1_000,
-            "expected >1000 knowledge entries, got {}",
-            entries.len()
-        );
+        // Every row the 2.06 header lists parses; a floor would let most of
+        // the table go missing unnoticed.
+        let listed = crate::binary::static_header::detect_named_pair(&find_knowledge_header(), &data).expect("2.06 header").2.len();
+        assert_eq!(entries.len(), listed, "rows parsed vs rows the header lists");
 
         let by_key: std::collections::HashMap<u32, &str> =
             entries.iter().map(|e| (e.key, e.name.as_str())).collect();
@@ -189,10 +178,11 @@ mod tests {
         // Sanity: at least 95% of names start with Knowledge_. The
         // scanner can pick up a small number of body-byte
         // false-positives (e.g. region-name-shaped sequences like
-        // `Valley_of_Vultures` lurking inside row bodies) but they're
-        // harmless — the HashMap dedupes by key, so real
-        // KnowledgeKey lookups return the correct name. Strict
-        // `starts_with` would flake on those rare hits.
+        // `Valley_of_Vultures` lurking inside row bodies). The bridge
+        // dedupes first-wins, so a real KnowledgeKey keeps its name
+        // unless a false-positive with the same key comes before it;
+        // the KNOWN pins above check that. Strict `starts_with` would
+        // flake on those rare hits.
         let knowledge_prefixed = entries
             .iter()
             .filter(|e| e.name.starts_with("Knowledge_"))

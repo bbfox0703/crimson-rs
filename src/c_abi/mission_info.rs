@@ -9,31 +9,28 @@
 //!    fallback. Mirror of [`super::iteminfo`] /
 //!    [`super::skill_info`]'s string-key getters.
 //! 2. [`crimson_missioninfo_lookup_display_name`] — chains internally
-//!    through `hashlittle2(name) → u64 PALOC key → PALOC string`,
+//!    through `hashlittle(name) → u64 PALOC key → PALOC string`,
 //!    returning the localized display title in one FFI call.
-//!    Implements the "Option B" shape from
-//!    `docs/save-editor-keys-plan.md` §3 (editor's stated preference:
-//!    template/chain expansion belongs in the parser, not spread
-//!    across the FFI).
+//!    The chain lives in the parser rather than across the FFI
+//!    (`docs/save-editor-keys-plan.md` §3).
 //!
-//! Resolution chain (1.06, verified end-to-end against 7 of the user's
-//! Main Quest titles — see the plan doc's "Verified hash transform"):
+//! Resolution chain (the plan doc's "Verified hash transform"):
 //!
 //! ```text
 //! MissionKey 1000157
 //!   └─► missioninfo row → "Mission_Intro_Tutorial_I"
-//!          └─► hashlittle2_c = 1891183967
+//!          └─► hashlittle_c = 1891183967
 //!                └─► (1891183967 << 32) | 0x101 = 8122573288984543489
 //!                      └─► PALOC.lookup_str("8122573288984543489")
 //!                            └─► "Unfamiliar Lands"
 //! ```
 //!
 //! The bridge keeps only `(key, name)` from the parse; the rest of the
-//! missioninfo row (rewards / HP / loc refs / etc.) is dropped. A future
-//! PR can grow the handle without reshaping this API.
+//! missioninfo row (rewards / HP / loc refs / etc.) is dropped, so the
+//! handle can grow without reshaping this API.
 //!
-//! Memory cost: ~4,300 missions on 1.06 × ~40 bytes per name ≈ 170 KB
-//! resident plus HashMap overhead.
+//! Memory cost: one short name per mission (tens of bytes each), a few
+//! hundred KB resident plus HashMap overhead.
 
 use std::collections::HashMap;
 use std::io;
@@ -48,7 +45,6 @@ use crate::mission_info::parse_mission_info_lossy;
 /// Opaque handle exposing `(MissionKey, internal_name)` lookups against
 /// the loaded `missioninfo.pabgb`. The lossy anchor-scan parse runs
 /// once; the bridge retains only the pair.
-#[repr(C)]
 pub struct CrimsonMissionInfoHandle {
     by_key: HashMap<u32, String>,
     /// On-disk order so the caller can enumerate via
@@ -65,13 +61,9 @@ impl CrimsonMissionInfoHandle {
             None => parse_mission_info_lossy(data),
         };
         // First-wins dedup so both `by_key` and `entries` agree on
-        // one canonical row per key. The earlier implementation built
-        // a last-wins HashMap from a duplicate-containing Vec, which
-        // made `get_entry` enumeration surface duplicates even though
-        // `lookup_string_key` would silently pick the winner. With
-        // the scanner's UTF-8 strict check in place, real duplicates
-        // are unlikely — but the dedup also guards against any
-        // future parser drift.
+        // one canonical row per key: `get_entry` enumeration must list
+        // each key once and name the same row `lookup_string_key`
+        // returns, even if the parse yields a key twice.
         let mut by_key: HashMap<u32, String> = HashMap::with_capacity(raw.len());
         let mut entries: Vec<(u32, String)> = Vec::with_capacity(raw.len());
         for e in raw {
@@ -96,9 +88,9 @@ impl CrimsonMissionInfoHandle {
 /// [`CrimsonMissionInfoHandle`] that the caller releases via
 /// [`crimson_missioninfo_free`].
 ///
-/// Note: this loader is **infallible** in practice — the underlying
-/// parser is anchor-scan-based and recovers gracefully from non-row
-/// bytes. A genuinely corrupted input might yield zero entries, which
+/// A sibling `.staticinfoheader` that does not match the body, or a
+/// non-empty table that yields no rows, is `BODY_PARSE` (see
+/// `c_abi::check_rows`); an empty file loads as an empty table, which
 /// the caller would notice via [`crimson_missioninfo_entry_count`].
 ///
 /// # Safety
@@ -123,8 +115,14 @@ pub unsafe extern "C" fn crimson_missioninfo_load_from_file(
             Err(_) => return error::IO,
         };
         // 2.06+: row names live in the `.staticinfoheader` next to the body.
-        let header = super::sibling_header(path_str);
+        let header = match super::sibling_header(path_str) {
+            Ok(h) => h,
+            Err(_) => return error::IO,
+        };
         let handle = CrimsonMissionInfoHandle::from_bytes(&bytes, header.as_deref());
+        if let Err(code) = crate::c_abi::check_rows(&bytes, header.as_deref(), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -157,6 +155,9 @@ pub unsafe extern "C" fn crimson_missioninfo_load_from_bytes(
             unsafe { std::slice::from_raw_parts(data, data_len) }
         };
         let handle = CrimsonMissionInfoHandle::from_bytes(slice, None);
+        if let Err(code) = crate::c_abi::check_rows(slice, None, handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -166,7 +167,9 @@ pub unsafe extern "C" fn crimson_missioninfo_load_from_bytes(
 /// Parse in-memory `missioninfo` bytes together with the table's
 /// `.staticinfoheader`. Required from 2.06, where row names moved out of the
 /// body into the header: `crimson_missioninfo_load_from_bytes` on a 2.06 body finds
-/// no rows. On an older install the header is not needed and is ignored.
+/// no rows, and returns `BODY_PARSE` for it. A header that is not the 2.06 shape
+/// or does not match the body is `BODY_PARSE` too (the parsers read the latest
+/// patch only).
 ///
 /// # Safety
 /// `data` / `header` must point to `data_len` / `header_len` readable bytes
@@ -198,6 +201,9 @@ pub unsafe extern "C" fn crimson_missioninfo_load_from_bytes_with_header(
             unsafe { std::slice::from_raw_parts(header, header_len) }
         };
         let handle = CrimsonMissionInfoHandle::from_bytes(slice, Some(header));
+        if let Err(code) = crate::c_abi::check_rows(slice, Some(header), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -285,7 +291,7 @@ pub unsafe extern "C" fn crimson_missioninfo_lookup_string_key(
 // ── Display-name lookup (production — one-shot chain) ──────────────────────
 
 /// One-shot title resolution: chain `MissionKey → internal name →
-/// hashlittle2 → PALOC u64 key → localized string` and write the
+/// hashlittle → PALOC u64 key → localized string` and write the
 /// result into `buf` (NUL-terminated UTF-8).
 ///
 /// `lo32_namespace` selects the PALOC sub-namespace:
@@ -293,7 +299,7 @@ pub unsafe extern "C" fn crimson_missioninfo_lookup_string_key(
 /// - `0x100` (256) — sub-arc / region heading
 /// - `0x102` (258) — description / secondary text (sparse in
 ///   missioninfo, denser in stageinfo)
-/// - `0x490` (1168) — mission text variant; sparse, exact meaning TBD
+/// - `0x490` (1168) — mission text variant; sparse, exact meaning unknown
 ///
 /// Two-call pattern over `buf`, identical shape to all other
 /// `_lookup_*` functions in this crate.
@@ -340,7 +346,7 @@ pub unsafe extern "C" fn crimson_missioninfo_lookup_display_name(
             return error::NOT_FOUND;
         };
 
-        // Step 2: hashlittle2(name) → u64 PALOC key
+        // Step 2: hashlittle(name) → u64 PALOC key
         let hi32 = calculate_checksum(name.as_bytes()) as u64;
         let u64_key = (hi32 << 32) | u64::from(lo32_namespace);
 
@@ -404,8 +410,7 @@ pub unsafe extern "C" fn crimson_missioninfo_get_entry(
 
 // ── Helper ─────────────────────────────────────────────────────────────────
 
-/// Two-call buffer writer used by every lookup. Pulled out so all four
-/// surfaces (string_key, display_name, get_entry) share the same
+/// Two-call buffer writer the lookups share, so they agree on the
 /// length math and never disagree on the trailing-NUL byte.
 ///
 /// `required` is always written to the needed size (including the
@@ -442,8 +447,7 @@ mod tests {
     //! `missioninfo.pabgb` + `localizationstring_eng.paloc` pair.
     //! Skips cleanly when no Steam install is present.
     //!
-    //! Pin the same seven verified mappings used by
-    //! `crate::mission_info::tests` and `crate::c_abi::checksum::tests`
+    //! Pin the same mappings as `crate::mission_info::tests::KNOWN`
     //! — keeping the assertions identical at every layer means a
     //! regression at any level surfaces here without ambiguity.
 
@@ -457,17 +461,14 @@ mod tests {
     use std::path::PathBuf;
     use std::ptr;
 
-    /// (MissionKey, internal_name, display_title) — verified
-    /// end-to-end. Same seven rows as `mission_info::tests::KNOWN`.
+    /// (MissionKey, internal_name, display_title) — the same rows as
+    /// `mission_info::tests::KNOWN`.
     const KNOWN: &[(u32, &str, &str)] = &[
-        // 2.01 retitled this mission "Unfamiliar Lands" -> "Unfamiliar Land";
-        // 2.03 changed it back.
         (1_000_157, "Mission_Intro_Tutorial_I", "Unfamiliar Lands"),
         (1_000_160, "Mission_Intro_MainBattle", "In Ashes"),
         (1_000_620, "Mission_Intro_Abyss_Tutorial", "Realm of Uncertainty"),
         (1_000_164, "Mission_Intro_After_Horse", "New Journey"),
         (1_000_052, "Mission_MeetAlustain_Alustain_Strength", "Where Rumors Gather"),
-        // 2.01 retitle (was "Mysterious Man").
         (1_000_053, "Mission_MeetAlustain_Alustain_Wisdom", "A Mysterious Beggar"),
         (
             1_000_083,
@@ -677,14 +678,8 @@ mod tests {
         unsafe { crimson_paloc_free(ph) };
     }
 
-    /// Regression for issue `001-missioninfo-invalid-utf8-names` from
-    /// the CrimsonAtomtic editor outbox. The earlier last-wins
-    /// HashMap + duplicate-Vec layout in
-    /// `CrimsonMissionInfoHandle::from_bytes` made
-    /// `crimson_missioninfo_get_entry` surface the same MissionKey
-    /// multiple times (the editor's probe reported
-    /// `MissionKey 1000038` appearing 4× in the first 5 samples).
-    /// After the fix, `get_entry` enumeration is one row per key.
+    /// `crimson_missioninfo_get_entry` enumerates one row per key, so a
+    /// MissionKey the parse sees more than once is not listed twice.
     #[test]
     fn c_abi_missioninfo_get_entry_no_duplicates() {
         let Some(pamt_path) = find_pamt() else {

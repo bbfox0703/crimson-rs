@@ -1,20 +1,20 @@
 //! `sublevelinfo.pabgb` parser — anchor-scan based.
 //!
 //! Sibling of [`crate::mission_info`] / [`crate::quest_info`] /
-//! [`crate::stage_info`] / [`crate::quest_gauge_info`]. Same row
-//! head shape (`[u32 name_len][name][u32 key][u8 0x00]...` since 2.04
-//! moved the key), different semantics:
+//! [`crate::stage_info`] / [`crate::quest_gauge_info`]. Same legacy row
+//! head shape (`[u32 name_len][name][u32 key][u8 0x00]...`), different
+//! semantics:
 //!
 //! SubLevel rows define **per-faction / per-stat / per-skill progress
 //! tracks** that the save's `SubLevelSaveData` block keys into via
 //! `(SubLevelKey, _level, _experience, _maxAchievedLevel)`. Examples:
 //! `Contribution_Graymane`, `Contribution_Pailunese`,
 //! `SkillPoint_Kliff`, `Religion_Hernand`, `LiberationRefugee`,
-//! `AchievementHP`. Roughly 40 rows total in 1.06.
+//! `AchievementHP`.
 //!
-//! Like [`crate::quest_gauge_info`], **no PALOC entries** were found
-//! at any namespace for these row keys — neither raw (Pattern A) nor
-//! via hashlittle2 hash-hop. The handful of raw-key collisions that
+//! Like [`crate::quest_gauge_info`], these row keys have **no PALOC
+//! entries** at any probed namespace — neither raw (Pattern A) nor
+//! via hashlittle hash-hop. The handful of raw-key collisions that
 //! surface (e.g. hi32=522 lo32=0x402f1 = "Unavailable during combat")
 //! are coincidental matches with generic UI tooltip slots, not real
 //! sub-level localizations. The localized track name a player sees
@@ -22,9 +22,8 @@
 //! `Religion_`, ...) plus the suffix faction/character name resolved
 //! through a different table.
 //!
-//! Practical consequence for the C ABI bridge: only
-//! `lookup_string_key` makes sense. There's no `lookup_display_name`
-//! analogue — see [`super::sub_level_info`] (the c_abi sibling) for
+//! The C ABI bridge therefore offers `lookup_string_key` and no
+//! `lookup_display_name` analogue — see `c_abi::sub_level_info` for
 //! the surface and rationale.
 
 use crate::binary::row_head::{is_row_name_byte, read_row_head};
@@ -39,12 +38,13 @@ pub struct SubLevelInfoEntry {
     pub name: String,
 }
 
-/// 2.06+: row names live in the `.staticinfoheader`, so the body alone no
-/// longer carries them. Rebuilds the pre-2.06 layout from both and scans that;
-/// a pre-2.06 pair (or a header that is not the 2.06 shape) scans `data` as is.
+/// 2.06+: row names live in the `.staticinfoheader`, which lists every row,
+/// so with a 2.06 header the rows come from it, in header order (the anchor
+/// scan drops rows its key and name rules do not expect). A pre-2.06
+/// pair, or a header that is not the 2.06 shape, falls back to scanning `data`.
 pub fn parse_sub_level_info_lossy_with_header(data: &[u8], header: &[u8]) -> Vec<SubLevelInfoEntry> {
-    match crate::binary::static_header::to_legacy_layout(data, header) {
-        Some(t) => parse_sub_level_info_lossy(&t.body),
+    match crate::binary::static_header::header_row_names(data, header) {
+        Some(rows) => rows.into_iter().map(|(key, name)| SubLevelInfoEntry { key, name }).collect(),
         None => parse_sub_level_info_lossy(data),
     }
 }
@@ -53,22 +53,22 @@ pub fn parse_sub_level_info_lossy_with_header(data: &[u8], header: &[u8]) -> Vec
 ///
 /// Validation rules:
 ///
-/// - `key != 0 && (key >> 24) == 0` — all real row keys observed in
-///   1.06 are in the 101..1003 range, well under 2^16. The hi-byte=0
-///   check filters out body-byte garbage.
-/// - `name_len ∈ [2, 128]` — actual range 2..28.
+/// - `key != 0 && (key >> 24) == 0` — real row keys are small track
+///   IDs, well under 2^16. The hi-byte=0 check filters out body-byte
+///   garbage.
+/// - `name_len ∈ [2, 128]`.
 /// - The name's first byte must be an ASCII letter. Filters out the
 ///   all-digit "names" that appear at offsets where the row body has
 ///   embedded stringinfo hashes serialized as decimal strings
-///   (observed for rows 201/202/203's `AbyssHp/AbyssMp/AbyssStamina`,
-///   whose bodies reference 12-digit stringinfo IDs).
+///   (e.g. the bodies of `AbyssHp` / `AbyssMp` / `AbyssStamina`,
+///   which reference 12-digit stringinfo IDs).
 /// - All other bytes must be identifier-shape (alphanumeric / `_` /
 ///   space / UTF-8 high byte).
 ///
-/// Returns entries in the order they appear in the file. The bridge's
-/// HashMap deduplicates by last-wins, but `or_insert` in the loader
-/// preserves first-wins to keep the real row (which appears first at
-/// offset 0) over any later body-byte false-positive.
+/// Returns entries in the order they appear in the file, duplicates
+/// included. The bridge deduplicates first-wins, which keeps a real row
+/// over a later body-byte false-positive with the same key, but not over
+/// one that comes before it.
 pub fn parse_sub_level_info_lossy(data: &[u8]) -> Vec<SubLevelInfoEntry> {
     let mut entries = Vec::new();
     let mut cursor = 0;
@@ -89,7 +89,7 @@ fn scan_next_anchor(data: &[u8], from: usize) -> Option<usize> {
     let mut o = from;
     while o + 12 < n {
         let slen = u32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]) as usize;
-        // Length, name, key, then the 0x00 that opens every 2.04 row body —
+        // Length, name, key, then the 0x00 that opens every legacy-layout row body —
         // the byte that rejects most body strings followed by a small number.
         if (2..=128).contains(&slen) && o + 9 + slen <= n && data[o + 8 + slen] == 0 {
             let bytes = &data[o + 4..o + 4 + slen];
@@ -117,16 +117,14 @@ fn scan_next_anchor(data: &[u8], from: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     //! Live-install integration test against the real
-    //! `sublevelinfo.pabgb`. Asserts the 7 mappings drawn from the
-    //! Save Editor handoff bundle (one live 1.06 save's
-    //! `SubLevelSaveData._list` block) plus a few extras that anchor
+    //! `sublevelinfo.pabgb`. Asserts mappings drawn from a live save's
+    //! `SubLevelSaveData._list` block plus a few extras that anchor
     //! the surrounding name clusters.
 
     use crate::binary::gamedata_layout;
     use super::*;
 
-    /// (SubLevelKey, expected internal_name) — verified against
-    /// `CrimsonAtomtic/out/analyze/handoff/keycases_unresolved.jsonl`.
+    /// (SubLevelKey, expected internal_name).
     /// Covers Skill / Contribution / Liberation tracks; the
     /// surrounding rows (101–113 stat tracks, 401–403 achievement
     /// tracks, 1000–1002 religion tracks) anchor that the scanner
@@ -139,7 +137,7 @@ mod tests {
         // Sub-skill tracks per character
         (522, "SkillPoint_Oongka"),
         (523, "SkillPoint_Damian"),
-        // Faction contribution tracks (every one in the handoff)
+        // Faction contribution tracks
         (600, "Contribution_Graymane"),
         (601, "Contribution_Hernandian"),
         (603, "Contribution_Demenissian"),
@@ -158,10 +156,10 @@ mod tests {
         gamedata_layout::extract_bin(&gamedata_layout::body("sublevelinfo"))
     }
 
-    /// 2.06+: the row names live here. Empty when absent (an older install
-    /// needs none, and `parse_sub_level_info_lossy_with_header` then scans the body alone).
+    /// The 2.06 `.staticinfoheader` beside the body (it holds the row
+    /// names); panics when the install has the body but not the header.
     fn find_sublevelinfo_header() -> Vec<u8> {
-        gamedata_layout::extract_bin(&gamedata_layout::header("sublevelinfo")).unwrap_or_default()
+        gamedata_layout::extract_bin(&gamedata_layout::header("sublevelinfo")).expect("the 2.06 header next to the table body (install present but header missing: drift?)")
     }
 
     #[test]
@@ -176,14 +174,10 @@ mod tests {
             entries.len(),
             data.len()
         );
-        // 1.06 shipped 40 real rows after the strict scanner; pin to
-        // >30 for plausibility while leaving headroom for future
-        // patches adding new sub-level tracks.
-        assert!(
-            entries.len() > 30,
-            "expected >30 sublevel entries, got {}",
-            entries.len()
-        );
+        // Every row the 2.06 header lists parses; a floor would let most of
+        // the table go missing unnoticed.
+        let listed = crate::binary::static_header::detect_named_pair(&find_sublevelinfo_header(), &data).expect("2.06 header").2.len();
+        assert_eq!(entries.len(), listed, "rows parsed vs rows the header lists");
 
         // First-wins to mirror the bridge's behaviour: the real row at
         // the smallest offset is the canonical entry; body-byte

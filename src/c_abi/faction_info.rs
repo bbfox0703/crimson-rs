@@ -3,10 +3,10 @@
 //! Resolves save-side `FactionKey (u32)` to the row's internal name
 //! (`"Faction_Graymane"`, `"Faction_ThiefDusksong"`, …), its faction group /
 //! relation group keys, and the group's localized name. Faction rows carry no
-//! localizable string of their own, and the PALOC byte-`0x30` lookup a
-//! `FactionKey` used to go through answers with *character* names (see
+//! localizable string of their own, and a PALOC byte-`0x30` lookup on a
+//! `FactionKey` answers with *character* names (see
 //! `src/faction_info/mod.rs`); the player-facing name is the group's
-//! ("Greymanes", "Hernand"). 135 rows in 2.06.
+//! ("Greymanes", "Hernand").
 //!
 //! The six name functions have the shape of the other name-only bridges
 //! (`impl_name_only_bridge!`); this file spells them out because the handle
@@ -21,15 +21,15 @@
 //! | Value | Name | Evidence |
 //! |---|---|---|
 //! | 0 | Neutral | exe table; also what an absent field defaults to |
-//! | 1 | War | **verified in game, 2026-11-27**: player ⇄ `Faction_Celeste_Hernand` set 3 → 1 both ways made the Hernand guards attack |
+//! | 1 | War | **in game**: player ⇄ `Faction_Celeste_Hernand` set 3 → 1 both ways makes the Hernand guards attack |
 //! | 2 | Agreement | exe table only |
-//! | 3 | BloodAlly | **verified in game, 2026-11-27**: a new two-way BloodAlly record between the player and `Faction_Bandit` (no explicit record before; relation group `Monster_Common`) stopped the bandits attacking, so an explicit relation overrides the relation group |
+//! | 3 | BloodAlly | **in game**: a new two-way BloodAlly record between the player and `Faction_Bandit` (which has no explicit record otherwise; relation group `Monster_Common`) stops the bandits attacking, so an explicit relation overrides the relation group |
 //! | 4 | ByGroup | exe table only; not seen in a save |
 //!
 //! Relations are stored both ways, and `_dueDate` reads 0xFFFFFFFF on every
 //! one seen. Whether a place turns hostile follows the faction of its ordinary
 //! NPCs (`crimson_characterinfo_lookup_faction_key`): `Faction_Celeste_Hernand`
-//! has 66 characters, a named house like `Faction_Roberts` 2.
+//! covers far more characters than a named house like `Faction_Roberts`.
 
 use std::collections::HashMap;
 use std::os::raw::c_char;
@@ -40,7 +40,6 @@ use super::{EntrySources, error, write_str_to_buf};
 use crate::faction_info::{FACTION_GROUP_PALOC_LO, parse_faction_info_lossy};
 
 /// Opaque handle over a parsed `faction` table.
-#[repr(C)]
 pub struct CrimsonFactionInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,
@@ -108,6 +107,9 @@ pub unsafe extern "C" fn crimson_faction_info_load_from_file(
             return error::IO;
         };
         let handle = CrimsonFactionInfoHandle::from_bytes(&pabgb, &pabgh);
+        if let Err(code) = crate::c_abi::check_rows(&pabgb, Some(&pabgh[..]), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -137,6 +139,9 @@ pub unsafe extern "C" fn crimson_faction_info_load_from_bytes(
     catch_unwind(AssertUnwindSafe(|| {
         let handle =
             CrimsonFactionInfoHandle::from_bytes(slice(pabgb, pabgb_len), slice(pabgh, pabgh_len));
+        if let Err(code) = crate::c_abi::check_rows(slice(pabgb, pabgb_len), Some(slice(pabgh, pabgh_len)), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -225,7 +230,12 @@ pub unsafe extern "C" fn crimson_faction_info_get_entry(
     if buf.is_null() && buf_len != 0 {
         return error::NULL_ARG;
     }
-    unsafe { *required = 0 };
+    // Zero `out_key` too, as the macro bridges do: the doc says it is
+    // always written.
+    unsafe {
+        *required = 0;
+        *out_key = 0;
+    }
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &*handle };
         let Some((key, name)) = h.entries.get(idx as usize) else {
@@ -284,7 +294,7 @@ pub unsafe extern "C" fn crimson_faction_info_entry_source(
 }
 
 /// The faction's `factiongroup` key and `factionrelationgroup` key.
-/// `*out_group_key` is 0 for a faction without a group (7 rows on 2.06).
+/// `*out_group_key` is 0 for a faction without a group.
 /// `NOT_FOUND` (both outputs 0) when `faction_key` is not in the table.
 ///
 /// # Safety
@@ -557,7 +567,7 @@ mod tests {
 
 #[cfg(test)]
 mod dlc_tests {
-    //! Merging `dlc_01`'s faction copy (11 DLC-only factions on 2.06, e.g.
+    //! Merging `dlc_01`'s faction copy (DLC-only factions such as
     //! `Faction_Satyros` in `FactionGroup_Ocean` "Great Ocean").
     use super::*;
     use crate::binary::gamedata_layout::{body, extract_bin, extract_dlc_bin, header};

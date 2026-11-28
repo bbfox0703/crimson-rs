@@ -2,8 +2,7 @@
 //!
 //! Resolves save-side `CraftToolGroupKey (u16-widened-u32)` to the
 //! row's template name (`"CraftTool_Equip_Enchant"`,
-//! `"CraftTool_Kukupot"`, `"CraftTool_Cook"`, …). Name-only,
-//! 10 rows in 1.07.
+//! `"CraftTool_Kukupot"`, `"CraftTool_Cook"`, …). Name-only.
 
 crate::impl_name_only_bridge! {
     handle = CrimsonCraftToolGroupInfoHandle,
@@ -108,7 +107,7 @@ mod tests {
             unsafe { crimson_craft_tool_group_info_entry_count(sh, &mut count) },
             error::OK
         );
-        assert_eq!(count, 12); // 1.12 (was 10 through 1.11)
+        assert_eq!(count, 12);
         for &(key, expected) in KNOWN {
             let mut req: usize = 0;
             assert_eq!(

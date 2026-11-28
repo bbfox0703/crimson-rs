@@ -1,14 +1,12 @@
 // Dead-code / unused-import lints are only meaningful on the full
-// surface (`c_abi` + `python`). Each consumer feature uses a different
-// slice of the core: the pack writer (PAZ/PAMT/PAPGT builders, trie
-// builder, skill writers) is reached only from the `python` facade,
-// the paver gate only from `c_abi`, and the bare-default build reaches
-// neither. Every partial build would therefore warn about code the
-// other feature uses — notably `cargo build --release --features c_abi`,
-// the build downstream links. Silence those two lints everywhere except
-// the full-surface build, where the strict clippy gate in
-// `.github/workflows/ci.yml` (`--all-targets --features c_abi,python
-// -- -D warnings`) still fails on genuinely dead code.
+// surface (`c_abi` + `python`). Each consumer feature reaches a different
+// slice of the core, and the bare-default build reaches neither, so every
+// partial build would warn about code the other feature uses — notably
+// `cargo build --release --features c_abi`, the build downstream links.
+// Silence those two lints everywhere except the full-surface build, where
+// the strict clippy gate in `.github/workflows/ci.yml` (`--all-targets
+// --features c_abi,python -- -D warnings`) still fails on genuinely dead
+// code.
 #![cfg_attr(
     not(all(feature = "python", feature = "c_abi")),
     allow(dead_code, unused_imports)
@@ -111,36 +109,29 @@ mod tests {
     use crate::binary::papgt::PackGroupTreeMeta;
     use crate::item_info::ItemInfo;
 
-    // Hardcoded to the maintainer's local install. Tests skip gracefully
-    // if the files aren't present (CI / fresh machines) — they don't fail.
-    const GAME_DIR: &str = r"D:\SteamLibrary\steamapps\common\Crimson Desert";
-    // The parser targets Crimson Desert 1.05. The roundtrip test reads the
-    // current 1.05 binary that `scripts\export_for_ce.py` extracts to
-    // `out\iteminfo.pabgb`. Test skips if the file isn't present (e.g. a
-    // fresh checkout that hasn't run the export pipeline).
-    const BINARY_PATH: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        r"\out\iteminfo.pabgb"
-    );
+    // The install the live tests read: `CRIMSON_GAME_ROOT`, else the
+    // maintainer's default path (`gamedata_layout::game_root`). Tests skip
+    // gracefully if the files aren't present (CI / fresh machines).
+    fn game_dir() -> std::path::PathBuf {
+        gamedata_layout::game_root()
+    }
     // PAPGT / PAMT in the live game install (used by the parse / roundtrip
     // tests below). meta/0.papgt is the global descriptor; any group's
     // 0.pamt works for the parse path — 0019 ships in every region.
-    const PAPGT_PATH: &str = concat!(
-        r"D:\SteamLibrary\steamapps\common\Crimson Desert",
-        r"\meta\0.papgt"
-    );
-    const PAMT_PATH: &str = concat!(
-        r"D:\SteamLibrary\steamapps\common\Crimson Desert",
-        r"\0019\0.pamt"
-    );
+    fn papgt_path() -> std::path::PathBuf {
+        game_dir().join("meta").join("0.papgt")
+    }
+    fn pamt_path() -> std::path::PathBuf {
+        game_dir().join("0019").join("0.pamt")
+    }
 
     /// Read a file, or print a skip notice and return `None` so tests can
     /// `let Some(data) = ... else { return };` instead of panicking.
-    fn try_read(path: &str, label: &str) -> Option<Vec<u8>> {
-        match std::fs::read(path) {
+    fn try_read(path: std::path::PathBuf, label: &str) -> Option<Vec<u8>> {
+        match std::fs::read(&path) {
             Ok(data) => Some(data),
             Err(e) => {
-                eprintln!("skipping: {label} not found at {path}: {e}");
+                eprintln!("skipping: {label} not found at {}: {e}", path.display());
                 None
             }
         }
@@ -148,7 +139,9 @@ mod tests {
 
     #[test]
     fn test_full_roundtrip() {
-        let Some(data) = try_read(BINARY_PATH, "1.04 baseline binary") else {
+        // The live install's table, not a local export, so the round-trip
+        // runs on the version that is installed.
+        let Some(data) = gamedata_layout::extract_bin(&gamedata_layout::body("iteminfo")) else {
             return;
         };
         let mut offset = 0;
@@ -168,7 +161,7 @@ mod tests {
 
     #[test]
     fn test_papgt_parse() {
-        let Some(data) = try_read(PAPGT_PATH, "papgt") else {
+        let Some(data) = try_read(papgt_path(), "papgt") else {
             return;
         };
         let papgt = PackGroupTreeMeta::parse(&data).unwrap();
@@ -187,7 +180,7 @@ mod tests {
 
     #[test]
     fn test_papgt_roundtrip() {
-        let Some(data) = try_read(PAPGT_PATH, "papgt") else {
+        let Some(data) = try_read(papgt_path(), "papgt") else {
             return;
         };
         let papgt = PackGroupTreeMeta::parse(&data).unwrap();
@@ -199,7 +192,7 @@ mod tests {
 
     #[test]
     fn test_pamt_parse() {
-        let Some(data) = try_read(PAMT_PATH, "pamt") else {
+        let Some(data) = try_read(pamt_path(), "pamt") else {
             return;
         };
         let pamt = PackMeta::parse(&data, None).unwrap();
@@ -222,7 +215,7 @@ mod tests {
 
     #[test]
     fn test_pamt_roundtrip() {
-        let Some(data) = try_read(PAMT_PATH, "pamt") else {
+        let Some(data) = try_read(pamt_path(), "pamt") else {
             return;
         };
         let pamt = PackMeta::parse(&data, None).unwrap();
@@ -240,7 +233,7 @@ mod tests {
     fn extract_paloc_from_archive(group: &str, lang: &str) -> Option<Vec<u8>> {
         let data = gamedata_layout::paloc_bytes(group, lang);
         if data.is_none() {
-            eprintln!("skipping: no {lang} paloc in group {group} of {GAME_DIR}");
+            eprintln!("skipping: no {lang} paloc in group {group} of {}", game_dir().display());
         }
         data
     }
@@ -269,7 +262,7 @@ mod tests {
     }
 
     /// Roundtrip every paloc file of one language **as it sits on disk**.
-    /// Pre-2.01 that is one blob; 2.01+ it is 39 per-namespace files, and
+    /// Pre-2.01 that is one blob; 2.01+ it is one file per namespace, and
     /// each has to come back byte-identical on its own — the merged blob
     /// `gamedata_layout::paloc_bytes` builds is a re-serialisation, so
     /// checking that instead would only prove self-consistency.
@@ -282,7 +275,7 @@ mod tests {
         use crate::binary::paloc::{is_wrapped, unwrap_container, wrap_container};
 
         let Some(blobs) = gamedata_layout::paloc_blobs(group, lang) else {
-            eprintln!("skipping: no {lang} paloc in group {group} of {GAME_DIR}");
+            eprintln!("skipping: no {lang} paloc in group {group} of {}", game_dir().display());
             return;
         };
         assert!(!blobs.is_empty());
@@ -325,13 +318,55 @@ mod tests {
 
     #[test]
     fn test_skill_roundtrip_1_05() {
-        let Some(pabgh) = extract_skill_from_archive(GAME_DIR, &gamedata_layout::header("skill")) else {
+        let Some(pabgh) = gamedata_layout::extract_bin(&gamedata_layout::header("skill")) else {
             return;
         };
-        let Some(pabgb) = extract_skill_from_archive(GAME_DIR, &gamedata_layout::body("skill")) else {
+        let Some(pabgb) = gamedata_layout::extract_bin(&gamedata_layout::body("skill")) else {
             return;
         };
-        run_skill_roundtrip("1.05 (live game install)", &pabgh, &pabgb);
+        let (fallback, total) = run_skill_roundtrip("live game install", &pabgh, &pabgb);
+        // The raw fallback keeps an entry's bytes but drops its buff fields,
+        // so a schema drift inside `BuffData` still round-trips and every
+        // other test stays green. A parser that matches the patch leaves
+        // about 14% of entries on the fallback; fail past 20%.
+        assert!(
+            fallback * 5 <= total,
+            "skill raw fallback on {fallback} of {total} entries (over 20%): BuffData drift?"
+        );
+    }
+
+    /// The post-buff validator that the skill boundary probe relies on caps
+    /// every list and `dev_*` string. Real data past a cap makes the whole
+    /// table fail to load, so this fails while the largest value is still
+    /// under half the cap, leaving a patch's growth room to be noticed first.
+    #[test]
+    fn skill_post_buff_stays_under_half_the_validator_caps() {
+        use crate::skill_info::SkillData;
+        use crate::skill_info::post_buff::{POST_BUFF_LIST_CAP, POST_BUFF_TEXT_CAP};
+        let Some(pabgh) = gamedata_layout::extract_bin(&gamedata_layout::header("skill")) else {
+            return;
+        };
+        let Some(pabgb) = gamedata_layout::extract_bin(&gamedata_layout::body("skill")) else {
+            return;
+        };
+        let data = SkillData::parse(&pabgh, &pabgb).unwrap();
+        let mut list = 0usize;
+        let mut text = 0usize;
+        for e in &data.entries {
+            let p = &e.post_buff;
+            list = list
+                .max(p.usable_character_info_list.len())
+                .max(p.usable_condition.len())
+                .max(p.use_resource_stat_list.len())
+                .max(p.use_resource_item_list.len())
+                .max(p.use_driver_resource_stat_list.len())
+                .max(p.reserve_slot_info_list.len())
+                .max(p.skill_group_key_list.len());
+            text = text.max(p.dev_skill_name.len()).max(p.dev_skill_desc.len());
+        }
+        println!("skill post-buff maxima: list {list} (cap {POST_BUFF_LIST_CAP}), text {text} B (cap {POST_BUFF_TEXT_CAP})");
+        assert!(list * 2 <= POST_BUFF_LIST_CAP as usize, "a post-buff list has {list} elements: raise the validator cap");
+        assert!(text * 2 <= POST_BUFF_TEXT_CAP as usize, "a dev_* string has {text} bytes: raise the validator cap");
     }
 
     /// Per-entry skill diagnostic. `SkillData::parse` aborts on the first
@@ -346,11 +381,11 @@ mod tests {
     #[ignore]
     fn _probe_skill_entry_failures() {
         use crate::skill_info::{SkillData, probe_entry_failures};
-        let Some(pabgh) = extract_skill_from_archive(GAME_DIR, &gamedata_layout::header("skill")) else {
+        let Some(pabgh) = gamedata_layout::extract_bin(&gamedata_layout::header("skill")) else {
             eprintln!("skipping: live install not found");
             return;
         };
-        let Some(pabgb) = extract_skill_from_archive(GAME_DIR, &gamedata_layout::body("skill")) else {
+        let Some(pabgb) = gamedata_layout::extract_bin(&gamedata_layout::body("skill")) else {
             return;
         };
         let report = probe_entry_failures(&pabgh, &pabgb)
@@ -371,27 +406,26 @@ mod tests {
         }
     }
 
-    /// Cross-version skill roundtrip: validates the parser also handles
-    /// the 1.03 (NoField58) and 1.04 (WithField58, smaller type_id table)
-    /// formats. Reads from a hard-coded path on the maintainer's machine
-    /// and skips on absence.
+    /// Skill round-trip on the versions in the parser's 2.04+ entry layout,
+    /// from the game-data fixtures in `crimson-rs-private` (`gamedata/<ver>/`,
+    /// see `test_fixtures::gamedata_dir`): 2.04 (= 2.04.08), 2.05.01 (= 2.05)
+    /// and 2.06. Skips a version whose fixture is missing.
     #[test]
     fn test_skill_roundtrip_cross_version() {
-        const VERSIONED_ROOT: &str = r"G:\我的雲端硬碟\temp\Crimson Desert";
-        for version in ["1.03.01", "1.04.01", "1.05.01"] {
-            let game_dir = format!(r"{}\{}", VERSIONED_ROOT, version);
-            let Some(pabgh) = extract_skill_from_archive(&game_dir, &gamedata_layout::header("skill")) else {
-                eprintln!("skipping {}: install not found", version);
+        for version in ["2.04", "2.05.01", "2.06"] {
+            let (Some(pabgh), Some(pabgb)) = (
+                crate::test_fixtures::gamedata(&format!("{version}/skill.staticinfoheader")),
+                crate::test_fixtures::gamedata(&format!("{version}/skill.staticinfobody")),
+            ) else {
                 continue;
             };
-            let Some(pabgb) = extract_skill_from_archive(&game_dir, &gamedata_layout::body("skill")) else {
-                continue;
-            };
-            run_skill_roundtrip(version, &pabgh, &pabgb);
+            let (fallback, total) = run_skill_roundtrip(version, &pabgh, &pabgb);
+            assert!(fallback * 5 <= total, "skill {version}: raw fallback on {fallback} of {total} entries");
         }
     }
 
-    fn run_skill_roundtrip(label: &str, pabgh: &[u8], pabgb: &[u8]) {
+    /// Parse, write back, compare bytes. Returns `(raw fallback entries, entries)`.
+    fn run_skill_roundtrip(label: &str, pabgh: &[u8], pabgb: &[u8]) -> (usize, usize) {
         use crate::skill_info::SkillData;
         let parsed = SkillData::parse(pabgh, pabgb)
             .unwrap_or_else(|e| panic!("{}: parse failed: {}", label, e));
@@ -414,41 +448,7 @@ mod tests {
         assert_eq!(b.len(), pabgb.len(), "{}: pabgb size mismatch", label);
         assert_eq!(h, pabgh, "{}: pabgh bytes mismatch", label);
         assert_eq!(b, pabgb, "{}: pabgb bytes mismatch", label);
-    }
-
-    fn extract_skill_from_archive(game_dir: &str, file_name: &str) -> Option<Vec<u8>> {
-        use crate::binary::paz;
-        use std::path::Path;
-
-        let group_dir = Path::new(game_dir).join("0008");
-        let pamt_path = group_dir.join("0.pamt");
-        let pamt_data = match std::fs::read(&pamt_path) {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("skipping: {}: {}", pamt_path.display(), e);
-                return None;
-            }
-        };
-        let pamt = PackMeta::parse(&pamt_data, None).unwrap();
-        let dir = pamt
-            .directories
-            .iter()
-            .find(|d| d.path == gamedata_layout::bin_dir())
-            .expect("dir not found");
-        let file = dir
-            .files
-            .iter()
-            .find(|f| f.name == file_name)
-            .unwrap_or_else(|| panic!("{} not found", file_name));
-        Some(
-            paz::extract_file(
-                &group_dir,
-                file,
-                gamedata_layout::bin_dir(),
-                &pamt.header.encrypt_info.encrypt_info,
-            )
-            .unwrap(),
-        )
+        (raw_fallback_count, parsed.entries.len())
     }
 
     #[test]
@@ -459,9 +459,8 @@ mod tests {
     #[test]
     fn test_game_dir_papgt_pamt_checksums() {
         use crate::crypto::checksum;
-        use std::path::Path;
 
-        let papgt_path = Path::new(GAME_DIR).join("meta/0.papgt");
+        let papgt_path = game_dir().join("meta/0.papgt");
         let papgt_data = match std::fs::read(&papgt_path) {
             Ok(d) => d,
             Err(e) => {
@@ -479,7 +478,7 @@ mod tests {
         let mut validated = 0;
         let mut skipped = 0;
         for entry in &papgt.entries {
-            let pamt_path = Path::new(GAME_DIR).join(&entry.group_name).join("0.pamt");
+            let pamt_path = game_dir().join(&entry.group_name).join("0.pamt");
 
             if !pamt_path.exists() {
                 println!("  SKIP group={} (no 0.pamt found)", entry.group_name);
@@ -528,70 +527,12 @@ mod tests {
     // save is found.
 
     fn try_find_save() -> Option<(std::path::PathBuf, Vec<u8>)> {
-        use std::path::PathBuf;
-        let local = std::env::var_os("LOCALAPPDATA").or_else(|| {
-            eprintln!("skipping save tests: LOCALAPPDATA not set");
-            None
-        })?;
-        let save_root = PathBuf::from(local).join("Pearl Abyss/CD/save");
-        let users = match std::fs::read_dir(&save_root) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!(
-                    "skipping save tests: cannot read {}: {}",
-                    save_root.display(),
-                    e
-                );
-                return None;
-            }
+        let Some(path) = crate::test_fixtures::newest_live_save() else {
+            eprintln!("skipping save tests: no live save under %LOCALAPPDATA%");
+            return None;
         };
-        // Two passes: prefer the canonical slot0/1/2 trio (stable across
-        // sessions and the lowest indices that any user with a save tends
-        // to have populated), then fall back to *any* slotN directory so
-        // a machine that only has post-1.07 slots (slot100+ on the
-        // maintainer's box) still exercises the save tests instead of
-        // silently skipping them.
-        let mut user_dirs: Vec<PathBuf> = users
-            .flatten()
-            .map(|u| u.path())
-            .filter(|p| p.is_dir())
-            .collect();
-        user_dirs.sort();
-        // Prefer slot107 — the current Crimson Desert 1.12 save — so the
-        // save tests validate against the live latest-patch format.
-        for user_path in &user_dirs {
-            let path = user_path.join("slot107").join("save.save");
-            if let Ok(data) = std::fs::read(&path) {
-                return Some((path, data));
-            }
-        }
-        for user_path in &user_dirs {
-            let Ok(entries) = std::fs::read_dir(user_path) else {
-                continue;
-            };
-            let mut slot_dirs: Vec<PathBuf> = entries
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| {
-                    p.is_dir()
-                        && p.file_name()
-                            .and_then(|n| n.to_str())
-                            .is_some_and(|n| n.starts_with("slot"))
-                })
-                .collect();
-            slot_dirs.sort();
-            for slot_dir in slot_dirs {
-                let path = slot_dir.join("save.save");
-                if let Ok(data) = std::fs::read(&path) {
-                    return Some((path, data));
-                }
-            }
-        }
-        eprintln!(
-            "skipping save tests: no save.save found under {}",
-            save_root.display()
-        );
-        None
+        let data = std::fs::read(&path).ok()?;
+        Some((path, data))
     }
 
     #[test]
@@ -787,7 +728,7 @@ mod tests {
             }
         }
 
-        // Hard invariant: against the live 1.06 save, every byte of
+        // Hard invariant: against every live and fixture save, every byte of
         // every block must be accounted for — either decoded into a
         // typed field or captured as a `trailing_pad`. A regression
         // here means a format detail has drifted.
@@ -816,11 +757,10 @@ mod tests {
     /// if any `trailing_pad` byte is left over, since under the rule every
     /// such byte is a marker.
     ///
-    /// It also checks a VALUE, which a byte-identical round-trip cannot (the
-    /// 1.16 lesson): with the markers left in place, a mercenary's
-    /// `_currentHp` behind absent lists read as numbers like
-    /// 1,134,700,311,674,881 — its low bytes were the markers. Decoded
-    /// properly, every one is a u32-range stat.
+    /// It also checks a VALUE, which a byte-identical round-trip cannot: a
+    /// walk that misses the markers reads a mercenary's `_currentHp` behind
+    /// absent lists as numbers like 1,134,700,311,674,881 — its low bytes
+    /// are the markers. Decoded properly, every one is a u32-range stat.
     #[test]
     fn test_save_body_absent_markers_every_live_save() {
         use crate::save::{Body, FieldValue, ObjectBlock, Save, ScalarValue};
@@ -867,6 +807,8 @@ mod tests {
             let mut objects = 0usize;
             let mut markers = 0usize;
             let mut pad_bytes = 0usize;
+            let mut prefix_bytes = 0usize;
+            let mut odd_prefixes = 0usize;
             let mut fallback: Vec<String> = Vec::new();
             let mut bad_hp: Vec<u64> = Vec::new();
             for block in &blocks {
@@ -874,6 +816,12 @@ mod tests {
                     objects += 1;
                     pad_bytes += obj.trailing_pad.len();
                     for f in &obj.fields {
+                        if let FieldValue::Locator { wrapper_prefix, .. } = &f.value {
+                            prefix_bytes += wrapper_prefix.len();
+                            if !matches!(wrapper_prefix.as_slice(), [] | [1]) {
+                                odd_prefixes += 1;
+                            }
+                        }
                         if f.present || !matches!(f.meta_kind, 3 | 6 | 7) {
                             continue;
                         }
@@ -896,7 +844,7 @@ mod tests {
                 });
             }
             println!(
-                "{}: {objects} objects, {markers} absence markers, {pad_bytes} trailing_pad bytes",
+                "{}: {objects} objects, {markers} absence markers, {pad_bytes} trailing_pad bytes, {prefix_bytes} wrapper_prefix bytes",
                 path.display()
             );
             assert!(
@@ -905,6 +853,8 @@ mod tests {
                 path.display()
             );
             assert_eq!(pad_bytes, 0, "{}: trailing_pad bytes left over", path.display());
+            // The encoder refuses any other prefix, which could hide an offset.
+            assert_eq!(odd_prefixes, 0, "{}: a wrapper_prefix other than empty or 01", path.display());
             assert!(
                 bad_hp.is_empty(),
                 "{}: implausible MercenarySaveData._currentHp (misaligned read?): {bad_hp:?}",
@@ -916,12 +866,11 @@ mod tests {
     /// Per-class `trailing_pad` census over every live save, oldest first,
     /// printed as a `pad/blocks` matrix. `test_save_body_decode_all_blocks`
     /// prints only the total, and that total moves with save *content*
-    /// (`FieldNPCSaveData` alone swings 228 ↔ 233 between saves), so when it
-    /// shifts on a new patch, compare a pre-patch save with a post-patch
+    /// (`FieldNPCSaveData` alone swings by a handful between saves), so when
+    /// it shifts on a new patch, compare a pre-patch save with a post-patch
     /// re-save of the same playthrough here before suspecting a new trailing
     /// field: real drift shows up as a class that pads in the new save and
-    /// never did before. On 2.02 the 2.01 slot0 and its 2.02 re-save slot102
-    /// matched class-for-class (242/1,168 each).
+    /// never did before.
     #[test]
     #[ignore]
     fn _probe_save_trailing_pad_census() {
@@ -1020,6 +969,31 @@ mod tests {
         out
     }
 
+    /// [`collect_all_saves`] plus every `save.save` in the private fixtures
+    /// (`test_fixtures::saves_dir`), so the encoder round-trips also run where
+    /// the fixtures are present and no game is installed.
+    fn collect_saves_with_fixtures() -> Vec<(std::path::PathBuf, Vec<u8>)> {
+        fn walk(dir: &std::path::Path, out: &mut Vec<(std::path::PathBuf, Vec<u8>)>) {
+            let Ok(entries) = std::fs::read_dir(dir) else { return };
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.file_name().is_some_and(|n| n == "save.save")
+                    && let Ok(data) = std::fs::read(&p)
+                {
+                    out.push((p, data));
+                }
+            }
+        }
+        let mut out = collect_all_saves();
+        let mut fixtures = Vec::new();
+        walk(&crate::test_fixtures::saves_dir(), &mut fixtures);
+        fixtures.sort_by(|a, b| a.0.cmp(&b.0));
+        out.extend(fixtures);
+        out
+    }
+
     /// Walk a decoded ObjectBlock tree looking for the smallest sub-element
     /// whose stored `data_offset..data_offset+data_size` range straddles the
     /// given body offset. Useful for narrowing down a roundtrip failure.
@@ -1061,20 +1035,14 @@ mod tests {
     /// block, encode it standalone and check the byte count matches
     /// the original.
     ///
-    /// We deliberately don't assert byte-identity here because the
-    /// engine writes a few items' `payload_offset` u32 with values
-    /// that don't point at the wrapper-end (the decoder falls back to
-    /// wrapper-end and parses correctly anyway). The encoder always
-    /// writes the canonical wrapper-end value, so those specific
-    /// bytes differ from the engine's quirky originals — but the
-    /// game tolerates canonical output, and our subsequent
-    /// encode→re-parse→re-encode is stable (idempotent). See
-    /// `test_save_body_full_roundtrip_is_idempotent` for the
-    /// stronger stability check.
+    /// This test checks sizes only. Byte identity of a no-op re-encode is
+    /// asserted by the byte-identity round-trip tests on the saves they
+    /// read; `test_save_body_full_roundtrip` checks that the encoder is
+    /// idempotent on every save.
     #[test]
     fn test_save_body_block_roundtrip_per_block() {
         use crate::save::{Body, Save, encode_top_level_block};
-        let saves = collect_all_saves();
+        let saves = collect_saves_with_fixtures();
         if saves.is_empty() {
             eprintln!("skipping per-block roundtrip: no saves found");
             return;
@@ -1099,9 +1067,8 @@ mod tests {
                     )
                 });
                 // Size invariant: encoder must produce the same number
-                // of bytes the original block occupied. Byte-identity
-                // is asserted by the full-body idempotence test, not
-                // here — see the test's docstring above for why.
+                // of bytes the original block occupied. Byte identity
+                // is asserted by other tests (see the docstring above).
                 if encoded.len() != original.len() {
                     let _ = original; // keep `original` in scope for the
                                        // diagnostic block that follows.
@@ -1213,21 +1180,19 @@ mod tests {
     /// Full-body round-trip stability: Body::write should be IDEMPOTENT —
     /// the second write of an already-encoded body equals the first.
     ///
-    /// Note: we can't assert byte-identity against the raw engine bytes
-    /// directly because the engine writes some items' `payload_offset`
-    /// u32 with non-canonical values. The decoder tolerates these
-    /// (falls back to wrapper_end), and the encoder always emits the
-    /// canonical wrapper_end. The first re-emit therefore differs
-    /// from the raw bytes; subsequent re-emits match the first
-    /// (idempotent stable state).
+    /// The first write is not compared with the raw bytes here; it must
+    /// keep the body length, and a second write must equal the first.
+    /// The encoder writes every wrapper's `payload_offset` as its own
+    /// wrapper end, which is what the game writes in the saves the
+    /// byte-identity tests read; a save with any other stored offset would
+    /// differ on the first write and match from the second on.
     ///
-    /// This still proves the encoder is a deterministic structural
-    /// inverse of the decoder — the property we actually need for
-    /// length-changing edits.
+    /// This proves the encoder is a deterministic structural inverse of
+    /// the decoder — the property length-changing edits need.
     #[test]
     fn test_save_body_full_roundtrip() {
         use crate::save::{Body, Save};
-        let saves = collect_all_saves();
+        let saves = collect_saves_with_fixtures();
         if saves.is_empty() {
             eprintln!("skipping full-body roundtrip: no saves found");
             return;
@@ -1237,7 +1202,7 @@ mod tests {
             let body = Body::parse(&save.body).unwrap();
             let blocks = body.decode_blocks(&save.body);
 
-            // First write: may differ from raw (engine quirks).
+            // First write: not compared with raw here (see the doc comment).
             let first = body.write(&save.body, &blocks).unwrap_or_else(|e| {
                 panic!("{}: body.write failed: {}", path.display(), e)
             });
@@ -1287,15 +1252,44 @@ mod tests {
         }
     }
 
-    /// Regression for the save-loader length-change crash
+    /// The encoder must refuse a block the decoder did not fully explain,
+    /// rather than return a body short by the undecoded bytes. Changing one
+    /// absence-marker byte in block 7 of the 1.10 fixture leaves 809
+    /// undecoded bytes. The untouched body still re-encodes byte for byte.
+    #[test]
+    fn test_save_encoder_refuses_undecoded_bytes() {
+        let Some(bytes) = crate::test_fixtures::save("1.10/save.save") else {
+            return;
+        };
+        let save = crate::save::Save::parse(&bytes).unwrap();
+        let mut raw = save.body.clone();
+        let body = crate::save::Body::parse(&raw).unwrap();
+        let blocks = body.decode_blocks(&raw);
+        assert_eq!(body.write(&raw, &blocks).unwrap(), raw, "no-op re-encode");
+
+        let (bi, at) = blocks
+            .iter()
+            .enumerate()
+            .skip(7)
+            .find_map(|(i, b)| b.fields.iter().find(|f| f.absent_marker).map(|f| (i, f.start)))
+            .expect("a block with an absence marker");
+        raw[at] = 0x02;
+        let blocks = body.decode_blocks(&raw);
+        let undecoded: usize = blocks[bi].undecoded_ranges.iter().map(|(s, e)| e - s).sum();
+        assert!(undecoded > 0, "the changed marker leaves undecoded bytes");
+        let err = body.write(&raw, &blocks).expect_err("must refuse to drop undecoded bytes");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData, "{err}");
+    }
+
+    /// Guards against the save-loader length-change crash
     /// (docs/save-loader-length-change-crash.md). A non-empty
     /// `_reviveQuestList` with no `01 01 01 01 01` trailer must decode (via the
     /// `prefix_00xx0100_notrailer` dynamic-array variant) so the following
-    /// `_factionNodeApplySkillList` object_list is parsed as a field. Before the
-    /// fix the forward walk broke at `_reviveQuestList`, dumping that object_list
+    /// `_factionNodeApplySkillList` object_list is parsed as a field. Otherwise
+    /// the forward walk breaks at `_reviveQuestList` and dumps that object_list
     /// — wrapper `payload_offset` and all — into `trailing_pad`; the encoder
-    /// wrote it verbatim, so on a length-changing edit the offset went stale and
-    /// the game's loader crashed on the dangling pointer.
+    /// writes it verbatim, so a length-changing edit leaves the offset stale and
+    /// the game's loader crashes on the dangling pointer.
     #[test]
     fn test_faction_revive_quest_no_trailer_relocates() {
         use crate::save::{Body, FieldKind, FieldValue, Save, encode_top_level_block};
@@ -1380,7 +1374,7 @@ mod tests {
     }
 
     /// Companion to the above for the `_reviveQuestList` header variants the
-    /// decoder still can't parse (`00 00 01 00` / `00 01 01 00`): their
+    /// decoder cannot parse (`00 00 01 00` / `00 01 01 00`): their
     /// `_factionNodeApplySkillList` stays in `trailing_pad`, but the encoder's
     /// self-referential relocation pass must still move its wrapper
     /// `payload_offset` when the block shifts. `engine-natural/before` carries
@@ -1435,8 +1429,8 @@ mod tests {
     /// Compare the `ContentsMiscSaveData` block between two saves
     /// (default: slot104 = 1.09, slot107 = 1.10). Dumps each field's
     /// decode kind + object_list count/variant, and the leading bytes of
-    /// any undecoded region. Used to RE the 1.10 `_contentsNpcSchedule`
-    /// drift.
+    /// any undecoded region, for narrowing down a schema drift in that
+    /// block.
     ///
     /// ```text
     /// cargo test --lib --features c_abi _probe_contents_misc_drift -- --ignored --nocapture
@@ -1517,5 +1511,44 @@ mod tests {
         let slot_b = std::env::var("CRIMSON_SAVE_B").unwrap_or_else(|_| "slot107".into());
         probe_one(&slot_a);
         probe_one(&slot_b);
+    }
+}
+
+/// The 2.06 `_with_header` parsers of the name-only bridges: with a 2.06
+/// header they must return every row it lists, which an anchor scan of the
+/// body does not.
+#[cfg(all(test, feature = "c_abi"))]
+mod with_header_tests {
+    use crate::binary::gamedata_layout::{body, extract_bin, header};
+    use crate::binary::static_header::header_row_names;
+
+    macro_rules! check {
+        ($table:expr, $parse:path) => {
+            'table: {
+                let (Some(b), Some(h)) = (extract_bin(&body($table)), extract_bin(&header($table))) else {
+                    eprintln!("skipping {}: no game install", $table);
+                    break 'table;
+                };
+                let Some(rows) = header_row_names(&b, &h) else {
+                    eprintln!("skipping {}: not a 2.06 header", $table);
+                    break 'table;
+                };
+                let got: Vec<(u32, String)> = $parse(&b, &h).into_iter().map(|e| (e.key, e.name)).collect();
+                assert_eq!(got.len(), rows.len(), "{}: rows", $table);
+                assert_eq!(got, rows, "{}: (key, name) in header order", $table);
+                eprintln!("{}: {} rows", $table, got.len());
+            }
+        };
+    }
+
+    #[test]
+    fn with_header_returns_every_header_row_live() {
+        check!("missioninfo", crate::mission_info::parse_mission_info_lossy_with_header);
+        check!("questinfo", crate::quest_info::parse_quest_info_lossy_with_header);
+        check!("stageinfo", crate::stage_info::parse_stage_info_lossy_with_header);
+        check!("knowledgeinfo", crate::knowledge_info::parse_knowledge_info_lossy_with_header);
+        check!("gimmickinfo", crate::gimmick_info::parse_gimmick_info_lossy_with_header);
+        check!("questgaugeinfo", crate::quest_gauge_info::parse_quest_gauge_info_lossy_with_header);
+        check!("sublevelinfo", crate::sub_level_info::parse_sub_level_info_lossy_with_header);
     }
 }

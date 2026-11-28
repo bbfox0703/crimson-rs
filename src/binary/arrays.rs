@@ -58,11 +58,9 @@ impl BinaryWrite for [u32; 4] {
 
 // ── 12 × u16 (Crimson Desert ItemInfo `inventory_info_list`) ───────────────
 //
-// 1.16 relocated the single head-side `inventory_info: InventoryKey` to the
-// item end and widened it to nine slots, absorbing the 1.13-era constant item
-// tail as slot 8; 2.03 appended a tenth and 2.04 two more. Each element is an `InventoryKey`
-// (u16); 0xFF marks an unused slot. See the "ItemInfo (2.03)" and
-// "ItemInfo (1.16)" headers in `src/item_info/item.rs`.
+// The item's inventory slots, stored at the item end. Each element is an
+// `InventoryKey` (u16); 0xFF marks an unused slot. The item layout is
+// described in `src/item_info/item.rs`.
 
 impl<'a> BinaryRead<'a> for [u16; 12] {
     fn read_from(data: &'a [u8], offset: &mut usize) -> io::Result<Self> {
@@ -98,77 +96,6 @@ impl BinaryWrite for [u8; 3] {
     }
 }
 
-impl<'a> BinaryRead<'a> for [u8; 22] {
-    fn read_from(data: &'a [u8], offset: &mut usize) -> io::Result<Self> {
-        super::check_remaining(data, *offset, 22)?;
-        let mut arr = [0u8; 22];
-        arr.copy_from_slice(&data[*offset..*offset + 22]);
-        *offset += 22;
-        Ok(arr)
-    }
-}
-
-impl BinaryWrite for [u8; 22] {
-    fn write_to(&self, w: &mut dyn Write) -> io::Result<()> {
-        w.write_all(self)
-    }
-}
-
-impl<'a> BinaryReadTracked<'a> for [u8; 22] {
-    fn read_tracked(
-        data: &'a [u8],
-        offset: &mut usize,
-        path: &mut String,
-        ranges: &mut Vec<FieldRange>,
-    ) -> io::Result<Self> {
-        let start = *offset;
-        let arr = <[u8; 22] as BinaryRead>::read_from(data, offset)?;
-        ranges.push(FieldRange {
-            path: path.clone(),
-            start,
-            end: *offset,
-            ty: "u8x22",
-        });
-        Ok(arr)
-    }
-}
-
-// ── 9-byte raw block (Crimson Desert 1.05 ItemInfo trailing pad) ────────────
-
-impl<'a> BinaryRead<'a> for [u8; 9] {
-    fn read_from(data: &'a [u8], offset: &mut usize) -> io::Result<Self> {
-        super::check_remaining(data, *offset, 9)?;
-        let mut arr = [0u8; 9];
-        arr.copy_from_slice(&data[*offset..*offset + 9]);
-        *offset += 9;
-        Ok(arr)
-    }
-}
-
-impl BinaryWrite for [u8; 9] {
-    fn write_to(&self, w: &mut dyn Write) -> io::Result<()> {
-        w.write_all(self)
-    }
-}
-
-impl<'a> BinaryReadTracked<'a> for [u8; 9] {
-    fn read_tracked(
-        data: &'a [u8],
-        offset: &mut usize,
-        path: &mut String,
-        ranges: &mut Vec<FieldRange>,
-    ) -> io::Result<Self> {
-        let start = *offset;
-        let arr = <[u8; 9] as BinaryRead>::read_from(data, offset)?;
-        ranges.push(FieldRange {
-            path: path.clone(),
-            start,
-            end: *offset,
-            ty: "u8x9",
-        });
-        Ok(arr)
-    }
-}
 
 // ── Fixed-size array tracked reads ──────────────────────────────────────────
 // Each element is reported as `<path>[i]` so the byte layout is preserved.

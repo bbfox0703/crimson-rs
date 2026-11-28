@@ -1,8 +1,8 @@
 //! `questgaugeinfo.pabgb` parser — anchor-scan based.
 //!
 //! Sibling of [`crate::mission_info`] / [`crate::quest_info`] /
-//! [`crate::stage_info`]. Same row head shape (`[u32 name_len][name]
-//! [u32 key][u8 0x00]...` since 2.04 moved the key), different semantics:
+//! [`crate::stage_info`]. Same legacy row head shape (`[u32 name_len][name]
+//! [u32 key][u8 0x00]...`), different semantics:
 //!
 //! QuestGauge rows are **internal-only progress meters** — kill
 //! counters, faction-operation tickers, gauge bars tied to a region
@@ -11,11 +11,9 @@
 //! comes from the referenced stage / mission rather than the gauge
 //! itself.
 //!
-//! Practical consequence for the C ABI bridge: only
-//! `lookup_string_key` makes sense. There's no
-//! `lookup_display_name` analogue — see
-//! [`super::quest_gauge_info`] (the c_abi sibling) for the surface
-//! and rationale.
+//! The C ABI bridge therefore offers `lookup_string_key` and no
+//! `lookup_display_name` analogue — see `c_abi::quest_gauge_info`
+//! for the surface and rationale.
 //!
 //! Names follow the convention `QuestGauge_<region_or_theme>`
 //! (e.g. `QuestGauge_WindCliffFort`, `QuestGauge_AbandonedWyvernNest`,
@@ -35,12 +33,13 @@ pub struct QuestGaugeInfoEntry {
     pub name: String,
 }
 
-/// 2.06+: row names live in the `.staticinfoheader`, so the body alone no
-/// longer carries them. Rebuilds the pre-2.06 layout from both and scans that;
-/// a pre-2.06 pair (or a header that is not the 2.06 shape) scans `data` as is.
+/// 2.06+: row names live in the `.staticinfoheader`, which lists every row,
+/// so with a 2.06 header the rows come from it, in header order (the anchor
+/// scan drops rows its key and name rules do not expect). A pre-2.06
+/// pair, or a header that is not the 2.06 shape, falls back to scanning `data`.
 pub fn parse_quest_gauge_info_lossy_with_header(data: &[u8], header: &[u8]) -> Vec<QuestGaugeInfoEntry> {
-    match crate::binary::static_header::to_legacy_layout(data, header) {
-        Some(t) => parse_quest_gauge_info_lossy(&t.body),
+    match crate::binary::static_header::header_row_names(data, header) {
+        Some(rows) => rows.into_iter().map(|(key, name)| QuestGaugeInfoEntry { key, name }).collect(),
         None => parse_quest_gauge_info_lossy(data),
     }
 }
@@ -56,15 +55,15 @@ pub fn parse_quest_gauge_info_lossy_with_header(data: &[u8], header: &[u8]) -> V
 ///   body-byte garbage like `"HD"`, where both bytes are ASCII
 ///   letters but the sequence is not a real row name).
 ///
-/// All real `QuestGauge_*` names start with `Q`, contain at least
-/// one `_`, and are ≥ 13 bytes long, so the stricter rules pass
-/// every real row and reject the small set of body-byte
+/// Real gauge names (`QuestGauge_*`, and the `Mission_*`-named gauges)
+/// start with a letter and contain at least one `_`, so the stricter
+/// rules pass every real row and reject the small set of body-byte
 /// false-positives the looser scanners would otherwise produce.
 ///
 /// The same tightening could be applied to the mission / quest /
-/// stage parsers; for now they stay looser because their HashMap
-/// deduplication makes the false positives harmless and the tests
-/// assert against real keys.
+/// stage parsers. They stay looser: their bridges dedupe first-wins,
+/// which keeps a real row over a later false positive with the same key
+/// (not over an earlier one), and the tests assert against real keys.
 pub fn parse_quest_gauge_info_lossy(data: &[u8]) -> Vec<QuestGaugeInfoEntry> {
     let mut entries = Vec::new();
     let mut cursor = 0;
@@ -85,7 +84,7 @@ fn scan_next_anchor(data: &[u8], from: usize) -> Option<usize> {
     let mut o = from;
     while o + 12 < n {
         let slen = u32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]) as usize;
-        // Length, name, key, then the 0x00 that opens every 2.04 row body —
+        // Length, name, key, then the 0x00 that opens every legacy-layout row body —
         // the byte that rejects most body strings followed by a small number.
         if (2..=128).contains(&slen) && o + 9 + slen <= n && data[o + 8 + slen] == 0 {
             let bytes = &data[o + 4..o + 4 + slen];
@@ -117,10 +116,9 @@ fn scan_next_anchor(data: &[u8], from: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     //! Live-install integration test against the real
-    //! `questgaugeinfo.pabgb`. Asserts that ~380 real gauge rows
-    //! parse with `QuestGauge_*` names and that the screenshot's
-    //! `_questGaugeStateList[0]._key = 1000083` row name comes back
-    //! correctly.
+    //! `questgaugeinfo.pabgb`. Asserts that every header row parses
+    //! with a gauge-shaped name and that the `KNOWN` keys resolve
+    //! (1000083 is a live save's `_questGaugeStateList[0]._key`).
 
     use crate::binary::gamedata_layout;
     use super::*;
@@ -138,10 +136,10 @@ mod tests {
         gamedata_layout::extract_bin(&gamedata_layout::body("questgaugeinfo"))
     }
 
-    /// 2.06+: the row names live here. Empty when absent (an older install
-    /// needs none, and `parse_quest_gauge_info_lossy_with_header` then scans the body alone).
+    /// The 2.06 `.staticinfoheader` beside the body (it holds the row
+    /// names); panics when the install has the body but not the header.
     fn find_questgauge_header() -> Vec<u8> {
-        gamedata_layout::extract_bin(&gamedata_layout::header("questgaugeinfo")).unwrap_or_default()
+        gamedata_layout::extract_bin(&gamedata_layout::header("questgaugeinfo")).expect("the 2.06 header next to the table body (install present but header missing: drift?)")
     }
 
     #[test]
@@ -156,13 +154,10 @@ mod tests {
             entries.len(),
             data.len()
         );
-        // 1.06 has ~382 gauge rows after the tighter scanner filter.
-        // Pin to >200 for plausibility.
-        assert!(
-            entries.len() > 200,
-            "expected >200 gauge entries, got {}",
-            entries.len()
-        );
+        // Every row the 2.06 header lists parses; a floor would let most of
+        // the table go missing unnoticed.
+        let listed = crate::binary::static_header::detect_named_pair(&find_questgauge_header(), &data).expect("2.06 header").2.len();
+        assert_eq!(entries.len(), listed, "rows parsed vs rows the header lists");
 
         let by_key: std::collections::HashMap<u32, &str> =
             entries.iter().map(|e| (e.key, e.name.as_str())).collect();
@@ -176,15 +171,11 @@ mod tests {
         }
 
         // Every name should be a real row name, not a body-byte garbage
-        // sequence the looser scanners would let through. The vast
-        // majority follow the `QuestGauge_<region_or_theme>` convention;
-        // 1.10's reconstruction phase introduced exactly one
-        // mission-linked gauge whose name uses the `Mission_` prefix
-        // instead (`Mission_Reconstruction_Node_Her_KarinQuarry`,
-        // key=1000488 — confirmed a real questgaugeinfo PABGH entry, see
-        // data/gamedata-keys-1.10/questgaugeinfo.txt). The scanner found
-        // exactly 509 rows = the PABGH key count, so no false positives
-        // slipped in. Accept both known-good prefixes.
+        // sequence the looser scanners would let through. Names follow
+        // the `QuestGauge_<region_or_theme>` convention, except
+        // mission-linked gauges, which use the `Mission_` prefix (e.g.
+        // `Mission_Reconstruction_Node_Her_KarinQuarry`, key 1000488, a
+        // real questgaugeinfo PABGH entry). Accept both prefixes.
         for e in &entries {
             assert!(
                 e.name.starts_with("QuestGauge_") || e.name.starts_with("Mission_"),

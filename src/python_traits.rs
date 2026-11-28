@@ -78,6 +78,11 @@ impl ToPyValue for [f32; 3] {
 impl WritePyValue for [f32; 3] {
     fn write_from_py(w: &mut Vec<u8>, obj: &Bound<'_, PyAny>) -> PyResult<()> {
         let list = obj.cast::<PyList>()?;
+        // A list of the wrong length would write a short or long row that
+        // fails only on the next parse, so it is refused here.
+        if list.len() != 3 {
+            return Err(PyValueError::new_err(format!("expected 3 values, got {}", list.len())));
+        }
         for item in list.iter() {
             let v: f32 = item.extract()?;
             w.extend_from_slice(&v.to_le_bytes());
@@ -95,6 +100,11 @@ impl ToPyValue for [u32; 2] {
 impl WritePyValue for [u32; 2] {
     fn write_from_py(w: &mut Vec<u8>, obj: &Bound<'_, PyAny>) -> PyResult<()> {
         let list = obj.cast::<PyList>()?;
+        // A list of the wrong length would write a short or long row that
+        // fails only on the next parse, so it is refused here.
+        if list.len() != 2 {
+            return Err(PyValueError::new_err(format!("expected 2 values, got {}", list.len())));
+        }
         for item in list.iter() {
             let v: u32 = item.extract()?;
             w.extend_from_slice(&v.to_le_bytes());
@@ -103,8 +113,7 @@ impl WritePyValue for [u32; 2] {
     }
 }
 
-// ItemInfo `inventory_info_list` — twelve InventoryKey (u16) slots (nine in
-// 1.16–2.02, ten in 2.03).
+// ItemInfo `inventory_info_list` — twelve InventoryKey (u16) slots.
 impl ToPyValue for [u16; 12] {
     fn to_py_value(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         Ok(self.to_vec().into_pyobject(py)?.into_any().unbind())
@@ -114,8 +123,8 @@ impl ToPyValue for [u16; 12] {
 impl WritePyValue for [u16; 12] {
     fn write_from_py(w: &mut Vec<u8>, obj: &Bound<'_, PyAny>) -> PyResult<()> {
         let list = obj.cast::<PyList>()?;
-        // The width changed in 2.03 and 2.04; a shorter list from an older
-        // export would otherwise write an item short.
+        // The slot count has changed across patches; a shorter list from an
+        // export of an older patch would otherwise write an item short.
         if list.len() != 12 {
             return Err(PyValueError::new_err(format!(
                 "inventory_info_list needs 12 InventoryKey slots, got {}",
@@ -139,6 +148,11 @@ impl ToPyValue for [u32; 4] {
 impl WritePyValue for [u32; 4] {
     fn write_from_py(w: &mut Vec<u8>, obj: &Bound<'_, PyAny>) -> PyResult<()> {
         let list = obj.cast::<PyList>()?;
+        // A list of the wrong length would write a short or long row that
+        // fails only on the next parse, so it is refused here.
+        if list.len() != 4 {
+            return Err(PyValueError::new_err(format!("expected 4 values, got {}", list.len())));
+        }
         for item in list.iter() {
             let v: u32 = item.extract()?;
             w.extend_from_slice(&v.to_le_bytes());
@@ -147,67 +161,12 @@ impl WritePyValue for [u32; 4] {
     }
 }
 
-// 22-byte raw block — appears as a list[int] in Python (NOT bytes, so it
-// serialises cleanly to JSON) so the serializer can roundtrip the exact
-// bytes without naming individual sub-fields.
-impl ToPyValue for [u8; 22] {
-    fn to_py_value(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let list = PyList::empty(py);
-        for &b in self.iter() {
-            list.append(b)?;
-        }
-        Ok(list.into_any().unbind())
-    }
-}
-
-impl WritePyValue for [u8; 22] {
-    fn write_from_py(w: &mut Vec<u8>, obj: &Bound<'_, PyAny>) -> PyResult<()> {
-        let list = obj.cast::<PyList>()?;
-        if list.len() != 22 {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                format!("expected 22 bytes, got {}", list.len()),
-            ));
-        }
-        for item in list.iter() {
-            let v: u8 = item.extract()?;
-            w.push(v);
-        }
-        Ok(())
-    }
-}
-
-// 9-byte raw block — Crimson Desert 1.05 ItemInfo `icon_unk_zeros` pad.
-impl ToPyValue for [u8; 9] {
-    fn to_py_value(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let list = PyList::empty(py);
-        for &b in self.iter() {
-            list.append(b)?;
-        }
-        Ok(list.into_any().unbind())
-    }
-}
-
-impl WritePyValue for [u8; 9] {
-    fn write_from_py(w: &mut Vec<u8>, obj: &Bound<'_, PyAny>) -> PyResult<()> {
-        let list = obj.cast::<PyList>()?;
-        if list.len() != 9 {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                format!("expected 9 bytes, got {}", list.len()),
-            ));
-        }
-        for item in list.iter() {
-            let v: u8 = item.extract()?;
-            w.push(v);
-        }
-        Ok(())
-    }
-}
 
 // ── CString ───────────────────────────────────────────────────────────────────
 
 impl ToPyValue for CString<'_> {
     fn to_py_value(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        Ok(self.data.into_pyobject(py)?.into_any().unbind())
+        Ok(self.as_str().into_pyobject(py)?.into_any().unbind())
     }
 }
 
@@ -229,7 +188,7 @@ impl ToPyValue for HeaderName<'_> {
 }
 
 impl WritePyValue for HeaderName<'_> {
-    /// The name lives in the table's header since 2.06, so the row gets no bytes.
+    /// The name lives in the table's `.staticinfoheader`, so the row gets no bytes.
     fn write_from_py(_w: &mut Vec<u8>, _obj: &Bound<'_, PyAny>) -> PyResult<()> {
         Ok(())
     }
@@ -242,7 +201,7 @@ impl ToPyValue for LocalizableString<'_> {
         let d = PyDict::new(py);
         d.set_item("category", self.category)?;
         d.set_item("index", self.index)?;
-        d.set_item("default", self.default.data)?;
+        d.set_item("default", self.default.as_str())?;
         Ok(d.into_any().unbind())
     }
 }
@@ -268,7 +227,7 @@ impl ToPyValue for OptLocalizableString<'_> {
         let d = PyDict::new(py);
         d.set_item("category", self.category)?;
         d.set_item("index", self.index)?;
-        d.set_item("default", self.default.data)?;
+        d.set_item("default", self.default.as_str())?;
         Ok(d.into_any().unbind())
     }
 }

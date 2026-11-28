@@ -1,8 +1,7 @@
 //! `royalsupply.pabgb` bridge — C ABI surface.
 //!
 //! Resolves save-side `RoyalSupplyKey (u16-widened-u32)` to the row's
-//! template internal name (`"RoyalSupply_Hernand"` etc.). Name-only,
-//! 4 rows in 1.07.
+//! template internal name (`"RoyalSupply_Hernand"` etc.). Name-only.
 
 use std::collections::HashMap;
 use std::ffi::CStr;
@@ -12,7 +11,6 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use super::error;
 use crate::royal_supply_info::parse_royal_supply_info_lossy;
 
-#[repr(C)]
 pub struct CrimsonRoyalSupplyInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,
@@ -33,6 +31,8 @@ impl CrimsonRoyalSupplyInfoHandle {
     }
 }
 
+/// Load the table from its body / header file pair on disk.
+///
 /// # Safety
 /// Path args must be NUL-terminated UTF-8 strings; out_handle non-null.
 #[unsafe(no_mangle)]
@@ -63,12 +63,17 @@ pub unsafe extern "C" fn crimson_royal_supply_info_load_from_file(
             Err(_) => return error::IO,
         };
         let handle = CrimsonRoyalSupplyInfoHandle::from_bytes(&pabgb, &pabgh);
+        if let Err(code) = crate::c_abi::check_rows(&pabgb, Some(&pabgh[..]), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
     .unwrap_or(error::PANIC)
 }
 
+/// Load the table from body and header bytes already in memory.
+///
 /// # Safety
 /// `pabgb`/`pabgh` may be null iff length is 0; out_handle non-null.
 #[unsafe(no_mangle)]
@@ -99,12 +104,17 @@ pub unsafe extern "C" fn crimson_royal_supply_info_load_from_bytes(
         };
         let handle =
             CrimsonRoyalSupplyInfoHandle::from_bytes(pabgb_slice, pabgh_slice);
+        if let Err(code) = crate::c_abi::check_rows(pabgb_slice, Some(pabgh_slice), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
     .unwrap_or(error::PANIC)
 }
 
+/// Free a handle returned by either loader.
+///
 /// # Safety
 /// `handle` must be null or live and unfreed.
 #[unsafe(no_mangle)]
@@ -119,6 +129,8 @@ pub unsafe extern "C" fn crimson_royal_supply_info_free(
     }
 }
 
+/// Number of rows in the handle.
+///
 /// # Safety
 /// `handle` live; `out_count` non-null.
 #[unsafe(no_mangle)]
@@ -137,6 +149,8 @@ pub unsafe extern "C" fn crimson_royal_supply_info_entry_count(
     .unwrap_or(error::PANIC)
 }
 
+/// Copy a row's name, by key, into `buf` (two-call sizing).
+///
 /// # Safety
 /// `handle`/`required` non-null; `buf` may be null iff `buf_len == 0`.
 #[unsafe(no_mangle)]
@@ -164,6 +178,8 @@ pub unsafe extern "C" fn crimson_royal_supply_info_lookup_string_key(
     .unwrap_or(error::PANIC)
 }
 
+/// Row `idx`'s key, and its name into `buf` (two-call sizing).
+///
 /// # Safety
 /// `handle`/`out_key`/`required` non-null; `buf` may be null iff
 /// `buf_len == 0`.

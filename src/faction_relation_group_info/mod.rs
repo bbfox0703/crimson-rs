@@ -2,8 +2,7 @@
 //!
 //! Resolves `FactionRelationGroupKey` — a small u16-shaped table that
 //! describes how the in-game faction system groups relationships
-//! (friendly / hostile / neutral / monster-vs-NPC). 1.07 ships exactly
-//! **5 rows**:
+//! (friendly / hostile / neutral / monster-vs-NPC). The rows:
 //!
 //! | key (0x..)  | internal name      |
 //! | ----------- | ------------------ |
@@ -21,12 +20,8 @@
 //! u16 count, then count × { u16 key, u32 offset }
 //! ```
 //!
-//! For 5 entries: 2 + 5 × 6 = 32 bytes (matches the live file's
-//! 32-byte `.pabgh`).
-//!
-//! **PABGB row layout** (all 5 rows; 2.04 moved `key` after the name, 2.06
-//! moved the name into the header; the content has not changed since
-//! 1.03.01):
+//! **PABGB row layout** (pre-2.06 body; 2.06 rows are rebuilt into it by
+//! `static_header::legacy_pair`):
 //!
 //! ```text
 //! Row {
@@ -39,7 +34,7 @@
 //! }
 //! ```
 //!
-//! ## The relation lists (2026-11-27)
+//! ## The relation lists
 //!
 //! The exe's reflection data names the row's fields `_key`,
 //! `_relationGroupList`, `_staticInfoIndex` and `_isBlocked`; the body is
@@ -47,8 +42,7 @@
 //! `FactionRelationType` (0 Neutral, 1 War, 2 Agreement, 3 BloodAlly — the
 //! name table after the exe's `FactionRelationGroupInfo(%#)…상호 같은 Relation
 //! 이어야 합니다` consistency message, which requires the two directions to
-//! agree). The bytes earlier read as "5 pad bytes" and "a 4-byte separator"
-//! are `_isBlocked` plus the empty Neutral list, and the empty Agreement list.
+//! agree).
 //!
 //! | group | War (1) | BloodAlly (3) |
 //! |---|---|---|
@@ -64,16 +58,16 @@
 //! relation to itself is not listed. This matches the game: Monster_Common
 //! (`Faction_Bandit`) and HostileCombat attack the player, NPC_Common and
 //! FriendlyCombat do not, and the save's explicit player ⇄
-//! `Faction_Celeste_Hernand` record was already 3 (BloodAlly). An explicit
+//! `Faction_Celeste_Hernand` record is 3 (BloodAlly). An explicit
 //! faction relation overrides the group default (verified in game with a
 //! BloodAlly record for `Faction_Bandit`).
 //!
 //! [`FactionRelationGroupEntry::relation_lists`] holds the four lists;
 //! [`FactionRelationGroupEntry::related`] is their concatenation (War, then
-//! BloodAlly), as the bridge exposed it before.
+//! BloodAlly).
 //!
-//! **PALOC chain**: none — the `_probe_faction_paloc_chains` pass
-//! returned only coincidental collisions at `lo32 = 0x80` (UI tooltip
+//! **PALOC chain**: none — the `_probe_faction_paloc_chains` probe finds
+//! only coincidental collisions at `lo32 = 0x80` (UI tooltip
 //! sentinels). The bridge follows the
 //! [`crate::sub_level_info`] pattern: no `lookup_display_name`.
 
@@ -196,10 +190,9 @@ mod tests {
 
     use crate::binary::gamedata_layout;
     use super::*;
-    use std::path::PathBuf;
 
     /// (FactionRelationGroupKey (u16-widened-to-u32), expected
-    /// internal_name). All five 1.07 rows pinned.
+    /// internal_name), one per row.
     const KNOWN: &[(u32, &str)] = &[
         (0x4243, "Graymane"),
         (0x4244, "FriendlyCombat"),
@@ -209,45 +202,12 @@ mod tests {
     ];
 
     fn find_table_bytes() -> Option<(Vec<u8>, Vec<u8>)> {
-        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
-            });
-        let pamt_path = game_root.join("0008").join("0.pamt");
-        if !pamt_path.is_file() {
-            return None;
-        }
-        let pamt_bytes = std::fs::read(&pamt_path).ok()?;
-        let pamt = crate::binary::pamt::PackMeta::parse(&pamt_bytes, None).ok()?;
-        let dir = pamt
-            .directories
-            .iter()
-            .find(|d| d.path == gamedata_layout::bin_dir())?;
-        let pabgb_file = dir
-            .files
-            .iter()
-            .find(|f| f.name == gamedata_layout::body("factionrelationgroup"))?;
-        let pabgh_file = dir
-            .files
-            .iter()
-            .find(|f| f.name == gamedata_layout::header("factionrelationgroup"))?;
-        let group_dir = game_root.join("0008");
-        let pabgb = crate::binary::paz::extract_file(
-            &group_dir,
-            pabgb_file,
-            gamedata_layout::bin_dir(),
-            &pamt.header.encrypt_info.encrypt_info,
-        )
-        .ok()?;
-        let pabgh = crate::binary::paz::extract_file(
-            &group_dir,
-            pabgh_file,
-            gamedata_layout::bin_dir(),
-            &pamt.header.encrypt_info.encrypt_info,
-        )
-        .ok()?;
-        Some((pabgb, pabgh))
+        // None only when the install (or the table) is absent; an install
+        // that is there but unreadable fails the test.
+        Some((
+            gamedata_layout::extract_bin(&gamedata_layout::body("factionrelationgroup"))?,
+            gamedata_layout::extract_bin(&gamedata_layout::header("factionrelationgroup"))?,
+        ))
     }
 
     #[test]
@@ -274,7 +234,7 @@ mod tests {
         }
         // Each row references at least one sibling row in its relation
         // lists; the body-parse guard surfaces zero refs only on
-        // truncation. All five rows in 1.07 have non-empty references.
+        // truncation.
         for e in &entries {
             assert!(
                 !e.related.is_empty(),

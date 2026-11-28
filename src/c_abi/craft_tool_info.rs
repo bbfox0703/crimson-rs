@@ -3,7 +3,7 @@
 //! Resolves save-side `CraftToolKey (u16-widened-u32)` to the row's
 //! template internal name (`"CraftTool_Enchant"`,
 //! `"CraftTool_Enchant_Kukupot"`, `"CraftTool_Burn_Kukupot"`, …).
-//! Name-only, 17 rows in 1.07. Built via the shared
+//! Name-only. Built via the shared
 //! `impl_name_only_bridge!` macro — see `c_abi/mod.rs` for the
 //! generated function shape.
 
@@ -110,7 +110,7 @@ mod tests {
             unsafe { crimson_craft_tool_info_entry_count(sh, &mut count) },
             error::OK
         );
-        assert_eq!(count, 19); // 1.12 (was 17 through 1.11)
+        assert_eq!(count, 19);
         for &(key, expected) in KNOWN {
             let mut req: usize = 0;
             assert_eq!(

@@ -1,4 +1,4 @@
-//! Jenkins hashlittle2 checksum — C ABI surface.
+//! Jenkins hashlittle checksum — C ABI surface.
 //!
 //! Thin extern "C" wrapper over [`crate::crypto::checksum::calculate_checksum`].
 //! The same hash is used inside crimson-rs for PAMT / PAPGT integrity, and —
@@ -6,7 +6,7 @@
 //! from gamedata internal-name strings:
 //!
 //! ```text
-//! PALOC u64 key = (hashlittle2_c(internal_name) << 32) | lo32_namespace
+//! PALOC u64 key = (hashlittle_c(internal_name) << 32) | lo32_namespace
 //! ```
 //!
 //! That two-hop chain is what lets the Save Editor map a save-side
@@ -25,7 +25,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use super::error;
 use crate::crypto::checksum::calculate_checksum;
 
-/// Compute the Jenkins hashlittle2 `c` output (Pearl Abyss variant — init
+/// Compute the Jenkins hashlittle `c` output (Pearl Abyss variant — init
 /// constant `0xDEBA1DCD`) over `data`. The result is the primary 32-bit
 /// hash used everywhere in the file format.
 ///
@@ -85,8 +85,7 @@ mod tests {
     /// ("Verified hash transform"). The hashes here are the `hi32`
     /// values from that table.
     const KNOWN: &[(&[u8], u32)] = &[
-        // Mission_Intro_Tutorial_I -> "Unfamiliar Lands" (read "Unfamiliar
-        // Land" in 2.01–2.02 only)
+        // Mission_Intro_Tutorial_I -> "Unfamiliar Lands"
         (b"Mission_Intro_Tutorial_I", 1_891_183_967),
         // Mission_IronStronghold_Block_ReturnToSister -> "Where the Wind Guides You"
         (b"Mission_IronStronghold_Block_ReturnToSister", 3_594_586_120),
@@ -139,10 +138,9 @@ mod tests {
     #[test]
     fn c_abi_checksum_null_args() {
         let mut out: u32 = 999;
-        // null data with non-zero len → NULL_ARG, out_checksum untouched
-        // by the early return (but the function does write 0 before the
-        // catch_unwind body; that's deliberate so the caller sees a
-        // sentinel even on error). Check NULL_ARG return is enough.
+        // null data with non-zero len → NULL_ARG. The early return leaves
+        // out_checksum untouched: the 0 sentinel is written only once the
+        // arguments pass, so checking the return code is enough.
         let rc = unsafe { crimson_calculate_checksum(ptr::null(), 16, &mut out) };
         assert_eq!(rc, error::NULL_ARG);
 

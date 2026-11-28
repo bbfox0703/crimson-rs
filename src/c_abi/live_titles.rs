@@ -1,7 +1,7 @@
 //! Live display titles for the curated-table drift tests (test-only).
 //!
 //! Resolves a `MissionKey` / `QuestKey` to its current English display title
-//! through the chain the bridges use — key → internal name → `hashlittle2` →
+//! through the chain the bridges use — key → internal name → `hashlittle` →
 //! `(hash << 32) | lo32` → PALOC — read straight from the live install.
 //! [`LiveTitles::load`] returns `None` when the install is absent, so the
 //! tests built on it skip cleanly on CI — and panics when the install is
@@ -35,15 +35,15 @@ impl LiveTitles {
     fn load_present() -> Option<Self> {
         let body = |stem: &str| gamedata_layout::extract_bin(&gamedata_layout::body(stem));
         let header = |stem: &str| gamedata_layout::extract_bin(&gamedata_layout::header(stem));
-        let missions = crate::mission_info::parse_mission_info_lossy_with_header(&body("missioninfo")?, &header("missioninfo")?)
-            .into_iter()
-            .map(|e| (e.key, e.name))
-            .collect();
-        let quests =
-            crate::quest_info::parse_quest_info_via_pabgh(&header("questinfo")?, &body("questinfo")?)
-                .into_iter()
-                .map(|e| (e.key, e.name))
-                .collect();
+        // First row wins for a duplicate key, as in the bridges.
+        let mut missions = HashMap::new();
+        for e in crate::mission_info::parse_mission_info_lossy_with_header(&body("missioninfo")?, &header("missioninfo")?) {
+            missions.entry(e.key).or_insert(e.name);
+        }
+        let mut quests = HashMap::new();
+        for e in crate::quest_info::parse_quest_info_via_pabgh(&header("questinfo")?, &body("questinfo")?) {
+            quests.entry(e.key).or_insert(e.name);
+        }
         let paloc_bytes = gamedata_layout::paloc_bytes("0020", "eng")?;
         let paloc = LocalizationFile::parse(&paloc_bytes)
             .ok()?

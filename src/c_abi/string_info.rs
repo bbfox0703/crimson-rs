@@ -1,7 +1,7 @@
 //! `stringinfo.pabgb` bridge — C ABI surface.
 //!
 //! Parses an in-memory `stringinfo.pabgb` blob (after PAZ extraction
-//! from group `0008`, directory `gamedata/binary__/client/bin/`) and
+//! from group `0008`, the static-info directory `gamedata/binarystaticinfo__/bin`) and
 //! exposes the lookup the icon-extraction pipeline needs: map a
 //! `StringInfoKey` (u32 hash, harvested from `iteminfo.pabgb`'s
 //! `icon_path` / `map_icon_path` fields) to its resolved string value.
@@ -13,8 +13,8 @@
 //! agrees can do so via the Rust API ([`super::super::string_info::
 //! StringInfoData::parse_pair`]).
 //!
-//! Memory cost: ~30,206 entries in 1.06 × ~30 bytes per string ≈
-//! 900 KB resident plus HashMap overhead. The reserved-zero + reserved-
+//! Memory cost: tens of thousands of entries × ~30 bytes per string, about
+//! 1 MB plus HashMap overhead. The reserved-zero + reserved-
 //! flag bytes are dropped — only `(hash, value)` is retained.
 
 use std::collections::HashMap;
@@ -28,7 +28,6 @@ use crate::string_info::StringInfoData;
 /// Opaque handle exposing hash→string lookups against the loaded
 /// stringinfo. The full pabgb walk runs once at load time; only the
 /// `(hash, value)` pairs are retained.
-#[repr(C)]
 pub struct CrimsonStringInfoHandle {
     by_hash: HashMap<u32, String>,
     /// `(hash, value)` in file order so the caller can enumerate via
@@ -43,7 +42,11 @@ impl CrimsonStringInfoHandle {
         for e in raw_entries {
             entries.push((e.hash, e.value));
         }
-        let by_hash = entries.iter().cloned().collect();
+        // First row wins for a duplicate hash, as in every other bridge.
+        let mut by_hash = HashMap::with_capacity(entries.len());
+        for (hash, value) in &entries {
+            by_hash.entry(*hash).or_insert_with(|| value.clone());
+        }
         Ok(CrimsonStringInfoHandle { by_hash, entries })
     }
 }
@@ -342,7 +345,7 @@ mod tests {
             unsafe { crimson_string_info_entry_count(handle, &mut count) },
             error::OK
         );
-        // 1.06 has 30,206 entries; just assert plausibly populated.
+        // The table holds tens of thousands of entries; just assert plausibly populated.
         assert!(count > 20_000, "expected >20k entries, got {count}");
 
         // ── Round-trip: pick entry 0, then look up its value by the u32

@@ -40,8 +40,8 @@ fn wr_item(w: &mut Vec<u8>, obj: &Bound<'_, PyAny>) -> PyResult<()> {
 
 // ── Module functions ───────────────────────────────────────────────────────
 
-/// Parse an iteminfo body. Since 2.06 a row's `string_key` lives in the
-/// table's `.staticinfoheader`; pass that header to get the names (and a check
+/// Parse an iteminfo body. A row's `string_key` lives in the table's
+/// `.staticinfoheader`; pass that header to get the names (and a check
 /// that every row's key and length match it). Without it `string_key` is "".
 #[pyfunction]
 #[pyo3(signature = (path, header_path=None))]
@@ -99,7 +99,7 @@ pub fn parse_iteminfo_from_bytes_inner(py: Python<'_>, data: &[u8]) -> PyResult<
 
 /// Try to find the next plausible item start at or after `from_offset`.
 ///
-/// Since 2.06 an item row begins with `u32 key` then `u32 row index` then
+/// An item row begins with `u32 key` then `u32 row index` then
 /// `is_blocked: u8`. We scan byte-by-byte for a position where:
 ///   - `key` is non-zero with the high byte zero (game item keys are
 ///     comfortably below 2^24);
@@ -108,9 +108,9 @@ pub fn parse_iteminfo_from_bytes_inner(py: Python<'_>, data: &[u8]) -> PyResult<
 fn scan_next_item_start(data: &[u8], from_offset: usize) -> Option<usize> {
     use crate::binary::static_header::read_body_row;
 
-    // `[u32 key][u32 row index][is_blocked: u8 = 0]`: the row shape since 2.06
-    // (the name moved to the header). A weaker anchor than the named head it
-    // replaced, so the row index is held to a plausible table size.
+    // `[u32 key][u32 row index][is_blocked: u8 = 0]`: the row shape (the name
+    // lives in the header). With no name to anchor on, the row index is held
+    // to a plausible table size.
     (from_offset..data.len()).find(|&o| {
         let Some(row) = read_body_row(&data[o..], 4) else {
             return false;
@@ -260,18 +260,29 @@ pub fn parse_iteminfo_tracked(py: Python<'_>, data: &[u8]) -> PyResult<Py<PyAny>
 ///   - abs_start, abs_end: absolute byte range of the field
 ///   - hit_offset: `abs_pos - abs_start` (offset into the field)
 ///   - hit_length: echo of input `length` (default 0 if not provided)
+///
+/// `header`: on 2.06+ the row names live in `iteminfo.staticinfoheader`, so
+/// pass it to match patches by name (without it every 2.06 row is nameless and
+/// every patch resolves to `None`).
 #[pyfunction]
+#[pyo3(signature = (vanilla_bytes, patches, header=None))]
 pub fn inspect_legacy_patches(
     py: Python<'_>,
     vanilla_bytes: &[u8],
     patches: &Bound<'_, PyList>,
+    header: Option<&[u8]>,
 ) -> PyResult<Py<PyAny>> {
     use crate::binary::{BinaryReadTracked, FieldRange};
     use std::collections::HashMap;
+    let header_names: Option<Vec<String>> = header.map(|h| {
+        crate::binary::static_header::parse_named_header(h, 2, 4)
+            .map(|rows| rows.iter().map(|r| r.name.to_string()).collect())
+            .ok_or_else(|| PyValueError::new_err("header is not a 2.06 iteminfo header"))
+    }).transpose()?;
 
     // Parse vanilla once, recording (string_key, span_start, span_end, ranges)
-    // per item. First occurrence wins on duplicate string_keys (none expected
-    // in 1.05 but cheaper than panicking).
+    // per item. First occurrence wins on duplicate string_keys (none expected,
+    // but cheaper than panicking).
     let mut offset = 0;
     let mut entries: Vec<(String, usize, usize, Vec<FieldRange>)> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
@@ -287,8 +298,11 @@ pub fn inspect_legacy_patches(
                     offset, e
                 ))
             })?;
-        let key = item.string_key.data.to_string();
         let i = entries.len();
+        let key = match &header_names {
+            Some(names) => names.get(i).cloned().unwrap_or_default(),
+            None => item.string_key.data.to_string(),
+        };
         index.entry(key.clone()).or_insert(i);
         entries.push((key, span_start, offset, ranges));
     }
@@ -358,12 +372,63 @@ pub fn serialize_iteminfo(py: Python<'_>, items: &Bound<'_, PyList>) -> PyResult
     Ok(PyBytes::new(py, &data).into_any().unbind())
 }
 
+/// Serialize items to a 2.06 pair: `(body, header)`. The header is rebuilt
+/// from each item's `key` and `string_key` with fresh offsets and sizes, so a
+/// length-changing edit and a renamed `string_key` both survive, which
+/// `serialize_iteminfo` (body only) cannot do on 2.06.
+#[pyfunction]
+pub fn serialize_iteminfo_with_header(py: Python<'_>, items: &Bound<'_, PyList>) -> PyResult<Py<PyAny>> {
+    let mut body = Vec::new();
+    let count = u16::try_from(items.len())
+        .map_err(|_| PyValueError::new_err(format!("{} items do not fit a u16 row count", items.len())))?;
+    let mut header = count.to_le_bytes().to_vec();
+    for item in items.iter() {
+        let d = item.cast::<PyDict>()?;
+        let key: u32 = get(d, "key")?;
+        let name: String = get(d, "string_key")?;
+        let offset = body.len();
+        wr_item_checked(&mut body, &item)?;
+        let size = body.len() - offset;
+        header.extend_from_slice(&key.to_le_bytes());
+        header.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        header.extend_from_slice(name.as_bytes());
+        header.extend_from_slice(&(offset as u32).to_le_bytes());
+        header.extend_from_slice(&(size as u32).to_le_bytes());
+    }
+    let tup = pyo3::types::PyTuple::new(
+        py,
+        [PyBytes::new(py, &body).into_any(), PyBytes::new(py, &header).into_any()],
+    )?;
+    Ok(tup.into_any().unbind())
+}
+
 pub fn serialize_iteminfo_impl(items: &Bound<'_, PyList>) -> PyResult<Vec<u8>> {
     let mut buf = Vec::new();
     for item in items.iter() {
-        wr_item(&mut buf, &item)?;
+        wr_item_checked(&mut buf, &item)?;
     }
     Ok(buf)
+}
+
+/// [`wr_item`], then parse the written row back: it must read as one item
+/// that consumes exactly its own bytes. A conditional field out of step with
+/// the fields that gate it (`unk_pre_gimmick_visual` after editing
+/// `equip_type_info` / `item_type`) or a wrong-length value would otherwise
+/// produce a row that fails only on the next parse.
+fn wr_item_checked(buf: &mut Vec<u8>, item: &Bound<'_, PyAny>) -> PyResult<()> {
+    let start = buf.len();
+    wr_item(buf, item)?;
+    let row = &buf[start..];
+    let mut off = 0;
+    let ok = ItemInfo::read_from(row, &mut off).is_ok() && off == row.len();
+    if !ok {
+        let key: Option<u32> = item.cast::<PyDict>().ok().and_then(|d| get(d, "key").ok());
+        return Err(PyValueError::new_err(format!(
+            "item {}: the written row does not parse back as one item (a conditional field such as unk_pre_gimmick_visual out of step with equip_type_info / item_type, or a value of the wrong size)",
+            key.map_or_else(|| "?".to_string(), |k| k.to_string())
+        )));
+    }
+    Ok(())
 }
 
 // ── PAPGT to/from Python ───────────────────────────────────────────────────
@@ -410,6 +475,7 @@ pub fn wr_papgt_from_dict(d: &Bound<'_, PyDict>) -> PyResult<Vec<u8>> {
 
     let mut entries = Vec::new();
     let mut group_names_buffer = Vec::new();
+    let mut claimed: Vec<bool> = Vec::new();
 
     for item in entries_list.iter() {
         let ed = item.cast::<PyDict>()?;
@@ -420,16 +486,36 @@ pub fn wr_papgt_from_dict(d: &Bound<'_, PyDict>) -> PyResult<Vec<u8>> {
         let group_name_offset: u32 = get(ed, "group_name_offset")?;
         let pack_meta_checksum: u32 = get(ed, "pack_meta_checksum")?;
 
-        // Write group name to buffer at the offset
-        // For new entries, we'd need to append. For roundtrip, offsets are preserved.
-        // Ensure the buffer is large enough
-        let needed = group_name_offset as usize + group_name.len() + 1;
-        if group_names_buffer.len() < needed {
-            group_names_buffer.resize(needed, 0);
+        // Write the name (plus its NUL) at its stored offset. A slot may be
+        // shared only by identical names, so overlapping offsets cannot
+        // silently overwrite a name, and an offset has to stay within reach
+        // of the names given, so a huge one cannot allocate that much.
+        if group_name.as_bytes().contains(&0) {
+            return Err(PyValueError::new_err(format!("group name {group_name:?} contains a NUL byte")));
         }
         let off = group_name_offset as usize;
-        group_names_buffer[off..off + group_name.len()].copy_from_slice(group_name.as_bytes());
-        group_names_buffer[off + group_name.len()] = 0; // null terminator
+        if off > entries_list.len() * 256 {
+            return Err(PyValueError::new_err(format!(
+                "group_name_offset {off} for {group_name:?} is past any buffer {} names could fill",
+                entries_list.len()
+            )));
+        }
+        let mut slot = group_name.as_bytes().to_vec();
+        slot.push(0);
+        let end = off + slot.len();
+        if group_names_buffer.len() < end {
+            group_names_buffer.resize(end, 0);
+            claimed.resize(end, false);
+        }
+        for (i, &b) in slot.iter().enumerate() {
+            if claimed[off + i] && group_names_buffer[off + i] != b {
+                return Err(PyValueError::new_err(format!(
+                    "group name {group_name:?} at offset {off} overlaps another name in the buffer"
+                )));
+            }
+            group_names_buffer[off + i] = b;
+            claimed[off + i] = true;
+        }
 
         entries.push(ResolvedEntry {
             group_name,
@@ -634,6 +720,19 @@ pub fn wr_pamt_from_dict(d: &Bound<'_, PyDict>) -> PyResult<Vec<u8>> {
         let name_offset: i32 = get(dd, "name_offset")?;
         let file_start_index: u32 = get(dd, "file_start_index")?;
         let file_count: u32 = get(dd, "file_count")?;
+        let files_list = get_obj(dd, "files")?.cast::<PyList>()?.clone();
+        // The file table is rebuilt by concatenating each directory's
+        // `files` in directory order, so each range has to start where the
+        // previous one ended and hold exactly its files. Anything else would
+        // point a directory at another directory's files.
+        if file_start_index as usize != raw_files.len() || file_count as usize != files_list.len() {
+            return Err(PyValueError::new_err(format!(
+                "directory {}: file_start_index {file_start_index} / file_count {file_count} do not match its {} files placed at index {} (ranges must follow directory order with no gaps; update both after adding or removing a file)",
+                raw_directories.len(),
+                files_list.len(),
+                raw_files.len()
+            )));
+        }
 
         raw_directories.push(PackMetaDirectory {
             name_checksum,
@@ -642,7 +741,6 @@ pub fn wr_pamt_from_dict(d: &Bound<'_, PyDict>) -> PyResult<Vec<u8>> {
             file_count,
         });
 
-        let files_list = get_obj(dd, "files")?.cast::<PyList>()?.clone();
         for f_item in files_list.iter() {
             let fd = f_item.cast::<PyDict>()?;
             raw_files.push(PackMetaFileRaw {
@@ -684,7 +782,11 @@ pub fn wr_pamt_from_dict(d: &Bound<'_, PyDict>) -> PyResult<Vec<u8>> {
         extensions_buffer,
     };
 
-    pamt.to_bytes()
+    // Recompute the header checksum: the dict's stored one goes stale on any
+    // edit and parse always validates it. An unedited PAMT still
+    // round-trips byte for byte, its stored checksum being the right one.
+    let _ = checksum;
+    pamt.to_bytes_with_checksum()
         .map_err(|e| PyIOError::new_err(e.to_string()))
 }
 
@@ -696,8 +798,8 @@ fn to_py_paloc_entry<'py>(
 ) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new(py);
     d.set_item("unk_id", entry.unk_id)?;
-    d.set_item("string_key", entry.string_key.data)?;
-    d.set_item("string_value", entry.string_value.data)?;
+    d.set_item("string_key", entry.string_key.as_str())?;
+    d.set_item("string_value", entry.string_value.as_str())?;
     Ok(d)
 }
 
@@ -856,7 +958,7 @@ fn parse_crypto(crypto: u8) -> PyResult<crate::binary::pamt::CryptoType> {
 /// Streaming pack group builder that writes .paz files to disk incrementally.
 ///
 /// Usage:
-///     builder = PackGroupBuilder("/path/to/0036", compression=2)
+///     builder = PackGroupBuilder("/path/to/0099", compression=2)
 ///     builder.add_file("textures", "icon.dds", raw_bytes)
 ///     builder.add_file_from_path("models", "mesh.obj", "/path/to/mesh.obj")
 ///     pamt_bytes = builder.finish()  # writes .paz + 0.pamt to output_dir
@@ -957,7 +1059,9 @@ pub fn add_papgt_entry(
     let mut papgt =
         PackGroupTreeMeta::parse(&bytes).map_err(|e| PyValueError::new_err(e.to_string()))?;
 
-    papgt.add_entry(group_name, pack_meta_checksum, is_optional, language);
+    papgt
+        .add_entry(group_name, pack_meta_checksum, is_optional, language)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
     let new_bytes = papgt
         .to_bytes()
@@ -1093,6 +1197,7 @@ fn skill_format_to_str(f: SkillFormat) -> &'static str {
     match f {
         SkillFormat::WithField58 => "with_field_58",
         SkillFormat::NoField58 => "no_field_58",
+        SkillFormat::InlineCondition => "inline_condition",
     }
 }
 
@@ -1100,8 +1205,9 @@ fn skill_format_from_str(s: &str) -> PyResult<SkillFormat> {
     match s {
         "with_field_58" => Ok(SkillFormat::WithField58),
         "no_field_58" => Ok(SkillFormat::NoField58),
+        "inline_condition" => Ok(SkillFormat::InlineCondition),
         other => Err(PyValueError::new_err(format!(
-            "unknown skill format '{}': expected 'with_field_58' or 'no_field_58'",
+            "unknown skill format '{}': expected 'with_field_58', 'no_field_58' or 'inline_condition'",
             other
         ))),
     }
@@ -1288,6 +1394,7 @@ fn buff_data_body_to_py<'py>(
     d.set_item("field_56", body.field_56)?;
     d.set_item("field_58", body.field_58)?;
     d.set_item("field_60", body.field_60)?;
+    d.set_item("field_60_condition", body.field_60_condition.as_deref().map(|c| PyBytes::new(py, c)))?;
     d.set_item("field_62", body.field_62)?;
     d.set_item("field_64", body.field_64)?;
     d.set_item("field_66", body.field_66)?;
@@ -1325,6 +1432,10 @@ fn buff_data_body_from_py(d: &Bound<'_, PyDict>) -> PyResult<BuffDataBody> {
             _ => None,
         },
         field_60: get(d, "field_60")?,
+        field_60_condition: match d.get_item("field_60_condition")? {
+            Some(v) if !v.is_none() => Some(v.extract()?),
+            _ => None,
+        },
         field_62: get(d, "field_62")?,
         field_64: get(d, "field_64")?,
         field_66: get(d, "field_66")?,
@@ -1494,9 +1605,16 @@ pub fn serialize_skillinfo(
             offset: get(d, "offset")?,
         });
     }
+    // `None` is a pre-2.06 table. A missing key is an error rather than the
+    // pre-2.06 layout, which would write a 2.06 table in the old shape.
     let row_indices: Option<Vec<u32>> = match data.get_item("row_indices")? {
         Some(v) if !v.is_none() => Some(v.extract()?),
-        _ => None,
+        Some(_) => None,
+        None => {
+            return Err(PyKeyError::new_err(
+                "row_indices: pass the dict from parse_skillinfo_from_bytes (None for a pre-2.06 table)",
+            ));
+        }
     };
     let sd = SkillData {
         entries,
@@ -1604,7 +1722,7 @@ pub fn write_save_with_nonce(
 ///   - `toc`: dict with `prefix_zero, toc_count, stream_size, entries[]`.
 ///
 /// Per-object decoding (turning a TOC entry's data slice into items, stats,
-/// quests, etc.) is the next layer and is not done here.
+/// quests, etc.) is `decode_save_body_blocks`, not this function.
 #[pyfunction]
 pub fn parse_save_body_from_bytes(py: Python<'_>, body: &[u8]) -> PyResult<Py<PyAny>> {
     let parsed = crate::save::Body::parse(body)
@@ -1889,10 +2007,26 @@ fn save_to_py_dict<'py>(py: Python<'py>, save: &crate::save::Save) -> PyResult<P
 // ── Registration ───────────────────────────────────────────────────────────
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // Version self-check: `PARSER_TARGET` is the game patch this
+    // build's parsers target, `(major, minor, min_patch)` in paver numbering.
+    // A stale wheel shows up as a target older than the install's paver.
+    {
+        use crate::binary::paver;
+        m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+        m.add(
+            "PARSER_TARGET",
+            (
+                paver::PARSER_TARGET_GAMEDATA_MAJOR,
+                paver::PARSER_TARGET_GAMEDATA_MINOR,
+                paver::PARSER_MIN_GAMEDATA_PATCH,
+            ),
+        )?;
+    }
     m.add_function(wrap_pyfunction!(parse_iteminfo_from_file, m)?)?;
     m.add_function(wrap_pyfunction!(parse_iteminfo_from_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(parse_iteminfo_tracked, m)?)?;
     m.add_function(wrap_pyfunction!(parse_iteminfo_lossy, m)?)?;
+    m.add_function(wrap_pyfunction!(serialize_iteminfo_with_header, m)?)?;
     m.add_function(wrap_pyfunction!(inspect_legacy_patches, m)?)?;
     m.add_function(wrap_pyfunction!(write_iteminfo_to_file, m)?)?;
     m.add_function(wrap_pyfunction!(serialize_iteminfo, m)?)?;

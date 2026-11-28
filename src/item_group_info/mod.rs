@@ -3,12 +3,12 @@
 //! Resolves `ItemGroupKey (u16-widened-u32)` — item group / category
 //! templates (`ItemGroup_Category_Equipment`,
 //! `ItemGroup_Category_Food`, `ItemGroup_Category_Material`, …).
-//! 1,500 rows in 1.07. The save layer references these as inventory-
+//! The save layer references these as inventory-
 //! filter / drop-table identifiers; ItemInfo also exposes them via
 //! `item_group_info_list`.
 //!
 //! `u16 count + (u16 key, u32 offset)*` PABGH. Body: `[u32 name_len]
-//! [name][u16 key]` (2.04 swapped key and name); rest carries the inline member-itemkey list
+//! [name][u16 key]`; rest carries the inline member-itemkey list
 //! which this bridge does not surface.
 
 use crate::binary::row_head::read_row_head;
@@ -60,7 +60,6 @@ pub fn parse_item_group_info_lossy(
 mod tests {
     use crate::binary::gamedata_layout;
     use super::*;
-    use std::path::PathBuf;
 
     const KNOWN: &[(u32, &str)] = &[
         (18167, "ItemGroup_Category_Equipment"),
@@ -69,37 +68,12 @@ mod tests {
     ];
 
     fn find_table_bytes() -> Option<(Vec<u8>, Vec<u8>)> {
-        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
-            });
-        let pamt_path = game_root.join("0008").join("0.pamt");
-        if !pamt_path.is_file() {
-            return None;
-        }
-        let pamt_bytes = std::fs::read(&pamt_path).ok()?;
-        let pamt = crate::binary::pamt::PackMeta::parse(&pamt_bytes, None).ok()?;
-        let dir = pamt
-            .directories
-            .iter()
-            .find(|d| d.path == gamedata_layout::bin_dir())?;
-        let group_dir = game_root.join("0008");
-        let pabgb = crate::binary::paz::extract_file(
-            &group_dir,
-            dir.files.iter().find(|f| f.name == gamedata_layout::body("itemgroupinfo"))?,
-            gamedata_layout::bin_dir(),
-            &pamt.header.encrypt_info.encrypt_info,
-        )
-        .ok()?;
-        let pabgh = crate::binary::paz::extract_file(
-            &group_dir,
-            dir.files.iter().find(|f| f.name == gamedata_layout::header("itemgroupinfo"))?,
-            gamedata_layout::bin_dir(),
-            &pamt.header.encrypt_info.encrypt_info,
-        )
-        .ok()?;
-        Some((pabgb, pabgh))
+        // None only when the install (or the table) is absent; an install
+        // that is there but unreadable fails the test.
+        Some((
+            gamedata_layout::extract_bin(&gamedata_layout::body("itemgroupinfo"))?,
+            gamedata_layout::extract_bin(&gamedata_layout::header("itemgroupinfo"))?,
+        ))
     }
 
     #[test]

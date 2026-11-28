@@ -3,9 +3,9 @@
 //! Resolves save-side `FactionSpawnDataKey (u32)` to the row's
 //! internal name (e.g.
 //! `"FactionSpawn_GlenbrightManor_Grace_ReedDevil"`). Mirrors
-//! [`super::sub_level_info`] / [`super::quest_gauge_info`] / sibling
-//! [`super::faction_node_info`] in shape — **no `lookup_display_name`
-//! surface**, the PALOC probe surfaced only coincidental collisions.
+//! [`super::sub_level_info`] / [`super::quest_gauge_info`]
+//! in shape — **no `lookup_display_name`
+//! surface**, the PALOC probe surfaces only coincidental collisions.
 //! See `src/faction_spawn_data_info/mod.rs` for schema notes.
 
 use std::collections::HashMap;
@@ -18,7 +18,6 @@ use crate::faction_spawn_data_info::parse_faction_spawn_data_info_lossy;
 
 /// Opaque handle exposing `(FactionSpawnDataKey, internal_name)`
 /// lookups against the loaded `factionspawndatainfo.pabgb` + `.pabgh`.
-#[repr(C)]
 pub struct CrimsonFactionSpawnDataInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,
@@ -74,6 +73,9 @@ pub unsafe extern "C" fn crimson_factionspawndatainfo_load_from_file(
             Err(_) => return error::IO,
         };
         let handle = CrimsonFactionSpawnDataInfoHandle::from_bytes(&pabgb, &pabgh);
+        if let Err(code) = crate::c_abi::check_rows(&pabgb, Some(&pabgh[..]), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -113,6 +115,9 @@ pub unsafe extern "C" fn crimson_factionspawndatainfo_load_from_bytes(
         };
         let handle =
             CrimsonFactionSpawnDataInfoHandle::from_bytes(pabgb_slice, pabgh_slice);
+        if let Err(code) = crate::c_abi::check_rows(pabgb_slice, Some(pabgh_slice), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))

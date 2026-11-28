@@ -41,7 +41,7 @@ patch:
 3. **For each broken fixture, check three things in order**:
    - Does the internal name still exist in the `.pabgb` file? (grep
      the extracted file for the ASCII name)
-   - Does `hashlittle2_c(name)` still produce the recorded hi32?
+   - Does `hashlittle_c(name)` still produce the recorded hi32?
    - Does PALOC still have an entry at
      `(hi32 << 32) | recorded_lo32`?
 
@@ -62,7 +62,7 @@ patch:
 ## PALOC namespace map (1.06, English)
 
 `lo32` is the low 32 bits of a PALOC numeric key; `hi32` is either a
-Jenkins `hashlittle2_c(name)` output or a literal integer ID
+Jenkins `hashlittle_c(name)` output or a literal integer ID
 depending on the namespace.
 
 | lo32 | hex | hi32 source | What it carries | Bridges that use it |
@@ -89,7 +89,7 @@ depending on the namespace.
 
 **Important distinctions**:
 
-- The `hash` namespaces use **Jenkins hashlittle2** (Pearl Abyss
+- The `hash` namespaces use **Jenkins hashlittle** (Pearl Abyss
   variant with `init = 0xDEBA1DCD`), implemented in
   `crate::crypto::checksum::calculate_checksum` and exposed to the C
   ABI as `crimson_calculate_checksum`.
@@ -285,7 +285,7 @@ Vendors" / "Outlaws" IDs suggest faction-scoped variants per region.)
 ## Verified key → display title mappings (1.06)
 
 Each row was traced through the full chain (save-side key →
-`.pabgb` row → internal name → `hashlittle2` → PALOC u64 key →
+`.pabgb` row → internal name → `hashlittle` → PALOC u64 key →
 localized string) and asserted in `cargo test --lib --features
 c_abi`. If any of these mismatches in a future game version, the
 relevant bridge has regressed.
@@ -366,11 +366,11 @@ QuestGaugeKey 1000083 is the editor screenshot's
 
 ## Verified hash anchors (1.06)
 
-These pin the **Jenkins hashlittle2** function itself — if these
+These pin the **Jenkins hashlittle** function itself — if these
 hi32 values drift, the hash algorithm or its init constant has
 changed.
 
-| Internal name | Expected `hashlittle2_c` (hi32) | Hex |
+| Internal name | Expected `hashlittle_c` (hi32) | Hex |
 | --- | ---:| ---:|
 | `Mission_Intro_Tutorial_I` | 1,891,183,967 | `0x70B92D5F` |
 | `Mission_IronStronghold_Block_ReturnToSister` | 3,594,586,120 | `0xD64ACBC8` |
@@ -446,7 +446,7 @@ Save Editor's `LocalizationProvider` calls.
 | StageKey | ✅ shipped | 6 rows above |
 | KnowledgeKey | ✅ shipped | 5 rows above |
 | QuestGaugeKey | ✅ shipped (internal name only) | 5 rows above |
-| Hash function (Jenkins hashlittle2) | ✅ exposed via `crimson_calculate_checksum` | 4 anchor pairs above |
+| Hash function (Jenkins hashlittle) | ✅ exposed via `crimson_calculate_checksum` | 4 anchor pairs above |
 | FieldNPCSaveDataKey | ✗ not shipped (item #8) | — |
 | FieldGimmickSaveDataKey | ✗ not shipped (item #8) | — |
 | SubLevelKey | ✗ not shipped (item #9, deferred) | — |

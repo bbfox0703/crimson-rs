@@ -8,8 +8,8 @@
 //! [`HashMap`] so the public API isn't bound by Rust lifetimes.
 //!
 //! Memory cost: roughly the file size on disk plus the HashMap overhead
-//! (~3-4× the entry-string bytes). For the 7 MB `localizationstring_eng.paloc`
-//! shipped with 1.06, that's ~25 MB resident — well within a desktop
+//! (~3-4× the entry-string bytes). For a 7 MB `localizationstring_eng.paloc`
+//! that's ~25 MB resident — well within a desktop
 //! editor's budget.
 //!
 //! Strings are passed as `(ptr, len)` rather than NUL-terminated. PALOC
@@ -27,7 +27,6 @@ use crate::binary::paloc::{LocalizationFile, unwrap_container};
 /// Opaque handle handed across the FFI. Owns a `HashMap<String, String>`
 /// of key → value plus the entries in insertion order so the caller can
 /// enumerate them sequentially.
-#[repr(C)]
 pub struct CrimsonPalocHandle {
     by_key: HashMap<String, String>,
     /// Original (key, value) ordering, preserved for index-based
@@ -43,9 +42,14 @@ impl CrimsonPalocHandle {
         let entries: Vec<(String, String)> = file
             .entries
             .iter()
-            .map(|e| (e.string_key.data.to_owned(), e.string_value.data.to_owned()))
+            .map(|e| (e.string_key.as_str().to_owned(), e.string_value.as_str().to_owned()))
             .collect();
-        let by_key = entries.iter().cloned().collect();
+        // First entry wins, as in the other bridges, so a duplicate key
+        // looks up the same value it enumerates.
+        let mut by_key = HashMap::with_capacity(entries.len());
+        for (k, v) in &entries {
+            by_key.entry(k.clone()).or_insert_with(|| v.clone());
+        }
         Ok(CrimsonPalocHandle { by_key, entries })
     }
 
@@ -151,11 +155,12 @@ pub unsafe extern "C" fn crimson_paloc_load_from_bytes(
     .unwrap_or(error::PANIC)
 }
 
-/// Free a handle returned by [`crimson_paloc_load_from_file`].
+/// Free a handle returned by [`crimson_paloc_load_from_file`] or
+/// [`crimson_paloc_load_from_bytes`].
 ///
 /// # Safety
-/// `handle` must either be null or a pointer previously returned by
-/// [`crimson_paloc_load_from_file`] that has not yet been freed.
+/// `handle` must either be null or a pointer previously returned by one
+/// of the loaders that has not yet been freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn crimson_paloc_free(handle: *mut CrimsonPalocHandle) {
     if handle.is_null() {
@@ -369,9 +374,9 @@ mod tests {
         if rc == error::NOT_FOUND {
             return None;
         }
-        // Empty-value entries (required == 1) take the OK path directly
-        // because buf_len 0 >= 1 is false → BUFFER_TOO_SMALL is the only
-        // valid first-call return for a present key.
+        // Even an empty value needs one byte (the trailing NUL), so a
+        // zero-length first call always reports BUFFER_TOO_SMALL for a
+        // present key.
         assert_eq!(rc, error::BUFFER_TOO_SMALL, "first lookup call should report size");
         let mut buf = vec![0u8; required];
         let rc = unsafe {
@@ -594,8 +599,8 @@ mod tests {
     fn c_abi_paloc_load_garbage_bytes_returns_body_parse() {
         // Anything that isn't a valid PALOC layout should surface as
         // BODY_PARSE — the loader must not allocate gigabytes based on
-        // a corrupt trailing entry count (regression: the raw wrapped
-        // gamedata/*.paloc files crash the parser this way).
+        // a corrupt trailing entry count (the raw wrapped
+        // gamedata/*.paloc files read as one).
         let garbage = [0u8; 32];
         let mut handle: *mut CrimsonPalocHandle = ptr::null_mut();
         let rc = unsafe {

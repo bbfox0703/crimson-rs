@@ -20,40 +20,33 @@
 //! [`RowLayout`] records which of the two a table uses; `reserved_zero` holds
 //! the row index on a 2.06 table.
 //!
-//! `reserved_zero` is the row's empty name: 2.04 moved the key after the
-//! name in every static-info table, which on a nameless row puts the zero
-//! length first (it swapped with `hash`, nothing else moved). `reserved_zero`
-//! and `reserved_flag` are 0 on all 33,888 rows of 2.04; carried for
-//! byte-identical round-trip in case a future patch promotes either to
-//! a real field. Walking the file front to back consumes every byte —
-//! no padding between entries.
+//! In the legacy layout `reserved_zero` is the row's empty name: every
+//! static-info table stores `[name][key]`, which on a nameless row puts the
+//! zero length ahead of the hash. `reserved_zero` (legacy) and
+//! `reserved_flag` read 0; they are carried so a non-zero value still
+//! round-trips byte for byte. Walking the file front to back consumes every
+//! byte — no padding between entries.
 //!
 //! Layout (`stringinfo.pabgh`)
 //! --------------------------
 //!
 //! Flat index, parsed by [`pabgh`]. See its module docs.
 //!
-//! Cross-version stability
-//! -----------------------
+//! Schema drift
+//! ------------
 //!
-//! Both halves are pure data tables. Apart from 2.04's swap above, fields
-//! and byte layout are unchanged since 1.05: of the 30,313 hashes in both
-//! 2.03 and 2.04, every row is byte-identical after undoing the swap. A
-//! schema drift in a future patch will
-//! surface as either a size mismatch in `pabgh` (header count vs file
-//! size) or a non-zero `reserved_zero` / `reserved_flag` in `pabgb`;
-//! the latter currently parses (we keep the bytes) but the round-trip
-//! test below will start exercising the non-zero path.
-
-// Most of this module is public API + round-trip helpers exercised only
-// by `#[cfg(test)]` callers (the live integration tests below). The
-// `c_abi` bridge consumes a strict subset (`parse_pabgb`). Match the
-// `item_info` precedent and silence dead-code warnings file-wide.
-#![allow(dead_code)]
+//! Both halves are pure data tables. A schema drift surfaces either as a
+//! size mismatch in `pabgh` (header count vs file size) or as a non-zero
+//! `reserved_flag` (or legacy `reserved_zero`) in `pabgb`; the latter
+//! parses (the bytes are kept) and round-trips.
+// The writers and the full-table readers are round-trip support that the
+// tests exercise; the c_abi bridge uses the lookup path. Outside tests they
+// are dead, so dead code is allowed there; the test build lints the module
+// in full.
+#![cfg_attr(not(test), allow(dead_code))]
 
 pub mod pabgh;
 
-use std::collections::HashMap;
 use std::io::{self, Write};
 
 use crate::binary::{BinaryRead, BinaryWrite};
@@ -62,8 +55,8 @@ pub use pabgh::{CountWidth, StringIndexEntry, StringInfoIndex, parse_pabgh, writ
 
 /// One entry from `stringinfo.pabgb`. Keeps both the decoded UTF-8
 /// string and the original raw bytes so round-trip is byte-identical
-/// even for entries that ship invalid UTF-8 (none observed in 1.06 but
-/// the contract should match `CString` in `binary::types`).
+/// even for entries that ship invalid UTF-8 (the same contract as
+/// `CString` in `binary::types`).
 #[derive(Debug, Clone)]
 pub struct StringInfoEntry {
     pub hash: u32,
@@ -124,13 +117,27 @@ pub enum RowLayout {
 }
 
 impl RowLayout {
-    /// A body's layout, from its first row: the legacy row opens with the
-    /// zero name length, the 2.06 row with a (non-zero) hash.
+    /// A body's layout, from its leading rows. Both layouts have the same
+    /// row lengths; a legacy row opens `[u32 0][u32 hash]`, a 2.06 row
+    /// `[u32 hash][u32 row index]`. A legacy first word is always 0, so the
+    /// body is 2.06 as soon as one of the first eight rows has a non-zero
+    /// first word. The row index cannot decide it: in a DLC table it is not
+    /// the row's position. Looking at the first row alone would read a 2.06
+    /// table whose first hash is 0 as legacy, swapping every hash with its
+    /// index.
     pub fn detect(pabgb: &[u8]) -> Self {
-        match pabgb.get(..4) {
-            Some(b) if b != [0, 0, 0, 0] => RowLayout::V206,
-            _ => RowLayout::Legacy,
+        let word = |at: usize| pabgb.get(at..at + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+        let mut at = 0usize;
+        for _ in 0..8 {
+            let (Some(first), Some(slen)) = (word(at), word(at + 9)) else {
+                break;
+            };
+            if first != 0 {
+                return RowLayout::V206;
+            }
+            at += 13 + slen as usize;
         }
+        RowLayout::Legacy
     }
 }
 
@@ -309,13 +316,6 @@ impl StringInfoData {
         }
         Ok(buf)
     }
-
-    /// Map hashes to their resolved string values. Drops the reserved
-    /// bytes — round-trip callers should hold the `Vec<StringInfoEntry>`
-    /// instead.
-    pub fn into_lookup_map(self) -> HashMap<u32, String> {
-        self.entries.into_iter().map(|e| (e.hash, e.value)).collect()
-    }
 }
 
 // ── Per-entry codec ──────────────────────────────────────────────────────
@@ -409,6 +409,29 @@ fn entry_size(entry: &StringInfoEntry) -> io::Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A 2.06 body whose first hash is 0 still reads as 2.06, DLC row indices
+    /// included; a legacy body reads as legacy.
+    #[test]
+    fn detect_uses_the_row_indices() {
+        fn row(first: u32, second: u32, s: &str) -> Vec<u8> {
+            let mut r = first.to_le_bytes().to_vec();
+            r.extend_from_slice(&second.to_le_bytes());
+            r.push(0);
+            r.extend_from_slice(&(s.len() as u32).to_le_bytes());
+            r.extend_from_slice(s.as_bytes());
+            r
+        }
+        let v206 = [row(0, 0, "a"), row(0x1234, 1, "bc"), row(0x99, 2, "")].concat();
+        assert_eq!(RowLayout::detect(&v206), RowLayout::V206);
+        // A DLC table's row index is not the row's position.
+        let dlc = [row(0, 167, "a"), row(0x1234, 170, "bc")].concat();
+        assert_eq!(RowLayout::detect(&dlc), RowLayout::V206);
+        let legacy = [row(0, 0x1234, "a"), row(0, 0x5678, "bc")].concat();
+        assert_eq!(RowLayout::detect(&legacy), RowLayout::Legacy);
+        let legacy_zero_first = [row(0, 0, "a"), row(0, 0x5678, "bc")].concat();
+        assert_eq!(RowLayout::detect(&legacy_zero_first), RowLayout::Legacy);
+    }
 
     fn make_entry(hash: u32, value: &str) -> StringInfoEntry {
         StringInfoEntry {
@@ -531,31 +554,11 @@ mod tests {
     // Exercises the parser against the live install's stringinfo pair.
     // Skips when the game isn't present.
     fn find_table_bytes() -> Option<(Vec<u8>, Vec<u8>)> {
-        use crate::binary::gamedata_layout;
-        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| {
-                std::path::PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
-            });
-        let group_dir = game_root.join("0008");
-        let pamt_bytes = std::fs::read(group_dir.join("0.pamt")).ok()?;
-        let pamt = crate::binary::pamt::PackMeta::parse(&pamt_bytes, None).ok()?;
-        let dir = pamt
-            .directories
-            .iter()
-            .find(|d| d.path == gamedata_layout::bin_dir())?;
-        let extract = |name: String| {
-            crate::binary::paz::extract_file(
-                &group_dir,
-                dir.files.iter().find(|f| f.name == name)?,
-                gamedata_layout::bin_dir(),
-                &pamt.header.encrypt_info.encrypt_info,
-            )
-            .ok()
-        };
+        // None only when the install (or the table) is absent; an install
+        // that is there but unreadable fails the test.
         Some((
-            extract(gamedata_layout::body("stringinfo"))?,
-            extract(gamedata_layout::header("stringinfo"))?,
+            crate::binary::gamedata_layout::extract_bin(&crate::binary::gamedata_layout::body("stringinfo"))?,
+            crate::binary::gamedata_layout::extract_bin(&crate::binary::gamedata_layout::header("stringinfo"))?,
         ))
     }
 
@@ -581,8 +584,8 @@ mod tests {
         assert_eq!(pabgb_out, pabgb, "pabgb round-trip differs");
         assert_eq!(pabgh_out, pabgh, "pabgh round-trip differs");
 
-        // First entry's hash + value on 2.04, read from the bytes during
-        // the 2.04 pass. Pinned so future schema drift fails loudly.
+        // The first row's hash and value, pinned so a schema drift fails
+        // loudly.
         assert_eq!(parsed.entries[0].hash, 0x04f6d06d);
         assert_eq!(parsed.entries[0].value, "rootlevel");
     }

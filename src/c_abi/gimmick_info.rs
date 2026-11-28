@@ -15,18 +15,13 @@
 //!    common namespace bytes:
 //!    - `0x200` (512) — gimmick display label (e.g. "Fire",
 //!      "Prison", "Broken Box"). Default for the lookup.
-//!    - `0x19202` (102914) — gimmick description (sparse — ~9 rows
-//!      have one in the live install, used for furniture inspect text).
+//!    - `0x19202` (102914) — gimmick description (sparse; used for
+//!      furniture inspect text).
 //!    - `0x60` (96) — interaction verb (Move/Skin/Load/Open).
 //!    - Various `0x30`/`0x70`/`0x71`/etc. hits are coincidental
 //!      collisions with character / item tables that share the
 //!      small-integer key space; the caller selects which namespace
 //!      they trust.
-//!
-//! Coverage observed on the 1.06 sample save: 527/530 (99.4%) of
-//! `_gimmickInfoKey` values resolve through the chain. The 3 misses
-//! are likely test/dev gimmicks without paloc entries OR rows the
-//! anchor scanner couldn't isolate from surrounding body noise.
 //!
 //! See `docs/save-editor-keys-plan.md` §7 for the rationale and the
 //! probe that confirmed the no-hash-hop resolution shape.
@@ -41,7 +36,6 @@ use crate::gimmick_info::parse_gimmick_info_lossy;
 
 /// Opaque handle exposing `(GimmickInfoKey, internal_name)` lookups
 /// against the loaded `gimmickinfo.pabgb`.
-#[repr(C)]
 pub struct CrimsonGimmickInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,
@@ -95,8 +89,14 @@ pub unsafe extern "C" fn crimson_gimmickinfo_load_from_file(
             Err(_) => return error::IO,
         };
         // 2.06+: row names live in the `.staticinfoheader` next to the body.
-        let header = super::sibling_header(path_str);
+        let header = match super::sibling_header(path_str) {
+            Ok(h) => h,
+            Err(_) => return error::IO,
+        };
         let handle = CrimsonGimmickInfoHandle::from_bytes(&bytes, header.as_deref());
+        if let Err(code) = crate::c_abi::check_rows(&bytes, header.as_deref(), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -128,6 +128,9 @@ pub unsafe extern "C" fn crimson_gimmickinfo_load_from_bytes(
             unsafe { std::slice::from_raw_parts(data, data_len) }
         };
         let handle = CrimsonGimmickInfoHandle::from_bytes(slice, None);
+        if let Err(code) = crate::c_abi::check_rows(slice, None, handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -137,7 +140,9 @@ pub unsafe extern "C" fn crimson_gimmickinfo_load_from_bytes(
 /// Parse in-memory `gimmickinfo` bytes together with the table's
 /// `.staticinfoheader`. Required from 2.06, where row names moved out of the
 /// body into the header: `crimson_gimmickinfo_load_from_bytes` on a 2.06 body finds
-/// no rows. On an older install the header is not needed and is ignored.
+/// no rows, and returns `BODY_PARSE` for it. A header that is not the 2.06 shape
+/// or does not match the body is `BODY_PARSE` too (the parsers read the latest
+/// patch only).
 ///
 /// # Safety
 /// `data` / `header` must point to `data_len` / `header_len` readable bytes
@@ -169,6 +174,9 @@ pub unsafe extern "C" fn crimson_gimmickinfo_load_from_bytes_with_header(
             unsafe { std::slice::from_raw_parts(header, header_len) }
         };
         let handle = CrimsonGimmickInfoHandle::from_bytes(slice, Some(header));
+        if let Err(code) = crate::c_abi::check_rows(slice, Some(header), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -264,8 +272,8 @@ pub unsafe extern "C" fn crimson_gimmickinfo_lookup_string_key(
 /// `lo32_namespace` selects the PALOC sub-namespace:
 /// - `0x200` (512) — gimmick display label (e.g. "Fire", "Prison",
 ///   "Broken Box"). The common UI case.
-/// - `0x19202` (102914) — gimmick description (sparse — only ~9 of
-///   530 sample keys have one; furniture / artifact inspect text).
+/// - `0x19202` (102914) — gimmick description (sparse; furniture /
+///   artifact inspect text).
 /// - `0x60` (96) — interaction verb (Move/Skin/Load/Open).
 ///
 /// Return codes:
@@ -301,7 +309,7 @@ pub unsafe extern "C" fn crimson_gimmickinfo_lookup_display_name(
     catch_unwind(AssertUnwindSafe(|| {
         // The gimmickinfo handle is intentionally not consulted — the
         // save's _gimmickInfoKey is already the PALOC hi32 directly,
-        // no internal-name → hashlittle2 detour needed (unlike
+        // no internal-name → hashlittle detour needed (unlike
         // mission/quest/stage/knowledge). We still validate that the
         // handle is live (above) so the surface matches its siblings
         // and future cat-byte transforms can hook in here without
@@ -389,9 +397,8 @@ mod tests {
     use std::ptr;
 
     /// (GimmickInfoKey, internal_name, display_name @ lo32=0x200).
-    /// Each row is from the 2026-05-14 probe pass — both the internal
-    /// name in gimmickinfo and the PALOC display name at lo32=0x200
-    /// independently verified against the live install.
+    /// Both the internal name in gimmickinfo and the PALOC display name
+    /// at lo32=0x200 are checked against the live install.
     const KNOWN: &[(u32, &str, &str)] = &[
         // cat=0x00 — generic gimmicks
         (0x000f_4257, "(see lookup_string_key)", "Prison"),

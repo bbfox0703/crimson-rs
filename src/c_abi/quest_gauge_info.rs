@@ -11,13 +11,13 @@
 //!
 //! The internal name is still useful in the Save Editor's resolved-
 //! name column: `"QuestGauge_WindCliffFort"` is enough context for
-//! a modder to know what they're looking at. Future enhancement
-//! could parse the row body to extract referenced StageKey / mission
-//! keys and chain into the stage / mission bridges, but the bridge
-//! itself stays single-purpose.
+//! a modder to know what they're looking at. The bridge does not
+//! parse the row body for the referenced StageKey / mission keys
+//! to chain into the stage / mission bridges; it stays
+//! single-purpose.
 //!
 //! See `docs/save-editor-keys-plan.md` §4 for the rationale and the
-//! probe that confirmed zero PALOC hits across every namespace.
+//! probe that finds no PALOC hits at any namespace.
 
 use std::collections::HashMap;
 use std::os::raw::c_char;
@@ -28,7 +28,6 @@ use crate::quest_gauge_info::parse_quest_gauge_info_lossy;
 
 /// Opaque handle exposing `(QuestGaugeKey, internal_name)` lookups
 /// against the loaded `questgaugeinfo.pabgb`.
-#[repr(C)]
 pub struct CrimsonQuestGaugeInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,
@@ -82,8 +81,14 @@ pub unsafe extern "C" fn crimson_questgaugeinfo_load_from_file(
             Err(_) => return error::IO,
         };
         // 2.06+: row names live in the `.staticinfoheader` next to the body.
-        let header = super::sibling_header(path_str);
+        let header = match super::sibling_header(path_str) {
+            Ok(h) => h,
+            Err(_) => return error::IO,
+        };
         let handle = CrimsonQuestGaugeInfoHandle::from_bytes(&bytes, header.as_deref());
+        if let Err(code) = crate::c_abi::check_rows(&bytes, header.as_deref(), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -115,6 +120,9 @@ pub unsafe extern "C" fn crimson_questgaugeinfo_load_from_bytes(
             unsafe { std::slice::from_raw_parts(data, data_len) }
         };
         let handle = CrimsonQuestGaugeInfoHandle::from_bytes(slice, None);
+        if let Err(code) = crate::c_abi::check_rows(slice, None, handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -124,7 +132,9 @@ pub unsafe extern "C" fn crimson_questgaugeinfo_load_from_bytes(
 /// Parse in-memory `questgaugeinfo` bytes together with the table's
 /// `.staticinfoheader`. Required from 2.06, where row names moved out of the
 /// body into the header: `crimson_questgaugeinfo_load_from_bytes` on a 2.06 body finds
-/// no rows. On an older install the header is not needed and is ignored.
+/// no rows, and returns `BODY_PARSE` for it. A header that is not the 2.06 shape
+/// or does not match the body is `BODY_PARSE` too (the parsers read the latest
+/// patch only).
 ///
 /// # Safety
 /// `data` / `header` must point to `data_len` / `header_len` readable bytes
@@ -156,6 +166,9 @@ pub unsafe extern "C" fn crimson_questgaugeinfo_load_from_bytes_with_header(
             unsafe { std::slice::from_raw_parts(header, header_len) }
         };
         let handle = CrimsonQuestGaugeInfoHandle::from_bytes(slice, Some(header));
+        if let Err(code) = crate::c_abi::check_rows(slice, Some(header), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -209,8 +222,8 @@ pub unsafe extern "C" fn crimson_questgaugeinfo_entry_count(
 /// Returns `NOT_FOUND` when `gauge_key` isn't in the table.
 ///
 /// **No `lookup_display_name` analogue exists for this bridge** —
-/// QuestGauge rows have no PALOC entries (confirmed by exhaustive
-/// scan, see `docs/save-editor-keys-plan.md` §4). The internal name
+/// QuestGauge rows have no PALOC entries (an exhaustive scan finds
+/// none, see `docs/save-editor-keys-plan.md` §4). The internal name
 /// is the only resolution surface; the editor surfaces it directly.
 ///
 /// # Safety

@@ -25,27 +25,67 @@ pub fn compress(data: &[u8], compression: Compression) -> io::Result<Vec<u8>> {
     }
 }
 
+/// Largest output an LZ4 block of `input_len` bytes can decode to. A
+/// sequence of 1 token byte plus up to 254 length bytes encodes at most
+/// 255 bytes per input byte, plus the trailing literals.
+pub(crate) fn lz4_max_output(input_len: usize) -> usize {
+    input_len.saturating_mul(255).saturating_add(64)
+}
+
+/// Largest output a zlib stream of `input_len` bytes can inflate to
+/// (deflate's maximum ratio is about 1032:1).
+fn zlib_max_output(input_len: usize) -> usize {
+    input_len.saturating_mul(1032).saturating_add(64)
+}
+
+/// Decompress `data` to exactly `uncompressed_size` bytes. The size comes
+/// from the PAMT, an untrusted file, so it is checked before anything is
+/// allocated (a size the input cannot possibly expand to is an error, not a
+/// multi-GB allocation that aborts the process) and the output must match it
+/// exactly; a short or long stream is an error.
 pub fn decompress(
     data: &[u8],
     compression: Compression,
     uncompressed_size: usize,
 ) -> io::Result<Vec<u8>> {
-    match compression {
-        Compression::None => Ok(data.to_vec()),
-        Compression::Lz4 => lz4_flex::block::decompress(data, uncompressed_size)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)),
+    let size_error = |what: &str| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{compression:?}: {what} (declared {uncompressed_size} bytes, input {} bytes)", data.len()),
+        )
+    };
+    let out = match compression {
+        Compression::None => data.to_vec(),
+        Compression::Lz4 => {
+            if uncompressed_size > lz4_max_output(data.len()) {
+                return Err(size_error("declared size is more than LZ4 can expand to"));
+            }
+            lz4_flex::block::decompress(data, uncompressed_size)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
+        }
         Compression::Zlib => {
             use std::io::Read;
-            let mut decoder = flate2::read::ZlibDecoder::new(data);
+            if uncompressed_size > zlib_max_output(data.len()) {
+                return Err(size_error("declared size is more than zlib can expand to"));
+            }
+            // One byte past the declared size tells an over-long stream apart
+            // without inflating a decompression bomb to the end.
+            let mut decoder = flate2::read::ZlibDecoder::new(data).take(uncompressed_size as u64 + 1);
             let mut out = Vec::with_capacity(uncompressed_size);
             decoder.read_to_end(&mut out)?;
-            Ok(out)
+            out
         }
-        _ => Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            format!("decompression {:?} not supported", compression),
-        )),
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("decompression {:?} not supported", compression),
+            ));
+        }
+    };
+    if out.len() != uncompressed_size {
+        return Err(size_error(&format!("produced {} bytes", out.len())));
     }
+    Ok(out)
 }
 
 /// Partial-compression scheme used by Pearl Abyss PAZ archives when
@@ -57,8 +97,8 @@ pub fn decompress(
 /// 2. **Header + LZ4(prefix dict)** — the first `PARTIAL_HEADER_BYTES`
 ///    (128) bytes are stored verbatim, then the remainder is one LZ4
 ///    block. The decoder uses those 128 bytes as a prefix dictionary
-///    so back-references can reach into the header. Covers every file
-///    under `0012/ui/texture/icon/` in 1.06 (every item icon).
+///    so back-references can reach into the header. Covers the item
+///    icons under `0012/ui/texture/icon/`.
 /// 3. **DDS per-mip table** — for DDS textures the engine can encode
 ///    each mip level independently. The on-disk size of mip *i* is
 ///    stored as a u32 in the DDS reserved area at `0x20 + 4*i` (11
@@ -70,12 +110,16 @@ pub fn decompress(
 ///    CrimsonForge modding tool — see `core/compression_engine.py`
 ///    `_decompress_type1_dds_per_mip_sizes`.
 ///
-/// **Not yet handled**: the PAR-container layout used by `.pam` /
+/// **Not handled**: the PAR-container layout used by `.pam` /
 /// `.pamlod` / `.pac` mesh assets in 0009/0015 (per-section LZ4 blocks
 /// indexed by an 8-slot table at offset 0x10). Those return an
 /// `InvalidData` error here so the caller can distinguish them from
 /// outright PAZ corruption.
 const PARTIAL_HEADER_BYTES: usize = 128;
+/// Largest DDS side the per-mip decoder accepts (Direct3D's limit is 16,384).
+const MAX_DDS_DIMENSION: usize = 32_768;
+/// Most mip levels it accepts (a 32,768 px side needs 16).
+const MAX_DDS_MIPS: usize = 32;
 
 pub(crate) fn decompress_partial(
     decrypted: &[u8],
@@ -96,6 +140,19 @@ pub(crate) fn decompress_partial(
                 PARTIAL_HEADER_BYTES,
                 decrypted.len(),
                 uncompressed_size,
+            ),
+        ));
+    }
+
+    // Every strategy below decodes LZ4, which cannot expand past
+    // `lz4_max_output`; refuse a declared size beyond that before any
+    // strategy allocates it.
+    if uncompressed_size > lz4_max_output(decrypted.len()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "partial PAZ entry declares {uncompressed_size} bytes, more than {} input bytes can expand to",
+                decrypted.len()
             ),
         ));
     }
@@ -224,10 +281,10 @@ fn try_partial_dds_per_mip(decrypted: &[u8], uncompressed_size: usize) -> Option
 
 /// Minimal DDS header reader, just enough for the per-mip partial
 /// decompressor: width, height, mip count, header length, and per-mip
-/// raw byte size given (width, height). Covers every format observed
-/// in Crimson Desert 1.06's PAZ archives (DXT1/3/5, DX10-wrapped
-/// BC1..BC7, packed RGB(A), single-channel luminance, DX10 RGBA8 /
-/// R8 / R16F / etc).
+/// raw byte size given (width, height). Covers the formats observed
+/// in the game's PAZ archives (DXT1/3/5, DX10-wrapped BC1..BC7,
+/// packed RGB(A), single-channel luminance, DX10 RGBA8 / R8 / R16F /
+/// etc).
 #[derive(Debug, Clone, Copy)]
 struct DdsInfo {
     width: usize,
@@ -296,6 +353,17 @@ impl DdsInfo {
         } else {
             return None;
         };
+        // The header is untrusted: bound what drives the size arithmetic, the
+        // allocations and the per-mip loop. Direct3D caps a
+        // texture at 16,384 px a side, which needs 15 mip levels.
+        if width > MAX_DDS_DIMENSION || height > MAX_DDS_DIMENSION || mip_count > MAX_DDS_MIPS {
+            return None;
+        }
+        if let DdsBody::PixelsBpp(bpp) = body
+            && bpp > 128
+        {
+            return None;
+        }
         Some(DdsInfo {
             width,
             height,
@@ -310,18 +378,18 @@ impl DdsInfo {
             DdsBody::Block8 => {
                 let bw = width.div_ceil(4).max(1);
                 let bh = height.div_ceil(4).max(1);
-                Some(bw * bh * 8)
+                bw.checked_mul(bh)?.checked_mul(8)
             }
             DdsBody::Block16 => {
                 let bw = width.div_ceil(4).max(1);
                 let bh = height.div_ceil(4).max(1);
-                Some(bw * bh * 16)
+                bw.checked_mul(bh)?.checked_mul(16)
             }
             DdsBody::PixelsBpp(bpp) => {
                 if bpp == 0 || bpp % 8 != 0 {
                     return None;
                 }
-                Some(width * height * (bpp / 8))
+                width.checked_mul(height)?.checked_mul(bpp / 8)
             }
         }
     }
@@ -331,7 +399,7 @@ impl DdsInfo {
         let (mut w, mut h) = (self.width.max(1), self.height.max(1));
         let mips = self.mip_count.max(1);
         for _ in 0..mips {
-            total += self.mip_payload_size(w, h)?;
+            total = total.checked_add(self.mip_payload_size(w, h)?)?;
             w = (w / 2).max(1);
             h = (h / 2).max(1);
         }
@@ -341,7 +409,7 @@ impl DdsInfo {
 
 /// DX10 DXGI_FORMAT → DdsBody. Codes per
 /// https://learn.microsoft.com/en-us/windows/win32/api/dxgiformat/ne-dxgiformat-dxgi_format
-/// trimmed to what Pearl Abyss actually ships in 1.06.
+/// trimmed to the formats the game ships.
 fn dxgi_body(dxgi: u32) -> Option<DdsBody> {
     Some(match dxgi {
         // RGBA8 / BGRA8 32-bit
@@ -383,7 +451,7 @@ pub fn process_file(
     let compressed = compress(data, compression)?;
 
     let processed = match crypto {
-        CryptoType::ChaCha20 => chacha20::encrypt_pack_entry(&compressed, encrypt_info, file_path),
+        CryptoType::ChaCha20 => chacha20::encrypt_pack_entry(&compressed, encrypt_info, file_path)?,
         CryptoType::None => compressed,
         _ => {
             return Err(io::Error::new(
@@ -484,16 +552,28 @@ impl PackGroupBuilder {
             self.flush_current_chunk()?;
         }
 
-        let chunk_offset = self.current_chunk_data.len() as u32;
+        // The PAMT stores these as u32 / u16, and the trie as one length byte
+        // per name fragment (every fragment lies inside one path segment); a
+        // value past those is refused rather than silently truncated.
+        if dir_path.split('/').chain([file_name]).any(|s| s.len() > 255) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("a path segment of {dir_path}/{file_name} is longer than 255 bytes"),
+            ));
+        }
+        let chunk_offset = u32::try_from(self.current_chunk_data.len()).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a .paz chunk past 4 GiB"))?;
+        let chunk_id = u16::try_from(self.current_chunk_id).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "more than 65,536 .paz chunks"))?;
+        let compressed_size = u32::try_from(compressed_size).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a file past 4 GiB compressed"))?;
+        let uncompressed_size = u32::try_from(data.len()).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a file past 4 GiB"))?;
         self.current_chunk_data.extend_from_slice(&processed);
 
         self.file_metas.push(FileMeta {
             dir_path: dir_path.to_string(),
             file_name: file_name.to_string(),
-            chunk_id: self.current_chunk_id as u16,
+            chunk_id,
             chunk_offset,
-            compressed_size: compressed_size as u32,
-            uncompressed_size: data.len() as u32,
+            compressed_size,
+            uncompressed_size,
             flags,
         });
 
@@ -520,7 +600,7 @@ impl PackGroupBuilder {
         }
 
         let crc = checksum::calculate_checksum(&self.current_chunk_data);
-        let size = self.current_chunk_data.len() as u32;
+        let size = u32::try_from(self.current_chunk_data.len()).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a .paz chunk past 4 GiB"))?;
 
         // Write to disk
         let paz_path = self
@@ -663,11 +743,15 @@ impl PackGroupBuilder {
         let pamt = PackMeta {
             header: PackMetaHeader {
                 checksum: 0,
-                count: pamt_chunks.len() as u16,
+                count: u16::try_from(pamt_chunks.len()).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "more than 65,535 .paz chunks"))?,
                 unknown0: 0, // seen in real files, always the same, maybe a version or magic?
+                // The key the files were encrypted with: extraction derives the
+                // ChaCha20 key from this header, so it must name the key the
+                // builder used. Live PAMTs pair [2, 14, 97] with 50 and
+                // [0, 0, 0] with 0.
                 encrypt_info: PackEncryptInfo {
-                    unknown0: 50,
-                    encrypt_info: [2, 14, 97],
+                    unknown0: if self.encrypt_info == [0, 0, 0] { 0 } else { 50 },
+                    encrypt_info: self.encrypt_info,
                 },
             },
             chunks: pamt_chunks,
@@ -712,7 +796,20 @@ pub fn extract_file(
         std::io::SeekFrom::Start(file.file.chunk_offset as u64),
     )?;
 
-    // Read the compressed/encrypted data
+    // Read the compressed/encrypted data. The size comes from the PAMT: check
+    // it against the chunk file before allocating.
+    let chunk_len = fh.metadata()?.len();
+    let end = u64::from(file.file.chunk_offset) + u64::from(file.file.compressed_size);
+    if end > chunk_len {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{}: entry {}..{end} runs past the chunk ({chunk_len} bytes)",
+                paz_path.display(),
+                file.file.chunk_offset
+            ),
+        ));
+    }
     let mut raw = vec![0u8; file.file.compressed_size as usize];
     fh.read_exact(&mut raw)?;
 
@@ -724,7 +821,7 @@ pub fn extract_file(
             } else {
                 format!("{}/{}", dir_path, file.name)
             };
-            chacha20::decrypt_pack_entry(&raw, encrypt_info, &full_path)
+            chacha20::decrypt_pack_entry(&raw, encrypt_info, &full_path)?
         }
         CryptoType::None => raw,
         other => {
@@ -1025,6 +1122,71 @@ mod tests {
         let compressed = compress(data, Compression::Zlib).unwrap();
         let decompressed = decompress(&compressed, Compression::Zlib, data.len()).unwrap();
         assert_eq!(decompressed, data.as_ref());
+    }
+
+    /// The declared size comes from the PAMT. A size the input cannot expand
+    /// to is refused before allocating, and the output must match it exactly.
+    #[test]
+    fn test_decompress_checks_the_declared_size() {
+        let data = vec![7u8; 4096];
+        for c in [Compression::Lz4, Compression::Zlib] {
+            let z = compress(&data, c).unwrap();
+            assert!(decompress(&z, c, 1 << 40).is_err(), "{c:?}: huge size");
+            assert!(decompress(&z, c, data.len() - 1).is_err(), "{c:?}: short size");
+            assert!(decompress(&z, c, data.len() + 1).is_err(), "{c:?}: long size");
+            assert_eq!(decompress(&z, c, data.len()).unwrap(), data);
+        }
+        assert!(decompress(&data, Compression::None, data.len() + 1).is_err());
+        assert!(decompress_partial(&[0u8; 200], 1 << 40).is_err());
+    }
+
+    /// A DDS header with a huge mip count or size is not decoded per mip; it
+    /// would drive a 2^32-step loop and wrapping size arithmetic.
+    #[test]
+    fn test_dds_header_bounds() {
+        let mut h = vec![0u8; 148];
+        h[..4].copy_from_slice(b"DDS ");
+        h[8..12].copy_from_slice(&0x0002_0000u32.to_le_bytes()); // mipmap count present
+        h[12..16].copy_from_slice(&64u32.to_le_bytes());
+        h[16..20].copy_from_slice(&64u32.to_le_bytes());
+        h[28..32].copy_from_slice(&7u32.to_le_bytes());
+        h[80..84].copy_from_slice(&0x4u32.to_le_bytes()); // FOURCC
+        h[84..88].copy_from_slice(b"DXT1");
+        assert!(DdsInfo::parse(&h).is_some());
+        h[28..32].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(DdsInfo::parse(&h).is_none(), "mip count");
+        h[28..32].copy_from_slice(&7u32.to_le_bytes());
+        h[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(DdsInfo::parse(&h).is_none(), "width");
+    }
+
+    /// A pack encrypted with a non-default key extracts back through its own
+    /// PAMT: the header names the key the builder used. Also covers ChaCha20
+    /// and LZ4 together.
+    #[test]
+    fn test_pack_group_builder_chacha20_round_trip() {
+        let dir = make_tempdir();
+        let key = [7u8, 33, 101];
+        let mut builder = PackGroupBuilder::new(dir.path(), Compression::Lz4, CryptoType::ChaCha20, key, 1_000_000);
+        let data: Vec<u8> = (0..5000u32).flat_map(|i| (i % 251).to_le_bytes()).collect();
+        builder.add_file("ui/icons", "a.dds", &data).unwrap();
+        let pamt_bytes = builder.finish().unwrap();
+        let pamt = PackMeta::parse(&pamt_bytes, None).unwrap();
+        assert_eq!(pamt.header.encrypt_info.encrypt_info, key);
+        let d = &pamt.directories[0];
+        let out = extract_file(dir.path(), &d.files[0], &d.path, &pamt.header.encrypt_info.encrypt_info).unwrap();
+        assert_eq!(out, data);
+    }
+
+    /// A path segment over 255 bytes is refused instead of truncating the
+    /// trie length byte.
+    #[test]
+    fn test_pack_group_builder_refuses_long_names() {
+        let dir = make_tempdir();
+        let mut builder = PackGroupBuilder::new(dir.path(), Compression::None, CryptoType::None, [0, 0, 0], 1_000_000);
+        assert!(builder.add_file("ui", &"x".repeat(256), b"data").is_err());
+        assert!(builder.add_file(&"d".repeat(300), "a.txt", b"data").is_err());
+        assert!(builder.add_file("ui", &"x".repeat(255), b"data").is_ok());
     }
 
     #[test]

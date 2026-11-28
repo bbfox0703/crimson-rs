@@ -25,13 +25,10 @@
 //!    best-scoring portrait path. Mirrors CrimsonForge's
 //!    `_match_media_for_record` algorithm in `core/asset_catalog.py`.
 //!
-//! Coverage observed on the editor's 221-key sample save (§6 of
-//! `docs/save-editor-keys-plan.md`): 49/221 (22%) of `_characterKey`
-//! values resolve through the PALOC chain. The 78% miss path is
-//! sample-bias rather than missing data — generic field NPCs that DO
-//! exist in PALOC simply don't appear as save instances. The bridge
-//! surfaces a miss as `NOT_FOUND` so the caller can fall back to the
-//! internal-name surface.
+//! Only part of a save's `_characterKey` values resolve through the
+//! PALOC chain (coverage in §6 of `docs/save-editor-keys-plan.md`).
+//! The bridge surfaces a miss as `NOT_FOUND` so the caller can fall
+//! back to the internal-name surface.
 
 use std::collections::HashMap;
 use std::os::raw::c_char;
@@ -48,7 +45,6 @@ pub const CHARACTER_DISPLAY_NAME_LO32: u32 = 0x30;
 
 /// Opaque handle exposing `(CharacterKey lo24, internal_name)`
 /// lookups against the loaded `characterinfo.pabgb`.
-#[repr(C)]
 pub struct CrimsonCharacterInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,
@@ -59,6 +55,19 @@ pub struct CrimsonCharacterInfoHandle {
 }
 
 impl CrimsonCharacterInfoHandle {
+    /// The row key `character_key` names: the key as given when it is a row
+    /// (the rows with a hashed 32-bit key, from 2.06), else the key with the
+    /// save-side cat-byte stripped (`& 0xFFFFFF`) when that is a row. `None`
+    /// when neither is in the table. No hashed key's low 24 bits are
+    /// another row's key, so the two readings never compete.
+    fn resolve_key(&self, character_key: u32) -> Option<u32> {
+        if self.by_key.contains_key(&character_key) {
+            return Some(character_key);
+        }
+        let lo24 = character_key & 0x00FF_FFFF;
+        self.by_key.contains_key(&lo24).then_some(lo24)
+    }
+
     /// Build from the body, plus (2.06+) the `.staticinfoheader` that holds
     /// the row names. Without a header only a pre-2.06 body yields rows.
     fn from_bytes(data: &[u8], header: Option<&[u8]>) -> Self {
@@ -118,8 +127,14 @@ pub unsafe extern "C" fn crimson_characterinfo_load_from_file(
             Err(_) => return error::IO,
         };
         // 2.06+: row names live in the `.staticinfoheader` next to the body.
-        let header = super::sibling_header(path_str);
+        let header = match super::sibling_header(path_str) {
+            Ok(h) => h,
+            Err(_) => return error::IO,
+        };
         let handle = CrimsonCharacterInfoHandle::from_bytes(&bytes, header.as_deref());
+        if let Err(code) = crate::c_abi::check_rows(&bytes, header.as_deref(), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -151,6 +166,9 @@ pub unsafe extern "C" fn crimson_characterinfo_load_from_bytes(
             unsafe { std::slice::from_raw_parts(data, data_len) }
         };
         let handle = CrimsonCharacterInfoHandle::from_bytes(slice, None);
+        if let Err(code) = crate::c_abi::check_rows(slice, None, handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -160,7 +178,9 @@ pub unsafe extern "C" fn crimson_characterinfo_load_from_bytes(
 /// Parse in-memory `characterinfo` bytes together with the table's
 /// `.staticinfoheader`. Required from 2.06, where row names moved out of the
 /// body into the header: `crimson_characterinfo_load_from_bytes` on a 2.06 body finds
-/// no rows. On an older install the header is not needed and is ignored.
+/// no rows, and returns `BODY_PARSE` for it. A header that is not the 2.06 shape
+/// or does not match the body is `BODY_PARSE` too (the parsers read the latest
+/// patch only).
 ///
 /// # Safety
 /// `data` / `header` must point to `data_len` / `header_len` readable bytes
@@ -192,6 +212,9 @@ pub unsafe extern "C" fn crimson_characterinfo_load_from_bytes_with_header(
             unsafe { std::slice::from_raw_parts(header, header_len) }
         };
         let handle = CrimsonCharacterInfoHandle::from_bytes(slice, Some(header));
+        if let Err(code) = crate::c_abi::check_rows(slice, Some(header), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -238,11 +261,12 @@ pub unsafe extern "C" fn crimson_characterinfo_entry_count(
 // ── Internal-name lookup (fallback) ────────────────────────────────────────
 
 /// Look up the internal name for a given `CharacterKey (u32)` and
-/// write it into `buf` (NUL-terminated UTF-8). The cat-byte in the
-/// save-side key's hi-byte is stripped before the lookup so any value
-/// of the form `0xXX_NNNNNN` resolves identically.
+/// write it into `buf` (NUL-terminated UTF-8). The key is matched as given
+/// first (rows with a hashed 32-bit key), then with the save-side cat-byte
+/// stripped (`& 0xFFFFFF`), so any value of the form `0xXX_NNNNNN` whose lo24
+/// is a row resolves identically.
 ///
-/// Returns `NOT_FOUND` when the stripped lo24 isn't in the table.
+/// Returns `NOT_FOUND` when neither the key nor its lo24 is in the table.
 ///
 /// # Safety
 /// `handle` and `required` must be non-null; `buf` may be null iff
@@ -264,8 +288,7 @@ pub unsafe extern "C" fn crimson_characterinfo_lookup_string_key(
     unsafe { *required = 0 };
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &*handle };
-        let lo24 = character_key & 0x00FF_FFFF;
-        let Some(name) = h.by_key.get(&lo24) else {
+        let Some(name) = h.resolve_key(character_key).and_then(|k| h.by_key.get(&k)) else {
             return error::NOT_FOUND;
         };
         write_str_to_buf(name, buf, buf_len, required)
@@ -278,8 +301,8 @@ pub unsafe extern "C" fn crimson_characterinfo_lookup_string_key(
 /// Merge a DLC copy of the table (`<install>/dlc/<name>/0008`, e.g.
 /// `characterinfo.dlc_01.staticinfobody` + `.staticinfoheader`) into a loaded
 /// handle. Adds only the rows whose key the handle lacks, after the existing
-/// entries; a shared key keeps the base row (on 2.06 base and `dlc_01` agree
-/// on every field this bridge exposes). `*out_added` = rows added.
+/// entries; a shared key keeps the base row (base and `dlc_01` agree on
+/// every field this bridge exposes). `*out_added` = rows added.
 ///
 /// **Optional.** Without the DLC installed (Steam installs `dlc/dlc_01` only
 /// for owners) skip this call: every function works on the base rows alone.
@@ -351,10 +374,7 @@ pub unsafe extern "C" fn crimson_characterinfo_lookup_faction_key(
     unsafe { *out_faction_key = 0 };
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &*handle };
-        let found = h
-            .faction_by_key
-            .get(&character_key)
-            .or_else(|| h.faction_by_key.get(&(character_key & 0x00FF_FFFF)));
+        let found = h.resolve_key(character_key).and_then(|k| h.faction_by_key.get(&k));
         match found {
             Some(&faction) => {
                 unsafe { *out_faction_key = faction };
@@ -367,8 +387,7 @@ pub unsafe extern "C" fn crimson_characterinfo_lookup_faction_key(
 }
 
 /// How many characters belong to `faction_key` (rows whose `FactionKey`
-/// equals it). On 2.06 `Faction_Celeste_Hernand` (1000131) has 66,
-/// `Faction_Roberts` (1000001) 2. `faction_key = 0` counts the characters with
+/// equals it). `faction_key = 0` counts the characters with
 /// no faction. An unknown faction counts 0 (`OK`).
 ///
 /// # Safety
@@ -394,11 +413,14 @@ pub unsafe extern "C" fn crimson_characterinfo_faction_member_count(
 // ── Display-name lookup ────────────────────────────────────────────────────
 
 /// One-shot display name resolution: `CharacterKey → PALOC at
-/// `((charkey & 0xFFFFFF) << 32) | lo32_namespace` → localized string`.
-/// Strips the cat-byte before composing the PALOC key. Writes the
-/// result into `buf` (NUL-terminated UTF-8).
+/// `(row_key << 32) | lo32_namespace` → localized string`, where `row_key` is
+/// the table row the key names (matched as given first, then with the cat-byte
+/// stripped, as [`crimson_characterinfo_lookup_string_key`] does). A hashed
+/// 32-bit row key is its own PALOC hi32 (such rows have their name at
+/// `(full_key << 32) | 0x30`); a key the table does not hold falls
+/// back to its lo24. Writes the result into `buf` (NUL-terminated UTF-8).
 ///
-/// **No hash hop** — the save's lo24 is the PALOC hi32 directly,
+/// **No hash hop** — the row key is the PALOC hi32 directly,
 /// matching the gimmickinfo/sublevel pattern.
 ///
 /// `lo32_namespace = 0x30` (= [`CHARACTER_DISPLAY_NAME_LO32`]) is the
@@ -406,10 +428,8 @@ pub unsafe extern "C" fn crimson_characterinfo_faction_member_count(
 /// secondary text (faction title etc.) but haven't been mapped out
 /// systematically.
 ///
-/// The `handle` parameter is retained for API symmetry with sibling
-/// bridges and so a future cat-byte transform (e.g. variant-specific
-/// display) can hook in without an ABI break. It is not consulted on
-/// the resolution path today.
+/// The `handle` tells a hashed 32-bit row key from a save key carrying a
+/// cat-byte.
 ///
 /// Return codes:
 /// - `OK` — chain resolved; bytes written.
@@ -441,9 +461,10 @@ pub unsafe extern "C" fn crimson_characterinfo_lookup_display_name(
     }
     unsafe { *required = 0 };
     catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
         let paloc = unsafe { &*paloc_handle };
-        let lo24 = u64::from(character_key & 0x00FF_FFFF);
-        let u64_key = (lo24 << 32) | u64::from(lo32_namespace);
+        let row_key = h.resolve_key(character_key).unwrap_or(character_key & 0x00FF_FFFF);
+        let u64_key = (u64::from(row_key) << 32) | u64::from(lo32_namespace);
         let decimal = format!("{u64_key}");
         let Some(display) = paloc.lookup_str(&decimal) else {
             return error::NOT_FOUND;
@@ -519,7 +540,7 @@ pub unsafe extern "C" fn crimson_characterinfo_get_entry(
 /// 2. Always also pull the internal name from `characterinfo` (if
 ///    present) as a secondary signal at half weight.
 /// 3. For each portrait in the list, extract the token between the
-///    six known NPC-portrait prefixes and the trailing `.dds`,
+///    known NPC-portrait prefixes and the trailing `.dds`,
 ///    normalise (lowercase, non-alnum → `_`, strip), and score it
 ///    against the normalised display / internal names.
 /// 4. Return the highest-scoring portrait. Ties are broken by the
@@ -562,14 +583,14 @@ pub unsafe extern "C" fn crimson_characterinfo_resolve_portrait(
     catch_unwind(AssertUnwindSafe(|| {
         let cinfo = unsafe { &*handle };
         let paloc = unsafe { &*paloc_handle };
-        let lo24 = character_key & 0x00FF_FFFF;
+        let row_key = cinfo.resolve_key(character_key).unwrap_or(character_key & 0x00FF_FFFF);
 
         // ── Pull names (display + internal) ────────────────────────────
         let display_name: Option<String> = {
-            let u64_key = (u64::from(lo24) << 32) | u64::from(CHARACTER_DISPLAY_NAME_LO32);
+            let u64_key = (u64::from(row_key) << 32) | u64::from(CHARACTER_DISPLAY_NAME_LO32);
             paloc.lookup_str(&format!("{u64_key}")).map(str::to_owned)
         };
-        let internal_name: Option<&str> = cinfo.by_key.get(&lo24).map(String::as_str);
+        let internal_name: Option<&str> = cinfo.by_key.get(&row_key).map(String::as_str);
         if display_name.is_none() && internal_name.is_none() {
             return error::NOT_FOUND;
         }
@@ -639,8 +660,8 @@ pub unsafe extern "C" fn crimson_characterinfo_resolve_portrait(
 
 // ── Internal: portrait matching ────────────────────────────────────────────
 
-/// The six NPC-portrait filename prefixes recognised across 1.05 /
-/// 1.06 / 1.07. Mirrors [`super::paz`]'s private list — duplicated
+/// The recognised NPC-portrait filename prefixes. Mirrors
+/// [`super::paz`]'s private list — duplicated
 /// here so the two modules stay decoupled (the matcher needs to know
 /// what to strip off filenames; the lister only needs to know what
 /// to include).
@@ -795,7 +816,7 @@ mod tests {
 
     #[test]
     fn extract_portrait_token_basic() {
-        // Each of the six known prefixes resolves.
+        // Known prefixes resolve.
         assert_eq!(
             extract_portrait_token(
                 "ui/texture/image/portraitimage/cd_portraitimage_chracter_kliff.dds"
@@ -958,7 +979,7 @@ mod tests {
         unsafe { crimson_characterinfo_entry_count(cinfo_h, &mut count) };
         assert!(count > 5_000, "expected >5000 character entries, got {count}");
 
-        // ── FactionKey (2.06, unchanged per character since 2.04) ────
+        // ── FactionKey ───────────────────────────────────────────────
         let faction_of = |key: u32| {
             let mut out = u32::MAX;
             let rc = unsafe { crimson_characterinfo_lookup_faction_key(cinfo_h, key, &mut out) };
@@ -1230,29 +1251,24 @@ mod tests {
         assert!(ch.is_null());
     }
 
-    /// `CharacterAppearanceIndexKey` investigation probe — RE was
-    /// suspended after this probe surfaced a structural gap, so the
-    /// bridge is **not** shipped. The probe is kept here so the next
-    /// session can pick the work up without redoing the discovery.
+    /// `CharacterAppearanceIndexKey` investigation probe. The bridge is
+    /// **not** shipped; the findings and the open questions are in §9
+    /// and §10 of `docs/save-editor-keys-plan.md`.
     ///
-    /// What this probe pins (verified 2026-05-15 against the live
-    /// 1.07 `slot0/save.save` + `0008/gamedata/binary__/client/bin/`):
+    /// The layout the probe reads:
     ///
-    /// 1. **File location**: `characterappearanceindexinfo.pabgb`
-    ///    (236 KB) + `.pabgh` (97 KB) sibling. PABGH/PABGB pair
-    ///    pattern — same shape as `skill.pabgh` + `skill.pabgb`.
+    /// 1. **File location**: `characterappearanceindexinfo.pabgb` +
+    ///    `.pabgh` sibling. PABGH/PABGB pair pattern — same shape as
+    ///    `skill.pabgh` + `skill.pabgb`.
     /// 2. **PABGH schema**:
     ///    ```text
-    ///    [u32 count = 8143]
+    ///    [u32 count]
     ///    [count × (u64 key, u32 offset)]
     ///    ```
     /// 3. **PABGB entry layout**: each entry = 8-byte key (matches
-    ///    the pabgh key verbatim) + **21-byte opaque body**. All
-    ///    entries observed are 29 bytes total. Body bytes are
-    ///    dense binary parameters with no string fields — likely
-    ///    layer / color / asset IDs that need IDA RE before they
-    ///    can be exposed semantically.
-    /// 4. **Save → PABGH transform** (verified):
+    ///    the pabgh key verbatim) + **21-byte opaque body** with no
+    ///    string fields.
+    /// 4. **Save → PABGH transform**:
     ///    ```rust
     ///    let b3   = ((save >> 24) & 0xFF) as i8;       // category, signed i8
     ///    let lo24 = save & 0x00FF_FFFF;                // appearance ID
@@ -1260,26 +1276,6 @@ mod tests {
     ///    // byte 7 of save (top byte) is a variant marker — drop it
     ///    // bytes 4..=6 of save mirror byte 3's sign (sign-ext padding)
     ///    ```
-    /// 5. **Why the bridge wasn't shipped**: of 122 distinct save-side
-    ///    appearance keys in the sample, **only 16 (13%) map to a
-    ///    PABGH entry**. The PABGH's `0xfffffffe` bucket (7,027 of
-    ///    its 8,143 entries) contains lo32 ∈ {1, 2, 4, 6, 100,
-    ///    400-459, …} — sparsely populated. The save uses lo24 = 11,
-    ///    12, 13, 14, … which fall in gaps the PABGH skips. The
-    ///    other 87% of save values likely reference a procedural
-    ///    / template-generated appearance system that isn't in this
-    ///    file. Shipping a 13%-coverage bridge with no body schema
-    ///    (and therefore no human-readable output) wouldn't earn
-    ///    its keep.
-    ///
-    /// Open RE questions when this work resumes — see §10 of
-    /// `docs/save-editor-keys-plan.md`:
-    /// - Where do the other 87% appearance refs resolve? Probably a
-    ///   sibling table in 0008 we haven't located, or a runtime
-    ///   procedural system not exposed to gamedata.
-    /// - Body 21-byte schema — IDA-RE the appearance loader to
-    ///   identify field layout (likely outfit IDs, color values,
-    ///   accessory flags).
     ///
     /// Probe behaviour: validates the file location, pabgh schema,
     /// and the canonical save→pabgh transform end-to-end. Prints
@@ -1499,29 +1495,15 @@ mod tests {
 
     /// Cross-version investigation probe: loads a live Crimson Desert
     /// save, walks every `FieldNPCSaveData` and `FieldGimmickSaveData`
-    /// block, dumps the actual field shapes. The 2026-05-15 run against
-    /// a 1.07 `slot0/save.save` empirically confirmed:
+    /// block, dumps the actual field shapes and cat-byte distributions.
+    /// It checks the two key shapes the bridges rely on (§6 of
+    /// `docs/save-editor-keys-plan.md`):
     ///
-    /// - `FieldNPCSaveData._characterKey` IS a flat u32 of shape
-    ///   `0xCC_LLLLLL` (cat-byte hi + 24-bit lo) exactly as §6 of
-    ///   `docs/save-editor-keys-plan.md` documented. 228 instances,
-    ///   222 distinct values, 90+ distinct cat-byte values (0x06–0xfe).
-    ///   The shipped `crimson_characterinfo_*` bridge is correct.
-    /// - `FieldGimmickSaveData._gimmickInfoKey` IS a flat u32 with no
-    ///   cat-byte, matching the shipped `crimson_gimmickinfo_*` bridge.
-    ///   4264 instances across 549 distinct keys; slot-key range
-    ///   `[131, 957806]` (slightly wider than §6's `[1788, 953478]`).
-    ///
-    /// What the probe ALSO revealed (and §6 didn't capture in detail):
-    /// `FieldNPCSaveData` ships with 12 fields, not 4 — `_friendly` is
-    /// a `Locator<ExperienceLevelSaveData>` (not a bool), plus
-    /// `_nudeAppearanceIndexKey` / `_customizationAppearanceIndexKey`
-    /// (both `CharacterAppearanceIndexKey` u64 — an unbridged key
-    /// type), `_armorDyeAppearanceIndexKey` (u8), `_touchID` (u64),
-    /// and a `_memoryOfTargetList` sublist. `FieldGimmickSaveData`
-    /// ships 43 fields including `_saveRootFieldGimmickSaveDataKey`
-    /// (parent-gimmick reference), `_ownerLevelName`, `_stageKey`,
-    /// `_originSpawnTransform`, and many sub-lists.
+    /// - `FieldNPCSaveData._characterKey` is a flat u32 of shape
+    ///   `0xCC_LLLLLL` (cat-byte hi + 24-bit lo), which the
+    ///   `crimson_characterinfo_*` bridge strips.
+    /// - `FieldGimmickSaveData._gimmickInfoKey` is a flat u32 with no
+    ///   cat-byte, as the `crimson_gimmickinfo_*` bridge expects.
     ///
     /// Run with:
     /// ```text
@@ -1530,7 +1512,7 @@ mod tests {
     /// ```
     ///
     /// Picks up the save from `%LOCALAPPDATA%\Pearl Abyss\CD\save\
-    /// <account>\slot0\save.save` by default — override via
+    /// <account>\slot107\save.save` by default — override via
     /// `CRIMSON_LIVE_SAVE`. `#[ignore]` so it never runs in the
     /// default suite (this is a diagnostic, not a regression gate —
     /// the shipped tests cover the bridge contract).
@@ -1543,7 +1525,7 @@ mod tests {
             .map(PathBuf::from)
             .or_else(|| {
                 // Default: walk `%LOCALAPPDATA%\Pearl Abyss\CD\save\` and
-                // pick the first `<account>/slot0/save.save` we find.
+                // pick the first `<account>/slot107/save.save` we find.
                 // The account directory is per-Steam-account so we don't
                 // hardcode it.
                 let appdata = std::env::var_os("LOCALAPPDATA")?;
@@ -1775,8 +1757,8 @@ mod tests {
     /// Schema probe for `InventorySaveData`. Dumps the first
     /// `InventorySaveData` block's field-by-field tree — top level,
     /// first inventory container, first item inside that container —
-    /// so we can pin the exact field names + types before shipping
-    /// the `crimson_save_list_inventory_items` C ABI.
+    /// to check the field names + types the
+    /// `crimson_save_list_inventory_items` C ABI relies on.
     #[test]
     #[ignore = "investigation only — InventorySaveData schema discovery"]
     fn _probe_inventory_save_data_schema() {
@@ -1919,15 +1901,13 @@ mod tests {
     /// first dye element's field tree. The schema baseline + sample
     /// values are reference data for CrimsonAtomtic's Dye editor.
     ///
-    /// What this confirms (verified 2026-05-15 against the 1.07
-    /// `slot0/save.save`):
+    /// The layout it checks:
     ///
     /// - `_itemDyeDataList` is field 14 of `ItemSaveData`, type
     ///   `ReflectObject`, `meta_size=0`. When present, it decodes as
     ///   `FieldValue::ObjectList<ItemDyeSaveData>`.
-    /// - Per-element schema (from PyQt5 reference editor's RE work in
-    ///   `D:\Github\CRIMSON-DESERT-SAVE-EDITOR-AND-GAME-MODS\
-    ///   CrimsonSaveEditor\parc_inserter3.py:1740-1785`):
+    /// - Per-element schema (from the PyQt5 reference editor,
+    ///   `CrimsonSaveEditor\parc_inserter3.py`):
     ///
     ///   | Mask | Field                     | Type    |
     ///   |------|---------------------------|---------|
@@ -1940,13 +1920,8 @@ mod tests {
     ///   | 0x40 | `_dyeColorGroupInfoKey`   | u32 LE  |
     ///   | 0x80 | `_texturePalleteKey`      | u16/u32 |
     ///
-    /// Also scans `0008/0.pamt` for `*dye*` files — the next-session
-    /// task is to parse the gamedata-side dye table (`dyeinfo.pabgb`
-    /// or similar) so per-item slot counts come from gamedata
-    /// directly rather than the PyQt5 reference editor's
-    /// hand-maintained `dye_slot_counts.json`. The CrimsonAtomtic
-    /// Dye editor v1 can still ship with the JSON approach while
-    /// this gamedata RE is in flight.
+    /// Also lists the `*dye*` files in `0008/0.pamt` — the
+    /// gamedata-side dye tables that per-item slot counts come from.
     #[test]
     #[ignore = "investigation only — ItemDyeSaveData schema + dyeinfo file discovery"]
     fn _probe_item_dye_data() {
@@ -2113,7 +2088,7 @@ mod tests {
             eprintln!("  (+{} more)", sample_paths.len() - 10);
         }
 
-        // ── Scan 0008 for *dye* files (next-session gamedata work) ──
+        // ── Scan 0008 for *dye* files ──────────────────────────────
         let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
@@ -2148,8 +2123,9 @@ mod tests {
     }
 
     /// `TransformSaveData` schema dump — finds the active character's
-    /// position field on slot102 and reports the full schema for the
-    /// (singleton) TransformSaveData block.
+    /// position field in the live save (slot107 unless
+    /// `CRIMSON_LIVE_SAVE` names another) and reports the full schema
+    /// for the (singleton) TransformSaveData block.
     #[test]
     #[ignore = "investigation only — TransformSaveData schema + active char position"]
     fn _probe_transform_save_data_slot107() {
@@ -2331,24 +2307,18 @@ mod tests {
 
     /// CE-coord vs save-coord cross-check probe.
     ///
-    /// User provided 10 CE-injected world coordinates from slot102
-    /// (active character + 9 Abyss waypoints). This probe loads
-    /// slot102 and:
+    /// Loads the live save (slot107 unless `CRIMSON_LIVE_SAVE` names
+    /// another) and:
     /// 1. Walks every TOC block + descendant looking for `float3`
-    ///    fields whose values match (or are near) the user's CE
-    ///    reading for the active character's position:
-    ///    `(-502.6116638, 610.5791016, -373.8612671)`.
+    ///    fields whose values match (or are near) a Cheat Engine
+    ///    reading of the active character's position (`CE_TARGET`).
     /// 2. For each match, reports the block class + field name + raw
     ///    value, plus the L1 distance to the CE target.
-    /// 3. Settles whether the save and CE use the same coordinate
-    ///    system, the same units, or whether there's a scale factor
-    ///    to apply. The previous merc[0] dump from slot103 had
-    ///    `_spawnPosition=F32x3([-8253.564, 524.6316, -3334.9424])`
-    ///    — a different character at a different location, so the
-    ///    8253 vs 502 magnitude difference doesn't necessarily mean
-    ///    a unit mismatch. This probe is the definitive check.
+    /// 3. Lists the largest-magnitude float3 fields, to tell whether
+    ///    the save and CE use the same coordinate system and units or
+    ///    need a scale factor.
     #[test]
-    #[ignore = "investigation only — find char position in slot102, cross-check CE coords"]
+    #[ignore = "investigation only — find the active character position in a live save, cross-check CE coords"]
     fn _probe_active_char_position_slot107() {
         use crate::save::{Body, FieldValue, ScalarValue, Save};
 
@@ -2375,8 +2345,9 @@ mod tests {
         let body = Body::parse(&save.body).expect("parse body");
         let blocks = body.decode_blocks(&save.body);
 
-        // User's CE reading for char position in slot102.
-        // (truncated to f32 precision — clippy::excessive_precision)
+        // A Cheat Engine reading of the active character's position
+        // in the save the probe targets (truncated to f32 precision —
+        // clippy::excessive_precision).
         const CE_TARGET: [f32; 3] = [-502.611_66, 610.579_1, -373.861_27];
 
         // Walk every block + descendant; collect every present float3
@@ -2470,9 +2441,9 @@ mod tests {
         }
     }
 
-    /// Extract world-map DDS textures from group 0000 to local disk
-    /// for offline decoding into PNGs (the calibration step). Writes
-    /// to `<crate_root>/out/worldmap/<filename>.dds`.
+    /// Extract world-map DDS textures from groups 0012 and 0000 to
+    /// local disk for offline decoding into PNGs. Writes to
+    /// `<current dir>/out/worldmap/<filename>.dds`.
     ///
     /// The DDS files are stored inside Pearl Abyss's PAZ container.
     /// This probe handles the PAZ-side decompression; the DDS body
@@ -2481,14 +2452,15 @@ mod tests {
     /// crimsonforge Python `core.dds_reader.decode_dds_to_rgba`
     /// understands both layers and returns flat RGBA pixels.
     ///
-    /// Targets the basemap layers + marker atlas + the tile patterns
-    /// that the world-map UI composes:
+    /// Targets the textures the world-map UI composes:
     ///
-    /// - `cd_uitexture_worldmap_00..04.dds` — basemap layers
+    /// - `cd_uitexture_worldmap_00..04.dds` — UI sprites (brush
+    ///   stamps, banners, masks), not a basemap
     /// - `cd_uitexture_worldmap_marker_00.dds` — marker atlas
     /// - `cd_worldmap_land_pattern.dds` / `_sea_pattern.dds` / `_paper_pattern.dds`
     /// - `cd_icon_worldmap_00.dds` — extra icons
-    /// - `cd_global_map_navigator_guide_00.dds` — navigator overlay
+    /// - `cd_global_map_navigator_guide_00.dds` — Korean-labelled
+    ///   faction overlay
     #[test]
     #[ignore = "investigation only — extract world-map DDS textures to disk"]
     fn _extract_worldmap_dds() {
@@ -2567,13 +2539,10 @@ mod tests {
         eprintln!("\nextracted: {extracted}, missing: {missing}");
     }
 
-    /// Wide-scope tile / heightmap / terrain hunt — the
-    /// `cd_uitexture_worldmap_00..04.dds` files we extracted earlier
-    /// turned out to be UI sprites (brush stamps, banners, masks),
-    /// NOT a basemap. `cd_global_map_navigator_guide_00.dds` is a
-    /// Korean-labelled faction overlay. The actual player-facing
-    /// map is probably composed at runtime from terrain data —
-    /// this probe goes looking for that source data.
+    /// Wide-scope tile / heightmap / terrain hunt for the source data
+    /// of the player-facing map. The `cd_uitexture_worldmap_*` files
+    /// [`_extract_worldmap_dds`] pulls are UI sprites, not a basemap,
+    /// so the map is composed from terrain data.
     ///
     /// Scans every PAMT group's full file table for:
     /// 1. Region-name matches (HERNAND, PILUZE, CRIMSON, DEMENISS,
@@ -2757,13 +2726,12 @@ mod tests {
     /// Extract sample basemap candidates to disk so we can decode +
     /// inspect them visually. Targets:
     /// 1. `0015/leveldata/rootlevel/terrain/global/global_colormap.dds`
-    ///    — pre-stitched 5.6 MB whole-world colormap. The "is there a
-    ///    single existing rendered world image?" answer.
+    ///    — pre-stitched whole-world colormap.
     /// 2. One representative color tile from `terrain/color/` —
-    ///    confirms the per-tile resolution + coverage.
-    /// 3. `cd_worldmap_blur_height.dds` — 89 MB UI-side heightmap.
-    /// 4. `cd_worldmap_road_sdf_32768x32768.dds` — claimed 32768²
-    ///    road SDF; actual texture dims TBD.
+    ///    shows the per-tile resolution + coverage.
+    /// 3. `cd_worldmap_blur_height.dds` — UI-side heightmap.
+    /// 4. `cd_worldmap_road_sdf_32768x32768.dds` — road SDF (the name
+    ///    claims 32768²).
     #[test]
     #[ignore = "investigation only — extract basemap candidates for visual inspection"]
     fn _extract_basemap_candidates() {
@@ -2978,11 +2946,10 @@ mod tests {
 
     /// MercenarySaveData ownership probe — dumps `(merc_idx,
     /// _characterKey, resolved name, _ownedCharacterKey)` for every
-    /// MercenarySaveData block. Used to investigate why some
+    /// MercenarySaveData block that carries equipment. Shows which
     /// player-controlled mounts (e.g. Kliff's Riding_Horse_Tiuta,
-    /// Animal_Stefano_Wild) aren't getting flagged as player-owned
-    /// by the current `_characterKey ∈ {1,4,6} || _ownedCharacterKey
-    /// ∈ {1,4,6}` rule.
+    /// Animal_Stefano_Wild) miss the `_characterKey ∈ {1,4,6} ||
+    /// _ownedCharacterKey ∈ {1,4,6}` player-owned rule.
     #[test]
     #[ignore = "investigation only — mercenary ownership field probe"]
     fn _probe_mercenary_ownership_slot107() {
@@ -3084,11 +3051,9 @@ mod tests {
     }
 
     /// Container-class schema dump — dumps the field schema of the
-    /// host classes the all-items enumerator needs to walk
-    /// (EquipmentSaveData, InventoryElementSaveData, MercenarySaveData,
-    /// MercenaryClanSaveData, UseItemReserveSlotElementSaveData). Used
-    /// to pin field-index → field-name mappings for the new
-    /// `crimson_save_list_all_items` C ABI surface.
+    /// host classes the all-items enumerator walks (`target_classes`),
+    /// to check the field-index → field-name mappings the
+    /// `crimson_save_list_all_items` C ABI surface relies on.
     #[test]
     #[ignore = "investigation only — container class field schema dump for the all-items enumerator"]
     fn _probe_container_classes_for_all_items() {
@@ -3289,22 +3254,19 @@ mod tests {
     /// / texturePallete / disableSymbol) for each hit — i.e. every dye
     /// the player has applied across the whole save.
     ///
-    /// Defaults to `slot103/save.save` because that's where the
-    /// 2026-05-17 in-game dye-application session lives (user dyed
-    /// multiple items via the NPC dye UI — Hernand / Pailune themes,
-    /// the bright / dark / normal tiers across the red / yellow color
-    /// families). Override with `CRIMSON_DYE_PROBE_SAVE` for other
-    /// slots.
+    /// Reads `CRIMSON_DYE_PROBE_SAVE`, else `CRIMSON_LIVE_SAVE`, else
+    /// `slot107/save.save`; point it at a save with dyes applied
+    /// through the in-game NPC dye UI.
     ///
     /// Output table per hit:
     ///   `(parent_class, item_key, dye_idx, R, G, B, A, slotNo,
     ///    grime, colorGroup, texturePallete, disableSymbol, path)`
     ///
-    /// Counterpart to [`_probe_item_dye_data`] (slot0, single sample,
+    /// Counterpart to [`_probe_item_dye_data`] (single sample,
     /// schema-validation only). This one is the **data-collection**
     /// probe: it doesn't enforce a schema, it just enumerates.
     #[test]
-    #[ignore = "investigation only — full dye enumeration anywhere in tree (default slot103)"]
+    #[ignore = "investigation only — full dye enumeration anywhere in a live save tree"]
     fn _probe_item_dye_data_anywhere_slot107() {
         use crate::save::{Body, FieldValue, ScalarValue, Save};
 
@@ -3524,27 +3486,25 @@ mod tests {
 
     /// Full dye enumeration with mercenary-template resolution.
     ///
-    /// Sibling of [`_probe_item_dye_data_anywhere_slot107`]. The
-    /// earlier probe walks the same tree but doesn't distinguish
-    /// mercenary classes (mounts vs human mercenaries) — both share
-    /// `MercenarySaveData` and only the `_mercenaryKey` template ID
-    /// tells them apart (e.g. `0 → "Mercenary_Main"`, `7 →
-    /// "Vehicle_Horse"`). This probe resolves that key for every
+    /// Sibling of [`_probe_item_dye_data_anywhere_slot107`], which
+    /// walks the same tree but doesn't distinguish mercenary classes
+    /// (mounts vs human mercenaries) — both share `MercenarySaveData`
+    /// and only the `_characterKey` template ID tells them apart. This
+    /// probe resolves that key through `characterinfo` for every
     /// mercenary container in the save and tags its equipment list /
     /// inventory list / dye hits accordingly.
     ///
     /// Catches:
     /// - All `_itemDyeDataList` hits across **every** ItemSaveData host
-    ///   the skeleton probe surfaced (EquipSlotElement, MercenarySaveData
-    ///   equip+inventory, InventoryElement, UseItemReserveSlot, faction,
-    ///   stores — though the latter two rarely carry user dyes).
+    ///   the skeleton probe surfaces (faction and store hosts rarely
+    ///   carry user dyes).
     /// - Per-mercenary roll-up: items held, dyed items, mount-vs-human
     ///   classification.
     ///
-    /// Defaults to `slot103/save.save`; override with
-    /// `CRIMSON_DYE_PROBE_SAVE`. Requires the live game install for
-    /// MercenaryKey name resolution; falls back to raw u32 keys if the
-    /// gamedata pamt isn't available.
+    /// Reads `CRIMSON_DYE_PROBE_SAVE`, else `CRIMSON_LIVE_SAVE`, else
+    /// `slot107/save.save`. Uses the live game install for CharacterKey
+    /// name resolution; falls back to raw u32 keys if the gamedata pamt
+    /// isn't available.
     #[test]
     #[ignore = "investigation only — dye enumeration with mount / mercenary template resolution"]
     fn _probe_item_dye_data_with_mercenary_resolution() {
@@ -3725,8 +3685,8 @@ mod tests {
 
         eprintln!("\n  total MercenarySaveData blocks: {merc_total}");
         eprintln!("  of which mounts (Vehicle/Horse/Mount): {mount_total}");
-        // Filter: only show non-empty / main entries (the 96-row dump
-        // is too noisy otherwise).
+        // Filter: only show non-empty / main entries (the full dump is
+        // too noisy otherwise).
         let mut shown = 0usize;
         for (path, _i, key, name, merc_no, is_main, equip, inv, dyes) in &merc_rows {
             if *equip == 0 && *inv == 0 && *dyes == 0 && !*is_main { continue; }
@@ -3901,65 +3861,32 @@ mod tests {
 
     /// Abyss-gate per-gate mapping probe — Path B (`CrimsonAtomtic`) input.
     ///
-    /// CrimsonAtomtic wants to replace the bulk "unlock all abyss gates"
-    /// UX from the PyQt5 reference editor with per-gate controls
-    /// (toggle lock state, mark discovered, set puzzle state). To do
-    /// that it needs to identify each abyss-gate `FieldGimmickSaveData`
-    /// block in a save and know which state-hash values mean what.
-    /// This probe builds that mapping end-to-end.
-    ///
-    /// What it does (2026-05-15 baseline against a 1.07 `slot0/save.save`):
+    /// CrimsonAtomtic's per-gate controls (toggle lock state, mark
+    /// discovered, set puzzle state) need each abyss-gate
+    /// `FieldGimmickSaveData` block in a save and the meaning of its
+    /// state-hash values. This probe builds that mapping end-to-end:
     ///
     /// 1. Loads `gimmickinfo.pabgb` (via the shipped parser) and
     ///    collects every row whose internal name contains "abyss" or
-    ///    "hyperspace". 2,313 rows match in 1.07.
-    /// 2. Walks the live save's `FieldGimmickSaveData` blocks (4,264
-    ///    in this save), filters for those whose `_gimmickInfoKey`
-    ///    lands in the abyss set. 356 blocks match.
+    ///    "hyperspace".
+    /// 2. Walks the live save's `FieldGimmickSaveData` blocks and
+    ///    keeps those whose `_gimmickInfoKey` lands in the abyss set.
     /// 3. For each match dumps `(_gimmickInfoKey, internal_name,
     ///    _ownerLevelName, _initStateNameHash, _isLockState,
     ///    _fieldGimmickSaveDataKey)` and writes the full table to
     ///    `out/abyss_gate_probe/mapping.json` (gitignored).
-    /// 4. Asserts the **three known `_initStateNameHash` constants**
-    ///    that this save sample surfaces:
+    /// 4. Asserts the **three known `_initStateNameHash` constants**:
     ///
-    /// | Hash         | Count | Empirical meaning |
-    /// |--------------|-------|-------------------|
-    /// | `0x866c7489` | 88    | Default / "untouched" — assigned to bridge gimmicks the player hasn't crossed yet |
-    /// | `0xe300acfe` | 16    | Activated — assigned to bridge gimmicks the player HAS crossed (state visibly changed in-game) |
-    /// | `0x150b14d0` | 252   | Idle / decoration — standstones, artifacts, ambient abyss pieces |
+    /// | Hash         | Empirical meaning |
+    /// |--------------|-------------------|
+    /// | `0x866c7489` | Default / "untouched" — assigned to bridge gimmicks the player hasn't crossed yet |
+    /// | `0xe300acfe` | Activated — assigned to bridge gimmicks the player HAS crossed (state visibly changed in-game) |
+    /// | `0x150b14d0` | Idle / decoration — standstones, artifacts, ambient abyss pieces |
     ///
-    /// The hash → state-name decode is NOT pinned yet. None of Jenkins
-    /// hashlittle / hashlittle2 / FNV-1a / SDBM / DJB2 / CRC32 with the
-    /// seeds we tried produced a match against either common state-name
-    /// candidates (Locked / Unlocked / Active / Root / Idle / …) or the
-    /// ASCII strings harvested from the matching `.binarygimmick` files
-    /// (`gimmick_abyssone_bridge_gate_01.binarygimmick`,
-    /// `abyss_standstone_01.binarygimmick`). PA's HashCode32 appears
-    /// to use a custom algorithm; cracking the decode requires IDA
-    /// decompilation of the engine's hash routine (or one known
-    /// `(name, hash)` pair to back-fit). See `docs/abyss-gate-map.md`
-    /// §"Open RE" for the resume plan.
-    ///
-    /// **Useful breadcrumb for the decode work**: within each
-    /// `.binarygimmick` body the state hash appears as a structured
-    /// record. For example, in `gimmick_abyssone_bridge_gate_01.binarygimmick`
-    /// at offset `0x16b`:
-    /// ```text
-    /// [0x283bf40d][0x7c9c9e2f][0xfd45d6ee][0x5bdda844][0x866c7489 00 00 00 00][0x866c7489 00 00 00 00] …
-    /// ```
-    /// The trailing duplicated `[state_hash][00 00 00 00]` pair is the
-    /// state node record. The four preceding hashes are likely event-
-    /// handler hashes (Enter / Exit / Frame / …) that re-appear across
-    /// every state node — same shape observed in `abyss_standstone_01.binarygimmick`
-    /// at a different offset. Cracking any one of those 4 handler-name
-    /// hashes would give us the back-fit.
-    ///
-    /// Empirical state values are enough for the editor today — Path B
-    /// can hardcode the three constants and patch
-    /// `FieldGimmickSaveData._initStateNameHash` directly, no name
-    /// decode needed. See `docs/abyss-gate-map.md` for the full
-    /// implementation outline.
+    /// The hash → state-name decode is not known; the editor patches
+    /// `FieldGimmickSaveData._initStateNameHash` with these constants
+    /// directly. The hashes tried, the `.binarygimmick` state-node
+    /// layout and the open questions are in `docs/abyss-gate-map.md`.
     #[test]
     #[ignore = "investigation only — abyss gate mapping for CrimsonAtomtic Path B"]
     fn _probe_abyss_gate_mapping() {
@@ -4133,9 +4060,9 @@ mod tests {
         for (h, count) in &hash_counts {
             eprintln!("  0x{h:08x}: {count} gates");
         }
-        // The three constants the Path B editor pin to. If any of these
-        // disappears across patches, the editor's per-gate UI will need
-        // a re-RE pass.
+        // The three constants the Path B editor pins to. If any of these
+        // disappears across patches, the editor's per-gate UI needs a
+        // re-RE pass.
         for &expected in &[0x866c_7489u32, 0xe300_acfeu32, 0x150b_14d0u32] {
             assert!(
                 hash_counts.contains_key(&expected),
@@ -4227,13 +4154,10 @@ mod tests {
     /// - `[EMPTY]`, `[FULL]` — sentinels
     /// - `%0`, `%1`, `%s`, `%d` — printf-style arg placeholders
     ///
-    /// Resolver scope decision (per `docs/save-editor-keys-plan.md`
-    /// status): only needed if a downstream consumer surfaces
-    /// description / dialogue / objective text. The shipped
-    /// `lookup_display_name` chains for Mission/Quest/Stage/Knowledge/
-    /// Character/GimmickInfo target the **title** namespaces (lo32 =
-    /// 0x30 / 0x100 / 0x101 / 0x490 / 0x200) where templates are rare
-    /// or absent — those bridges don't need a resolver.
+    /// A template resolver is only needed if a downstream consumer
+    /// surfaces description / dialogue / objective text: the shipped
+    /// `lookup_display_name` chains target the **title** namespaces
+    /// (`bridge_namespaces` below), where templates are rare or absent.
     #[test]
     #[ignore = "investigation only — paloc template density survey"]
     fn _probe_paloc_template_density() {
@@ -4352,22 +4276,17 @@ mod tests {
 
     /// Dye gamedata schema probe — phase 1, smallest table first.
     ///
-    /// Investigates the three `dye*.pabgb` + `.pabgh` tables surfaced
-    /// by `_probe_item_dye_data` to settle their on-disk layout so we
-    /// can ship anchor-scan / PABGH-indexed parsers + c_abi bridges
-    /// that replace the PyQt5 reference editor's hand-maintained
-    /// `dye_slot_counts.json`.
+    /// Dumps the on-disk layout of the three `dye*.pabgb` + `.pabgh`
+    /// tables listed by `_probe_item_dye_data` (background in
+    /// `docs/dye-editor-scope.md` §"Open RE"), smallest first:
     ///
-    /// Recommended order (see `docs/dye-editor-scope.md` §"Open RE"):
-    ///
-    /// 1. `dyecolorgroupinfo.pabgb` (~10 rows) — smallest, gets the
-    ///    schema right with a low-volume sample. Resolves
+    /// 1. `dyecolorgroupinfo.pabgb` — small. Resolves
     ///    `_dyeColorGroupInfoKey (u32)` → color group definition.
-    /// 2. `partprefabdyetexturepalleteinfo.pabgb` (~5 rows) — tiny
-    ///    sibling. Resolves `_texturePalleteKey (u16)` → material
-    ///    palette name (Cloth / Metal / Leather / etc.).
-    /// 3. `partprefabdyeslotinfo.pabgb` (~730 rows) — large, replaces
-    ///    the `dye_slot_counts.json` catalog. Per-prefab slot counts.
+    /// 2. `partprefabdyetexturepalleteinfo.pabgb` — tiny sibling.
+    ///    Resolves `_texturePalleteKey (u16)` → material palette name
+    ///    (Cloth / Metal / Leather / etc.).
+    /// 3. `partprefabdyeslotinfo.pabgb` — large; the per-prefab slot
+    ///    counts.
     ///
     /// What this probe dumps for each file:
     ///
@@ -4724,7 +4643,7 @@ mod tests {
         eprintln!("\n=== partprefabdyeslotinfo (full hex of a low-slot, mid-slot, high-slot row) ===");
         let pps_entries = crate::skill_info::parse_pabgh(&pps_pabgh).expect("parse pabgh");
         let pps_ranges = crate::skill_info::entry_ranges(&pps_entries, pps_pabgb.len());
-        // Print rows 0 (count=1), 5 (count=10), 9 (count=8) per the phase-1 dump
+        // Rows with low, mid and high slot counts, picked from the phase-1 dump.
         for &i in &[0usize, 5, 9, 13] {
             let (s, e) = pps_ranges[i];
             let body = &pps_pabgb[s..e];
@@ -4749,11 +4668,12 @@ mod tests {
         }
     }
 
-    /// Socket / gem schema probe — targets slot104 specifically.
+    /// Socket / gem schema probe — reads `CRIMSON_SOCKET_PROBE_SAVE`,
+    /// else slot107; point it at the slot104 socket fixture.
     ///
-    /// The user populated slot104 with 5 instances of "North Wind Trident"
-    /// (itemkey 310031) configured to exercise every socket-state
-    /// permutation we need for the C# socket editor:
+    /// slot104 holds 5 instances of "North Wind Trident" (itemkey
+    /// 310031) set up to exercise every socket-state permutation the
+    /// C# socket editor needs:
     ///
     /// | Weapon | Max sockets | Opened | Filled positions | Note |
     /// |---|---:|---:|---|---|
@@ -4764,7 +4684,7 @@ mod tests {
     /// | 5 | 5 | 5 | 2,4 (1002979); 1,3,5 empty | tests inverse sparse pattern |
     ///
     /// Item 1002979 ("爆走的力量審判") is a high-durability gem
-    /// (~100 endurance per the user). Vanilla gems are durability-less.
+    /// (~100 endurance). Vanilla gems are durability-less.
     ///
     /// What this dumps for each of the 5 weapons:
     ///
@@ -4782,11 +4702,11 @@ mod tests {
     ///    interpretation and check how non-socket items (e.g.
     ///    standalone gems in the inventory) encode their own endurance.
     #[test]
-    #[ignore = "investigation only — ItemSocketSaveData schema via slot104"]
+    #[ignore = "investigation only — ItemSocketSaveData schema from a live save"]
     fn _probe_item_socket_data() {
         use crate::save::{Body, FieldValue, ScalarValue, Save};
 
-        // ── Locate slot104 specifically ────────────────────────────
+        // ── Locate the probe save ──────────────────────────────────
         let save_path = std::env::var_os("CRIMSON_SOCKET_PROBE_SAVE")
             .map(PathBuf::from)
             .or_else(|| {
@@ -5011,16 +4931,16 @@ mod tests {
         }
     }
 
-    /// Phase-4 socket probe — finds **every block (in any class)**
-    /// across slot104 that has a present `_socketSaveDataList`, then
-    /// dumps the full schema of any item the user specifies via the
-    /// `CRIMSON_SOCKET_TARGET_KEYS` env var (comma-separated u32
-    /// itemkeys). Targets the EquipmentSaveData blocks that the
-    /// InventorySaveData-only walker missed.
+    /// Phase-4 socket probe — finds **every block (in any class)** in
+    /// the probe save (`CRIMSON_SOCKET_PROBE_SAVE`, else slot107) that
+    /// has a present `_socketSaveDataList`, then dumps the full schema
+    /// of any item named in the `CRIMSON_SOCKET_TARGET_KEYS` env var
+    /// (comma-separated u32 itemkeys). Covers the EquipmentSaveData
+    /// blocks an InventorySaveData-only walk misses.
     ///
     /// Default targets if no env var: 1002285 / 1002284 / 1000316
     /// (嘟嘟鳥放電盔甲 / 嘟嘟鳥馬羅尼雷射頭盔 / 嘟嘟鳥里西的鞋子 —
-    /// user's CE-modified examples with stuffed-beyond-vanilla sockets).
+    /// CE-modified examples with sockets stuffed beyond vanilla).
     ///
     /// Re-run with:
     ///   cargo test --lib --features c_abi _probe_item_socket_data_anywhere -- --ignored --nocapture
@@ -5048,7 +4968,7 @@ mod tests {
         };
         eprintln!("probing {}", save_path.display());
 
-        // Targets — default to the 3 user-flagged CE-modified items.
+        // Targets — default to the three CE-modified example items.
         let targets: std::collections::BTreeSet<u32> = std::env::var("CRIMSON_SOCKET_TARGET_KEYS")
             .ok()
             .map(|s| s.split(',').filter_map(|x| x.trim().parse::<u32>().ok()).collect())
@@ -5216,7 +5136,7 @@ mod tests {
             );
         }
 
-        // ── Anomaly summary across ALL hits (now including EquipmentSaveData).
+        // ── Anomaly summary across ALL hits (EquipmentSaveData included).
         let mut anomalies_all = 0u32;
         for hit in &hits {
             let FieldValue::ObjectList { elements: sockets, .. } = &hit.socket_field.value
@@ -5454,11 +5374,11 @@ mod tests {
         }
     }
 
-    /// Phase-2 socket probe — scans **every** item in slot104 with a
-    /// present `_socketSaveDataList`, validates the schema invariants
-    /// observed on the 5 reference tridents, and flags anomalies.
-    ///
-    /// What the previous probe (`_probe_item_socket_data`) established:
+    /// Phase-2 socket probe — scans **every** item in the probe save
+    /// (`CRIMSON_SOCKET_PROBE_SAVE`, else slot107) with a present
+    /// `_socketSaveDataList`, validates the schema invariants
+    /// `_probe_item_socket_data` reads off the 5 reference tridents,
+    /// and flags anomalies. The invariants (`docs/socket-editor-scope.md`):
     ///
     /// - `_socketSaveDataList.count == _maxSocketCount` (always)
     /// - Each `ItemSocketSaveData` has exactly 2 fields + 1 mask byte
@@ -5469,7 +5389,7 @@ mod tests {
     ///
     /// 1. Whether the invariants hold across ALL socket-bearing items
     ///    (armour, accessories, other weapons — not just the 5 tridents).
-    /// 2. **CE-modified anomalies** the user flagged: filled_count >
+    /// 2. **CE-modified anomalies**: filled_count >
     ///    `_validSocketCount` (overfilled item). These work in-game but
     ///    might break NPC-interface UIs.
     /// 3. Any unusual mask bytes (e.g. [0x01], [0x02]) suggesting a
@@ -5483,7 +5403,7 @@ mod tests {
     /// (filled ≤ valid) vs CE-modified (filled > valid). Plus a
     /// schema-invariant summary at the end.
     #[test]
-    #[ignore = "investigation only — full slot104 socket scan + anomaly detection"]
+    #[ignore = "investigation only — full socket scan of a live save + anomaly detection"]
     fn _probe_item_socket_data_full_scan() {
         use crate::save::{Body, FieldValue, ScalarValue, Save};
 
@@ -5991,7 +5911,7 @@ mod tests {
         let mut numeric: HashMap<u64, String> = HashMap::new();
         for e in &parsed.entries {
             if let Ok(k) = e.string_key.data.parse::<u64>() {
-                numeric.insert(k, e.string_value.data.to_owned());
+                numeric.insert(k, e.string_value.as_str().to_owned());
             }
         }
         eprintln!("loaded {} numeric PALOC entries", numeric.len());
@@ -6125,7 +6045,7 @@ mod tests {
             }
 
             // Identity chain: (key << 32) | lo32
-            // Hash hop:       (hashlittle2(name) << 32) | lo32
+            // Hash hop:       (hashlittle(name) << 32) | lo32
             // Try lo32 values we've seen for other tables.
             let los: &[u32] = &[
                 0x00, 0x30, 0x60, 0x70, 0x71, 0x80, 0x90, 0xc1, 0x100, 0x101, 0x102,
@@ -6306,7 +6226,7 @@ mod tests {
 
     /// Investigation probe — file discovery + schema sampling for the
     /// **StoreKey** / **MercenaryKey** / **`_itemKey → _partPrefabKey`**
-    /// bridges (next-session workstream).
+    /// bridges.
     ///
     /// What it does:
     /// 1. Lists every `store*` / `mercenary*` / `partprefab*` file in
@@ -6688,12 +6608,13 @@ mod tests {
         eprintln!("wrote linkage.txt ({} B)", linkage.len());
     }
 
-    /// Investigation probe — deepen the `_itemKey → _partPrefabKey`
-    /// linkage hunt now that the first probe ruled out the obvious
-    /// `iteminfo.prefab_data_list[].prefab_names[].0` candidate (0%
-    /// intersection across 5,377 items × 4,261 distinct hashes).
+    /// Investigation probe — `_itemKey → _partPrefabKey` linkage
+    /// strategies beyond the direct
+    /// `iteminfo.prefab_data_list[].prefab_names[].0` match the
+    /// previous probe tests (the join that works goes through
+    /// `stringinfo`; see `_probe_partprefab_string_linkage`).
     ///
-    /// Strategies tried here:
+    /// Strategies:
     /// 1. Cross-check partprefabdyeslotinfo row keys against
     ///    `stringinfo.pabgb` — are the row keys themselves StringInfoKey
     ///    hashes? If yes, resolving the key gives the prefab name, and
@@ -6962,10 +6883,8 @@ mod tests {
     }
 
     /// Investigation probe — broad scan across every PAMT group (0001..)
-    /// looking for a sibling table that might house the
-    /// `_itemKey → _partPrefabKey` linkage. Strategy v2 ruled out
-    /// iteminfo (0% direct u32 overlap) and stringinfo (0% partprefab-key
-    /// presence), so the linkage table likely lives elsewhere.
+    /// for a sibling table that might house the
+    /// `_itemKey → _partPrefabKey` linkage as a direct u32 map.
     ///
     /// Heuristics:
     /// 1. List every `.pabgb` filename across every 000N/PAMT, group by
@@ -6973,10 +6892,10 @@ mod tests {
     /// 2. Highlight files matching any of: `dye`, `prefab`, `item`,
     ///    `appearance`, `equipment`, `equip`, `wear` — these are the
     ///    plausible homes for an `(item_key, part_prefab_key)` map.
-    /// 3. For the top candidates (<200 KB), extract the file and check
-    ///    whether ANY u32 window in the body matches a known
-    ///    partprefabdyeslotinfo row key. If yes, that's our linkage
-    ///    table — record the file + the hit count.
+    /// 3. For the candidates up to 5 MB, smallest first, extract the
+    ///    file and check whether ANY u32 window in the body matches a
+    ///    known partprefabdyeslotinfo row key; record the file + the
+    ///    hit count.
     #[test]
     #[ignore = "investigation only — partprefab linkage table file search across all PAMT groups"]
     fn _probe_partprefab_linkage_table_scan() {
@@ -6991,7 +6910,7 @@ mod tests {
                 PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
             });
 
-        // First, gather the 1,105 partprefabdyeslotinfo keys from 0008.
+        // First, gather the partprefabdyeslotinfo keys from 0008.
         let pamt_0008 = match std::fs::read(game_root.join("0008").join("0.pamt")) {
             Ok(b) => b,
             Err(_) => {
@@ -7094,9 +7013,9 @@ mod tests {
             }
         }
 
-        // Sort candidates by ascending uncompressed size — small files first,
-        // they're cheap to probe and the linkage table is likely <500 KB
-        // (1,105 rows × maybe 16 bytes/row ≈ 18 KB minimum).
+        // Sort candidates by ascending uncompressed size — small files first:
+        // they're cheap to probe, and a key map over the partprefab rows
+        // would be a small table.
         candidates.sort_by_key(|c| c.4);
 
         let _ = writeln!(
@@ -7167,7 +7086,7 @@ mod tests {
     /// derivation rule like "prepend cd_ + lowercase" is in play).
     ///
     /// Also tests the Jenkins-hash hypothesis: for the first few
-    /// partprefab row keys, brute-force Jenkins hashlittle2 of the
+    /// partprefab row keys, brute-force Jenkins hashlittle of the
     /// row's `prefab_name` field with seed 0 / 0xDEBA1DCD / 1, see if
     /// any match the row key.
     #[test]
@@ -7439,13 +7358,7 @@ mod tests {
     }
 
     /// Investigation probe — schema dump for the **niche bridge**
-    /// candidates from the next-session list. Twelve table candidates:
-    /// `characterappearanceindexinfo`, `gameadviceinfo`,
-    /// `gameplayvariableinfo`, `itemgroupinfo`, `crafttoolinfo`,
-    /// `royalsupply` / `royalsupplyinfo`, `globalgameevent` /
-    /// `globalgameeventinfo`, `regioninfo`, `houseinfo`,
-    /// `factionresearch*`, `equipslotinfo`, `reserveslot` /
-    /// `reserveslotinfo`.
+    /// candidate tables (the candidate list in the probe body).
     ///
     /// For each candidate:
     /// 1. Locate the `.pabgb` + (optional) `.pabgh` in 0008's PAMT.
@@ -7759,14 +7672,13 @@ mod tests {
     /// Investigation probe — survey every `(type_name, meta_size, meta_kind)`
     /// triple in a live save's decoded blocks, focusing on composite
     /// scalar fields (meta_kind ∈ {0, 2} with `meta_size` not in
-    /// {1, 2, 4, 8}) that currently fall through `scalar_from_bytes`
-    /// to `ScalarValue::Bytes`.
+    /// {1, 2, 4, 8}) that fall through `scalar_from_bytes` to
+    /// `ScalarValue::Bytes`.
     ///
     /// Output (sorted by occurrence count) goes to
-    /// `out/composite_scalar_survey/summary.txt`. Driver for the
-    /// "extend `ScalarValue` with typed composite variants" work — the
-    /// decision of which `F32x{2,3,4}` / color / quat variants to add
-    /// is informed by what this probe actually finds in the wild.
+    /// `out/composite_scalar_survey/summary.txt`; it shows which
+    /// composite types (`F32x{2,3,4}` / color / quat) occur in real
+    /// saves and so which typed `ScalarValue` variants are worth having.
     #[test]
     #[ignore = "investigation only — composite-scalar type survey"]
     fn _probe_save_composite_types() {
@@ -7927,16 +7839,13 @@ mod tests {
         eprintln!("wrote out/composite_scalar_survey/summary.txt ({} B)", out.len());
     }
 
-    /// Positioned-entity schema probe — used to pin field-index +
-    /// field-name mappings for the new
-    /// `crimson_save_list_field_positions` C ABI surface. Scans the
-    /// entire save tree (top-level + nested) for every block class
-    /// that carries a present `F32x3` field, and reports
-    /// `(class_name, field_name, field_index)` with instance counts.
-    /// Also dumps the schema of the candidate host classes
-    /// (`MercenarySaveData`, `FieldNPCSaveData`, `FieldGimmickSaveData`,
-    /// `TransformFieldSaveData`, `GameData_GimmickPointData`) so the
-    /// ABI walker knows which descent path each container requires.
+    /// Positioned-entity schema probe — checks the field-index +
+    /// field-name mappings the `crimson_save_list_field_positions` C
+    /// ABI surface relies on. Scans the entire save tree (top-level +
+    /// nested) for every block class that carries a present `F32x3`
+    /// field, and reports `(class_name, field_name, field_index)` with
+    /// instance counts. Also dumps the schema of the candidate host
+    /// classes, which shows the descent path each container requires.
     #[test]
     #[ignore = "investigation only — positioned-entity host class schema"]
     fn _probe_positioned_entity_hosts() {
@@ -8075,7 +7984,7 @@ mod tests {
 
 #[cfg(test)]
 mod dlc_tests {
-    //! Merging `dlc_01`'s characterinfo copy (287 DLC-only characters on 2.06).
+    //! Merging `dlc_01`'s characterinfo copy (DLC-only characters).
     use super::*;
     use crate::binary::gamedata_layout::{body, extract_bin, extract_dlc_bin, header};
     use std::ptr;
@@ -8123,5 +8032,61 @@ mod dlc_tests {
         assert_eq!(unsafe { crimson_characterinfo_entry_source(ch, base, &mut src) }, error::OK);
         assert_eq!(src, 1);
         unsafe { crimson_characterinfo_free(ch) };
+    }
+}
+
+#[cfg(test)]
+mod hashed_key_tests {
+    //! The rows with a hashed 32-bit key: every lookup must reach them, not
+    //! only `get_entry` and `lookup_faction_key`.
+    use super::*;
+    use crate::binary::gamedata_layout::{self, body, extract_bin, header};
+    use crate::c_abi::paloc::{crimson_paloc_free, crimson_paloc_load_from_bytes};
+    use std::ptr;
+
+    fn name_of(h: *const CrimsonCharacterInfoHandle, key: u32) -> (i32, String) {
+        let mut buf = vec![0u8; 512];
+        let mut req = 0usize;
+        let rc = unsafe { crimson_characterinfo_lookup_string_key(h, key, buf.as_mut_ptr(), buf.len(), &mut req) };
+        let s = if rc == error::OK { String::from_utf8_lossy(&buf[..req.saturating_sub(1)]).into_owned() } else { String::new() };
+        (rc, s)
+    }
+
+    #[test]
+    fn every_row_key_resolves_live() {
+        let (Some(b), Some(hd)) = (extract_bin(&body("characterinfo")), extract_bin(&header("characterinfo"))) else {
+            eprintln!("skipping every_row_key_resolves_live: no game install");
+            return;
+        };
+        let mut h: *mut CrimsonCharacterInfoHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_characterinfo_load_from_bytes_with_header(b.as_ptr(), b.len(), hd.as_ptr(), hd.len(), &mut h) },
+            error::OK
+        );
+        let entries = unsafe { &*h }.entries.clone();
+        let hashed = entries.iter().filter(|(k, _)| k >> 24 != 0).count();
+        eprintln!("characterinfo: {} rows, {hashed} with a hashed 32-bit key", entries.len());
+        for (key, name) in &entries {
+            assert_eq!(name_of(h, *key), (error::OK, name.clone()), "CharacterKey {key:#x}");
+        }
+        // A save key with a cat-byte still reaches its 24-bit row.
+        assert_eq!(name_of(h, 0x0a00_0001), name_of(h, 1));
+
+        const NOBLE_1: u32 = 2_000_248_813; // NHM_Noble_1, a hashed 32-bit key
+        if let Some(pb) = gamedata_layout::paloc_bytes("0020", "eng") {
+            let mut p: *mut CrimsonPalocHandle = ptr::null_mut();
+            assert_eq!(unsafe { crimson_paloc_load_from_bytes(pb.as_ptr(), pb.len(), &mut p) }, error::OK);
+            let mut buf = vec![0u8; 256];
+            let mut req = 0usize;
+            let rc = unsafe {
+                crimson_characterinfo_lookup_display_name(
+                    h, p, NOBLE_1, CHARACTER_DISPLAY_NAME_LO32, buf.as_mut_ptr(), buf.len(), &mut req,
+                )
+            };
+            assert_eq!(rc, error::OK, "display name of NHM_Noble_1");
+            eprintln!("NHM_Noble_1 display name: {}", String::from_utf8_lossy(&buf[..req.saturating_sub(1)]));
+            unsafe { crimson_paloc_free(p) };
+        }
+        unsafe { crimson_characterinfo_free(h) };
     }
 }

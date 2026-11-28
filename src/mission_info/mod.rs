@@ -1,14 +1,11 @@
 //! `missioninfo.pabgb` parser — anchor-scan based.
 //!
 //! Full schema RE for byte-roundtrip is **not done** for this file. The
-//! Save Editor's contract only needs the `(MissionKey, internal_name)`
+//! Save Editor's contract needs the `(MissionKey, internal_name)`
 //! pair — the rest of each row (HP / drops / level data / etc.) is
-//! opaque to the resolver chain and can be added later if needed.
+//! opaque to the resolver chain.
 //!
-//! What's known about the row head (verified 2026-05-14 by anchor-
-//! scanning the live 1.06 file and cross-referencing the editor's
-//! handoff keycases — see `docs/save-editor-keys-plan.md`; 2.04 moved the
-//! key after the name and opens the body with a 0x00 byte):
+//! The legacy-layout row head (see `docs/save-editor-keys-plan.md`):
 //!
 //! ```text
 //! [u32 name_len][name_len bytes ASCII][u32 MissionKey][u8 0x00][...variable body]
@@ -16,16 +13,14 @@
 //!
 //! The head is identical in shape to `iteminfo.pabgb`. The variable
 //! body's size depends on the row's content (per-mission rewards / loc
-//! refs / conditional fields), ranging 334–390 bytes for the prologue
-//! cluster.
+//! refs / conditional fields).
 //!
 //! Anchor scanner is byte-by-byte with rigorous validation, identical
 //! in spirit to `python::scan_next_item_start` (which underpins the
-//! iteminfo lossy parser). False-positive rate on the live 2.04 file is
-//! zero against its `.pabgh` (4,428 anchors, every one an indexed row).
-//! The other 2,444 indexed rows are `Challenge_*` rows whose keys read as
-//! 0xFFFFFFxx (negative i32), outside the key rule below; 2.03 had the
-//! same 2,444.
+//! iteminfo lossy parser). Indexed rows keyed `0xFFFFxxxx` (`Mission_*`,
+//! `Challenge_*`, …) fall outside the key rule below, so the scan misses
+//! them; a 2.06 header lists every row, and
+//! [`parse_mission_info_lossy_with_header`] returns them all from it.
 
 use crate::binary::row_head::{is_row_name_byte, read_row_head};
 
@@ -36,16 +31,17 @@ pub struct MissionInfoEntry {
     /// `_missionStateList[N]._key`).
     pub key: u32,
     /// ASCII internal name (e.g. `"Mission_Intro_Tutorial_I"`). Feeds the
-    /// PALOC u64 lookup chain via `hashlittle2(name) << 32 | lo32`.
+    /// PALOC u64 lookup chain via `hashlittle(name) << 32 | lo32`.
     pub name: String,
 }
 
-/// 2.06+: row names live in the `.staticinfoheader`, so the body alone no
-/// longer carries them. Rebuilds the pre-2.06 layout from both and scans that;
-/// a pre-2.06 pair (or a header that is not the 2.06 shape) scans `data` as is.
+/// 2.06+: row names live in the `.staticinfoheader`, which lists every row,
+/// so with a 2.06 header the rows come from it, in header order (the anchor
+/// scan drops rows its key and name rules do not expect). A pre-2.06
+/// pair, or a header that is not the 2.06 shape, falls back to scanning `data`.
 pub fn parse_mission_info_lossy_with_header(data: &[u8], header: &[u8]) -> Vec<MissionInfoEntry> {
-    match crate::binary::static_header::to_legacy_layout(data, header) {
-        Some(t) => parse_mission_info_lossy(&t.body),
+    match crate::binary::static_header::header_row_names(data, header) {
+        Some(rows) => rows.into_iter().map(|(key, name)| MissionInfoEntry { key, name }).collect(),
         None => parse_mission_info_lossy(data),
     }
 }
@@ -56,7 +52,7 @@ pub fn parse_mission_info_lossy_with_header(data: &[u8], header: &[u8]) -> Vec<M
 /// name bytes, key and the body's opening 0x00 form a plausible row head.
 /// The validation rules:
 ///
-/// - `key != 0 && (key >> 24) == 0` — PA's gamedata keys are 7-digit
+/// - `key != 0 && (key >> 24) == 0` — regular mission keys are 7-digit
 ///   decimal numbers well under 2^24.
 /// - `name_len ∈ [2, 128]` — internal names range from short to
 ///   ~70-byte qualified paths.
@@ -69,14 +65,12 @@ pub fn parse_mission_info_lossy_with_header(data: &[u8], header: &[u8]) -> Vec<M
 ///   identifier check permits any `b >= 0x80`, but a real UTF-8
 ///   high byte is part of a multi-byte sequence — random high bytes
 ///   inside row bodies (rewards/HP/loc refs/etc.) routinely fail this
-///   check. Without it, ~16% of recovered rows were body-noise
-///   false-positives that `from_utf8_lossy` would render as
-///   `U+FFFD REPLACEMENT CHARACTER` glyphs. The strict check rejects
-///   them at scan time so the bridge never sees mojibake.
+///   check. The strict check rejects such body-noise names at scan
+///   time, so the bridge never sees mojibake (`U+FFFD` glyphs).
 ///
 /// Returns entries in the order they appear in the file. The bridge's
-/// `from_bytes` uses first-wins dedup so any legitimate duplicate
-/// MissionKey row (none observed in 1.06) is suppressed.
+/// `from_bytes` uses first-wins dedup so any duplicate MissionKey row is
+/// suppressed.
 pub fn parse_mission_info_lossy(data: &[u8]) -> Vec<MissionInfoEntry> {
     let mut entries = Vec::new();
     let mut cursor = 0;
@@ -97,15 +91,13 @@ pub fn parse_mission_info_lossy(data: &[u8]) -> Vec<MissionInfoEntry> {
 /// Validates UTF-8 in addition to the byte-level identifier-shape
 /// check — the latter permits any `b >= 0x80`, which lets random
 /// high bytes inside row bodies pass when they shouldn't. Strict
-/// UTF-8 catches them; see the parser's doc-comment for the
-/// CrimsonAtomtic editor's mojibake report (16% of mission rows
-/// were false-positives before this check landed).
+/// UTF-8 catches them; see the parser's doc comment.
 fn scan_next_anchor(data: &[u8], from: usize) -> Option<usize> {
     let n = data.len();
     let mut o = from;
     while o + 12 < n {
         let slen = u32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]) as usize;
-        // Length, name, key, then the 0x00 that opens every 2.04 row body —
+        // Length, name, key, then the 0x00 that opens every legacy-layout row body —
         // the byte that rejects most body strings followed by a small number.
         if (2..=128).contains(&slen) && o + 9 + slen <= n && data[o + 8 + slen] == 0 {
             let bytes = &data[o + 4..o + 4 + slen];
@@ -116,11 +108,10 @@ fn scan_next_anchor(data: &[u8], from: usize) -> Option<usize> {
                 data[o + 7 + slen],
             ]);
             // Require `_` in the name. Every real `Mission_*` / `Challenge_*`
-            // row has at least one; the body-byte false-positives the editor
-            // reported were 2-char fragments like `"fI"` that happened to
-            // share a `(key, slen)` with a real row at a later offset. Without
-            // this check, first-wins dedup picked the noise over the real
-            // anchor (the keycases bundle's report has the dump).
+            // row has at least one. Body-byte noise such as the 2-char
+            // `"fI"` can share a `(key, slen)` with a real row at a later
+            // offset, and first-wins dedup would then keep the noise over
+            // the real anchor.
             if key != 0
                 && (key >> 24) == 0
                 && bytes.contains(&b'_')
@@ -142,11 +133,11 @@ mod tests {
     //! valid file from scratch is impractical (4000+ rows with variable
     //! body sizes), so the only meaningful test is against real bytes.
     //!
-    //! Asserts the seven verified mappings from
+    //! Asserts the seven mappings from
     //! `docs/save-editor-keys-plan.md` ("Verified hash transform").
-    //! These map save-side MissionKey values to internal names, and
-    //! were independently traced to PALOC display titles. If any one
-    //! regresses, the bridge's resolution chain breaks for that quest.
+    //! These map save-side MissionKey values to internal names, each
+    //! traced to a PALOC display title. If any one regresses, the
+    //! bridge's resolution chain breaks for that quest.
 
     use crate::binary::gamedata_layout;
     use super::*;
@@ -166,10 +157,10 @@ mod tests {
         gamedata_layout::extract_bin(&gamedata_layout::body("missioninfo"))
     }
 
-    /// 2.06+: the row names live here. Empty when absent (an older install
-    /// needs none, and `parse_mission_info_lossy_with_header` then scans the body alone).
+    /// The 2.06 `.staticinfoheader` beside the body (it holds the row
+    /// names); panics when the install has the body but not the header.
     fn find_missioninfo_header() -> Vec<u8> {
-        gamedata_layout::extract_bin(&gamedata_layout::header("missioninfo")).unwrap_or_default()
+        gamedata_layout::extract_bin(&gamedata_layout::header("missioninfo")).expect("the 2.06 header next to the table body (install present but header missing: drift?)")
     }
 
     #[test]
@@ -178,18 +169,18 @@ mod tests {
             eprintln!("skipping mission_info_lossy_live: no game install");
             return;
         };
-        let entries = parse_mission_info_lossy_with_header(&data, &find_missioninfo_header());
+        let header = find_missioninfo_header();
+        let entries = parse_mission_info_lossy_with_header(&data, &header);
+        // A 2.06 header lists every row, keys >= 2^24 included, so the key
+        // rule below holds for the anchor scan alone.
+        let scanned = crate::binary::static_header::header_row_names(&data, &header).is_none();
         println!("parsed {} missioninfo entries from {} bytes", entries.len(), data.len());
 
-        // 1.06 sample showed ~4,300 mission entries; just assert plausible
-        // population, not a fixed count (patches add/remove missions).
-        assert!(
-            entries.len() > 1_000,
-            "expected >1000 mission entries, got {}",
-            entries.len()
-        );
+        // Every row the 2.06 header lists parses; a floor would let most of
+        // the table go missing unnoticed.
+        let listed = crate::binary::static_header::detect_named_pair(&header, &data).expect("2.06 header").2.len();
+        assert_eq!(entries.len(), listed, "rows parsed vs rows the header lists");
 
-        // Build a fast lookup and validate the seven verified mappings.
         let by_key: std::collections::HashMap<u32, &str> =
             entries.iter().map(|e| (e.key, e.name.as_str())).collect();
 
@@ -205,8 +196,8 @@ mod tests {
             );
         }
 
-        // Every key should be 7-digit-ish (< 2^24).
-        for e in &entries {
+        // Every scanned key should be 7-digit-ish (< 2^24).
+        for e in entries.iter().filter(|_| scanned) {
             assert!(
                 e.key < (1 << 24),
                 "MissionKey {} ({:?}) exceeds 2^24 — scanner constraint violated",
@@ -215,14 +206,10 @@ mod tests {
             );
         }
 
-        // Regression: filed by the CrimsonAtomtic editor at
-        // `D:\Github\CrimsonAtomtic\out\crimson-rs-issues\001-missioninfo-invalid-utf8-names.md`.
-        // The previous `from_utf8_lossy` parse let 791/4,939 mission
-        // rows (16%) through with one or more U+FFFD replacement
-        // characters in their internal name — body-byte noise that
-        // the byte-level `is_ident` check passed because it permits
-        // `b >= 0x80`. The strict `std::str::from_utf8` validation
-        // inside the scanner rejects those at scan time.
+        // No name carries a U+FFFD replacement character: body-byte noise
+        // passes the byte-level identifier check (it permits `b >= 0x80`),
+        // and the strict `std::str::from_utf8` validation inside the
+        // scanner rejects it at scan time.
         for e in &entries {
             assert!(
                 !e.name.contains('\u{fffd}'),
@@ -241,11 +228,11 @@ mod tests {
         }
 
         // Duplicate behaviour: `parse_mission_info_lossy` is allowed
-        // to return the same MissionKey more than once — observed
-        // for `MissionKey 65536 "Musket_0001_Phase01_00"` in the 1.06
-        // file (likely a row embedded as a body field of another
-        // row, indistinguishable from the real row at scanner level
-        // without a full body-RE pass). The bridge's first-wins
+        // to return the same MissionKey more than once — e.g.
+        // `MissionKey 65536 "Musket_0001_Phase01_00"` (likely a row
+        // embedded as a body field of another row, indistinguishable
+        // from the real row at scanner level without a full body
+        // decode). The bridge's first-wins
         // dedup in `CrimsonMissionInfoHandle::from_bytes` collapses
         // these. The invariant the bridge tests assert is that
         // `get_entry` never surfaces a duplicate key.

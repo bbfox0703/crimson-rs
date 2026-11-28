@@ -649,7 +649,7 @@ SaveKey (u32 in save file)
      "simple" prefix join         hash-hop join
      for tables whose names       for tables whose names map
      paloc-resolve directly       to PALOC u64 keys via
-     (e.g. SkillKey →             hashlittle2 (Mission/Quest/Stage)
+     (e.g. SkillKey →             hashlittle (Mission/Quest/Stage)
       "SkillName_<name>")
               │                            │
               └─────────────┬──────────────┘
@@ -676,9 +676,9 @@ hash-of-every-ASCII-identifier-in-questinfo+missioninfo pass.
 ### The transform
 
 ```
-PALOC u64 key = (hashlittle2_c(internal_name) << 32) | lo32_namespace
+PALOC u64 key = (hashlittle_c(internal_name) << 32) | lo32_namespace
 
-  hashlittle2_c      = the c output of the Jenkins hashlittle2 variant
+  hashlittle_c      = the c output of the Jenkins hashlittle variant
                         already in crimson-rs/src/crypto/checksum.rs
                         (custom init constant 0xDEBA1DCD)
   internal_name      = the ASCII identifier from <table>.pabgb row,
@@ -691,7 +691,7 @@ PALOC u64 key = (hashlittle2_c(internal_name) << 32) | lo32_namespace
 
 ### Verified mappings (10/10 of the user's first prologue + chapter 1)
 
-| User-facing title (English UI) | Internal name (from `missioninfo.pabgb`) | hi32 = hashlittle2_c |
+| User-facing title (English UI) | Internal name (from `missioninfo.pabgb`) | hi32 = hashlittle_c |
 | --- | --- | ---:|
 | Unfamiliar Lands | `Mission_Intro_Tutorial_I` | 1,891,183,967 |
 | In Ashes | `Mission_Intro_MainBattle` | 666,048,679 |
@@ -931,7 +931,7 @@ hash transform cracked, the resolution chain is just:
 ```
 save MissionKey (u32) 
    ├─► missioninfo.pabgb row → internal_name (e.g. "Mission_Intro_Tutorial_I")
-   ├─► hashlittle2_c(internal_name) = hi32
+   ├─► hashlittle_c(internal_name) = hi32
    ├─► (hi32 << 32) | 0x101 = u64 PALOC key
    └─► PALOC.lookup(u64_as_decimal_string) → "Unfamiliar Lands"
 ```
@@ -1415,7 +1415,7 @@ established:
   the PALOC hi32 directly. `(gimmick_key << 32) | 0x200` resolves to
   the display label (`"Fire"`, `"Prison"`, `"Broken Box"`, ...).
   Hash-hop probe over 30 sample internal names: zero hits at any
-  namespace — confirms the row key, not its hashlittle2, is the
+  namespace — confirms the row key, not its hashlittle, is the
   PALOC key.
 - **PALOC namespaces with meaningful content**:
   - `lo32 = 0x200` (512) — display label (530/530 of sample save's
@@ -1504,7 +1504,7 @@ probe confirmed zero meaningful hits at any namespace:
 - Pattern A (raw key) hits at `lo32 ∈ {0x402f1, 0x802f1, 0xc02f1}`
   return generic UI tooltip strings ("Unavailable during combat.")
   that share the small hi32 by coincidence, not real localizations.
-- hashlittle2(name) hash-hop probe: zero hits at any namespace.
+- hashlittle(name) hash-hop probe: zero hits at any namespace.
 
 The localized UI label the player sees (e.g. "Demenissian
 Reputation") is composed at runtime from the row's prefix
@@ -1637,13 +1637,13 @@ its keep.
 
 ### ~~Q1. The u32 → u64 quest-title hash transform~~ ✅ RESOLVED
 
-`hashlittle2_c(internal_name) << 32 | lo32_namespace`. Verified against
+`hashlittle_c(internal_name) << 32 | lo32_namespace`. Verified against
 10/10 user-provided Main Quest titles and 701 broader matches. See
 "Verified hash transform" above.
 
 ### ~~Q2. Does StageKey use the same transform?~~ ✅ RESOLVED
 
-Yes — `hashlittle2_c(name) << 32 | 0x101` (titles) or `0x102`
+Yes — `hashlittle_c(name) << 32 | 0x101` (titles) or `0x102`
 (descriptions). 6,911 PALOC matches, including `StageKey 1004305 →
 "Intro_Tutorial_Miseenscene_00" → "Mise-en-scene Before Intro Combat"`.
 See §5.
@@ -1764,7 +1764,7 @@ No public API breakage on existing surface.
   cracked hash hop: `missioninfo.pabgb` for individual quest titles,
   `questinfo.pabgb` for arc/chapter headings, hashed and looked up
   against PALOC u64 keys.
-- ~~Q1 hash transform~~ — **`hashlittle2_c(internal_name) << 32 |
+- ~~Q1 hash transform~~ — **`hashlittle_c(internal_name) << 32 |
   lo32_namespace`**, verified end-to-end against 7 user-provided Main
   Quest titles with matching save-side MissionKey values + completedTime
   monotonicity.

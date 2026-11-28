@@ -34,32 +34,14 @@ from pathlib import Path
 
 import crimson_rs
 
-from gamedata_layout import PalocTarget, discover_paloc_targets, resolve_bin_layout
+from gamedata_layout import PalocTarget, discover_paloc_targets, find_game_dir, resolve_bin_layout
 
-
-GAME_DIR_CANDIDATES = [
-    r"D:\SteamLibrary\steamapps\common\Crimson Desert",
-    r"F:\SteamLibrary\steamapps\common\Crimson Desert",
-    r"E:\SteamLibrary\steamapps\common\Crimson Desert",
-    r"C:\Program Files (x86)\Steam\steamapps\common\Crimson Desert",
-]
 
 BIN_GROUP = "0008"
 
 # Localization groups that may host the paloc files — the same generous range
 # export_for_ce.py scans (Korean lives in 0019, English in 0020).
 PALOC_GROUPS = [f"{n:04d}" for n in range(19, 50)]
-
-
-def find_game_dir(explicit: str | None) -> str:
-    if explicit:
-        if not Path(explicit).is_dir():
-            sys.exit(f"--game-dir not found: {explicit}")
-        return explicit
-    for c in GAME_DIR_CANDIDATES:
-        if Path(c).is_dir():
-            return c
-    sys.exit("Game install not found. Pass --game-dir.")
 
 
 def list_bin_files(game_dir: str, bin_dir: str) -> list[tuple[str, str]]:
@@ -135,7 +117,7 @@ def extract_paloc(game_dir: str, version: str, t: PalocTarget, out_dir: Path) ->
         "concatenating their entry lists reproduces the pre-2.01 single",
         f"localizationstring_{t.lang}.paloc blob. Read with crimson_rs.parse_paloc_bytes();",
         "a string_key is either a name or the decimal (hash << 32) | namespace, where",
-        "hash = hashlittle2 of the owning row's internal name (0x100 quest titles,",
+        "hash = hashlittle of the owning row's internal name (0x100 quest titles,",
         "0x101 mission and stage titles).",
     ]
     if wrapped:
@@ -171,6 +153,11 @@ def main() -> None:
         help="also keep this language's PALOC under <out>/paloc/<LANG>/ "
         "(repeatable; the archive keeps 'eng' from 2.02 on)",
     )
+    ap.add_argument(
+        "--force",
+        action="store_true",
+        help="write into an output directory that already has files in it",
+    )
     args = ap.parse_args()
 
     game = find_game_dir(args.game_dir)
@@ -181,6 +168,13 @@ def main() -> None:
     else:
         sys.exit("Pass --out or set CRIMSON_GAMEDATA_BIN.")
     paloc_targets = resolve_paloc(game, args.paloc)
+    # The archive is the ground truth once Steam has patched the install, and a
+    # rerun with the wrong --version would overwrite a kept version in place.
+    if out_dir.is_dir() and any(out_dir.iterdir()) and not args.force:
+        sys.exit(
+            f"{out_dir} already has files. It may be a kept version that cannot be "
+            "re-extracted; check --version, or pass --force to overwrite."
+        )
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Game dir : {game}")

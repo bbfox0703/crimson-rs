@@ -1,7 +1,7 @@
 //! `questinfo.pabgb` bridge — C ABI surface.
 //!
 //! Sibling of [`super::mission_info`]. Same architecture and same
-//! resolution chain (`QuestKey → name → hashlittle2 → u64 PALOC key
+//! resolution chain (`QuestKey → name → hashlittle → u64 PALOC key
 //! → display title`). The terminology / namespace defaults differ
 //! per Pearl Abyss's internal model:
 //!
@@ -30,7 +30,6 @@ use crate::quest_info::{parse_quest_info_lossy, parse_quest_info_via_pabgh};
 
 /// Opaque handle exposing `(QuestKey, internal_name)` lookups against
 /// the loaded `questinfo.pabgb`.
-#[repr(C)]
 pub struct CrimsonQuestInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,
@@ -74,11 +73,11 @@ impl CrimsonQuestInfoHandle {
 
 /// Parse `questinfo.pabgb` from disk via the anchor-scan path.
 ///
-/// Under-counts by 1 row in 1.08 (the anchor-scan's `_`-in-name
-/// validation drops `LevelSequencerSpawn` / `StartGame`, which have no
-/// underscore). **Prefer [`crimson_questinfo_load_from_file_with_pabgh`]**
+/// Without a sibling `.staticinfoheader`, the anchor scan's `_`-in-name
+/// validation drops rows whose name has no underscore (`StartGame`).
+/// **Prefer [`crimson_questinfo_load_from_file_with_pabgh`]**
 /// when both files are available — it returns the in-game-authoritative
-/// 1,019 entries instead of the anchor-scan's 1,018.
+/// key set.
 ///
 /// See [`super::mission_info`] for the full resolution-chain contract.
 ///
@@ -104,8 +103,14 @@ pub unsafe extern "C" fn crimson_questinfo_load_from_file(
             Err(_) => return error::IO,
         };
         // 2.06+: row names live in the `.staticinfoheader` next to the body.
-        let header = super::sibling_header(path_str);
+        let header = match super::sibling_header(path_str) {
+            Ok(h) => h,
+            Err(_) => return error::IO,
+        };
         let handle = CrimsonQuestInfoHandle::from_bytes(&bytes, header.as_deref());
+        if let Err(code) = crate::c_abi::check_rows(&bytes, header.as_deref(), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -114,7 +119,7 @@ pub unsafe extern "C" fn crimson_questinfo_load_from_file(
 
 /// Parse questinfo bytes already in memory via the anchor-scan path.
 ///
-/// Under-counts by 1 row in 1.08 (see
+/// The anchor scan drops rows whose name has no underscore (see
 /// [`crimson_questinfo_load_from_file`] for details). **Prefer
 /// [`crimson_questinfo_load_from_bytes_with_pabgh`]** for the
 /// authoritative key set.
@@ -142,6 +147,9 @@ pub unsafe extern "C" fn crimson_questinfo_load_from_bytes(
             unsafe { std::slice::from_raw_parts(data, data_len) }
         };
         let handle = CrimsonQuestInfoHandle::from_bytes(slice, None);
+        if let Err(code) = crate::c_abi::check_rows(slice, None, handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -151,7 +159,9 @@ pub unsafe extern "C" fn crimson_questinfo_load_from_bytes(
 /// Parse in-memory `questinfo` bytes together with the table's
 /// `.staticinfoheader`. Required from 2.06, where row names moved out of the
 /// body into the header: `crimson_questinfo_load_from_bytes` on a 2.06 body finds
-/// no rows. On an older install the header is not needed and is ignored.
+/// no rows, and returns `BODY_PARSE` for it. A header that is not the 2.06 shape
+/// or does not match the body is `BODY_PARSE` too (the parsers read the latest
+/// patch only).
 ///
 /// # Safety
 /// `data` / `header` must point to `data_len` / `header_len` readable bytes
@@ -183,6 +193,9 @@ pub unsafe extern "C" fn crimson_questinfo_load_from_bytes_with_header(
             unsafe { std::slice::from_raw_parts(header, header_len) }
         };
         let handle = CrimsonQuestInfoHandle::from_bytes(slice, Some(header));
+        if let Err(code) = crate::c_abi::check_rows(slice, Some(header), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -193,7 +206,7 @@ pub unsafe extern "C" fn crimson_questinfo_load_from_bytes_with_header(
 /// **recommended** path.
 ///
 /// Uses the PABGH `[u32 count][(u32 key, u32 offset)*]` index for the
-/// in-game-authoritative key list (1,019 on 1.08), then reads the
+/// in-game-authoritative key list, then reads the
 /// `[u32 slen][slen bytes][u32 key_repeat]` row head at each offset
 /// from PABGB. Returns the same entries the in-game iterator does —
 /// no `_`-in-name validation rejecting legitimate rows.
@@ -229,6 +242,9 @@ pub unsafe extern "C" fn crimson_questinfo_load_from_file_with_pabgh(
             Err(_) => return error::IO,
         };
         let handle = CrimsonQuestInfoHandle::from_pabgh_and_pabgb(&pabgh, &pabgb);
+        if let Err(code) = crate::c_abi::check_rows(&pabgb, Some(&pabgh[..]), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -273,6 +289,9 @@ pub unsafe extern "C" fn crimson_questinfo_load_from_bytes_with_pabgh(
             unsafe { std::slice::from_raw_parts(pabgh_ptr, pabgh_len) }
         };
         let handle = CrimsonQuestInfoHandle::from_pabgh_and_pabgb(pabgh, pabgb);
+        if let Err(code) = crate::c_abi::check_rows(pabgb, Some(pabgh), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -352,7 +371,7 @@ pub unsafe extern "C" fn crimson_questinfo_lookup_string_key(
 // ── Display-name lookup (production — one-shot chain) ──────────────────────
 
 /// One-shot title resolution: chain `QuestKey → internal name →
-/// hashlittle2 → PALOC u64 key → localized string`. Same shape as
+/// hashlittle → PALOC u64 key → localized string`. Same shape as
 /// [`super::mission_info::crimson_missioninfo_lookup_display_name`].
 ///
 /// Common `lo32_namespace` values for questinfo rows:
@@ -651,8 +670,7 @@ mod tests {
     }
 
     /// PABGH-driven loader: confirms the anchor-scan path drops the
-    /// no-underscore entry (`StartGame`) that PABGH loads. 2.04 removed the
-    /// other one this used to pin, `LevelSequencerSpawn` (key 1000414).
+    /// no-underscore entry (`StartGame`) that PABGH loads.
     #[test]
     fn c_abi_questinfo_with_pabgh_recovers_no_underscore_rows() {
         let Some(pamt_path) = find_pamt() else {
@@ -715,7 +733,12 @@ mod tests {
         let rc_pabgh = unsafe {
             crimson_questinfo_lookup_string_key(pabgh_h, key, ptr::null_mut(), 0, &mut req)
         };
-        assert_eq!(rc_anchor, error::NOT_FOUND);
+        // A 2.06 header lists the row, so `_with_header` finds it too; the
+        // anchor scan of a pre-2.06 body still drops it.
+        let header_lists_rows =
+            crate::binary::static_header::header_row_names(&q_pabgb, &q_pabgb_header).is_some();
+        let expect_anchor = if header_lists_rows { error::BUFFER_TOO_SMALL } else { error::NOT_FOUND };
+        assert_eq!(rc_anchor, expect_anchor);
         assert_eq!(rc_pabgh, error::BUFFER_TOO_SMALL);
 
         unsafe { crimson_questinfo_free(anchor_h) };

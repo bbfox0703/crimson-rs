@@ -2,18 +2,17 @@
 //!
 //! Resolves `GameAdviceInfoKey (u32)` — gameplay-tip / hint
 //! templates surfaced by the in-game advice system (`Advice_Control_Move`,
-//! `Advice_Control_Battle`, …). 461 rows in 1.07. Each row carries a
+//! `Advice_Control_Battle`, …). Each row carries a
 //! pair of 20-byte ASCII PALOC numeric keys that resolve to the
 //! localized tip body / title via `localizationstring_eng.paloc`, in
 //! the same hash-hop pattern used by mission / quest / stage / knowledge.
 //!
-//! This bridge ships **name-only** for now — the PALOC chain probe is
-//! deferred to a follow-on session. The internal name
-//! (`Advice_Control_Move` etc.) is the save-layer's stable identifier
-//! and is what most consumers need today.
+//! This bridge is **name-only**: it does not follow the PALOC chain.
+//! The internal name (`Advice_Control_Move` etc.) is the save-layer's
+//! stable identifier.
 //!
 //! Standard `u16 count + (u32 key, u32 offset)*` PABGH. Row body starts
-//! with `[u32 name_len][name][u32 key]` (2.04 swapped key and name).
+//! with `[u32 name_len][name][u32 key]`.
 
 use crate::binary::row_head::read_row_head;
 
@@ -54,7 +53,6 @@ pub fn parse_game_advice_info_lossy(
 mod tests {
     use crate::binary::gamedata_layout;
     use super::*;
-    use std::path::PathBuf;
 
     const KNOWN: &[(u32, &str)] = &[
         (0x9cfd99b0, "Advice_Control_Move"),
@@ -63,37 +61,12 @@ mod tests {
     ];
 
     fn find_table_bytes() -> Option<(Vec<u8>, Vec<u8>)> {
-        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
-            });
-        let pamt_path = game_root.join("0008").join("0.pamt");
-        if !pamt_path.is_file() {
-            return None;
-        }
-        let pamt_bytes = std::fs::read(&pamt_path).ok()?;
-        let pamt = crate::binary::pamt::PackMeta::parse(&pamt_bytes, None).ok()?;
-        let dir = pamt
-            .directories
-            .iter()
-            .find(|d| d.path == gamedata_layout::bin_dir())?;
-        let group_dir = game_root.join("0008");
-        let pabgb = crate::binary::paz::extract_file(
-            &group_dir,
-            dir.files.iter().find(|f| f.name == gamedata_layout::body("gameadviceinfo"))?,
-            gamedata_layout::bin_dir(),
-            &pamt.header.encrypt_info.encrypt_info,
-        )
-        .ok()?;
-        let pabgh = crate::binary::paz::extract_file(
-            &group_dir,
-            dir.files.iter().find(|f| f.name == gamedata_layout::header("gameadviceinfo"))?,
-            gamedata_layout::bin_dir(),
-            &pamt.header.encrypt_info.encrypt_info,
-        )
-        .ok()?;
-        Some((pabgb, pabgh))
+        // None only when the install (or the table) is absent; an install
+        // that is there but unreadable fails the test.
+        Some((
+            gamedata_layout::extract_bin(&gamedata_layout::body("gameadviceinfo"))?,
+            gamedata_layout::extract_bin(&gamedata_layout::header("gameadviceinfo"))?,
+        ))
     }
 
     #[test]

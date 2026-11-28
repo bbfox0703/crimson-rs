@@ -2,8 +2,8 @@
 //!
 //! Resolves `PartPrefabDyeTexturePalleteKey (u16)` — the gamedata
 //! key stored as `ItemDyeSaveData._texturePalleteKey` in the save's
-//! `_itemDyeDataList`. 11 rows in 1.07 (key 0..=10). Each row defines
-//! a "palette tier" — a set of 2 or 3 material sub-records (cloth /
+//! `_itemDyeDataList`. 11 rows (keys 0..=10; the live test pins them). Each row defines
+//! a "palette tier" — a set of 3 material sub-records (cloth /
 //! leather / metal) with paired icon + texture DDS paths.
 //!
 //! Lookup keys here are exposed as `u32` for cross-bridge consistency
@@ -24,14 +24,13 @@ use std::collections::HashMap;
 use std::os::raw::c_char;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use super::error;
+use super::{error, write_str_to_buf};
 use crate::part_prefab_dye_texture_pallete_info::{
     PartPrefabDyeTexturePalleteEntry, parse_part_prefab_dye_texture_pallete_info_lossy,
 };
 
 /// Opaque handle exposing palette-row lookups against the loaded
 /// `partprefabdyetexturepalleteinfo.pabgb` + `.pabgh`.
-#[repr(C)]
 pub struct CrimsonPartPrefabDyeTexturePalleteHandle {
     by_key: HashMap<u32, PartPrefabDyeTexturePalleteEntry>,
     entries: Vec<PartPrefabDyeTexturePalleteEntry>,
@@ -89,6 +88,9 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_texture_pallete_load_from_file(
             Err(_) => return error::IO,
         };
         let handle = CrimsonPartPrefabDyeTexturePalleteHandle::from_bytes(&pabgb, &pabgh);
+        if let Err(code) = crate::c_abi::check_rows(&pabgb, Some(&pabgh[..]), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -130,6 +132,9 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_texture_pallete_load_from_bytes
             pabgb_slice,
             pabgh_slice,
         );
+        if let Err(code) = crate::c_abi::check_rows(pabgb_slice, Some(pabgh_slice), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -167,6 +172,7 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_texture_pallete_entry_count(
     if handle.is_null() || out_count.is_null() {
         return error::NULL_ARG;
     }
+    unsafe { *out_count = 0 };
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &*handle };
         unsafe { *out_count = h.entries.len() as u32 };
@@ -213,7 +219,11 @@ enum SubStringField {
     VariantName,
 }
 
-fn lookup_sub_string(
+/// Shared body of the four sub-string getters.
+///
+/// # Safety
+/// `handle` and `required` must be non-null; `buf` may be null iff `buf_len == 0`.
+unsafe fn lookup_sub_string(
     handle: *const CrimsonPartPrefabDyeTexturePalleteHandle,
     palette_key: u32,
     sub_idx: u32,
@@ -262,18 +272,20 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_texture_pallete_lookup_sub_mate
     buf_len: usize,
     required: *mut usize,
 ) -> i32 {
-    lookup_sub_string(
-        handle,
-        palette_key,
-        sub_idx,
-        SubStringField::MaterialName,
-        buf,
-        buf_len,
-        required,
-    )
+    unsafe {
+        lookup_sub_string(
+            handle,
+            palette_key,
+            sub_idx,
+            SubStringField::MaterialName,
+            buf,
+            buf_len,
+            required,
+        )
+    }
 }
 
-/// UI icon DDS path (falls back to texture path for `palette_key=0`).
+/// UI icon DDS path, as stored in the row (no fallback to the texture path).
 ///
 /// # Safety
 /// `handle` and `required` must be non-null; `buf` may be null iff
@@ -287,15 +299,17 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_texture_pallete_lookup_sub_icon
     buf_len: usize,
     required: *mut usize,
 ) -> i32 {
-    lookup_sub_string(
-        handle,
-        palette_key,
-        sub_idx,
-        SubStringField::IconPath,
-        buf,
-        buf_len,
-        required,
-    )
+    unsafe {
+        lookup_sub_string(
+            handle,
+            palette_key,
+            sub_idx,
+            SubStringField::IconPath,
+            buf,
+            buf_len,
+            required,
+        )
+    }
 }
 
 /// Material texture DDS path used at runtime.
@@ -312,15 +326,17 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_texture_pallete_lookup_sub_text
     buf_len: usize,
     required: *mut usize,
 ) -> i32 {
-    lookup_sub_string(
-        handle,
-        palette_key,
-        sub_idx,
-        SubStringField::TexturePath,
-        buf,
-        buf_len,
-        required,
-    )
+    unsafe {
+        lookup_sub_string(
+            handle,
+            palette_key,
+            sub_idx,
+            SubStringField::TexturePath,
+            buf,
+            buf_len,
+            required,
+        )
+    }
 }
 
 /// Variant label inside a material — empty when absent, or
@@ -338,15 +354,17 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_texture_pallete_lookup_sub_vari
     buf_len: usize,
     required: *mut usize,
 ) -> i32 {
-    lookup_sub_string(
-        handle,
-        palette_key,
-        sub_idx,
-        SubStringField::VariantName,
-        buf,
-        buf_len,
-        required,
-    )
+    unsafe {
+        lookup_sub_string(
+            handle,
+            palette_key,
+            sub_idx,
+            SubStringField::VariantName,
+            buf,
+            buf_len,
+            required,
+        )
+    }
 }
 
 /// Variant strength — `-1.0` is the "no variant" sentinel.
@@ -405,28 +423,11 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_texture_pallete_get_entry_key(
     .unwrap_or(error::PANIC)
 }
 
-fn write_str_to_buf(
-    src: &str,
-    buf: *mut u8,
-    buf_len: usize,
-    required: *mut usize,
-) -> i32 {
-    let needed = src.len() + 1;
-    unsafe { *required = needed };
-    if buf_len < needed {
-        return error::BUFFER_TOO_SMALL;
-    }
-    unsafe {
-        std::ptr::copy_nonoverlapping(src.as_ptr(), buf, src.len());
-        *buf.add(src.len()) = 0;
-    }
-    error::OK
-}
 
 #[cfg(test)]
 mod tests {
     //! Live-install integration test. Pins the 11-row count, the
-    //! per-row sub_count invariants (key=0 → 2; key=1..=10 → 3), and
+    //! per-row sub_count invariant (3 on every key), and
     //! the cloth/wool variant on key=1 sub=0 (positive variant_value).
 
     use crate::binary::gamedata_layout;
@@ -517,7 +518,7 @@ mod tests {
         );
         assert_eq!(count, 11);
 
-        // sub_count: key=0 → 3 in 1.13 (was 2 ≤1.12); key=1..=10 → 3.
+        // sub_count is 3 on every key.
         let mut sub_count: u32 = 0;
         assert_eq!(
             unsafe {

@@ -27,7 +27,7 @@ use std::io;
 
 use super::object::{
     ABSENT_MARKER, DecodedField, FieldKind, FieldValue, ObjectBlock, ObjectLocatorWrapper,
-    ScalarValue, absent_kind_has_marker, decode_scalar, field_present, type_index_map,
+    absent_kind_has_marker, decode_scalar, field_present, type_index_map,
 };
 use super::schema::{FieldDef, Schema, TypeDef};
 use super::toc::Toc;
@@ -111,8 +111,9 @@ fn decode_one_block(
     // for round-trip rather than dropping them.
     //
     // Cap at 16 bytes so a real decode failure (which produces much
-    // larger residuals) is still surfaced via `undecoded_ranges`. See
-    // docs/save-body-format.md for the empirical analysis.
+    // larger residuals) is still surfaced via `undecoded_ranges`. The
+    // per-class census is `_probe_save_trailing_pad_census` (listed in
+    // docs/save-side-probes.md).
     const TRAILING_PAD_MAX: usize = 16;
     let trailing_pad: Vec<u8> = if undecoded.len() == 1 {
         let (s, e) = undecoded[0];
@@ -306,19 +307,18 @@ pub(crate) fn decode_fields_in_region(
 // open with a 0x00 tag followed by a u32 count.
 //
 // The legacy walks (`decode_fields_in_region`, the inline-payload walk)
-// skip absent fields without consuming anything, so every marker landed in
+// skip absent fields without consuming anything, so every marker lands in
 // the NEXT field: scalars read one byte early per preceding marker, list
-// headers grew "marker run" variants, dynamic arrays grew leading/trailing
-// 01 runs, and what was left at the end became `trailing_pad`. The bytes
-// still round-tripped, but the values after an absent array/list were
-// wrong.
+// headers match "marker run" variants, dynamic arrays carry leading/trailing
+// 01 runs, and what is left at the end becomes `trailing_pad`. The bytes
+// still round-trip, but the values after an absent array/list are wrong.
 //
 // `walk_fields_with_markers` decodes with the real rule and is strict: it
 // returns `None` the moment the rule does not explain a byte (a missing
 // marker, an array or list without its 0x00 tag, a list whose elements do
 // not all decode, a locator without a decodable child). Callers then fall
 // back to the legacy walk unchanged, so a block the rule cannot explain
-// decodes exactly as it did before.
+// decodes exactly as the legacy walk reads it.
 
 /// Every schema field placed, and the cursor just past the last one.
 type MarkerWalk = (Vec<DecodedField>, usize);
@@ -563,8 +563,8 @@ fn decode_dynamic_array(
     }
 
     // Variant 1: prefix `00 00 XX 01 00`, count u32, data, trailing
-    // `01 01 01 01 01`. The 3rd byte (XX) is a flag whose meaning we
-    // don't yet know — observed values include 0x06 (most arrays) and
+    // `01 01 01 01 01`. The 3rd byte (XX) is a flag whose meaning is
+    // not known — observed values include 0x06 (most arrays) and
     // 0x01 (e.g. FactionNodeElementSaveData._reviveQuestList). The
     // surrounding constraints (fixed bytes at 0,1,3,4 + count < 0x10000
     // + 5-byte trailing pattern) are strict enough that allowing any
@@ -706,6 +706,44 @@ fn decode_dynamic_array(
     ))
 }
 
+thread_local! {
+    /// Payload offsets of the locator children this thread is decoding,
+    /// outermost first. See [`PayloadGuard`].
+    static PAYLOAD_STACK: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Deepest locator / list nesting the decoder follows. Game saves nest at
+/// most 5 deep (21 fixture and live saves); every level may try two walks, so
+/// the bound also keeps a crafted chain from taking exponential time.
+const MAX_PAYLOAD_NESTING: usize = 16;
+
+/// Marks a locator child payload as being decoded. Refuses (`None`) a payload
+/// that is already being decoded further up (a child whose
+/// `child_payload_offset` points back at an ancestor would recurse until the
+/// stack overflows) and nesting past [`MAX_PAYLOAD_NESTING`].
+struct PayloadGuard;
+
+impl PayloadGuard {
+    fn enter(start: usize) -> Option<Self> {
+        PAYLOAD_STACK.with(|s| {
+            let mut s = s.borrow_mut();
+            if s.len() >= MAX_PAYLOAD_NESTING || s.contains(&start) {
+                return None;
+            }
+            s.push(start);
+            Some(PayloadGuard)
+        })
+    }
+}
+
+impl Drop for PayloadGuard {
+    fn drop(&mut self) {
+        PAYLOAD_STACK.with(|s| {
+            s.borrow_mut().pop();
+        });
+    }
+}
+
 fn decode_inline_object_locator(
     raw: &[u8],
     cursor: usize,
@@ -771,16 +809,15 @@ fn decode_inline_object_locator(
     if let Some(td) = child_type_def {
         let child_mask_owned = raw[body_cursor + 2..body_cursor + 2 + mbc].to_vec();
 
-        // The wrapper's `child_payload_offset` is informational: most of
-        // the time it equals `wrapper_end` (truly inline), but in some
-        // blocks the engine writes a different value while the actual
-        // payload still sits at wrapper_end (observed in FactionSaveData
-        // list elements). So we always try inline first, then fall back
-        // to the stated offset.
+        // The wrapper's `child_payload_offset` normally equals
+        // `wrapper_end` (the payload is inline), and the encoder always
+        // writes it so. We try inline first and fall back to the stated
+        // offset only when the inline decode fails.
         let try_payload = |start: usize, tail: usize| {
             if start + 8 > tail {
                 return None;
             }
+            let _guard = PayloadGuard::enter(start)?;
             decode_inline_object_payload(raw, td, &child_mask_owned, start, tail, by_index)
                 .ok()
                 .map(|(child_end, reserved, _, fields, pad)| {
@@ -1005,10 +1042,10 @@ fn decode_inline_object_payload(
     })?;
     let size_u32 = read_u32(raw, size_at);
     // Bytes between the forward-walk end and the trailing-size location
-    // are not claimed by any field. The decoder previously dropped them
-    // (they were still "covered" at the enclosing block level via
-    // collect_decoded_ranges, so undecoded_ranges stayed empty). The
-    // encoder needs them verbatim — return as a pad slice to caller.
+    // are not claimed by any field (the enclosing block still counts them
+    // as covered via collect_decoded_ranges, so undecoded_ranges stays
+    // empty). The encoder needs them verbatim — return as a pad slice to
+    // caller.
     let pad = raw[cursor..size_at].to_vec();
     Ok((size_at + 4, reserved_u32, size_u32, fields, pad))
 }
@@ -1028,16 +1065,15 @@ fn decode_object_list(
     // shapes vary across game versions and a couple of bytes of padding
     // sometimes precede the real header.
     //
-    // 1.10 widened the leading-pad on `ContentsMiscSaveData`'s
-    // `ReflectObject` lists (e.g. `_alertHistorySaveDataList`) from 3 pad
-    // bytes to 4 — the real `zero1_count_u24` header now sits at
-    // body_offset 4 instead of 3. Without offset 4 in the scan the first
-    // list mis-reads its count, decodes zero elements, and every
-    // downstream field in the block desyncs (107 KB undecoded on a 1.10
-    // save). The furthest-reach tiebreak keeps older saves unaffected:
-    // their correct offset (≤3) still wins, and offset 4 lands on a
-    // non-header byte that errors out. See `_probe_contents_misc_drift`
-    // in `lib.rs` for the 1.09↔1.10 comparison that pinned this.
+    // From 1.10, `ContentsMiscSaveData`'s `ReflectObject` lists (e.g.
+    // `_alertHistorySaveDataList`) carry 4 leading pad bytes instead of 3,
+    // so the real `zero1_count_u24` header sits at body_offset 4. Without
+    // offset 4 in the scan the first list mis-reads its count, decodes zero
+    // elements, and every downstream field in the block desyncs. The
+    // furthest-reach tiebreak keeps older saves right: their correct offset
+    // (≤3) still wins, and offset 4 lands on a non-header byte that errors
+    // out. `_probe_contents_misc_drift` in `lib.rs` compares the two
+    // layouts.
     const MAX_LEADING_PAD: usize = 4;
     let mut best: Option<(usize, FieldValue, &'static str)> = None;
     let mut last_err: Option<io::Error> = None;
@@ -1068,6 +1104,12 @@ fn try_decode_object_list_at(
     tail_cursor: usize,
     by_index: &HashMap<u32, &TypeDef>,
 ) -> io::Result<(usize, FieldValue, &'static str)> {
+    // Every header variant below is at least 18 bytes; a list starting in the
+    // last bytes of the region must not index past the body.
+    let tail_cursor = tail_cursor.min(raw.len());
+    if body_cursor + 18 > tail_cursor {
+        return overrun("object list header");
+    }
     let prefix_u8 = raw[body_cursor];
     let mut marker_end = body_cursor;
     while marker_end < tail_cursor && raw[marker_end] == 1 {
@@ -1077,7 +1119,7 @@ fn try_decode_object_list_at(
     let (count, header_size, header_variant): (u32, usize, &'static str);
 
     if marker_end > body_cursor
-        && marker_end + 17 <= tail_cursor
+        && marker_end + 18 <= tail_cursor
         && raw[marker_end] == 0
         && raw[marker_end + 5..marker_end + 18] == [0u8; 13]
     {
@@ -1285,10 +1327,8 @@ fn overrun<T>(what: &'static str) -> io::Result<T> {
 /// `locator_wrapper` populated, suitable for direct insertion into a
 /// `FieldValue::ObjectList::elements` vector.
 ///
-/// Used by the c_abi `list_insert_element` entry point (Phase B.3) to
-/// validate caller-supplied template bytes. Gated to `c_abi` builds
-/// because that's the only consumer; PyO3 / lib-only consumers don't
-/// need it.
+/// Used by the c_abi `list_insert_element` entry point to validate
+/// caller-supplied template bytes, hence gated to `c_abi` builds.
 #[cfg(feature = "c_abi")]
 pub(crate) fn decode_one_list_element_bytes(
     bytes: &[u8],
@@ -1299,26 +1339,23 @@ pub(crate) fn decode_one_list_element_bytes(
     Ok(block)
 }
 
-/// Reduce a [`ScalarValue`] to a JSON-friendly integer when possible.
-/// Lossy for `Bytes` / floats, kept for cross-language consumers (Python)
-/// that want a plain int comparison.
-#[allow(dead_code)]
-pub(crate) fn scalar_as_i128(v: &ScalarValue) -> Option<i128> {
-    match v {
-        ScalarValue::Bool(b) => Some((*b != 0) as i128),
-        ScalarValue::U8(x) => Some(*x as i128),
-        ScalarValue::U16(x) => Some(*x as i128),
-        ScalarValue::U32(x) => Some(*x as i128),
-        ScalarValue::U64(x) => Some(*x as i128),
-        ScalarValue::I8(x) => Some(*x as i128),
-        ScalarValue::I16(x) => Some(*x as i128),
-        ScalarValue::I32(x) => Some(*x as i128),
-        ScalarValue::I64(x) => Some(*x as i128),
-        ScalarValue::F32(_)
-        | ScalarValue::F64(_)
-        | ScalarValue::F32x3(_)
-        | ScalarValue::F32x4(_)
-        | ScalarValue::U32x4(_)
-        | ScalarValue::Bytes(_) => None,
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A payload already being decoded, or nesting past the bound, is refused;
+    /// leaving a level pops it again.
+    #[test]
+    fn payload_guard_refuses_cycles_and_deep_nesting() {
+        let a = PayloadGuard::enter(100).unwrap();
+        assert!(PayloadGuard::enter(100).is_none(), "a child pointing back at its ancestor");
+        let mut nested = Vec::new();
+        for i in 1..MAX_PAYLOAD_NESTING {
+            nested.push(PayloadGuard::enter(100 + i).unwrap());
+        }
+        assert!(PayloadGuard::enter(9999).is_none(), "one level past the bound");
+        drop(nested);
+        drop(a);
+        assert!(PayloadGuard::enter(100).is_some(), "the stack unwinds");
     }
 }

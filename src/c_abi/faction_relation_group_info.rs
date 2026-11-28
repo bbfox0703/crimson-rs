@@ -7,7 +7,7 @@
 //! shape every other bridge uses and so the editor doesn't have to
 //! special-case this table.
 //!
-//! **PALOC chain**: none — the exhaustive probe found only
+//! **PALOC chain**: none — the exhaustive probe finds only
 //! coincidental collisions with UI-tooltip sentinel strings at
 //! `lo32 = 0x80`. The bridge mirrors [`super::sub_level_info`] /
 //! [`super::quest_gauge_info`] in shape — no `lookup_display_name`.
@@ -33,7 +33,6 @@ use crate::faction_relation_group_info::parse_faction_relation_group_info_lossy;
 /// Opaque handle exposing `(FactionRelationGroupKey, internal_name,
 /// related[])` lookups against the loaded `factionrelationgroup.pabgb`
 /// + `.pabgh`.
-#[repr(C)]
 pub struct CrimsonFactionRelationGroupInfoHandle {
     by_key: HashMap<u32, RowData>,
     entries: Vec<(u32, RowData)>,
@@ -103,6 +102,9 @@ pub unsafe extern "C" fn crimson_factionrelationgroup_load_from_file(
         };
         let handle =
             CrimsonFactionRelationGroupInfoHandle::from_bytes(&pabgb, &pabgh);
+        if let Err(code) = crate::c_abi::check_rows(&pabgb, Some(&pabgh[..]), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -144,6 +146,9 @@ pub unsafe extern "C" fn crimson_factionrelationgroup_load_from_bytes(
             pabgb_slice,
             pabgh_slice,
         );
+        if let Err(code) = crate::c_abi::check_rows(pabgb_slice, Some(pabgh_slice), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -169,8 +174,7 @@ pub unsafe extern "C" fn crimson_factionrelationgroup_free(
 
 // ── Scalar getters ─────────────────────────────────────────────────────────
 
-/// Total number of `factionrelationgroup` rows in the loaded table
-/// (always 5 in 1.07).
+/// Total number of `factionrelationgroup` rows in the loaded table.
 ///
 /// # Safety
 /// `handle` must be live; `out_count` must be non-null.
@@ -193,11 +197,10 @@ pub unsafe extern "C" fn crimson_factionrelationgroup_entry_count(
 // ── Lookups ────────────────────────────────────────────────────────────────
 
 /// Look up the internal name for a given `FactionRelationGroupKey`
-/// (passed as u32 — only the low 16 bits are meaningful). Two-call
-/// pattern.
+/// (a u16 key widened to u32). Two-call pattern.
 ///
-/// Returns `NOT_FOUND` when `faction_relation_group_key` isn't in the
-/// table.
+/// The whole u32 is compared, not masked: a key with any of the high
+/// 16 bits set returns `NOT_FOUND`, as does a key that isn't in the table.
 ///
 /// # Safety
 /// `handle` and `required` must be non-null; `buf` may be null iff

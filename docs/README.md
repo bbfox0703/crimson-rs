@@ -27,9 +27,13 @@ Active reference:
 - [`docs/c-sharp-nativeaot-integration.md`](c-sharp-nativeaot-integration.md) — C# NativeAOT single-file integration recipe.
 - [`docs/historical-parser-setup.md`](historical-parser-setup.md) — Sibling-install recipe for a previous-version parser (cross-version diff).
 - [`docs/paloc-71-dev-items.md`](paloc-71-dev-items.md) — Why 71 items have no PALOC translation in any of 14 languages.
+- [`docs/code-audit-2026-11-28-plan.md`](code-audit-2026-11-28-plan.md) — 2026-11-28 code audit: the nine blocks (A–I), what each audit checks, and the per-block reports `code-audit-2026-11-28-{a..i}.md` (findings with file:line, severity, confidence). [`code-audit-2026-11-28-verification.md`](code-audit-2026-11-28-verification.md) is the second, independent check of every finding (verdicts, live-data measurements, new findings) and the proposed fix order.
+- [`tools/README.md`](../tools/README.md) — What `tools/git-crypt.exe` is: version, SHA256, upstream and licence, and why it stays (old commits' encrypted fixtures).
 - [`scripts/CLAUDE.md`](../scripts/CLAUDE.md) — Next-session engineering notes: the "On a new game patch" runbook, machine notes, layout invariants, don'ts.
 
 Archived / historical (`docs/archive/`):
+- [`docs/archive/iteminfo-layout-history.md`](archive/iteminfo-layout-history.md) — Per-patch ItemInfo row layout history (1.05 → 2.06), how each drift was found and pinned; moved out of `src/item_info/item.rs` on 2026-11-28.
+- [`docs/archive/comment-pass-2026-11-28-notes.md`](archive/comment-pass-2026-11-28-notes.md) — Measurements and RE findings removed from source comments on 2026-11-28 that no other document recorded.
 - [`docs/archive/1.05-parser-history.md`](archive/1.05-parser-history.md) — Long-form RE history of the 1.05 ItemInfo parser (read first when picking up parser-RE work).
 - [`docs/archive/globalgameevent-body-re.md`](archive/globalgameevent-body-re.md) — RE of the globalgameevent per-row body (group_key + paloc_key).
 - [`docs/archive/mercenaryinfo-body-re.md`](archive/mercenaryinfo-body-re.md) — RE of the mercenaryinfo `(u8,u32)` PABGH variant.

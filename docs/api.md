@@ -24,26 +24,31 @@ Compression.LZ4       # 2
 Compression.ZLIB      # 3
 
 Crypto.NONE           # 0
-Crypto.ICE            # 1
-Crypto.AES            # 2
+Crypto.ICE            # 1  (archive code only: packing rejects it)
+Crypto.AES            # 2  (archive code only: packing rejects it)
 Crypto.CHACHA20       # 3
 
 Language.ALL          # 0x7FFF (all 15 languages)
 Language.KOR          # 0x0001
 Language.ENG          # 0x0002
 Language.JPN          # 0x0004
-Language.CHT          # 0x0008
-Language.GER          # 0x0010
-Language.FRA          # 0x0020
-Language.SPA          # 0x0040
-Language.POR          # 0x0080
-Language.RUS          # 0x0100
-Language.TUR          # 0x0200
-Language.THA          # 0x0400
-Language.IND          # 0x0800
-Language.CHS          # 0x1000
-Language.ARA          # 0x2000
+Language.RUS          # 0x0008
+Language.TUR          # 0x0010
+Language.SPA_ES       # 0x0020
+Language.SPA_MX       # 0x0040
+Language.FRE          # 0x0080
+Language.GER          # 0x0100
+Language.ITA          # 0x0200
+Language.POL          # 0x0400
+Language.POR_BR       # 0x0800
+Language.ZHO_TW       # 0x1000
+Language.ZHO_CN       # 0x2000
+Language.ARA          # 0x4000
 ```
+
+The values are `python/crimson_rs/enums.py`; the PAPGT's language field uses them (on
+2.06 the optional group `0036` carries `0x0080`, French). This table listed a different,
+wrong set until 2026-11-28.
 
 ---
 
@@ -61,7 +66,7 @@ pack_mod(
     game_dir="/path/to/Crimson Desert",
     mod_folder="/path/to/modified/files",
     output_dir="/path/to/output",
-    group_name="0036",
+    group_name="0099",  # four digits, not already in meta/0.papgt
     compression=Compression.LZ4,    # default
     crypto=Crypto.NONE,             # default
     language=Language.ALL,           # default
@@ -72,9 +77,9 @@ pack_mod(
 - `game_dir` — Path to the Crimson Desert installation (to read original `meta/0.papgt`)
 - `mod_folder` — Directory containing mod files in game directory structure
 - `output_dir` — Where to write the packed output (paz + pamt + papgt)
-- `group_name` — Pack group name (e.g. `"0036"`)
+- `group_name` — Pack group name: four digits not already listed in the game's `meta/0.papgt` (e.g. `"0099"`). On 2.06 the PAPGT lists `0036`–`0040` (the optional language groups) with no folder on disk, so a free folder name is not enough; `pack_mod` and `create_pack_group*` refuse a listed name (they used to replace that entry) and anything that is not four digits
 - `compression` — `Compression.LZ4` (default), `.ZLIB`, or `.NONE`
-- `crypto` — `Crypto.NONE` (default), `.ICE`, `.AES`, or `.CHACHA20`
+- `crypto` — `Crypto.NONE` (default) or `.CHACHA20`; `.ICE` and `.AES` are rejected
 - `encrypt_info` — 3 bytes of encryption key material (default: `b"\x00\x00\x00"`)
 - `max_chunk_size` — Max bytes per `.paz` file (default: 500MB)
 - `is_optional` — Whether the group is optional (default: `False`)
@@ -90,6 +95,14 @@ output_dir/
 └── meta/
     └── 0.papgt    # Updated with mod entry at front
 ```
+
+**Writing into the game folder.** `pack_mod` only reads the game folder. Its siblings
+`crimson_rs.create_pack.create_pack_group` / `create_pack_group_from_folder` write the group into
+the game folder and rewrite `meta/0.papgt` **in place**, and `python -m crimson_rs.validate_game_dir`
+rewrites stale checksums in place. Since 2026-11-28 each copies `0.papgt` to
+`0.papgt.bak-<timestamp>` first (the 2.04+ trailer cannot be recomputed, so the original bytes are
+the only way back), `validate_game_dir --dry-run` only reports, and a pack that fails partway
+removes the half-built group folder instead of leaving one that blocks the next run.
 
 ---
 
@@ -117,7 +130,7 @@ Upsert a pack group entry. Inserts at front for mod priority (see [Mod Loading](
 
 ```python
 papgt = crimson_rs.parse_papgt_file("meta/0.papgt")
-updated = crimson_rs.add_papgt_entry(papgt, "0036", checksum, 0, 0x7FFF)
+updated = crimson_rs.add_papgt_entry(papgt, "0099", checksum, 0, 0x7FFF)
 crimson_rs.write_papgt_file(updated, "output/meta/0.papgt")
 ```
 
@@ -149,7 +162,7 @@ Streaming builder that creates `.paz` chunks and `0.pamt` index on disk.
 
 ```python
 builder = crimson_rs.PackGroupBuilder(
-    output_dir="/path/to/0036",
+    output_dir="/path/to/0099",
     compression=int(Compression.LZ4),
     crypto=int(Crypto.NONE),
     encrypt_info=b"\x00\x00\x00",
@@ -180,7 +193,7 @@ Decompress data.
 
 ### `calculate_checksum(data: bytes) -> int`
 
-Compute Jenkins hashlittle2 checksum (seed `0xDEBA1DCD`).
+Compute Jenkins hashlittle checksum (seed `0xDEBA1DCD`).
 
 ---
 
@@ -293,7 +306,7 @@ for entry in skills["entries"]:
                 print(buff["body"]["type_id"])
 ```
 
-The `BuffData` subclass tail size depends on `type_id` (0..119) and is **not statically known** — the loader brute-forces sizes 0..500 per unique `type_id` and caches the discovery. For ~10% of entries (cross-version probing showed 547/1924 in 1.03, ~190/1963 in 1.04+) the probe cannot resolve, and the raw bytes are preserved in `buff_raw_fallback` for byte-identical roundtrip via `serialize_skillinfo`.
+The `BuffData` subclass tail size depends on `type_id` (0..119) and is **not statically known** — the loader brute-forces sizes 0..500 per unique `type_id` and caches the discovery. For some entries (547/1924 in 1.03, ~190/1963 in 1.04, ~14% from 2.04 on: 308 of 2,163 in 2.06) the probe cannot resolve, and the raw bytes are preserved in `buff_raw_fallback` for byte-identical roundtrip via `serialize_skillinfo`.
 
 **Raises:** `ValueError` on parse errors (truncated input, malformed index).
 
@@ -404,6 +417,13 @@ crimson_rs.write_iteminfo_to_file(items, "output.pabgb")
 
 ---
 
+### `serialize_iteminfo_with_header(items: list[dict]) -> tuple[bytes, bytes]`
+
+2.06+: write `(staticinfobody, staticinfoheader)`. The header is rebuilt from each item's `key`
+and `string_key` with fresh offsets and sizes, so length-changing edits and renamed items survive;
+`serialize_iteminfo` writes the body only, which leaves the game's header stale after any length
+change. An unedited list round-trips both files byte for byte (checked on 2.06).
+
 ### `serialize_iteminfo(items: list[dict]) -> bytes`
 
 Serialize items to raw bytes.
@@ -443,7 +463,7 @@ All data is returned as plain Python dicts, lists, and primitives. No custom cla
 
 ## ItemInfo
 
-Each item is a dict with 105 fields. All fields are required for serialization.
+Each item is a dict with 124 fields on 2.06 (the `ItemInfo` TypedDict in `__init__.pyi` lists them). All fields are required for serialization.
 
 ### Identity Fields
 
@@ -505,8 +525,6 @@ Each item is a dict with 105 fields. All fields are required for serialization.
 | `money_icon_path` | `int` | StringInfoKey (u32) |
 | `use_map_icon_alert` | `int` | (u8) |
 | `emoji_texture_id` | `int` | StringInfoKey (u32) since 2.04, a string before it |
-| `prefab_data_list` | `list[dict]` | See [PrefabData](#prefabdata) |
-| `gimmick_visual_prefab_data_list` | `list[dict]` | See [GimmickVisualPrefabData](#gimmickvisualprefabdata) |
 
 ### Description & Knowledge
 
@@ -533,6 +551,7 @@ Each item is a dict with 105 fields. All fields are required for serialization.
 | `enchant_data_list` | `list[dict]` | See [EnchantData](#enchantdata) |
 | `sharpness_data` | `dict \| None` | See [ItemInfoSharpnessData](#iteminfoSharpnessdata). `None` when absent (2.04) |
 | `max_endurance` | `int` | Maximum durability (u16). |
+| `merged_prefab_visual_list` | `list[dict]` | See [MergedPrefabVisualData](#mergedprefabvisualdata) (1.13 merged the old prefab and gimmick-visual lists into this one, at the item end) |
 | `repair_data_list` | `list[dict]` | See [RepairData](#repairdata) |
 | `is_shield_item` | `int` | (u8) |
 | `is_tower_shield_item` | `int` | (u8) |
@@ -621,7 +640,7 @@ Each item is a dict with 105 fields. All fields are required for serialization.
 
 ### 2.04 schema delta
 
-2.04 keeps almost every value and rearranges all of them: the row opens with `string_key` then `key`, a fixed 157-byte block of flags and keys comes next, and empty lists and absent structs shrink to one byte. The field-by-field record is the "ItemInfo (2.04)" header in `src/item_info/item.rs`. What changes for a caller of this API:
+2.04 keeps almost every value and rearranges all of them: the row opens with `string_key` then `key`, a fixed 157-byte block of flags and keys comes next, and empty lists and absent structs shrink to one byte. The field-by-field record is the "ItemInfo (2.04)" section in [`archive/iteminfo-layout-history.md`](archive/iteminfo-layout-history.md). What changes for a caller of this API:
 
 - **Gone**: `quick_slot_index`, `consumable_type_list`, `is_important_item` (see `item_importance_kind`), `unk_pre_pattern_key`, `unk_pre_pattern_flag`, `unk_pre_respawn_flag`, `unk_post_respawn_data_list`, `unk_pre_max_endurance` (see `is_packed_in_vehicle`), and the top-level `unk_pre_respawn_data_list` (now inside `unk_pre_respawn_block`).
 - **Can now be `None`**: `drop_default_data`, `sharpness_data`, `inspect_action`. Check before indexing.
@@ -868,26 +887,19 @@ Variant type with a type tag.
 }
 ```
 
-### GimmickVisualPrefabData
+### MergedPrefabVisualData
 
 ```python
 {
-    "tag_name_hash": int,          # u32
-    "scale": [float, float, float],# [f32; 3]
-    "prefab_names": [int],         # StringInfoKey list (u32)
-    "animation_path_list": [int],  # StringInfoKey list (u32)
-    "use_gimmick_prefab": int      # u8
-}
-```
-
-### PrefabData
-
-```python
-{
-    "prefab_names": [int],       # StringInfoKey list (u32)
-    "equip_slot_list": [int],    # u16 list
-    "tribe_gender_list": [int],  # StringInfoKey list (u32)
-    "is_craft_material": int     # u8
+    "scale": [float, float, float],  # [f32; 3], (1, 1, 1) on prefab-origin rows
+    "prefab_names": [int],           # StringInfoKey list (u32)
+    "animation_path_list": [int],    # StringInfoKey list (u32)
+    "equip_slot_list": [int],        # u16 list
+    "tribe_gender_list": [int],      # StringInfoKey list (u32)
+    "unk_pre_is_craft_material": int,# u32, 0xeac5e173 (the empty-string hash) on every element read
+    "is_craft_material": int,        # u8, flag tail byte 1 (meaning open)
+    "use_gimmick_prefab": int,       # u8, flag tail byte 2 (meaning open)
+    "unk_post_flag": int             # u8, flag tail byte 3 (meaning open)
 }
 ```
 

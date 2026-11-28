@@ -6,30 +6,28 @@
 //! these by `u16`, so the same bridge surfaces the value widened to
 //! `u32` to keep the C ABI uniform across the project.
 //!
-//! 1.07 ships **292 rows** ranging across every store family: general
+//! Rows range across every store family: general
 //! stores (`Store_Her_General` / `Store_Cal_General`), per-region
 //! suppliers, blacksmiths, fishing vendors, basecamp shops, and the
 //! various non-standard formats (BlackMarket, StreetVendor, Church
-//! camp, etc.) the hexpat-RE pass in [`references/store_info.hexpat`]
-//! catalogued.
+//! camp, etc.) catalogued in `references/store_info.hexpat`.
 //!
-//! **PABGH layout** — custom 6-byte entries (`u16 count + (u16 key, u32 offset)*`),
-//! same shape as `factionrelationgroup.pabgh` and
-//! `partprefabdyetexturepalleteinfo.pabgh`. 292 entries × 6 + 2 header =
-//! 1,754 bytes (matches the live file).
+//! **PABGH layout** (pre-2.06; a 2.06 header is rebuilt into it in
+//! memory by `static_header::legacy_pair`) — custom 6-byte entries
+//! (`u16 count + (u16 key, u32 offset)*`).
+//! `count` entries × 6 + 2 header bytes.
 //!
-//! **PABGB row layout** — the bridge only consumes the leading
-//! `(u32 name_len, name, u16 key)` triple (2.04 swapped key and name, and
-//! reordered the body, so the hexpat and the offsets it documents are
-//! pre-2.04). The rest of each row (~4 KB
-//! of price / item / format-tag body) is left untouched; the hexpat
-//! pattern at `references/store_info.hexpat` documents the per-format
-//! layouts for callers that want to RE the embedded item list. Per-row
-//! body decode (with per-item `(item_key, buy_price, sell_price,
-//! purchase_limit)` extraction) is **deferred** — the hexpat-claimed
-//! "105-byte uniform items" turns out to be wrong: items are
-//! variable-length in 1.07 saves (the first item of Store_Her_General
-//! is 123 bytes, item 1 has a different size, stride is not constant).
+//! **PABGB row layout** — the bridge consumes the leading
+//! `(u32 name_len, name, u16 key)` triple. The rest of each row (~4 KB
+//! of price / item / format-tag body) is left untouched. The hexpat
+//! pattern at `references/store_info.hexpat` documents per-format
+//! layouts of the pre-2.04 body (2.04 swapped key and name and
+//! reordered the body), so its offsets do not match the current rows.
+//! Per-row body decode (per-item `(item_key, buy_price, sell_price,
+//! purchase_limit)` extraction) is not implemented, and the hexpat's
+//! "105-byte uniform items" is wrong: items are variable-length (in
+//! the pre-2.04 body, `Store_Her_General`'s first item is 123 bytes and
+//! the stride is not constant).
 //! See [`docs/save-editor-keys-plan.md`](../../docs/save-editor-keys-plan.md)
 //! "What's deferred" for the RE roadmap and the
 //! `_probe_store_variant_distribution` test below for the classified-
@@ -47,10 +45,10 @@
 //!
 //! `CString`-shape (no trailing NUL) name field, matching `iteminfo.pabgb`.
 //!
-//! **PALOC chain**: not probed yet. The user-facing localized name a
+//! **PALOC chain**: not followed. The user-facing localized name a
 //! player sees in-game ("General Store of Herennen") is resolved through
 //! a different gamedata path; the internal template name is the
-//! save-layer's only stable identifier and is what this bridge surfaces.
+//! save-layer's stable identifier and is what this bridge surfaces.
 
 use crate::binary::row_head::read_row_head;
 
@@ -67,9 +65,9 @@ pub struct StoreInfoEntry {
 /// Parse `storeinfo.pabgb` using its custom-shape `.pabgh` index.
 ///
 /// Returns entries in PABGH on-disk order. Skips any row whose body is
-/// truncated or whose body key disagrees with the PABGH key — both
-/// treated as anchor noise rather than panics so a future patch with a
-/// new row shape doesn't break the build.
+/// truncated or whose body key disagrees with the PABGH key — such a
+/// row is skipped rather than panicking, so a row of an unexpected shape
+/// costs that row alone.
 pub fn parse_store_info_lossy(pabgb: &[u8], pabgh: &[u8]) -> Vec<StoreInfoEntry> {
     // 2.06 moved row names into the header; rebuild the pre-2.06 layout.
     let (pabgb, pabgh) = crate::binary::static_header::legacy_pair(pabgb, pabgh);
@@ -118,56 +116,25 @@ pub fn parse_store_info_lossy(pabgb: &[u8], pabgh: &[u8]) -> Vec<StoreInfoEntry>
 #[cfg(test)]
 mod tests {
     //! Live-install integration test against the real storeinfo
-    //! `.pabgb` / `.pabgh` pair. Pins a handful of mappings from the
-    //! 2026-05-16 RE pass. Skips cleanly when the game install isn't
-    //! present.
+    //! `.pabgb` / `.pabgh` pair. Pins a handful of mappings. Skips
+    //! cleanly when the game install isn't present.
 
     use crate::binary::gamedata_layout;
     use super::*;
-    use std::path::PathBuf;
 
-    /// (StoreKey, expected internal_name). Taken from the
-    /// `_probe_store_mercenary_partprefab` output — the first two
-    /// entries by on-disk PABGH order. The 1.07 file has 292 rows.
+    /// (StoreKey, expected internal_name): two general stores.
     const KNOWN: &[(u32, &str)] = &[
         (3101, "Store_Her_General"),
         (3201, "Store_Cal_General"),
     ];
 
     fn find_table_bytes() -> Option<(Vec<u8>, Vec<u8>)> {
-        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert")
-            });
-        let pamt_path = game_root.join("0008").join("0.pamt");
-        if !pamt_path.is_file() {
-            return None;
-        }
-        let pamt_bytes = std::fs::read(&pamt_path).ok()?;
-        let pamt = crate::binary::pamt::PackMeta::parse(&pamt_bytes, None).ok()?;
-        let dir = pamt
-            .directories
-            .iter()
-            .find(|d| d.path == gamedata_layout::bin_dir())?;
-        let pabgb_file = dir.files.iter().find(|f| f.name == gamedata_layout::body("storeinfo"))?;
-        let pabgh_file = dir.files.iter().find(|f| f.name == gamedata_layout::header("storeinfo"))?;
-        let group_dir = game_root.join("0008");
-        let pabgb = crate::binary::paz::extract_file(
-            &group_dir,
-            pabgb_file,
-            gamedata_layout::bin_dir(),
-            &pamt.header.encrypt_info.encrypt_info,
-        )
-        .ok()?;
-        let pabgh = crate::binary::paz::extract_file(
-            &group_dir,
-            pabgh_file,
-            gamedata_layout::bin_dir(),
-            &pamt.header.encrypt_info.encrypt_info,
-        )
-        .ok()?;
-        Some((pabgb, pabgh))
+        // None only when the install (or the table) is absent; an install
+        // that is there but unreadable fails the test.
+        Some((
+            gamedata_layout::extract_bin(&gamedata_layout::body("storeinfo"))?,
+            gamedata_layout::extract_bin(&gamedata_layout::header("storeinfo"))?,
+        ))
     }
 
     #[test]
@@ -182,11 +149,10 @@ mod tests {
             entries.len(),
             pabgb.len()
         );
-        assert!(
-            entries.len() >= 250,
-            "expected at least 250 storeinfo rows in 1.07, got {}",
-            entries.len()
-        );
+        // Every row the 2.06 header lists parses; a floor would let most of
+        // the table go missing unnoticed.
+        let listed = crate::binary::static_header::detect_named_pair(&pabgh, &pabgb).expect("2.06 header").2.len();
+        assert_eq!(entries.len(), listed, "rows parsed vs rows the header lists");
         let by_key: std::collections::HashMap<u32, &str> =
             entries.iter().map(|e| (e.key, e.name.as_str())).collect();
         for &(key, expected) in KNOWN {
@@ -207,26 +173,26 @@ mod tests {
         }
     }
 
-    /// Forensic probe for the next-session per-row body RE pass.
+    /// Forensic probe for per-row body reverse-engineering.
     /// Classifies every row by `(field_e, format_tag)` (the
     /// common-header discriminators at offsets +21 and +26..+27) and
     /// dumps the first 96 bytes of body for each variant group. Those
-    /// offsets are the pre-2.04 body's; the groups below are 1.07's and
-    /// have not been re-derived on the reordered 2.04 body.
+    /// offsets are the pre-2.04 body's and have not been re-derived on
+    /// the reordered 2.04 body.
     ///
-    /// 1.07 distribution (2026-05-17 baseline):
-    /// - `field_e=0, format_tag=0x01FD/0x03FC/0x83FC`: 181 rows (standard family;
-    ///   items table follows the 23-byte std-family continuation)
-    /// - `field_e=1, format_tag=0x01FD`: 10 rows (Trade — variable-length items)
-    /// - `field_e=2, format_tag=0x01FD`: 9 rows (Short-tail — 15-byte tail variant)
-    /// - `field_e=0, format_tag=0x0600/0x83FC`: 6 rows (Camp anomaly + leather variants)
-    /// - `field_e ∈ {14, 1536, 1537, 1538}`: 86 rows (Camp / BlackMarket /
-    ///   Furniture / TradeManager etc. — completely different body layout,
-    ///   prefix-list-then-std-family structure; layout pending full RE)
+    /// Variant families of the pre-2.04 body:
+    /// - `field_e=0, format_tag=0x01FD/0x03FC/0x83FC`: standard family
+    ///   (items table follows the 23-byte std-family continuation)
+    /// - `field_e=1, format_tag=0x01FD`: Trade — variable-length items
+    /// - `field_e=2, format_tag=0x01FD`: Short-tail — 15-byte tail variant
+    /// - `field_e=0, format_tag=0x0600/0x83FC`: Camp anomaly + leather variants
+    /// - `field_e ∈ {14, 1536, 1537, 1538}`: Camp / BlackMarket /
+    ///   Furniture / TradeManager etc. — a different body layout
+    ///   (prefix list, then the std-family structure), not decoded
     ///
     /// The hexpat `references/store_info.hexpat` claims a uniform 105-byte
-    /// `StoreItemEntry`, but the probe revealed that item bytes are
-    /// actually **variable-length** even within the standard family
+    /// `StoreItemEntry`, but item bytes are
+    /// **variable-length** even within the standard family
     /// (Store_Her_General's first item is 123 bytes; subsequent items
     /// have different sizes). A full per-item parser needs either:
     /// - a variable-length walker that scans for the `0xFFFF` separator

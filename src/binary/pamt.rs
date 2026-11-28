@@ -9,10 +9,9 @@ use crate::crypto::checksum;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-#[allow(dead_code)]
 pub enum Compression {
     None = 0,
-    Partial = 1,
+    // 1 is partial compression, carried by `PackMetaFile::is_partial`.
     Lz4 = 2,
     Zlib = 3,
     QuickLz = 4,
@@ -95,9 +94,18 @@ pub struct PackMetaFile {
 }
 
 impl PackMetaFile {
-    fn from_raw(raw: PackMetaFileRaw) -> Self {
+    /// Decode the flags. A compression nibble of 5..=15 or a crypto nibble of
+    /// 4..=15 is an error: reading it as "none" would turn format drift into
+    /// garbage output instead of a failure.
+    fn from_raw(raw: PackMetaFileRaw) -> io::Result<Self> {
         let raw_compression = raw.flags & 0x0F;
         let raw_crypto = raw.flags >> 4;
+        if raw_compression > 4 || raw_crypto > 3 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unknown PAMT file flags {:#04x} (compression {raw_compression}, crypto {raw_crypto})", raw.flags),
+            ));
+        }
 
         let (compression, is_partial) = if raw_compression == 1 {
             (Compression::None, true)
@@ -107,8 +115,7 @@ impl PackMetaFile {
                     0 => Compression::None,
                     2 => Compression::Lz4,
                     3 => Compression::Zlib,
-                    4 => Compression::QuickLz,
-                    _ => Compression::None,
+                    _ => Compression::QuickLz,
                 },
                 false,
             )
@@ -118,11 +125,10 @@ impl PackMetaFile {
             0 => CryptoType::None,
             1 => CryptoType::Ice,
             2 => CryptoType::Aes,
-            3 => CryptoType::ChaCha20,
-            _ => CryptoType::None,
+            _ => CryptoType::ChaCha20,
         };
 
-        PackMetaFile {
+        Ok(PackMetaFile {
             name_offset: raw.name_offset,
             chunk_offset: raw.chunk_offset,
             compressed_size: raw.compressed_size,
@@ -133,7 +139,7 @@ impl PackMetaFile {
             compression,
             crypto,
             is_partial,
-        }
+        })
     }
 }
 
@@ -245,7 +251,9 @@ impl PackMeta {
         check_remaining(data, offset, 4)?;
         let dir_count = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
         offset += 4;
-        let mut raw_directories = Vec::with_capacity(dir_count);
+        // A count from the file can reserve at most what the remaining bytes
+        // could hold (16 B per directory), not 64 GiB.
+        let mut raw_directories = Vec::with_capacity(dir_count.min((data.len() - offset) / 16));
         for _ in 0..dir_count {
             raw_directories.push(PackMetaDirectory::read_from(data, &mut offset)?);
         }
@@ -254,7 +262,7 @@ impl PackMeta {
         check_remaining(data, offset, 4)?;
         let file_count = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
         offset += 4;
-        let mut raw_files = Vec::with_capacity(file_count);
+        let mut raw_files = Vec::with_capacity(file_count.min((data.len() - offset) / 20));
         for _ in 0..file_count {
             raw_files.push(PackMetaFileRaw::read_from(data, &mut offset)?);
         }
@@ -348,7 +356,8 @@ impl PackMeta {
                 }
 
                 let chunk = chunk_map[&(raw_file.chunk_id as u32)];
-                if raw_file.chunk_offset + raw_file.compressed_size > chunk.size {
+                // u64: a u32 sum can wrap in release builds.
+                if u64::from(raw_file.chunk_offset) + u64::from(raw_file.compressed_size) > u64::from(chunk.size) {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!(
@@ -367,7 +376,7 @@ impl PackMeta {
                     chunk_id: raw_file.chunk_id,
                     flags: raw_file.flags,
                     extension_index: raw_file.extension_index,
-                });
+                })?;
 
                 resolved_files.push(ResolvedFile {
                     name: file_name,
@@ -437,15 +446,18 @@ impl PackMeta {
         Ok(post_header)
     }
 
-    /// Serialize back to bytes (roundtrip).
+    /// Serialize back to bytes with the stored checksum (byte-exact
+    /// roundtrip; the round-trip tests use it). Writers of edited data use
+    /// [`Self::to_bytes_with_checksum`].
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn to_bytes(&self) -> io::Result<Vec<u8>> {
         let post_header = self.post_header_bytes()?;
 
         // Build full output
         let mut out = Vec::new();
 
-        // Header (checksum field is from the original - the actual post-header
-        // checksum is validated by the papgt entry, not stored in the pamt header itself)
+        // The header keeps its stored checksum, which covers the bytes after
+        // it; parse validates it, and a writer of edited data recomputes it.
         self.header.write_to(&mut out)?;
         out.write_all(&post_header)?;
 
@@ -473,5 +485,31 @@ impl PackMeta {
         out.write_all(&post_header)?;
 
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn raw(flags: u8) -> PackMetaFileRaw {
+        PackMetaFileRaw {
+            name_offset: 0,
+            chunk_offset: 0,
+            compressed_size: 0,
+            uncompressed_size: 0,
+            chunk_id: 0,
+            flags,
+            extension_index: 0,
+        }
+    }
+
+    /// Unknown compression / crypto nibbles are errors, not "none".
+    #[test]
+    fn unknown_file_flags_are_errors() {
+        assert_eq!(PackMetaFile::from_raw(raw(0x32)).unwrap().crypto, CryptoType::ChaCha20);
+        assert_eq!(PackMetaFile::from_raw(raw(0x32)).unwrap().compression, Compression::Lz4);
+        assert!(PackMetaFile::from_raw(raw(0x05)).is_err(), "compression 5");
+        assert!(PackMetaFile::from_raw(raw(0x40)).is_err(), "crypto 4");
     }
 }

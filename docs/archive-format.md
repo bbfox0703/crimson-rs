@@ -50,7 +50,7 @@ it goes stale when entries change. See [Mod Loading](#mod-loading-overlay-approa
 | Offset | Type | Field |
 |--------|------|-------|
 | 0 | u32 | unknown0 |
-| 4 | u32 | checksum (Jenkins hashlittle2 of post-header data) |
+| 4 | u32 | checksum (Jenkins hashlittle of post-header data) |
 | 8 | u8 | entry_count |
 | 9 | u8 | unknown1 |
 | 10 | u16 | unknown2 |
@@ -82,7 +82,7 @@ Virtual filesystem index for a single pack group. Maps directory paths and file 
 ### Header (12 bytes)
 | Offset | Type | Field |
 |--------|------|-------|
-| 0 | u32 | checksum (Jenkins hashlittle2 of post-header data) |
+| 0 | u32 | checksum (Jenkins hashlittle of post-header data) |
 | 4 | u16 | count |
 | 6 | u8 | unknown |
 | 7 | u8[3] | encrypt_info |
@@ -224,7 +224,7 @@ repeat count × { u64 unk_id; CString string_key; CString string_value }
 u32 count                                  // trailing, not leading
 ```
 
-`string_key` is a name, or the decimal `(hashlittle2(owning row's internal name) << 32) | namespace`
+`string_key` is a name, or the decimal `(hashlittle(owning row's internal name) << 32) | namespace`
 (`0x70` item names, `0x100` quest titles, `0x101` mission and stage titles, …).
 
 ### Container (2.03+)
@@ -250,7 +250,7 @@ decompressed body, the same contract as the save format.
 
 ## Checksum
 
-Jenkins hashlittle2 with constant seed `0xDEBA1DCD`.
+Jenkins hashlittle with constant seed `0xDEBA1DCD`.
 
 Used in:
 - PAMT header (covers post-header data)
@@ -265,7 +265,7 @@ Used in:
 The game resolves files by scanning PAPGT entries front-to-back. First match wins.
 
 ### How It Works
-1. **Create a new pack group** (e.g., `0036/`) containing modified files packed into `.paz` + `0.pamt`
+1. **Create a new pack group** under a number the PAPGT does not list (e.g. `0099/`; on 2.06 `0036`–`0040` are listed vanilla language groups with no folder) containing modified files packed into `.paz` + `0.pamt`
 2. **Insert the mod entry at the front** of both the PAPGT entries list and the group_names buffer
 3. **Replace `meta/0.papgt`** with the updated version
 

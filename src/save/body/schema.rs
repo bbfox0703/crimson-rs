@@ -26,19 +26,17 @@
 //! ```
 //!
 //! The "interleaved name" layout — each type's name lives before its body
-//! rather than as a header — matches the Python `save_parser.py`
-//! implementation byte for byte. We deliberately preserve the same
-//! traversal so a future round-trip writer is straightforward.
+//! rather than as a header — is walked the same way as the Python
+//! `save_parser.py` reference implementation.
 
 use std::io;
 
 /// One field within a [`TypeDef`].
 ///
-/// `meta_kind` selects the field decoder used for instance data (see the
-/// upcoming object-decoder layer). The remaining `meta_size` and
-/// `meta_aux` are opaque to the schema parser — they're passed through to
-/// the decoder. Capturing `(start_offset, end_offset)` here lets a future
-/// writer round-trip the schema without reparsing.
+/// `meta_kind` selects the field decoder used for instance data (see
+/// `body::decoder`). The remaining `meta_size` and `meta_aux` are opaque
+/// to the schema parser — they're passed through to the decoder.
+/// `(start_offset, end_offset)` locate the field's schema record in the body.
 #[derive(Debug, Clone)]
 pub struct FieldDef {
     pub name: String,
