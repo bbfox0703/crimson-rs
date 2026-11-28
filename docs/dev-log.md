@@ -25,6 +25,60 @@ landed together. **Reading tip:** grep `^## ` for the index, then read from the 
 
 -----
 
+## 2026-11-28 — Comment rules applied repo-wide; pyo3 0.30 and patched dependencies
+
+After the audit batches, at the maintainer's request: the comment rules of the UE5CEDumper repo,
+adapted here.
+
+- **The rule** is now in `CLAUDE.md` under Working conventions ("Code comments"): present tense, and
+  no history in a comment. That means no fix narrative, audit or review tags, commit hashes, PR
+  numbers or "found on <date>"; that goes here or in the document this points to. Also:
+  - no line numbers into the repo;
+  - no restating the next line;
+  - no enumerations that must be kept in sync;
+  - no unenforced "only" / "every caller" claims;
+  - no plan wording.
+
+  Facts about the game data stay when they are the reason for the code. Counts that pin a patch
+  belong in a test or here. The maintainer asked for no bug tags at all, which is stricter than
+  UE5CEDumper's `[TAG]` + date.
+- **Gate:** `repo_doc_budget::comments_cite_no_lines_or_audit_tags` (CI) fails on a source comment
+  that cites `foo.rs:12` or carries an `audit X-NN` tag. It found 123 before the pass and 0 after.
+  History phrasing beyond those two patterns is left to review: the leftover "used to" / "fix" hits
+  are "used to compute", "fixed" and "fixture".
+- **The pass:**
+  - Seven subagents split the source by file (`src/c_abi/mod.rs`; the big `c_abi` files; the dye /
+    item / quest bridges; the other bridges; core / archive / save; the table parsers; scripts and
+    the Python stub). They edited comments only.
+  - Each group was checked before its commit: with comments stripped, HEAD and the new file have
+    identical code in every changed file. Seven commits, roughly 2,000 comment lines removed net.
+  - `scripts/archive/` was left as historical tooling.
+  - Docs that were wrong about the code got corrected along the way. Transplant within one handle is
+    allowed. A failed `end_deferred_redecode` moves the version forward. The allowed-gem list is a
+    union of two lists. factionnode has a display-name lookup. Several test docs now describe what
+    their tests actually assert.
+  - `#[ignore]` reasons and two code consistency fixes followed: stringinfo keeps the first row for a
+    duplicate hash, as every other bridge does, and the house / royal-supply extern docs gained the
+    summary line the symbol index reads.
+- **Where the removed history went:**
+  - `src/item_info/item.rs`'s 516-line per-patch layout history is archived verbatim in
+    `docs/archive/iteminfo-layout-history.md`. The nine `validated-patches.md` / `api.md` pointers to
+    that header now point there.
+  - Measurements and RE findings that no document recorded are collected in
+    `docs/archive/comment-pass-2026-11-28-notes.md` (44 entries).
+  - Unreconciled, and noted there: the appearance-key hit count, 16 of 122 in the old probe doc vs 9
+    of 122 in `save-editor-keys-plan.md`.
+- **Dependencies (CI):** the new `cargo audit` job failed on its first run.
+  - pyo3 0.27.2 had RUSTSEC-2026-0176 / 0177; it is now 0.30.1, with no code change.
+  - anyhow 1.0.102 and rustix 1.1.4 were unsound; now 1.0.105 and 1.1.6.
+  - chacha20 0.10.0 was yanked; now 0.10.2.
+  - The rebuilt wheel round-trips live iteminfo, skill, PAPGT and all 74 PAMTs byte for byte and
+    reads the English PALOC (222,887 entries). CI is green on `a037809`.
+- **Measured on this PC:** 441 passed, 48 ignored, with the install and fixtures; the same 441 pass
+  with neither. Strict clippy and all four feature combinations are clean.
+- **CrimsonAtomtic:** nothing to do. No signature or behaviour changed, apart from stringinfo's
+  first-wins on a duplicate hash; 2.06 has none.
+
 ## 2026-11-28 — Audit P10: docs, tooling, RustCrypto versions, last tests; every finding settled
 
 The tenth and last fix batch, on the same branch as the entries below. Status table after it: 133
