@@ -222,7 +222,7 @@ impl WritePyValue for [u8; 9] {
 
 impl ToPyValue for CString<'_> {
     fn to_py_value(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        Ok(self.data.into_pyobject(py)?.into_any().unbind())
+        Ok(self.as_str().into_pyobject(py)?.into_any().unbind())
     }
 }
 
@@ -257,7 +257,7 @@ impl ToPyValue for LocalizableString<'_> {
         let d = PyDict::new(py);
         d.set_item("category", self.category)?;
         d.set_item("index", self.index)?;
-        d.set_item("default", self.default.data)?;
+        d.set_item("default", self.default.as_str())?;
         Ok(d.into_any().unbind())
     }
 }
@@ -283,7 +283,7 @@ impl ToPyValue for OptLocalizableString<'_> {
         let d = PyDict::new(py);
         d.set_item("category", self.category)?;
         d.set_item("index", self.index)?;
-        d.set_item("default", self.default.data)?;
+        d.set_item("default", self.default.as_str())?;
         Ok(d.into_any().unbind())
     }
 }

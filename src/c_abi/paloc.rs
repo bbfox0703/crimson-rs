@@ -43,9 +43,15 @@ impl CrimsonPalocHandle {
         let entries: Vec<(String, String)> = file
             .entries
             .iter()
-            .map(|e| (e.string_key.data.to_owned(), e.string_value.data.to_owned()))
+            .map(|e| (e.string_key.as_str().to_owned(), e.string_value.as_str().to_owned()))
             .collect();
-        let by_key = entries.iter().cloned().collect();
+        // First entry wins, as in every other bridge; `collect` let the last
+        // one win, so a duplicate key looked up one value and enumerated
+        // another (audit A-16; no duplicates in the 2.06 English PALOC).
+        let mut by_key = HashMap::with_capacity(entries.len());
+        for (k, v) in &entries {
+            by_key.entry(k.clone()).or_insert_with(|| v.clone());
+        }
         Ok(CrimsonPalocHandle { by_key, entries })
     }
 

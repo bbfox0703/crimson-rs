@@ -827,7 +827,7 @@ impl ToPyValue for SealableItemInfo<'_> {
         match &self.value {
             SealableValue::Item(k) => d.set_item("value", k.0)?,
             SealableValue::Gimmick(k) => d.set_item("value", k.0)?,
-            SealableValue::String(s) => d.set_item("value", s.data)?,
+            SealableValue::String(s) => d.set_item("value", s.as_str())?,
             SealableValue::Character(k) => d.set_item("value", k.0)?,
             SealableValue::Tribe(k) => d.set_item("value", k.0)?,
         };

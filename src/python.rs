@@ -787,8 +787,8 @@ fn to_py_paloc_entry<'py>(
 ) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new(py);
     d.set_item("unk_id", entry.unk_id)?;
-    d.set_item("string_key", entry.string_key.data)?;
-    d.set_item("string_value", entry.string_value.data)?;
+    d.set_item("string_key", entry.string_key.as_str())?;
+    d.set_item("string_value", entry.string_value.as_str())?;
     Ok(d)
 }
 

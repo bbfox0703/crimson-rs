@@ -6017,7 +6017,7 @@ mod tests {
         let mut numeric: HashMap<u64, String> = HashMap::new();
         for e in &parsed.entries {
             if let Ok(k) = e.string_key.data.parse::<u64>() {
-                numeric.insert(k, e.string_value.data.to_owned());
+                numeric.insert(k, e.string_value.as_str().to_owned());
             }
         }
         eprintln!("loaded {} numeric PALOC entries", numeric.len());
