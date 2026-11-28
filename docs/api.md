@@ -525,8 +525,6 @@ Each item is a dict with 124 fields on 2.06 (the `ItemInfo` TypedDict in `__init
 | `money_icon_path` | `int` | StringInfoKey (u32) |
 | `use_map_icon_alert` | `int` | (u8) |
 | `emoji_texture_id` | `int` | StringInfoKey (u32) since 2.04, a string before it |
-| `prefab_data_list` | `list[dict]` | See [PrefabData](#prefabdata) |
-| `gimmick_visual_prefab_data_list` | `list[dict]` | See [GimmickVisualPrefabData](#gimmickvisualprefabdata) |
 
 ### Description & Knowledge
 
@@ -553,6 +551,7 @@ Each item is a dict with 124 fields on 2.06 (the `ItemInfo` TypedDict in `__init
 | `enchant_data_list` | `list[dict]` | See [EnchantData](#enchantdata) |
 | `sharpness_data` | `dict \| None` | See [ItemInfoSharpnessData](#iteminfoSharpnessdata). `None` when absent (2.04) |
 | `max_endurance` | `int` | Maximum durability (u16). |
+| `merged_prefab_visual_list` | `list[dict]` | See [MergedPrefabVisualData](#mergedprefabvisualdata) (1.13 merged the old prefab and gimmick-visual lists into this one, at the item end) |
 | `repair_data_list` | `list[dict]` | See [RepairData](#repairdata) |
 | `is_shield_item` | `int` | (u8) |
 | `is_tower_shield_item` | `int` | (u8) |
@@ -888,26 +887,19 @@ Variant type with a type tag.
 }
 ```
 
-### GimmickVisualPrefabData
+### MergedPrefabVisualData
 
 ```python
 {
-    "tag_name_hash": int,          # u32
-    "scale": [float, float, float],# [f32; 3]
-    "prefab_names": [int],         # StringInfoKey list (u32)
-    "animation_path_list": [int],  # StringInfoKey list (u32)
-    "use_gimmick_prefab": int      # u8
-}
-```
-
-### PrefabData
-
-```python
-{
-    "prefab_names": [int],       # StringInfoKey list (u32)
-    "equip_slot_list": [int],    # u16 list
-    "tribe_gender_list": [int],  # StringInfoKey list (u32)
-    "is_craft_material": int     # u8
+    "scale": [float, float, float],  # [f32; 3], (1, 1, 1) on prefab-origin rows
+    "prefab_names": [int],           # StringInfoKey list (u32)
+    "animation_path_list": [int],    # StringInfoKey list (u32)
+    "equip_slot_list": [int],        # u16 list
+    "tribe_gender_list": [int],      # StringInfoKey list (u32)
+    "unk_pre_is_craft_material": int,# u32, 0xeac5e173 (the empty-string hash) on every element read
+    "is_craft_material": int,        # u8, flag tail byte 1 (meaning open)
+    "use_gimmick_prefab": int,       # u8, flag tail byte 2 (meaning open)
+    "unk_post_flag": int             # u8, flag tail byte 3 (meaning open)
 }
 ```
 
