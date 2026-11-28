@@ -317,6 +317,18 @@ int32_t crimson_factionnode_entry_source(const CrimsonFactionNodeInfoHandle *han
   header count exceeds the elements the decoder read. And `mutation_version` now
   moves with every mutation inside a deferred batch and forward on abort, see
   [`save-mutation-version.md`](save-mutation-version.md).
+- **Save-editing safety net (2026-11-28, audit F-01 / G-02 / G-10 / G-11)** — the
+  encoder refuses a block the decoder did not fully explain (undecoded bytes,
+  `Unknown` fields, placeholder elements, a locator child away from its wrapper),
+  so a length-changing edit returns `MUTATION_INVALID` instead of writing a body
+  with bytes missing. After every commit the re-decoded tree must decode
+  completely too, or the edit rolls back with `MUTATION_INVALID`; this is what
+  makes the transplant's "definition mismatch" promise hold. Inserts, transplants
+  and template inserts return the new `ELEMENT_CLASS_MISMATCH` (−27) for an
+  element whose class differs from the list's (no game save mixes classes in a
+  list: 0 of 213,171 lists in 21 saves). Exporting a placeholder element as a
+  template returns `BODY_PARSE`. Still open: the template compares a scalar's
+  kind and size but not its type name, which the CRET v1 format does not record.
 
 **Absence markers.** The engine writes one `0x01` byte for every *absent*
 dynamic array (`meta_kind` 3) and object list (6 / 7), and nothing for other

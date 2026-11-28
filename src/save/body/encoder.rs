@@ -99,6 +99,16 @@ fn check_fully_decoded(block: &ObjectBlock) -> Result<(), String> {
     Ok(())
 }
 
+/// [`check_fully_decoded`] over a whole decoded tree, for callers that need
+/// to know a re-decode explained every byte (the C ABI's post-commit check).
+#[cfg_attr(not(feature = "c_abi"), allow(dead_code))]
+pub(crate) fn blocks_fully_decoded(blocks: &[ObjectBlock]) -> Result<(), String> {
+    for (i, block) in blocks.iter().enumerate() {
+        check_fully_decoded(block).map_err(|why| format!("block {i} ({}): {why}", block.class_name))?;
+    }
+    Ok(())
+}
+
 /// Encode a single top-level TOC block back to bytes, treating
 /// `block_data_offset` as the absolute body offset where this block
 /// will sit. The encoder uses this to recompute each locator

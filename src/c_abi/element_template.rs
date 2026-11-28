@@ -111,6 +111,11 @@ fn template_from_block(block: &ObjectBlock, depth: usize) -> Result<TObject, i32
     if depth > MAX_DEPTH || !block.trailing_pad.is_empty() || !block.undecoded_ranges.is_empty() {
         return Err(error::BODY_PARSE);
     }
+    // A placeholder (wrapper only, its payload did not decode) carries no
+    // fields to record; exporting it would template an empty object.
+    if block.mask_bytes.is_empty() && block.fields.is_empty() {
+        return Err(error::BODY_PARSE);
+    }
     let wrapper = block.locator_wrapper.as_ref().ok_or(error::BODY_PARSE)?;
     let mut fields = Vec::new();
     for f in &block.fields {
@@ -743,6 +748,9 @@ pub unsafe extern "C" fn crimson_save_list_insert_element_template(
             }
             if insert_at as usize > elements.len() {
                 return Err(error::OUT_OF_RANGE);
+            }
+            if elements.first().is_some_and(|e| e.class_name != element.class_name) {
+                return Err(error::ELEMENT_CLASS_MISMATCH);
             }
             elements.insert(insert_at as usize, element);
             *count = elements.len() as u32;

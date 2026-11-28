@@ -37,7 +37,7 @@ pub use object::{
 #[cfg(feature = "c_abi")]
 pub(crate) use decoder::decode_one_list_element_bytes;
 #[cfg(feature = "c_abi")]
-pub(crate) use encoder::encode_scalar;
+pub(crate) use encoder::{blocks_fully_decoded, encode_scalar};
 #[cfg(feature = "c_abi")]
 pub(crate) use schema::{FieldDef, TypeDef};
 #[cfg(feature = "c_abi")]

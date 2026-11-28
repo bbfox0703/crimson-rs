@@ -181,6 +181,10 @@ pub mod error {
     /// Rewriting `count` from the decoded elements would drop the rest, so
     /// the edit is refused and the save is untouched.
     pub const LIST_PARTIALLY_DECODED: i32 = -26;
+    /// An insert, transplant or template insert would put an element of a
+    /// different class into a list whose existing elements share one class.
+    /// The save is untouched.
+    pub const ELEMENT_CLASS_MISMATCH: i32 = -27;
     pub const PANIC: i32 = -99;
 }
 
@@ -1728,6 +1732,13 @@ where
         }
     };
     let new_blocks = new_body_parsed.decode_blocks(&new_body);
+    // The re-decode is the check: the bytes just produced must decode back
+    // completely, or the edit wrote something the decoder cannot read (e.g.
+    // an element transplanted from a different schema). Roll back.
+    if crate::save::blocks_fully_decoded(&new_blocks).is_err() {
+        h.blocks = blocks_backup;
+        return error::MUTATION_INVALID;
+    }
 
     h.save.body = new_body;
     h.body = new_body_parsed;
@@ -2894,6 +2905,9 @@ pub unsafe extern "C" fn crimson_save_transplant_list_element(
             if insert_at as usize > elements.len() {
                 return Err(error::OUT_OF_RANGE);
             }
+            if elements.first().is_some_and(|e| e.class_name != transplanted.class_name) {
+                return Err(error::ELEMENT_CLASS_MISMATCH);
+            }
             elements.insert(insert_at as usize, transplanted);
             *count = elements.len() as u32;
             update_object_list_count_in_header(header_bytes, header_variant, *count)?;
@@ -3626,6 +3640,9 @@ pub unsafe extern "C" fn crimson_save_list_insert_element(
             }
             if (insert_at as usize) > elements.len() {
                 return Err(error::OUT_OF_RANGE);
+            }
+            if elements.first().is_some_and(|e| e.class_name != parsed.class_name) {
+                return Err(error::ELEMENT_CLASS_MISMATCH);
             }
             elements.insert(insert_at as usize, parsed);
             *count = elements.len() as u32;
@@ -4360,6 +4377,9 @@ pub unsafe extern "C" fn crimson_save_end_deferred_redecode(
             Err(_) => return roll_back(h, state),
         };
         let new_blocks = new_body_parsed.decode_blocks(&new_body);
+        if crate::save::blocks_fully_decoded(&new_blocks).is_err() {
+            return roll_back(h, state);
+        }
         h.save.body = new_body;
         h.body = new_body_parsed;
         h.blocks = new_blocks;
@@ -6194,6 +6214,40 @@ mod tests {
             }
         }
         assert_eq!(ck, src_charkey, "transplanted element charKey mismatch");
+
+        // G-11: the same element into a top-level list whose elements have a
+        // different class is refused, and the target body stays as it was.
+        let src_class = {
+            let h = unsafe { &*a };
+            let FieldValue::ObjectList { elements, .. } =
+                &h.blocks[block_idx as usize].fields[field_idx as usize].value
+            else { panic!("source field not a list"); };
+            elements[0].class_name.clone()
+        };
+        let other = {
+            let h = unsafe { &*b };
+            h.blocks.iter().enumerate().find_map(|(bi, block)| {
+                block.fields.iter().enumerate().find_map(|(fi, field)| match &field.value {
+                    FieldValue::ObjectList { elements, .. }
+                        if elements.first().is_some_and(|e| e.class_name != src_class) =>
+                    {
+                        Some((bi as u32, fi as u32))
+                    }
+                    _ => None,
+                })
+            })
+        };
+        if let Some((obi, ofi)) = other {
+            let body_before = unsafe { (*b).save.body.clone() };
+            let rc = unsafe {
+                crimson_save_transplant_list_element(
+                    b, obi, ptr::null(), 0, ofi, 0,
+                    a, block_idx, ptr::null(), 0, field_idx, 0,
+                )
+            };
+            assert_eq!(rc, error::ELEMENT_CLASS_MISMATCH);
+            assert_eq!(unsafe { (*b).save.body.clone() }, body_before, "a refused transplant changes nothing");
+        }
 
         unsafe { crimson_save_free(a) };
         unsafe { crimson_save_free(b) };
