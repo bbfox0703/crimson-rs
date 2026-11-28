@@ -50,9 +50,11 @@ jobs:
       - name: clippy --features c_abi,python (strict)
         run: cargo clippy --all-targets --lib --features c_abi,python -- -D warnings
 
-      # The game-data-dependent tests skip cleanly when the install
-      # paths (D:\..., G:\...) aren't present, so this exercises the
-      # synthetic / pure-logic tests (PAZ compression, PABGH roundtrip,
-      # trie, etc.) — exactly the layer that should be CI-verified.
-      - name: cargo test --lib
-        run: cargo test --lib
+      # `c_abi` on: every gamedata bridge and the save-editor ABI sit
+      # behind it, so without it only 111 of the 399 tests compile in.
+      # The game-data-dependent tests skip cleanly when the install,
+      # the private fixtures and %LOCALAPPDATA% saves aren't present,
+      # so this exercises the synthetic / pure-logic tests. The thread
+      # cap mirrors the local invocation (see CLAUDE.md).
+      - name: cargo test --lib --features c_abi
+        run: cargo test --lib --features c_abi -- --test-threads=4
