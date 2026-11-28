@@ -25,6 +25,58 @@ landed together. **Reading tip:** grep `^## ` for the index, then read from the 
 
 -----
 
+## 2026-11-28 — Audit P3: untrusted-input bounds, live tests, script guards
+
+The third batch from the audit verification's fix order, on the same branch as the two entries
+below.
+
+- **Trie names (A-01):** `TrieStringBuffer::get_string` recursed up the parent chain, so a
+  self-parent (possible in the ≤ 2.03 absolute encoding) or a deep chain overflowed the stack and
+  aborted; caching every node's full string was also quadratic memory. It now walks the chain in a
+  loop and refuses more than 4,096 links or a name over 4,096 bytes, and it caches prefixes only up
+  to 512 bytes. A 4,096-deep chain resolves, and one link more errors.
+- **Sizes from untrusted headers (A-02, A-03, F-05, H-17):**
+  - PAMT dir/file counts reserve at most what the remaining bytes hold.
+  - `extract_file` checks the entry against the `.paz` length before allocating.
+  - `decompress` refuses a declared size beyond LZ4's 255:1 or zlib's 1032:1 before allocating it,
+    caps zlib output, and requires exactly the declared size (a short LZ4 stream used to come back
+    `Ok`). `decompress_partial` and the save loader apply the same LZ4 bound.
+  - Python `decompress_data(b"\0", 3, 1 << 40)` is now an error instead of a process abort.
+- **DDS per-mip header (A-12):** above 32,768 px a side, 32 mips or 128 bpp, the header is not
+  decoded per mip, and the size math is checked. Direct3D caps textures at 16,384 px.
+- **Save TOC and nesting (F-02, F-03):**
+  - A TOC count the body cannot hold is an error. It used to be a ~128 GiB `with_capacity`, followed
+    by entries read out of the data section.
+  - A locator child whose payload is already being decoded higher up, or nesting past 16, is refused.
+    The cycle used to crash the process in 0.48 s; game saves nest at most 5 deep (21 saves measured).
+- **Live tests (C-02, C-18 / I-04, I-02, I-03, I-05):**
+  - A new test writes back every row of the live `iteminfo` and `iteminfo.dlc_01` (7,068 / 8,218,
+    all byte-identical).
+  - The cross-version skill test now reads 2.04–2.06 from the version archive
+    (`CRIMSON_GAMEDATA_BIN`): all round-trip, 303–308 raw fallback each. Its old `G:` path no longer
+    existed, so it had always skipped.
+  - `lib.rs` tests honour `CRIMSON_GAME_ROOT`.
+  - The shared `gamedata_layout` helpers panic on an unreadable PAMT, a missing static-info directory
+    or a failed extraction instead of reporting "no install".
+  - The save round-trip tests also cover all nine fixture saves.
+- **Scripts and the doc-size test (I-13, I-14, I-16):**
+  - `extract_gamedata_bin.py` refuses a non-empty version folder unless `--force`.
+  - `dump_gamedata_keys.py` requires `--version`; its old default overwrote the committed 1.08
+    snapshot, and runbook step 7 now shows the flag.
+  - The CLAUDE.md size test counts CRLF as LF, as git stores it.
+- **Measured on this PC:** 412 passed, 48 ignored, with the live install, the fixtures and the
+  version archive; the same 412 pass with none of them (what CI runs). Strict clippy and the
+  bare-default `cargo check` are clean.
+- **Not established / still open:**
+  - About 20 per-module `find_table_bytes` helpers and the PALOC helpers still turn any failure into
+    "skip".
+  - The F-03 exponential-time case is bounded by the nesting cap (≤ 2^16 walks) but was not timed.
+  - P4 (doc and comment drift) is not started.
+- **CrimsonAtomtic:** no signature changed. Corrupt or crafted archives and saves now return errors
+  where they used to abort the process or come back short.
+
+-----
+
 ## 2026-11-28 — Audit P2: dye slot count, save-edit safety net, pack helpers
 
 The second batch from the audit verification's fix order, on the same branch as the P0/P1 entry
