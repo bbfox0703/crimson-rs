@@ -80,10 +80,8 @@ pub mod trigger_region_info;
 /// the `.staticinfoheader`, so the body-only bridges' file loaders read it from
 /// next to the body. The header file next to a body file (`x.staticinfobody` → `x.staticinfoheader`,
 /// `x.pabgb` → `x.pabgh`, extension case ignored): `Ok(None)` when there is
-/// none, `Err` when it exists but cannot be read. It used to match the
-/// extension case-sensitively and swallow every read error, so a
-/// `X.STATICINFOBODY` path or a sharing violation loaded as "OK, 0 rows"
-/// (audit B-02).
+/// none, `Err` when it exists but cannot be read, so a sharing violation
+/// surfaces as an error rather than as a table with no rows.
 pub(crate) fn sibling_header(body_path: &str) -> std::io::Result<Option<Vec<u8>>> {
     let p = std::path::Path::new(body_path);
     let Some(ext) = p.extension().and_then(|e| e.to_str()) else {
@@ -102,13 +100,12 @@ pub(crate) fn sibling_header(body_path: &str) -> std::io::Result<Option<Vec<u8>>
 }
 
 /// The check every table loader runs before handing out a handle, so a table
-/// it could not read is an error rather than `OK` with nothing in it (audit
-/// B-02 / E-04):
+/// it could not read is an error rather than `OK` with nothing in it:
 ///
 /// - A non-empty `header` must be a 2.06 header that matches `body`
 ///   ([`detect_named_pair`](crate::binary::static_header::detect_named_pair));
-///   anything else used to fall back to a body scan and return 0 rows, or
-///   noise rows. The parsers target the latest patch only.
+///   a body scan without the names would return 0 rows, or noise rows. The
+///   parsers target the latest patch only.
 /// - Rows it lists, or a non-empty body read without a header, must give at
 ///   least one row.
 ///
@@ -205,7 +202,7 @@ pub mod error {
     /// untouched.
     pub const TRANSPLANT_TYPE_MISSING: i32 = -24;
     /// `crimson_save_list_insert_element_template` found a template field
-    /// whose kind or size no longer matches the same-named field in the
+    /// whose kind or size does not match the same-named field in the
     /// TARGET save's schema (e.g. a scalar that changed width), or an
     /// always-present inline object whose class the target save gives no
     /// instance to learn from. Nothing is reinterpreted; the save is
@@ -263,9 +260,8 @@ pub(crate) unsafe fn slice_from_raw_or_empty<'a, T>(ptr: *const T, len: usize) -
 ///
 /// # Safety
 /// `buf` may be null iff `buf_len == 0`. `required` must be non-null.
-/// The existing per-bridge helpers (in `faction_node_info`, `store_info`,
-/// etc.) predate this and remain inlined; new bridges should use this
-/// shared copy.
+/// Some bridges carry their own inlined copy of this writer; new bridges
+/// should use this shared one.
 pub(crate) fn write_str_to_buf(
     src: &str,
     buf: *mut u8,
@@ -322,9 +318,9 @@ pub(crate) struct EntrySources {
 }
 
 impl EntrySources {
-    /// The source number the next merge will use (1 for the first DLC). It is
+    /// The source number the next merge uses (1 for the first DLC). It is
     /// taken only when that merge adds a row (see [`Self::push`]), so a merge
-    /// that adds nothing does not use a number up (audit B-10).
+    /// that adds nothing does not use a number up.
     pub(crate) fn next_merge(&self) -> u8 {
         self.merges.saturating_add(1)
     }
@@ -340,8 +336,7 @@ impl EntrySources {
 /// returns how many it added.
 ///
 /// The DLC table's `.staticinfoheader` is required (`BODY_PARSE` without it):
-/// a 2.06 body carries no names, and the body-only scan the merges fell back
-/// to added junk rows (18 into characterinfo; audit D-05).
+/// a 2.06 body carries no names, and a body-only scan of it adds junk rows.
 ///
 /// # Safety
 /// `handle` must be a live handle of type `H` or null; `body` / `header`
@@ -370,9 +365,9 @@ pub(crate) unsafe fn merge_dlc_ffi<H>(
         let h = unsafe { &mut *handle };
         let body = unsafe { slice_from_raw_or_empty(body, body_len) };
         let header = unsafe { slice_from_raw_or_empty(header, header_len) };
-        // A header that does not match the body used to merge nothing and
-        // return OK with `added == 0`, which reads as "the DLC adds no keys"
-        // (audit B-02).
+        // A header that does not match the body is an error: merging nothing
+        // and returning OK with `added == 0` would read as "the DLC adds no
+        // keys".
         if crate::binary::static_header::detect_named_pair(header, body).is_none() {
             return error::BODY_PARSE;
         }
@@ -415,12 +410,9 @@ pub(crate) unsafe fn entry_source_ffi<H>(
 /// standard handle struct + six `extern "C"` functions (load_from_file,
 /// load_from_bytes, free, entry_count, lookup_string_key, get_entry).
 ///
-/// Used by ten bridges: CraftToolKey, CraftToolGroupKey, TriggerRegionKey,
-/// GamePlayVariableKey, GlobalGameEventGroupKey, GameAdviceInfoKey,
-/// GameAdviceGroupKey, ReserveSlotKey, RegionKey and ItemGroupKey. The
-/// other name-only bridges (store_info, faction_node_info, house_info,
-/// royal_supply_info, etc.) are hand-written; house_info and
-/// royal_supply_info behave exactly like the macro output.
+/// The bridges that use it are the `crate::impl_name_only_bridge!` call
+/// sites; other name-only bridges are hand-written, some of them with
+/// exactly the macro's behaviour.
 ///
 /// Usage (`<table>` stands for the bridge's name):
 ///
@@ -681,7 +673,7 @@ pub struct CrimsonSaveHandle {
     /// intentionally inconsistent until `end_*` re-emits.
     deferred_state: Option<DeferredState>,
     /// Set by [`crimson_save_set_allow_hmac_rewrap`]: write this save even
-    /// though its HMAC did not verify on load (audit F-10).
+    /// though its HMAC did not verify on load.
     allow_hmac_rewrap: bool,
 }
 
@@ -959,7 +951,7 @@ pub unsafe extern "C" fn crimson_save_free(handle: *mut CrimsonSaveHandle) {
 /// the save. Output is a contiguous array of
 /// [`CrimsonInventoryItemRecord`] values (48 bytes each, `repr(C)`),
 /// suitable for direct `MemoryMarshal.Cast` / `Span<T>` consumption on
-/// the C# side. Saves a downstream editor from walking 18
+/// the C# side. Saves a downstream editor from walking the
 /// `_inventorylist[N]` × `_itemList[M]` nesting in N+1 FFI calls — one
 /// call returns the whole picture.
 ///
@@ -1001,19 +993,18 @@ pub unsafe extern "C" fn crimson_save_free(handle: *mut CrimsonSaveHandle) {
 /// **What this function reads** (no mutation):
 /// - Every `InventorySaveData` block (typically 1 per save, but the
 ///   ABI doesn't assume — multi-block saves work the same).
-/// - The `_inventorylist` ObjectList (18 elements in 1.07; ABI doesn't
-///   pin the count). Each element is an `InventoryElementSaveData`
+/// - The `_inventorylist` ObjectList (the ABI doesn't pin its length).
+///   Each element is an `InventoryElementSaveData`
 ///   with `_inventoryKey: InventoryKey (u16)` + `_itemList: ObjectList`.
 /// - Every `_itemList` element is an `ItemSaveData` row — pulls
 ///   `_itemKey`, `_slotNo`, `_stackCount`, `_itemNo`,
 ///   `_transferredItemKey`, `_isLocked`, `_isNewMark` into the record.
-///   Other 18 ItemSaveData fields (sockets / endurance / charge data /
+///   The other ItemSaveData fields (sockets / endurance / charge data /
 ///   dye lists / etc.) are NOT in the record — fetch via
 ///   [`crimson_save_get_block_json`] when needed for a specific slot.
 ///
-/// **Performance**: O(total items × small constant). For the 1.07
-/// reference save (543 items across 18 containers), end-to-end cost
-/// is under 1 ms. Each call collects the records into an internal `Vec`
+/// **Performance**: O(total items × small constant). Each call collects
+/// the records into an internal `Vec`
 /// first, then copies them into the caller's buffer.
 ///
 /// Return codes:
@@ -1215,8 +1206,6 @@ pub struct CrimsonCharacterRefRecord {
 /// each, `repr(C)`).
 ///
 /// Use to answer: "which characters does this save reference, and where?"
-/// — closes the gap noted in the Save Editor's character browser
-/// (screenshot, 2026-05-17).
 ///
 /// **Two-call shape** (records, not bytes):
 ///
@@ -1229,9 +1218,8 @@ pub struct CrimsonCharacterRefRecord {
 /// time. See [`crimson_save_list_inventory_items`] for the snapshot /
 /// staleness pattern.
 ///
-/// **Performance**: O(blocks × fields × nesting_depth). For the 1.07
-/// reference save this scans ~10k blocks × ~30 fields each in well
-/// under 100 ms. Each call collects the records into an internal `Vec`
+/// **Performance**: O(blocks × fields × nesting_depth). Each call
+/// collects the records into an internal `Vec`
 /// first, then copies them into the caller's buffer.
 ///
 /// Return codes:
@@ -1315,9 +1303,8 @@ fn walk_for_character_refs(
                     });
                 }
                 // DynamicArray of CharacterKey (meta_kind == 3) — each
-                // element is a u32. None seen in the 1.07 sample save
-                // but the survey probe doesn't rule it out, so handle
-                // it defensively.
+                // element is a u32. No sample save carries one, but the
+                // schema allows it.
                 FieldValue::DynamicArray { bytes, count, .. } if f.meta_size == 4 => {
                     let n = (*count as usize).min(bytes.len() / 4);
                     for i in 0..n {
@@ -1478,7 +1465,7 @@ pub unsafe extern "C" fn crimson_save_get_hmac_ok(
 /// Allow (`allow != 0`) or refuse (`0`, the default) writing this save when
 /// its HMAC did not verify on load. `crimson_save_write_to_file` returns
 /// `HMAC_UNVERIFIED` for such a save unless this was set, because writing
-/// re-seals the body with a fresh HMAC (audit F-10).
+/// re-seals the body with a fresh HMAC.
 ///
 /// # Safety
 /// `handle` must be a live handle returned by `crimson_save_load_from_file`.
@@ -1714,7 +1701,7 @@ fn resolve_leaf_range(
 }
 
 /// Mutable counterpart to [`resolve_leaf_range`] used by the length-
-/// changing edit surface (Phase B.2).
+/// changing edit surface.
 ///
 /// Navigates `(block_idx, path[])` and returns a `&mut DecodedField` at
 /// `field_idx` in the deepest reachable block. Same path semantics +
@@ -1802,10 +1789,9 @@ where
     // if `Body::write` or `Body::parse` fails on bytes we produced.
     let blocks_backup = h.blocks.clone();
 
-    // A panic inside the mutator or the encode / re-parse used to leave
-    // `h.blocks` half-edited while the outer guard reported PANIC (audit
-    // G-05). Catch it here, restore the snapshot, then let it continue to the
-    // outer guard.
+    // A panic inside the mutator or the encode / re-parse would leave
+    // `h.blocks` half-edited while the outer guard reports PANIC. Catch it
+    // here, restore the snapshot, then let it continue to the outer guard.
     let attempt = catch_unwind(AssertUnwindSafe(|| -> Result<(Vec<u8>, Body, Vec<ObjectBlock>), i32> {
         mutator(&mut h.blocks)?;
         let new_body = h.body.write(&h.save.body, &h.blocks).map_err(|_| error::MUTATION_INVALID)?;
@@ -1859,8 +1845,8 @@ fn apply_scalar_mutation_in_blocks(
     }
     // A fixed scalar's length is its schema size. `end - start` is stale
     // (0..0) for a scalar a presence toggle just made present in this
-    // batch, which rejected the right length and let a 0-byte write
-    // through (audit G-08).
+    // batch, so checking against it would reject the right length and let
+    // a 0-byte write through.
     let expected = match field.meta_size as usize {
         0 => field.end.saturating_sub(field.start),
         size => size,
@@ -1986,8 +1972,7 @@ fn classify_scalar_after_mask_toggle(parent: &ObjectBlock, field_idx: usize) -> 
 /// On success the cached body bytes are patched in place and **every**
 /// block is re-decoded so subsequent
 /// [`crimson_save_get_block_json`] / `_info` calls see the new value.
-/// The re-decode is O(toc_count) but completes in milliseconds on the
-/// 1112-block save.
+/// The re-decode is O(toc_count).
 ///
 /// # Safety
 /// `handle` must be a live, exclusive handle. `bytes` must be a valid
@@ -2139,8 +2124,7 @@ pub unsafe extern "C" fn crimson_save_set_scalar_field_path(
 // setters expect. They emit nothing the raw API can't already produce
 // — purely an ergonomic convenience so the C# editor doesn't have to
 // hand-pack 12/16-byte buffers for every float3 / float4 / uint4
-// edit. Mirrors the typed read side added in 2026-05-17
-// (`ScalarValue::F32x3` etc.).
+// edit. Mirrors the typed read side (`ScalarValue::F32x3` etc.).
 //
 // Mutation rule: each composite is atomic — there's no path to make
 // individual components absent. Either the whole vector is present
@@ -2390,9 +2374,9 @@ pub unsafe extern "C" fn crimson_save_set_uint4_field_present(
 ///    a single time after the last patch, regardless of `op_count`.
 ///
 /// This is the high-throughput path for bulk edits — e.g. "fill every
-/// item's stack to max", which performs 168 writes today and would
-/// otherwise pay 168 × `decode_blocks` cost. Wall-time goes from
-/// O(N · block_count) to O(N + block_count).
+/// item's stack to max", which would otherwise pay one `decode_blocks`
+/// per write. Wall-time goes from O(N · block_count) to
+/// O(N + block_count).
 ///
 /// `out_failed_op_index` (optional, may be NULL):
 /// - On error, written with the index of the op whose validation failed
@@ -2462,7 +2446,7 @@ pub unsafe extern "C" fn crimson_save_set_scalar_fields_batch(
         // turn; no body patch, no decode_blocks. Validation is per-op
         // (same code as the single-op setter); the first failing op
         // reports its index and leaves earlier ops applied — the
-        // batch's abort_* call will roll back if the caller wants
+        // batch's abort_* call rolls back if the caller wants
         // all-or-nothing semantics.
         if h.is_deferred() {
             // Reads see the in-progress tree, so the version moves with it,
@@ -2552,7 +2536,7 @@ pub unsafe extern "C" fn crimson_save_set_scalar_fields_batch(
     .unwrap_or(error::PANIC)
 }
 
-// ── Length-changing edits (Phase B.2) ──────────────────────────────────────
+// ── Length-changing edits ──────────────────────────────────────────────────
 
 /// Remove element `element_idx` from the `object_list` field reached by
 /// `(block_idx, path[], field_idx)`. The list's `count` is decremented,
@@ -2561,8 +2545,7 @@ pub unsafe extern "C" fn crimson_save_set_scalar_fields_batch(
 ///
 /// Validation:
 /// - The leaf field must be `FieldKind::ObjectList`; else `NOT_SCALAR`
-///   (overloaded — "not a list either"; the existing code maps non-list
-///   leaves to this).
+///   (overloaded to mean "not a list either").
 /// - `element_idx` must be `< current count`; else `OUT_OF_RANGE`.
 /// - The list's `header_variant` must be one whose count we can patch:
 ///   `zero1_count_u24`, `zero4_count_u32`, `ones_then_count`,
@@ -2729,9 +2712,10 @@ pub unsafe extern "C" fn crimson_save_list_remove_elements_batch(
     .unwrap_or(error::PANIC)
 }
 
-/// Shared mutator for both the single-op and batch list-remove entry
-/// points. Resolves the list field, bounds-checks `element_idx`, drops
-/// the element, and rewrites the variant header's count.
+/// Mutator for [`crimson_save_list_remove_elements_batch`], with the same
+/// checks as [`crimson_save_list_remove_element`]. Resolves the list
+/// field, bounds-checks `element_idx`, drops the element, and rewrites
+/// the variant header's count.
 fn remove_one_list_element_in_place(
     blocks: &mut [ObjectBlock],
     block_idx: u32,
@@ -2910,8 +2894,9 @@ fn remap_block_type_indices(
 /// `LIST_VARIANT_UNSUPPORTED`, `MUTATION_INVALID`.
 ///
 /// # Safety
-/// `target_handle` and `source_handle` must be live and **distinct**
-/// handles (aliasing one save as both is UB). Each `*_path` must point to
+/// `target_handle` and `source_handle` must be live handles; they may be
+/// the same handle (the element is cloned before the target is borrowed
+/// mutably). Each `*_path` must point to
 /// `*_path_len` readable [`CrimsonPathStep`]s (or NULL with len 0).
 #[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
@@ -2942,7 +2927,7 @@ pub unsafe extern "C" fn crimson_save_transplant_list_element(
         // deadlock concern. `source` is only read to clone one element, and
         // `target` is borrowed mutably only after that clone, so the two
         // borrows never overlap even when both pointers name the same save
-        // (copying between two lists of one save; audit G-15).
+        // (copying between two lists of one save).
         let _ffi_guard = save_ffi_lock();
         let source = unsafe { &*source_handle };
         let t_steps: &[CrimsonPathStep] = if target_path_len == 0 {
@@ -3157,7 +3142,7 @@ fn toggle_one_scalar_presence_in_place(
         let value = crate::save::scalar_from_bytes(init_bytes, &type_name, meta_size);
         field_mut.value = FieldValue::Scalar(value);
         // start/end are stale but the encoder ignores them for
-        // scalar emission; they'll be refreshed by the re-decode.
+        // scalar emission; the re-decode refreshes them.
     } else {
         field_mut.value = FieldValue::None;
         field_mut.start = 0;
@@ -3416,9 +3401,9 @@ fn toggle_one_object_list_presence_in_place(
     if target_idx / 8 >= parent.mask_bytes.len() {
         return Err(error::OUT_OF_RANGE);
     }
-    // Already in the requested state: leave it alone. Making a present list
-    // present again used to replace its N elements with the one default
-    // element (audit G-03).
+    // Already in the requested state: leave it alone, so making a present
+    // list present again keeps its elements instead of replacing them with
+    // the one default element.
     if field.present == make_present {
         return Ok(());
     }
@@ -3490,9 +3475,9 @@ fn toggle_one_object_list_presence_in_place(
 ///    via [`Body::write`] exactly once after the last successful
 ///    toggle. This is the high-throughput path for bulk presence
 ///    flips — e.g. "promote `_completedTime` from absent to present
-///    on 1300 `MissionStateData` blocks", which would otherwise pay
-///    1300 × encode + decode cost (~20 minutes on a 1100-block save)
-///    and instead amortizes to a single re-emit (~seconds).
+///    on every `MissionStateData` block", which would otherwise pay one
+///    encode + decode per block and instead amortizes to a single
+///    re-emit.
 ///
 /// `out_failed_op_index` (optional, may be NULL):
 /// - On an op's failure, written with that op's index.
@@ -3616,11 +3601,11 @@ pub unsafe extern "C" fn crimson_save_set_scalar_fields_present_batch(
 /// - Locator wrapper: `mbc` (= `ceil(field_count / 8)` clamped to `1..=16`)
 ///   mask bytes (all zero, so every field is absent), `type_index =
 ///   class_index`, all sentinels and `payload_offset` zero.
-/// - Inline payload: `u32 reserved = 0`, no field bytes, `u32
-///   trailing_size = 4`.
+/// - Inline payload: `u32 reserved = 0`, one `0x01` absence marker per
+///   dynamic-array / object-list field, `u32 trailing_size = 4 + markers`.
 ///
-/// Total size: wrapper (`mbc + 17`) + payload (`8`) = `mbc + 25` bytes.
-/// For a class with a 4-byte mask (≤32 fields), the element is 29 bytes.
+/// Total size: wrapper (`mbc + 17`) + payload (`8 + markers`). A class
+/// without dynamic-array or object-list fields gives `mbc + 25` bytes.
 ///
 /// Uses the standard two-call pattern: pass `buf=NULL, buf_len=0` to
 /// learn the required size, then allocate and call again. `out_required`
@@ -3847,8 +3832,7 @@ fn build_empty_element_bytes(class_index: u32, body: &Body) -> Result<Vec<u8>, i
 /// Validation:
 /// - The leaf field must be `FieldKind::DynamicArray`; else `NOT_SCALAR`.
 /// - The field's `meta_size` must be 4 (u32 element); else
-///   `LENGTH_MISMATCH`. (Other element widths can be added when a real
-///   need surfaces.)
+///   `LENGTH_MISMATCH`.
 /// - The header's `header_variant` must be one of the known fixed-shape
 ///   variants (`prefix_00xx0100` / `marker_prefix` / `compact` /
 ///   `generic`); else `BODY_PARSE`.
@@ -3907,8 +3891,7 @@ pub unsafe extern "C" fn crimson_save_dynamic_array_set_u32_elements(
             if !matches!(field.kind, FieldKind::DynamicArray) {
                 return Err(error::NOT_SCALAR);
             }
-            // Restrict to u32 element width for now. Other widths can be
-            // added by mirroring this function for u8/u16/u64 if needed.
+            // Only u32 elements are supported.
             if field.meta_size != 4 {
                 return Err(error::LENGTH_MISMATCH);
             }
@@ -3982,10 +3965,9 @@ pub unsafe extern "C" fn crimson_save_dynamic_array_get_u32_elements(
         } else {
             unsafe { std::slice::from_raw_parts(path, path_len) }
         };
-        // Read-only navigation reuses the schema-aware `resolve_leaf_range`
-        // path used by other read-side getters, but here we need the
-        // FieldValue, not just byte offsets. Walk a borrowed view of
-        // h.blocks instead.
+        // This needs the FieldValue, not just the byte range
+        // `resolve_leaf_range` returns, so walk a borrowed view of
+        // h.blocks.
         let parent = match navigate_to_parent_ref(&h.blocks, block_idx, steps) {
             Ok(b) => b,
             Err(code) => return code,
@@ -4062,8 +4044,7 @@ pub unsafe extern "C" fn crimson_save_dynamic_array_get_u32_elements(
 ///   `payload_offset`s) to match the new length.
 /// - Passing `new_bytes_len == 0` writes a zero-length string (count
 ///   slot becomes 0, payload becomes empty). The field stays present
-///   — to fully clear the field's bytes from the block, use a future
-///   "make-absent" entry point (not yet exposed for inline_bytes).
+///   — there is no make-absent entry point for inline_bytes.
 ///
 /// # Safety
 /// `handle` must be a live, exclusive handle. `path` must point to
@@ -4236,7 +4217,7 @@ fn write_inline_bytes_in_place(
         count,
         bytes: new_bytes.to_vec(),
     };
-    // start / end will be refreshed on re-decode after the encode pass.
+    // The re-decode after the encode pass refreshes start / end.
     Ok(())
 }
 
@@ -4358,7 +4339,7 @@ pub unsafe extern "C" fn crimson_save_write_to_file(
             return error::BATCH_IN_PROGRESS;
         }
         // Re-sealing a save whose HMAC failed on load would make a damaged or
-        // tampered file valid again (audit F-10).
+        // tampered file valid again.
         if !h.save.hmac_ok && !h.allow_hmac_rewrap {
             return error::HMAC_UNVERIFIED;
         }
@@ -4381,7 +4362,7 @@ pub unsafe extern "C" fn crimson_save_write_to_file(
 
 /// Write `bytes` to a temporary file beside `path`, flush it to disk, then
 /// rename it over `path`. A crash or a full disk mid-write leaves the old
-/// file intact instead of a truncated save (audit G-12); on Windows the
+/// file intact instead of a truncated save; on Windows the
 /// rename replaces an existing file.
 fn write_file_atomically(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
@@ -4409,12 +4390,11 @@ fn write_file_atomically(path: &std::path::Path, bytes: &[u8]) -> std::io::Resul
 /// (`crimson_save_list_insert_element`,
 /// `crimson_save_set_scalar_field_present`,
 /// `crimson_save_dynamic_array_set_u32_elements`, …) runs the
-/// `Body::write` + `Body::parse` + `decode_blocks` cycle (~25 ms on a
-/// typical 1.07 save). Each scalar mutation also runs `decode_blocks`.
-/// Workflows that need many mutations in sequence (e.g.
-/// "complete all 141 held abyss-artifact challenges", which fires
-/// **3 length-changing calls per challenge × 141 ≈ 423 re-decodes**)
-/// pay 10+ seconds of `decode_blocks` time.
+/// `Body::write` + `Body::parse` + `decode_blocks` cycle. Each scalar
+/// mutation also runs `decode_blocks`. Workflows that need many
+/// mutations in sequence (e.g. completing every held abyss-artifact
+/// challenge, three length-changing calls per challenge) pay one full
+/// re-decode per call.
 ///
 /// While a batch is open, every mutation entry point mutates the
 /// in-memory `blocks` tree directly and skips the re-decode tail. The
@@ -4475,7 +4455,8 @@ pub unsafe extern "C" fn crimson_save_begin_deferred_redecode(
 ///
 /// On encode / re-parse failure the batch is rolled back: `blocks` is
 /// restored from the snapshot captured by `begin_*`, the mutation
-/// counter is left at its pre-begin value, and the call returns
+/// counter moves forward past any mid-batch value exactly as
+/// `crimson_save_abort_deferred_redecode` does, and the call returns
 /// `MUTATION_INVALID`. Callers that hit `MUTATION_INVALID` should
 /// treat the batch as if it had been aborted — `begin_*` again to
 /// retry with different ops.
@@ -4626,7 +4607,7 @@ mod load_check_tests {
         assert_eq!(check_rows(&[], None, 0), Ok(()), "an empty table is not an error");
     }
 
-    /// Each of these used to load as `OK` with 0 rows (audit B-02).
+    /// Each of these is refused rather than loaded as `OK` with 0 rows.
     #[test]
     fn check_rows_refuses_what_it_cannot_read() {
         let (body, hdr) = pair();
@@ -4710,7 +4691,7 @@ mod hmac_rewrap_tests {
     use std::ffi::CString;
 
     /// A save whose HMAC failed on load is not written unless the caller
-    /// opts in; with the opt-in it is, and the copy verifies (audit F-10).
+    /// opts in; with the opt-in it is, and the copy verifies.
     #[test]
     fn unverified_save_needs_the_opt_in() {
         let rel = "1.10/save.save";
@@ -4748,8 +4729,7 @@ mod hmac_rewrap_tests {
 #[cfg(test)]
 mod atomic_write_tests {
     /// The save is written to a temporary file and renamed over the target:
-    /// the target ends up with the new bytes and no temporary file is left
-    /// (audit G-12).
+    /// the target ends up with the new bytes and no temporary file is left.
     #[test]
     fn write_file_atomically_replaces_the_target() {
         let dir = std::env::temp_dir().join(format!("crimson-atomic-{}", std::process::id()));
@@ -4766,7 +4746,7 @@ mod atomic_write_tests {
 // ── Layout guards for the save ABI's repr(C) structs ──────────────────────
 //
 // C# declares these with [StructLayout(LayoutKind.Sequential)]; a field added,
-// removed or retyped here must break the build, not C#'s reads (audit G-13).
+// removed or retyped here must break the build, not C#'s reads.
 // The batch ops carry pointers, so their sizes are pinned for 64-bit targets.
 const _: () = {
     use std::mem::{align_of, size_of};
@@ -5364,8 +5344,8 @@ mod tests {
         unsafe { crimson_save_free(handle) };
     }
 
-    /// Drives the new mutation API end-to-end against a live save:
-    /// mutate block 0 field 0 (a fixed_suffix u32 in
+    /// Drives the mutation API end-to-end against a live save:
+    /// mutate block 0 field 0 (the `_characterKey` u32 scalar of
     /// CharacterStatusSaveData), assert the in-memory JSON reflects the
     /// new value, write to a tempfile, reload that tempfile, and assert
     /// the value survived the encrypt → LZ4 → HMAC → decrypt round-trip.
@@ -5385,11 +5365,10 @@ mod tests {
         );
 
         // Confirm block 0 field 0 is the u32 `_characterKey` scalar we're
-        // about to overwrite. If the schema ever drifts this assert will
-        // tell us we picked the wrong target. (Which pass placed it is not
-        // the point: the legacy walk peeled it off the tail as
-        // `fixed_suffix`, the marker-aware walk reads it forward as
-        // `fixed_prefix`.)
+        // about to overwrite; on schema drift this assert says we picked
+        // the wrong target. (Which pass placed it is not the point: the
+        // legacy walk peels it off the tail as `fixed_suffix`, the
+        // marker-aware walk reads it forward as `fixed_prefix`.)
         let json = read_block_json(handle, 0);
         assert!(
             json.contains("\"field_index\":0,\"name\":\"_characterKey\"")
@@ -5596,8 +5575,8 @@ mod tests {
         );
 
         // ── Empty-path parity: path_len=0 must behave identically to
-        // the top-level setter. Block 0 field 0 is the _characterKey
-        // fixed_suffix u32 the existing tests already exercise.
+        // the top-level setter. Block 0 field 0 is the _characterKey u32
+        // scalar `c_abi_mutate_and_write_roundtrip` also writes.
         let sentinel: [u8; 4] = [0xAB, 0xCD, 0xEF, 0x01];
         assert_eq!(
             unsafe {
@@ -6159,8 +6138,7 @@ mod tests {
 
         // Collect candidates from the batch handle; both handles parsed
         // the same file so positions are identical. Cap at 200 to keep
-        // the test fast — 200 ops is already 5× the fill-stacks use
-        // case and is plenty to exercise the batch path.
+        // the test fast; that is plenty to exercise the batch path.
         let mut scalars = collect_top_level_u32_scalars(handle_batch);
         assert!(
             scalars.len() >= 50,
@@ -6207,7 +6185,7 @@ mod tests {
         );
 
         // Apply the same N ops one-at-a-time on handle B via the
-        // pre-existing single-op setter.
+        // single-op setter.
         for ((b, f, _), bytes) in scalars.iter().zip(sentinels.iter()) {
             assert_eq!(
                 unsafe {
@@ -6241,12 +6219,12 @@ mod tests {
         unsafe { crimson_save_free(handle_single) };
     }
 
-    // ── Length-changing edits (Phase B.2) ──────────────────────────────────
+    // ── Length-changing edits ──────────────────────────────────────────────
 
     /// Find the first top-level (block_idx, field_idx) whose value is an
     /// `ObjectList` with `header_variant == "zero1_count_u24"` and at
-    /// least one element. Returns `None` if none — all live 1.06 saves
-    /// have multiple matches, so this is mostly a CI-environment guard.
+    /// least one element. Returns `None` if none — live saves have
+    /// several, so this mostly guards CI.
     fn find_object_list(
         blocks: &[ObjectBlock],
     ) -> Option<(u32, u32)> {
@@ -6334,10 +6312,10 @@ mod tests {
 
     /// Clone-then-remove on a `marker_run_plus_zeros` list (e.g.
     /// `MercenaryClanSaveData._mercenaryDataList`) must round-trip
-    /// byte-identically. Regression guard for the variant the
-    /// length-changing ops used to reject with `LIST_VARIANT_UNSUPPORTED`
-    /// (the blocker for save-side mount/mercenary insertion). Skips
-    /// cleanly when no live save — or no marker-variant list — is present.
+    /// byte-identically: its count sits at the header's tail, not at a
+    /// fixed offset from the front, and save-side mount/mercenary insertion
+    /// goes through it. Skips cleanly when no live save — or no
+    /// marker-variant list — is present.
     #[test]
     fn c_abi_list_clone_then_remove_roundtrip_marker_variant() {
         let Some(path) = find_save() else {
@@ -6534,7 +6512,7 @@ mod tests {
         }
         assert_eq!(ck, src_charkey, "transplanted element charKey mismatch");
 
-        // G-11: the same element into a top-level list whose elements have a
+        // The same element into a top-level list whose elements have a
         // different class is refused, and the target body stays as it was.
         let src_class = {
             let h = unsafe { &*a };
@@ -6556,8 +6534,8 @@ mod tests {
                 })
             })
         };
-        // G-15: the same pointer as target and source (copy within one save)
-        // is sound now; the element is cloned before the target is borrowed.
+        // The same pointer as target and source (copy within one save) is
+        // sound: the element is cloned before the target is borrowed.
         let len_before = {
             let FieldValue::ObjectList { elements, .. } =
                 &unsafe { &*a }.blocks[block_idx as usize].fields[field_idx as usize].value
@@ -6594,10 +6572,10 @@ mod tests {
         unsafe { crimson_save_free(b) };
     }
 
-    /// `list_remove_element` then bring the same element back by cloning
-    /// the new head is NOT byte-identical (different element repeated)
-    /// — verified by negation. This locks in the per-element identity:
-    /// clones are byte-equal copies, not "any element of the same class".
+    /// Clone element 1 into slot 0 of a list whose first two elements
+    /// differ, then remove slot 0: the body must come back byte-identical,
+    /// so the clone landed at `dst` and the other elements kept their
+    /// bytes and order.
     #[test]
     fn c_abi_list_clone_distinct_source_changes_body() {
         let Some(path) = find_save() else {
@@ -6876,8 +6854,7 @@ mod tests {
     }
 
     /// Cloning an element grows the body by exactly the source element's
-    /// `data_size` (the wrapper + payload bytes). Locks the size delta
-    /// observation from the slot100/slot101 RE pass.
+    /// `data_size` (the wrapper + payload bytes).
     #[test]
     fn c_abi_list_clone_grows_body_by_element_size() {
         let Some(path) = find_save() else {
@@ -6925,7 +6902,7 @@ mod tests {
         unsafe { crimson_save_free(handle) };
     }
 
-    // ── Schema-aware element builder + list_insert_element (Phase B.3) ─────
+    // ── Schema-aware element builder + list_insert_element ─────────────────
 
     /// `make_empty_element_bytes` produces bytes that decode cleanly back
     /// to an `ObjectBlock` of the requested class with all fields absent.
@@ -7204,7 +7181,8 @@ mod tests {
 
     /// End-to-end: insert empty element, populate one scalar field via
     /// `set_scalar_field_present`, then `set_scalar_field_path` on a
-    /// nested location. Verifies the full B.1 + B.2 + B.3 chain.
+    /// nested location. Verifies the insert, presence-toggle and path
+    /// setters work together.
     #[test]
     fn c_abi_insert_then_populate_field() {
         let Some(path) = find_save() else {
@@ -7339,21 +7317,16 @@ mod tests {
         unsafe { crimson_save_free(handle) };
     }
 
-    /// Fixture history: this socket round-trip was first RE'd against slot104,
-    /// which the user populated with 5 North Wind Tridents in a specific
-    /// gem-distribution pattern for a known data shape. It now loads the
-    /// newest live save via `find_save` and skips cleanly when no
-    /// item with an empty opened socket is present.
-    ///
     /// Insert a gem into an empty socket slot via
     /// `set_scalar_fields_present_batch`, then remove it. Body MUST be
     /// byte-identical to the pre-mutation state after the remove.
     ///
-    /// This is the validation that the existing C ABI surface already
-    /// supports the "absent → insert gem" and "gem → absent" cases the
-    /// CrimsonAtomtic socket editor needs — without any new primitive.
+    /// Shows the C ABI covers the "absent → insert gem" and "gem → absent"
+    /// cases the CrimsonAtomtic socket editor needs. Loads the newest live
+    /// save via `find_save` and skips cleanly when no item with an empty
+    /// opened socket is present.
     ///
-    /// Schema being exercised (verified via `_probe_item_socket_data` in
+    /// Schema being exercised (see the `_probe_item_socket_data` probe in
     /// `src/c_abi/character_info.rs`):
     ///
     /// - `ItemSaveData._socketSaveDataList` is an ObjectList of
@@ -7637,10 +7610,8 @@ mod tests {
     ///
     /// Strategy: find any equipped item with a FILLED socket, snapshot
     /// the gem's endurance + itemkey, remove → re-insert with the
-    /// same values, assert byte-identical to original. Works whether
-    /// the user has empty opened slots or not (the user's CE-stuffed
-    /// 1002285/1002284/1000316 are all full, but they still have
-    /// filled slots we can round-trip on).
+    /// same values, assert byte-identical to original. Works whether or
+    /// not the save has empty opened slots.
     #[test]
     fn c_abi_socket_remove_then_reinsert_roundtrip_equipment() {
         let Some(path) = find_save() else {
@@ -7838,7 +7809,7 @@ mod tests {
     /// `ItemDyeSaveData`) → toggle it back to absent → assert body
     /// bytes are byte-identical to the original.
     ///
-    /// Closes the v2 "add dye to undyed item" path for `CrimsonAtomtic`'s
+    /// Covers the "add dye to undyed item" path of `CrimsonAtomtic`'s
     /// dye editor (see [`docs/dye-editor-scope.md`](../../../docs/dye-editor-scope.md)).
     /// Skips cleanly when no live save is present.
     #[test]
@@ -8023,9 +7994,8 @@ mod tests {
             "body bytes must be byte-identical to original after the full round-trip"
         );
 
-        // ── G-03: making the (present, non-empty) `_itemList` present again
-        //    is a no-op. It used to replace every item with one default
-        //    element.
+        // ── Making the (present, non-empty) `_itemList` present again is a
+        //    no-op: every item stays.
         let item_list_path = [CrimsonPathStep { field_idx: inv_field_idx, element_idx: inv_elem_idx }];
         let item_list_len = |h: &CrimsonSaveHandle| {
             let FieldValue::ObjectList { elements: containers, .. } =
@@ -8052,7 +8022,7 @@ mod tests {
         assert_eq!(item_list_len(unsafe { &*handle }), before, "present(1) on a present list keeps it");
         assert_eq!(unsafe { (*handle).save.body.clone() }, original_body);
 
-        // ── G-06: a list whose header count exceeds the decoded elements
+        // ── A list whose header count exceeds the decoded elements
         //    (what the legacy walk leaves when it stops early) must not be
         //    edited, or the undecoded elements would be dropped.
         unsafe {
@@ -8138,7 +8108,7 @@ mod tests {
         unsafe { crimson_save_free(handle) };
     }
 
-    // ── Length-changing batch entry points (Phase B.5) ─────────────────────
+    // ── Length-changing batch entry points ─────────────────────────────────
 
     /// Collect up to `cap` (block_idx, field_idx, original_bytes) triples
     /// of present scalar fields suitable for an absent→present round-trip
@@ -8807,10 +8777,8 @@ mod tests {
     }
 
     /// `set_inline_bytes_field` rejects fixed-size scalar fields with
-    /// `NOT_INLINE_BYTES` instead of corrupting them. Synthetic-no-save
-    /// rejection of mis-kind targets is the kind of regression test
-    /// that would have caught the case where a typo'd field index
-    /// pointed at a scalar.
+    /// `NOT_INLINE_BYTES` instead of corrupting them, so a mistyped field
+    /// index that lands on a scalar fails cleanly.
     #[test]
     fn c_abi_set_inline_bytes_field_rejects_non_inline_bytes_kind() {
         let Some(path) = find_save() else {
@@ -8912,9 +8880,10 @@ mod tests {
     /// - doesn't bump on failed mutations
     /// - returns `NULL_ARG` on null pointers
     ///
-    /// Drives the counter through a `crimson_save_set_scalar_field`
-    /// mutation found by the existing `find_nested_u32_scalar`
-    /// helper. Skips when no live save is present.
+    /// Drives the counter through `crimson_save_set_scalar_field_path` on
+    /// the nested scalar `find_nested_u32_scalar` finds, and through a
+    /// failing `crimson_save_set_scalar_field`. Skips when no live save is
+    /// present.
     #[test]
     fn c_abi_mutation_version_bumps_on_mutation_only() {
         let Some(path) = find_save() else {
@@ -9038,14 +9007,12 @@ mod tests {
         unsafe { crimson_save_free(handle) };
     }
 
-    /// Live-save integration: walk every InventorySaveData and confirm
-    /// the flat list matches the per-container counts in the schema
-    /// probe (`_probe_inventory_save_data_schema` baseline:
-    /// 543 items across 18 containers in the user's 1.07 sample).
-    /// Asserts record-shape invariants (inventory_key non-zero, no
-    /// duplicate (inv, slot) pairs within a single container) and the
-    /// staleness-detection contract (version stamp matches the
-    /// handle's current version at read time).
+    /// Live-save integration: list every item across the
+    /// InventorySaveData blocks through the two-call shape. Asserts
+    /// record-shape invariants (inventory_key a small non-zero category
+    /// id, several distinct categories) and the staleness-detection
+    /// contract (version stamp matches the handle's current version at
+    /// read time).
     #[test]
     fn c_abi_list_inventory_items_live() {
         let Some(path) = find_save() else {
@@ -9105,8 +9072,7 @@ mod tests {
         // Record-shape invariants.
         let mut seen_inv_keys: std::collections::HashSet<u32> = Default::default();
         for r in &buf {
-            // Every record must address a real save block.
-            // inventory_key should be in the documented 1..20 range.
+            // inventory_key is a small non-zero container category id.
             assert!(
                 r.inventory_key > 0 && r.inventory_key < 100,
                 "inventory_key out of plausible range: {}",
@@ -9114,7 +9080,7 @@ mod tests {
             );
             seen_inv_keys.insert(r.inventory_key);
         }
-        // 1.07 sample has at least ~7 distinct container categories.
+        // A played save spreads its items over several container categories.
         assert!(
             seen_inv_keys.len() >= 3,
             "expected ≥3 distinct inventory_key values, got {} ({:?})",
@@ -9216,12 +9182,9 @@ mod tests {
     /// `_inventory_items` test's two-call + NULL_ARG + buffer-too-small
     /// shape. Asserts that the flat list:
     ///
-    /// - Returns a plausible row count (≥ 50 distinct character_key
-    ///   values in a typical 1.07 save).
-    /// - Resolves each `character_key` through the gamedata-side
-    ///   `crimson_characterinfo_lookup_string_key` when the live install
-    ///   is present — every emitted key MUST exist in the catalog (no
-    ///   silent zeros / garbage).
+    /// - Returns a plausible row count (≥ 50 refs, ≥ 20 distinct
+    ///   `character_key` values in a live save).
+    /// - Carries no zero `character_key` and a zero `reserved0`.
     /// - Reports the same `class_index` for every record from the same
     ///   `block_idx` (the top-level class doesn't change mid-block).
     #[test]
@@ -9521,8 +9484,9 @@ mod tests {
     }
 
     /// Abort path: discards every mutation since begin, restores the
-    /// pre-begin tree + version. Subsequent reads see the original
-    /// scalar value, not the sentinel applied during the batch.
+    /// pre-begin tree and moves the version forward. Subsequent reads see
+    /// the pre-begin scalar value, not the sentinel applied during the
+    /// batch.
     #[test]
     fn c_abi_deferred_redecode_abort_restores_pre_begin() {
         let Some(path) = find_save() else {
@@ -9542,8 +9506,8 @@ mod tests {
             panic!("expected a u32 scalar in the live save; fixture drift");
         };
 
-        // Bump once outside the batch so we can prove abort restores
-        // to a non-zero version rather than just "version == 0".
+        // Bump once outside the batch so the tree abort restores holds a
+        // value other than the loaded one, at a non-zero version.
         let sentinel_outside: u32 = original_u32.wrapping_add(1);
         let outside_bytes = sentinel_outside.to_le_bytes();
         let steps = [step];
@@ -9824,7 +9788,7 @@ mod tests {
         unsafe { crimson_save_free(hb) };
     }
 
-    /// Null-arg paths for the new deferred-redecode entry points.
+    /// Null-arg paths for the deferred-redecode entry points.
     #[test]
     fn c_abi_deferred_redecode_null_args() {
         let mut sink: i32 = -1;
