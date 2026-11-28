@@ -35,7 +35,6 @@ use crate::global_game_event_info::{
 ///
 /// - `by_key`: `u32 key → entry index in `entries`` for O(1) lookups.
 /// - `entries`: preserved on-disk order, used by `get_entry`.
-#[repr(C)]
 pub struct CrimsonGlobalGameEventInfoHandle {
     by_key: std::collections::HashMap<u32, usize>,
     entries: Vec<GlobalGameEventInfoEntry>,

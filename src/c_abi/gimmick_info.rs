@@ -41,7 +41,6 @@ use crate::gimmick_info::parse_gimmick_info_lossy;
 
 /// Opaque handle exposing `(GimmickInfoKey, internal_name)` lookups
 /// against the loaded `gimmickinfo.pabgb`.
-#[repr(C)]
 pub struct CrimsonGimmickInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,

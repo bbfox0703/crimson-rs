@@ -28,7 +28,6 @@ use crate::dye_color_group_info::{PaletteCondition, parse_dye_color_group_info_l
 /// See [`crate::dye_color_group_info`] for the BGRA-to-RGBA swap
 /// rationale + the palette layout (positions 0-8 grayscale + 9-108
 /// ten chromatic rows × ten columns).
-#[repr(C)]
 pub struct CrimsonDyeColorGroupInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,

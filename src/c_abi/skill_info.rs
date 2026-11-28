@@ -33,7 +33,6 @@ use crate::skill_info::SkillData;
 /// Opaque handle exposing lean per-skill lookups against the loaded
 /// `skill.pabgb` + `skill.pabgh` pair. The full `SkillData` parse runs
 /// once; only `(key, name)` is retained.
-#[repr(C)]
 pub struct CrimsonSkillInfoHandle {
     by_key: HashMap<u32, String>,
     /// `(key, name)` in on-disk PABGH order so the caller can enumerate

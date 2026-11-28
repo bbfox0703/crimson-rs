@@ -48,7 +48,6 @@ use crate::mission_info::parse_mission_info_lossy;
 /// Opaque handle exposing `(MissionKey, internal_name)` lookups against
 /// the loaded `missioninfo.pabgb`. The lossy anchor-scan parse runs
 /// once; the bridge retains only the pair.
-#[repr(C)]
 pub struct CrimsonMissionInfoHandle {
     by_key: HashMap<u32, String>,
     /// On-disk order so the caller can enumerate via

@@ -87,7 +87,6 @@ struct ItemPrefabVariant {
 
 /// Opaque handle exposing precomputed `ItemKey → Vec<PartPrefabKey>`
 /// lookups.
-#[repr(C)]
 pub struct CrimsonItemPartPrefabHandle {
     /// Joined map. Keys are item keys; values are the list of
     /// part-prefab keys resolvable for that item, in

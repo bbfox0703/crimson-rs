@@ -18,7 +18,6 @@ use crate::faction_spawn_data_info::parse_faction_spawn_data_info_lossy;
 
 /// Opaque handle exposing `(FactionSpawnDataKey, internal_name)`
 /// lookups against the loaded `factionspawndatainfo.pabgb` + `.pabgh`.
-#[repr(C)]
 pub struct CrimsonFactionSpawnDataInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,

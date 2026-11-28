@@ -27,7 +27,6 @@ use crate::stage_info::{parse_stage_info_lossy, parse_stage_info_via_pabgh};
 
 /// Opaque handle exposing `(StageKey, internal_name)` lookups against
 /// the loaded `stageinfo.pabgb`.
-#[repr(C)]
 pub struct CrimsonStageInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,

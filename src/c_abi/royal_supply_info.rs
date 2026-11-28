@@ -12,7 +12,6 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use super::error;
 use crate::royal_supply_info::parse_royal_supply_info_lossy;
 
-#[repr(C)]
 pub struct CrimsonRoyalSupplyInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,

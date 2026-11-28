@@ -23,7 +23,6 @@ use crate::store_info::parse_store_info_lossy;
 
 /// Opaque handle exposing `(StoreKey, internal_name)` lookups against
 /// the loaded `storeinfo.pabgb` + `.pabgh` pair.
-#[repr(C)]
 pub struct CrimsonStoreInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,

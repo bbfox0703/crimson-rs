@@ -40,7 +40,6 @@ use super::{EntrySources, error, write_str_to_buf};
 use crate::faction_info::{FACTION_GROUP_PALOC_LO, parse_faction_info_lossy};
 
 /// Opaque handle over a parsed `faction` table.
-#[repr(C)]
 pub struct CrimsonFactionInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,

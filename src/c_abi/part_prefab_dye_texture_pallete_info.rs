@@ -31,7 +31,6 @@ use crate::part_prefab_dye_texture_pallete_info::{
 
 /// Opaque handle exposing palette-row lookups against the loaded
 /// `partprefabdyetexturepalleteinfo.pabgb` + `.pabgh`.
-#[repr(C)]
 pub struct CrimsonPartPrefabDyeTexturePalleteHandle {
     by_key: HashMap<u32, PartPrefabDyeTexturePalleteEntry>,
     entries: Vec<PartPrefabDyeTexturePalleteEntry>,

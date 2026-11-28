@@ -33,7 +33,6 @@ use crate::faction_relation_group_info::parse_faction_relation_group_info_lossy;
 /// Opaque handle exposing `(FactionRelationGroupKey, internal_name,
 /// related[])` lookups against the loaded `factionrelationgroup.pabgb`
 /// + `.pabgh`.
-#[repr(C)]
 pub struct CrimsonFactionRelationGroupInfoHandle {
     by_key: HashMap<u32, RowData>,
     entries: Vec<(u32, RowData)>,

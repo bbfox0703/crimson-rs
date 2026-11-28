@@ -23,7 +23,6 @@ use crate::mercenary_info::parse_mercenary_info_lossy;
 
 /// Opaque handle exposing `(MercenaryKey, internal_name)` lookups
 /// against the loaded `mercenaryinfo.pabgb` + `.pabgh` pair.
-#[repr(C)]
 pub struct CrimsonMercenaryInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,

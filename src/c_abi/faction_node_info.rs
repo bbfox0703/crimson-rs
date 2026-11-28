@@ -26,7 +26,6 @@ use crate::faction_node_info::parse_faction_node_info_lossy;
 
 /// Opaque handle exposing `(FactionNodeKey, internal_name)` lookups
 /// against the loaded `factionnode.pabgb` + `.pabgh` pair.
-#[repr(C)]
 pub struct CrimsonFactionNodeInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,

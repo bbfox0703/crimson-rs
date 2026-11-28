@@ -33,7 +33,6 @@ use crate::sub_level_info::parse_sub_level_info_lossy;
 
 /// Opaque handle exposing `(SubLevelKey, internal_name)` lookups
 /// against the loaded `sublevelinfo.pabgb`.
-#[repr(C)]
 pub struct CrimsonSubLevelInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,

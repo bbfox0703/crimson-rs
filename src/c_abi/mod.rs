@@ -249,7 +249,7 @@ pub mod error {
 /// readable elements aligned for `T`. When `len == 0`, `ptr` may be
 /// anything (null or arbitrary).
 #[inline]
-unsafe fn slice_from_raw_or_empty<'a, T>(ptr: *const T, len: usize) -> &'a [T] {
+pub(crate) unsafe fn slice_from_raw_or_empty<'a, T>(ptr: *const T, len: usize) -> &'a [T] {
     if len == 0 {
         &[]
     } else {
@@ -450,8 +450,7 @@ macro_rules! impl_name_only_bridge {
         get_entry = $get_entry:ident,
         key_param = $key_param:ident,
     ) => {
-        #[repr(C)]
-        pub struct $Handle {
+                pub struct $Handle {
             by_key: std::collections::HashMap<u32, String>,
             entries: Vec<(u32, String)>,
         }
@@ -537,16 +536,8 @@ macro_rules! impl_name_only_bridge {
             }
             unsafe { *out_handle = std::ptr::null_mut() };
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let pabgb_slice = if pabgb_len == 0 {
-                    &[][..]
-                } else {
-                    unsafe { std::slice::from_raw_parts(pabgb, pabgb_len) }
-                };
-                let pabgh_slice = if pabgh_len == 0 {
-                    &[][..]
-                } else {
-                    unsafe { std::slice::from_raw_parts(pabgh, pabgh_len) }
-                };
+                let pabgb_slice = unsafe { $crate::c_abi::slice_from_raw_or_empty(pabgb, pabgb_len) };
+                let pabgh_slice = unsafe { $crate::c_abi::slice_from_raw_or_empty(pabgh, pabgh_len) };
                 let handle = $Handle::from_bytes(pabgb_slice, pabgh_slice);
                 if let Err(code) = $crate::c_abi::check_rows(pabgb_slice, Some(pabgh_slice), handle.entries.len()) {
                     return code;
@@ -665,7 +656,6 @@ macro_rules! impl_name_only_bridge {
 /// length-changing mutations) stamp the version at read time via
 /// [`crimson_save_get_mutation_version`] and re-walk when it changes.
 /// See that function's doc for the canonical pattern.
-#[repr(C)]
 pub struct CrimsonSaveHandle {
     save: Save,
     body: Body,

@@ -62,6 +62,11 @@ pub fn parse_named_header(
         let len = u32::from_le_bytes(hdr.get(at..at + 4)?.try_into().ok()?) as usize;
         at += 4;
         let name = std::str::from_utf8(hdr.get(at..at.checked_add(len)?)?).ok()?;
+        // A NUL would cut the name short for a C caller while the reported
+        // length covers all of it; no real row name has one.
+        if name.contains('\0') {
+            return None;
+        }
         at += len;
         let offset = u32::from_le_bytes(hdr.get(at..at + 4)?.try_into().ok()?);
         let size = u32::from_le_bytes(hdr.get(at + 4..at + 8)?.try_into().ok()?);
@@ -71,8 +76,10 @@ pub fn parse_named_header(
     (at == hdr.len()).then_some(rows)
 }
 
-/// The count and key widths 2.06 uses, most common first.
-const WIDTHS: [(usize, usize); 12] = [
+/// Every count width (1, 2, 4) with every key width (1, 2, 4, 8, 12) that
+/// 2.06 tables use, the common pairs first. Ambiguous parses are settled by
+/// row packing and, with the body at hand, by the keys.
+const WIDTHS: [(usize, usize); 15] = [
     (2, 4),
     (2, 2),
     (4, 4),
@@ -85,6 +92,9 @@ const WIDTHS: [(usize, usize); 12] = [
     (1, 4),
     (4, 1),
     (2, 8),
+    (1, 8),
+    (1, 12),
+    (4, 12),
 ];
 
 /// Parse a 2.06 header whose widths are not known in advance: the first
@@ -337,6 +347,48 @@ mod tests {
         assert_eq!(idx, [0, 1]);
         let (b2, h2) = from_legacy_layout(&t.body, &t.header, 2, 2, &idx).unwrap();
         assert_eq!((b2, h2), (body, h));
+    }
+
+    /// Every width pair in `WIDTHS` is detected from a one-row pair.
+    #[test]
+    fn detects_every_width_pair() {
+        for &(cw, kw) in &WIDTHS {
+            let mut body = vec![0u8; kw];
+            body[0] = 0x31;
+            body.extend_from_slice(&0u32.to_le_bytes());
+            body.push(7);
+            let h = header(cw, kw, &[(0x31, "Row", 0, body.len() as u32)]);
+            let (c, k, rows) = detect_named_pair(&h, &body).unwrap_or_else(|| panic!("({cw}, {kw}) not detected"));
+            assert_eq!((c, k), (cw, kw));
+            assert_eq!((rows[0].key, rows[0].name), (0x31, "Row"));
+            let row = read_body_row(&body, kw).unwrap();
+            assert_eq!((row.key, row.index, row.rest), (0x31, 0, &[7u8][..]));
+        }
+    }
+
+    /// Rows must tile the body in order, and names must be NUL-free UTF-8.
+    #[test]
+    fn refuses_gaps_overlaps_and_bad_names() {
+        let mut body = vec![0x10, 0x00];
+        body.extend_from_slice(&0u32.to_le_bytes());
+        body.push(1);
+        body.extend_from_slice(&[0x20, 0x00]);
+        body.extend_from_slice(&1u32.to_le_bytes());
+        body.push(2);
+        let ok = header(2, 2, &[(0x10, "A", 0, 7), (0x20, "B", 7, 7)]);
+        assert!(detect_named_pair(&ok, &body).is_some());
+        let gap = header(2, 2, &[(0x10, "A", 0, 6), (0x20, "B", 7, 7)]);
+        assert!(detect_named_pair(&gap, &body).is_none(), "gap");
+        let overlap = header(2, 2, &[(0x10, "A", 0, 8), (0x20, "B", 7, 7)]);
+        assert!(detect_named_pair(&overlap, &body).is_none(), "overlap");
+        let short = header(2, 2, &[(0x10, "A", 0, 7), (0x20, "B", 7, 6)]);
+        assert!(detect_named_pair(&short, &body).is_none(), "rows stop short of the body");
+        let nul = header(2, 2, &[(0x10, "A\0", 0, 7), (0x20, "B", 7, 7)]);
+        assert!(parse_named_header(&nul, 2, 2).is_none(), "NUL in a name");
+        let mut lying = ok.clone();
+        lying[0] = 3;
+        assert!(parse_named_header(&lying, 2, 2).is_none(), "count larger than the rows");
+        assert!(read_body_row(&body[..5], 2).is_none(), "row shorter than key + index");
     }
 
     fn header(count_width: usize, key_width: usize, rows: &[(u64, &str, u32, u32)]) -> Vec<u8> {

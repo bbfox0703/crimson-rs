@@ -27,7 +27,6 @@ use crate::binary::paloc::{LocalizationFile, unwrap_container};
 /// Opaque handle handed across the FFI. Owns a `HashMap<String, String>`
 /// of key → value plus the entries in insertion order so the caller can
 /// enumerate them sequentially.
-#[repr(C)]
 pub struct CrimsonPalocHandle {
     by_key: HashMap<String, String>,
     /// Original (key, value) ordering, preserved for index-based

@@ -39,7 +39,6 @@ use crate::knowledge_info::parse_knowledge_info_lossy;
 
 /// Opaque handle exposing `(KnowledgeKey, internal_name)` lookups
 /// against the loaded `knowledgeinfo.pabgb`.
-#[repr(C)]
 pub struct CrimsonKnowledgeInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,

@@ -254,7 +254,6 @@ const _: () = {
 /// iteminfo: the `string_key` (internal id) and the `max_stack_count`
 /// (stack cap). The full ItemInfo parse runs once; only the bits the
 /// downstream editor needs are retained.
-#[repr(C)]
 pub struct CrimsonItemInfoHandle {
     by_key: HashMap<u32, String>,
     max_stack_by_key: HashMap<u32, u64>,

@@ -30,7 +30,6 @@ use crate::quest_info::{parse_quest_info_lossy, parse_quest_info_via_pabgh};
 
 /// Opaque handle exposing `(QuestKey, internal_name)` lookups against
 /// the loaded `questinfo.pabgb`.
-#[repr(C)]
 pub struct CrimsonQuestInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,

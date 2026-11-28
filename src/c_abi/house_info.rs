@@ -13,7 +13,6 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use super::error;
 use crate::house_info::parse_house_info_lossy;
 
-#[repr(C)]
 pub struct CrimsonHouseInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,

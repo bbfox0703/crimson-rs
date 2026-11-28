@@ -42,7 +42,6 @@ use crate::part_prefab_dye_slot_info::{
 };
 
 /// Opaque handle.
-#[repr(C)]
 pub struct CrimsonPartPrefabDyeSlotInfoHandle {
     by_key: HashMap<u32, PartPrefabDyeSlotInfoEntry>,
     entries: Vec<PartPrefabDyeSlotInfoEntry>,

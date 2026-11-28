@@ -28,7 +28,6 @@ use crate::quest_gauge_info::parse_quest_gauge_info_lossy;
 
 /// Opaque handle exposing `(QuestGaugeKey, internal_name)` lookups
 /// against the loaded `questgaugeinfo.pabgb`.
-#[repr(C)]
 pub struct CrimsonQuestGaugeInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,

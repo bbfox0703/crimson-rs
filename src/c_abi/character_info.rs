@@ -48,7 +48,6 @@ pub const CHARACTER_DISPLAY_NAME_LO32: u32 = 0x30;
 
 /// Opaque handle exposing `(CharacterKey lo24, internal_name)`
 /// lookups against the loaded `characterinfo.pabgb`.
-#[repr(C)]
 pub struct CrimsonCharacterInfoHandle {
     by_key: HashMap<u32, String>,
     entries: Vec<(u32, String)>,

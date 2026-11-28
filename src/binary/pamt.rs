@@ -9,10 +9,9 @@ use crate::crypto::checksum;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-#[allow(dead_code)]
 pub enum Compression {
     None = 0,
-    Partial = 1,
+    // 1 is partial compression, carried by `PackMetaFile::is_partial`.
     Lz4 = 2,
     Zlib = 3,
     QuickLz = 4,

@@ -28,7 +28,6 @@ use crate::string_info::StringInfoData;
 /// Opaque handle exposing hash→string lookups against the loaded
 /// stringinfo. The full pabgb walk runs once at load time; only the
 /// `(hash, value)` pairs are retained.
-#[repr(C)]
 pub struct CrimsonStringInfoHandle {
     by_hash: HashMap<u32, String>,
     /// `(hash, value)` in file order so the caller can enumerate via

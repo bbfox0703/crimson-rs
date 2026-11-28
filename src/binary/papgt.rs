@@ -1,6 +1,5 @@
 use std::io::{self, Write};
 
-#[allow(unused_imports)]
 use super::trie::read_cstring;
 use super::{BinaryRead, BinaryWrite, check_remaining};
 use crate::binary_struct;
