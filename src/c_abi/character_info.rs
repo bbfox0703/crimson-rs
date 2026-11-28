@@ -2318,7 +2318,7 @@ mod tests {
     ///    the save and CE use the same coordinate system and units or
     ///    need a scale factor.
     #[test]
-    #[ignore = "investigation only — find char position in slot102, cross-check CE coords"]
+    #[ignore = "investigation only — find the active character position in a live save, cross-check CE coords"]
     fn _probe_active_char_position_slot107() {
         use crate::save::{Body, FieldValue, ScalarValue, Save};
 
@@ -3266,7 +3266,7 @@ mod tests {
     /// schema-validation only). This one is the **data-collection**
     /// probe: it doesn't enforce a schema, it just enumerates.
     #[test]
-    #[ignore = "investigation only — full dye enumeration anywhere in tree (default slot103)"]
+    #[ignore = "investigation only — full dye enumeration anywhere in a live save tree"]
     fn _probe_item_dye_data_anywhere_slot107() {
         use crate::save::{Body, FieldValue, ScalarValue, Save};
 
@@ -4702,7 +4702,7 @@ mod tests {
     ///    interpretation and check how non-socket items (e.g.
     ///    standalone gems in the inventory) encode their own endurance.
     #[test]
-    #[ignore = "investigation only — ItemSocketSaveData schema via slot104"]
+    #[ignore = "investigation only — ItemSocketSaveData schema from a live save"]
     fn _probe_item_socket_data() {
         use crate::save::{Body, FieldValue, ScalarValue, Save};
 
@@ -5403,7 +5403,7 @@ mod tests {
     /// (filled ≤ valid) vs CE-modified (filled > valid). Plus a
     /// schema-invariant summary at the end.
     #[test]
-    #[ignore = "investigation only — full slot104 socket scan + anomaly detection"]
+    #[ignore = "investigation only — full socket scan of a live save + anomaly detection"]
     fn _probe_item_socket_data_full_scan() {
         use crate::save::{Body, FieldValue, ScalarValue, Save};
 
