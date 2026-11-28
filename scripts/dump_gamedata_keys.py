@@ -74,12 +74,13 @@ PABGH_TABLES = [
 # Also dumped from every installed DLC (`<install>/dlc/<dlc>/0008`), as
 # `<table>.<dlc>.txt`: every table above plus iteminfo, whose base keys live
 # in `data/keys-<ver>.txt`. A DLC table is its own row set (its row index is
-# not the row's position), and a layout drift has shown up only in a DLC
-# table before, so these are diffed like the base ones.
+# not the row's position), and a layout drift can show only in a DLC table
+# (a list that is empty on every base row hides it), so these are diffed like
+# the base ones.
 DLC_EXTRA_TABLES = ["iteminfo"]
 
 # Tables with PABGH backing (questinfo / stageinfo use the u32-count
-# variant, picked up by parse_pabgh_keys above). The c_abi bridges for
+# variant, picked up by parse_pabgh_keys). The c_abi bridges for
 # these still anchor-scan PABGB at runtime — but for the cross-version
 # snapshot we just want the in-game key list, which the PABGH delivers
 # without the bridge's body-validation extras.
@@ -143,7 +144,7 @@ def parse_pabgh_keys(pabgh: bytes) -> list[int] | None:
             continue
         if at == len(pabgh) and len(pabgh) > cw + 8 * n:
             return keys
-    # u32-count variant — only the questinfo / stageinfo shape so far.
+    # u32-count variant: the questinfo / stageinfo shape.
     if len(pabgh) >= 4:
         count32 = struct.unpack_from("<I", pabgh, 0)[0]
         if 4 + 8 * count32 == len(pabgh):
@@ -188,8 +189,8 @@ def main() -> None:
     ap.add_argument(
         "--version",
         required=True,
-        help="version label for the output dir, e.g. 2.06 (no default: a bare run used to "
-        "overwrite the committed 1.08 snapshot)",
+        help="version label for the output dir, e.g. 2.06 (required, so a bare run cannot "
+        "overwrite a committed snapshot)",
     )
     ap.add_argument("--out", help="output directory (default: <repo>/data/gamedata-keys-<version>)")
     args = ap.parse_args()
@@ -219,8 +220,8 @@ def main() -> None:
             # parse_pabgh_keys above to add the new shape — silently
             # falling back to pabgb anchor-scan inflates counts via false
             # positives (the bridges' per-table validation rules are
-            # what makes anchor-scan precise) and that asymmetry has
-            # surprised us before.
+            # what makes anchor-scan precise), so an unknown shape is
+            # reported instead.
             print(f"  {label:<35} <pabgh shape unknown — extend parse_pabgh_keys>")
             summary.append((label, None, "shape unknown"))
             continue

@@ -1,9 +1,9 @@
 """Cross-version drift RE: 1.11 -> 1.12 partprefabdyeslotinfo schema.
 
-Phase 1 found: per slot, 1.12 inserts 5 bytes (u8=0xff + u32=0) between
-mask[3] and the tail CString. Confirmed on 968/968 records.
+Starting point: per slot, 1.12 inserts 5 bytes (u8=0xff + u32=0) between
+mask[3] and the tail CString.
 
-This phase answers the design question for the fix: is a per-row
+This script answers the design question for the parser: is a per-row
 dual-schema attempt SAFE? i.e. do the OLD (1.11) and NEW (1.12) per-slot
 layouts ever cross-match (walk clean to body.len() under the wrong
 schema)? If cross-match ~= 0, dual-schema is unambiguous and we can keep

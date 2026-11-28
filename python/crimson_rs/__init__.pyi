@@ -118,8 +118,8 @@ class EnchantData(TypedDict):
 
 
 class MergedPrefabVisualData(TypedDict):
-    """1.13+: one element of ``merged_prefab_visual_list``, the merge of the
-    old ``prefab_data_list`` and ``gimmick_visual_prefab_data_list``."""
+    """One element of ``merged_prefab_visual_list``, which holds prefab and
+    gimmick-visual prefab entries in one list."""
     scale: list[float]
     """[f32; 3]; (1, 1, 1) on prefab-origin rows."""
     prefab_names: list[int]
@@ -165,7 +165,7 @@ class PageData(TypedDict):
     right_page_related_knowledge_info: int
     """KnowledgeKey (u32)."""
     unk_post_right_page_related_knowledge_info: int
-    """2.05.01: u8. 0, or 2 on the DLC's treasure-map pages."""
+    """u8. 0, or 2 on the DLC's treasure-map pages."""
 
 
 class InspectData(TypedDict):
@@ -346,7 +346,7 @@ class DockingChildData(TypedDict):
     enable_collision: int
     """u8"""
     unk_pre_disable_collision: int
-    """2.04: u32, always 0."""
+    """u32, always 0."""
     disable_collision_with_other_gimmick: int
     """u8"""
     docking_slot_key: str
@@ -378,18 +378,17 @@ class PatternDescriptionData(TypedDict):
 class ItemInfo(TypedDict):
     """A single item parsed from the iteminfo binary file."""
 
-    # Identity. On disk since 2.06 a row opens with ``key`` then ``row_index``
-    # and ``string_key`` lives in the table's ``.staticinfoheader`` (2.04 and
-    # 2.05 opened the row with ``string_key`` then ``key``). Fields come in file
-    # order, not this order: see the "ItemInfo (2.04)" header in
+    # Identity. On disk a row opens with ``key`` then ``row_index``, and
+    # ``string_key`` lives in the table's ``.staticinfoheader``. Fields come in
+    # file order, not this order: see the "ItemInfo (2.04)" header in
     # ``src/item_info/item.rs``.
     key: int
     """Unique item ID. ItemKey (u32)."""
     row_index: int
-    """The row's position in the base table (u32). Written after ``key`` since 2.06."""
+    """The row's position in the base table (u32), written right after ``key``."""
     string_key: str
-    """String identifier, e.g. ``"Pyeonjeon_Arrow"``. Since 2.06 read from the
-    header; ``""`` when the parser is not given one."""
+    """String identifier, e.g. ``"Pyeonjeon_Arrow"``, read from the header;
+    ``""`` when the parser is not given one."""
     is_blocked: int
     """u8"""
     max_stack_count: int
@@ -443,9 +442,9 @@ class ItemInfo(TypedDict):
     item_memo: str
     filter_type: str
     charged_sound_name: str
-    """2.04.08: empty except on seven DLC ship cannons."""
+    """Empty except on a few DLC ship cannons."""
     charged_sound_param: str
-    """2.04.08: empty except on seven DLC ship cannons."""
+    """Empty except on a few DLC ship cannons."""
     gimmick_info: int
     """GimmickInfoKey (u32)."""
     gimmick_tag_list: list[str]
@@ -483,7 +482,7 @@ class ItemInfo(TypedDict):
     discardable: int
     """u8"""
     unk_post_discardable: int
-    """2.05.01: u8. 1 on exactly the items with `item_type` 102 or 103, else 0."""
+    """u8. 1 on exactly the items with `item_type` 102 or 103, else 0."""
     is_dyeable: int
     """u8"""
     is_editable_grime: int
@@ -496,27 +495,26 @@ class ItemInfo(TypedDict):
     item_tier: int
     """u8"""
     item_importance_kind: int
-    """2.04: u8. 0 where the old ``is_important_item`` read 1, 2 where it read
-    0, and 1 on one item."""
+    """u8. 0 on important items, 2 on the others, and 1 on one item."""
     apply_drop_stat_type: int
     """u8"""
     drop_default_data: DropDefaultData | None
-    """2.04: None where it would be all defaults (no sockets, tag-18 sub item)."""
+    """None where it would be all defaults (no sockets, tag-18 sub item)."""
     enchant_data_list: list[EnchantData]
     price_list: list[ItemPriceInfo]
     docking_child_data: DockingChildData | None
     docking_child_data_list: list[DockingChildData]
-    """2.04: empty except on the eight ``Item_wagon_wheel_*`` items."""
+    """Empty except on the ``Item_wagon_wheel_*`` items."""
     inventory_change_data: InventoryChangeData | None
     unk_texture_path: int
-    """2.04: StringInfoKey (u32), was str. Empty string is 0xeac5e173."""
+    """StringInfoKey (u32). The empty string is 0xeac5e173."""
     fixed_page_data_list: list[PageData]
     dynamic_page_data_list: list[PageData]
     inspect_data_list: list[InspectData]
     inspect_action: InspectAction | None
-    """2.04: None when absent."""
+    """None when absent."""
     unk_pre_cooltime_flag: int
-    """2.04: u8, 1 on every item."""
+    """u8, 1 on every item."""
     default_sub_item: SubItem
     cooltime: int
     """i64"""
@@ -529,7 +527,7 @@ class ItemInfo(TypedDict):
     usable_alert_type: int
     """u8"""
     sharpness_data: ItemInfoSharpnessData | None
-    """2.04: None when absent."""
+    """None when absent."""
     max_charged_useable_count: int
     """u32"""
     unk_post_max_charged_a: int
@@ -572,7 +570,7 @@ class ItemInfo(TypedDict):
     item_bundle_data_list: list[ItemBundleData]
     money_type_define: MoneyTypeDefine | None
     emoji_texture_id: int
-    """2.04: StringInfoKey (u32), was str. Empty string is 0xeac5e173."""
+    """StringInfoKey (u32). The empty string is 0xeac5e173."""
     enable_equip_in_clone_actor: int
     """u8"""
     is_blocked_store_sell: int
@@ -597,28 +595,25 @@ class ItemInfo(TypedDict):
     """Conditional on ``equip_type_info``; writing it back does not re-check
     the condition, so keep it consistent when editing ``equip_type_info``."""
     merged_prefab_visual_list: list[MergedPrefabVisualData]
-    """1.13+: the merged prefab + gimmick-visual list (see the class)."""
+    """The merged prefab + gimmick-visual list (see the class)."""
     repair_data_list: list[RepairData]
 
-    # The field set matches what `parse_iteminfo_from_bytes` returns on 2.06
-    # (124 keys, checked 2026-11-28 against the live install); the order and
-    # the per-field notes above are partial. `src/item_info/item.rs` is the
+    # The field set matches what `parse_iteminfo_from_bytes` returns; the order
+    # and the per-field notes above are partial. `src/item_info/item.rs` is the
     # source of truth for the layout.
     unk_pre_respawn_a: int
-    """1.16: u32. 0 on all but 36 items (Wood_Branch_* tiers, which carry an
-    ItemKey-shaped value)."""
+    """u32. 0 except on the Wood_Branch_* tiers, which carry an ItemKey-shaped
+    value."""
     unk_pre_respawn_block: UnkPreRespawnBlock | None
-    """2.04: holds `unk_pre_respawn_data_list`. None on every base-table item;
+    """Holds `unk_pre_respawn_data_list`. None on every base-table item;
     only `iteminfo.dlc_01` carries it."""
     is_packed_in_vehicle: int
-    """2.04: u8, 1 on the `Trade_*_PackedInVehicle` items. Was the top byte of
-    the 4-byte `unk_pre_max_endurance`."""
+    """u8, 1 on the `Trade_*_PackedInVehicle` items."""
     unk_pre_packed_item_flag: int
-    """2.04: u8. Through 2.03 it was misread as `packed_item_info == 1`."""
+    """u8."""
     inventory_info_list: list[int]
-    """Twelve InventoryKey (u16) slots at the item end (nine in 1.16-2.02, ten
-    in 2.03). Slot 0 is the pre-1.16 head-side `inventory_info`, slot 8 the
-    1.13-era constant `unk_tail`. 0xFF marks an unused slot."""
+    """Twelve InventoryKey (u16) slots at the item end. Slot 0 is the
+    inventory tab the item goes to; 0xFF marks an unused slot."""
 
 
 class UnkPreRespawnBlock(TypedDict):
@@ -634,7 +629,7 @@ class UnkPreRespawnBlock(TypedDict):
 
 
 class UnkPreRespawnData(TypedDict):
-    """1.16: element of `ItemInfo.unk_pre_respawn_data_list` (28 bytes).
+    """Element of `ItemInfo.unk_pre_respawn_data_list` (28 bytes).
     Semantic role unknown; `unk_b == unk_c` and `unk_d == unk_c + 1` on every
     element in the table."""
 
@@ -1247,8 +1242,8 @@ class PostBuff(TypedDict):
     is_use_child_pattern_description_buff_data: int
     """u8"""
     unk_pre_damage_type: int
-    """u8. Added in 1.16 between `is_use_child_pattern_description_buff_data`
-    and `damage_type`; reads 0 on every sampled entry."""
+    """u8 between `is_use_child_pattern_description_buff_data` and
+    `damage_type`; reads 0 on every sampled entry."""
     damage_type: int
     """u8"""
     ui_type: int
@@ -1452,7 +1447,7 @@ def extract_file_from_paz(paz_path: str, vfs_path: str) -> bytes:
     ...
 
 
-# ── Saves and lossy iteminfo (declared 2026-11-28; the module had them) ─────
+# ── Saves and lossy iteminfo ────────────────────────────────────────────────
 
 
 class LossyItemInfo(TypedDict):

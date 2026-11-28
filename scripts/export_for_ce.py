@@ -30,12 +30,10 @@ table is the base `iteminfo.staticinfoheader` in order (indices 0..N-1),
 followed by each DLC's `iteminfo.<dlc>.staticinfoheader` rows whose keys the
 base lacks, in that header's order; keys a DLC overrides keep their base
 slot. The header also gives every row's offset, so no anchor scan is needed.
-Verified on 2.05: the in-memory key array matched this row for row, and a
-DLC item placed in-game (1004792 Clams, 651st DLC-only row) showed index
-7068 + 650 = 7718. `keys.txt` (a CE dump) is then only a cross-check: a
-mismatch is reported, and the header order is still used.
+`keys.txt` (a CE dump) is then only a cross-check: a mismatch is reported,
+and the header order is still used.
 
-`--order keys` restores the older behaviour: keys.txt *is* the order and
+With `--order keys`, keys.txt *is* the order and
 each key is anchored in the base binary (base table only); with
 `--keys ''` it falls back to lossy parsing of the binary alone.
 """
@@ -580,9 +578,9 @@ def export_paloc(
                 item_names[sid >> 32] = e["string_value"]
         if failed == len(fnames):
             continue
-        # Through 2.05.01 a DLC's item names lived in its own PALOC; 2.06 moved
-        # them into the base game's (all 1,311 dlc_01 items, every language),
-        # so a DLC PALOC without item names is no longer an error.
+        # Through 2.05.01 a DLC's item names live in its own PALOC; from 2.06
+        # they are in the base game's, so a DLC PALOC without item names is
+        # not an error.
         out[lang] = item_names
         summary.append((lang, group, len(fnames), n_entries))
 

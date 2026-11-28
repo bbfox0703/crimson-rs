@@ -15,8 +15,8 @@
 $ErrorActionPreference = 'Stop'
 
 # $ErrorActionPreference does not cover native commands: a failing `gh` or
-# `git` (gh not logged in, say) used to let the script carry on and print a
-# summary as if every guard were set (audit I-19).
+# `git` (gh not logged in, say) would otherwise let the script carry on and
+# print a summary as if every guard were set.
 function Invoke-NativeChecked {
     param([string]$What, [scriptblock]$Command)
     & $Command
@@ -30,8 +30,8 @@ Invoke-NativeChecked 'gh repo set-default' { gh repo set-default bbfox0703/crims
 Invoke-NativeChecked 'git config remote.pushDefault' { git config remote.pushDefault origin }
 
 # 3. No `upstream` remote at all. The parent has not moved since the fork and
-#    nothing is ever fetched from it or sent to it, so the remote only offered
-#    a wrong target (it used to be kept with its push URL disabled).
+#    nothing is ever fetched from it or sent to it, so the remote would only
+#    offer a wrong target.
 if (git remote | Select-String -Quiet '^upstream$') {
     Invoke-NativeChecked 'git remote remove upstream' { git remote remove upstream }
 }

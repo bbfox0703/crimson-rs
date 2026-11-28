@@ -1,11 +1,10 @@
 """Anchor-based items.jsonl builder.
 
 Strategy:
-    1. Load the CE-dumped key list (keys.txt) — 6,236 keys in their in-game
-       order.
-    2. Scan the 1.05 iteminfo binary for each key in order, validating that
-       the bytes at that offset look like an `ItemInfo` start (key + small
-       length + ASCII string_key + NUL).
+    1. Load the CE-dumped key list (keys.txt), in in-game order.
+    2. Scan the iteminfo binary for each key in order, validating that the
+       bytes at that offset look like an `ItemInfo` row head
+       (`looks_like_item_start`).
     3. For each item chunk (offset → next-anchor), try to parse with
        crimson_rs.parse_iteminfo_tracked. If it consumes the full chunk,
        use the parsed dict directly. Otherwise fall back to a minimal
@@ -22,7 +21,7 @@ Strategy:
 
 This guarantees every in-game item appears in items.jsonl, and downstream
 tools that only need (index, key, string_key) keep working even if the
-1.05 parser is incomplete.
+parser is incomplete.
 """
 
 from __future__ import annotations
@@ -55,7 +54,7 @@ def load_keys(path: Path) -> list[int]:
 
 def is_ident_byte(b: int) -> bool:
     # ASCII alphanumeric / underscore / space, OR any UTF-8 high byte.
-    # Some 1.05 string_keys contain Roman numerals (Ⅲ/Ⅳ/Ⅵ) encoded as
+    # Some string_keys contain Roman numerals (Ⅲ/Ⅳ/Ⅵ) encoded as
     # multi-byte UTF-8, e.g. Goblin_Merchant_Fabric_Armor_Ⅲ.
     return (
         b == ord("_")
@@ -71,9 +70,8 @@ def looks_like_item_start(data: bytes, off: int, expected_key: int) -> bool:
     """A 2.04 row head: ``[u32 len][name][u32 key][is_blocked: u8 = 0]``."""
     if off < 0 or off + 12 > len(data):
         return False
-    # 1.05 introduced names up to 71 bytes (Recipe_Item_Skill_AbyssGear_…_LV1).
-    # Bound is generous — real item keys are 2..~80 bytes; 128 is comfortably
-    # past anything observed.
+    # Names run past 70 bytes (Recipe_Item_Skill_AbyssGear_…_LV1). The bound
+    # is generous: 128 is comfortably past anything observed.
     slen = struct.unpack_from("<I", data, off)[0]
     if not (2 <= slen <= 128):
         return False

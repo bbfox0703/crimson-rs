@@ -15,7 +15,7 @@ way — but every path and extension moved:
       1.05 - 2.00   00NN/gamedata/stringtable/binary__/localizationstring_<lang>.paloc
       2.01+         00NN/gamedata/stringtable/binary__/<lang>/<namespace>.paloc
 
-The 2.01 split gives 39 namespace files per language instead of one blob;
+The 2.01 split gives one file per namespace per language instead of one blob;
 concatenating their entries reproduces the old single-file content, and the
 `(key << 32) | group` string_key encoding is unchanged.
 
@@ -155,7 +155,7 @@ def discover_paloc_targets(
     """Scan `groups` for every language's paloc file(s), both layouts.
 
     Deduped by language, first hit wins. `files` holds one entry for the
-    pre-2.01 single blob and 39 namespace files for 2.01+.
+    pre-2.01 single blob and one per namespace for 2.01+.
     """
     found: list[PalocTarget] = []
     seen: set[str] = set()
@@ -196,7 +196,7 @@ def discover_paloc_targets(
 
 def paloc_entries(game_dir: str | Path, groups: list[str], lang: str) -> list[dict]:
     """Every paloc entry for one language, merged across whatever files the
-    install ships (one blob pre-2.01, 39 namespace files from 2.01 on).
+    install ships (one blob pre-2.01, one file per namespace from 2.01 on).
 
     Raises `SystemExit` when the language isn't in any of `groups` — these
     are diagnostic scripts, so failing loudly beats a silent empty result.
