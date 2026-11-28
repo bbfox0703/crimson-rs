@@ -245,7 +245,9 @@ impl PackMeta {
         check_remaining(data, offset, 4)?;
         let dir_count = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
         offset += 4;
-        let mut raw_directories = Vec::with_capacity(dir_count);
+        // A count from the file can reserve at most what the remaining bytes
+        // could hold (16 B per directory), not 64 GiB (audit A-02).
+        let mut raw_directories = Vec::with_capacity(dir_count.min((data.len() - offset) / 16));
         for _ in 0..dir_count {
             raw_directories.push(PackMetaDirectory::read_from(data, &mut offset)?);
         }
@@ -254,7 +256,7 @@ impl PackMeta {
         check_remaining(data, offset, 4)?;
         let file_count = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
         offset += 4;
-        let mut raw_files = Vec::with_capacity(file_count);
+        let mut raw_files = Vec::with_capacity(file_count.min((data.len() - offset) / 20));
         for _ in 0..file_count {
             raw_files.push(PackMetaFileRaw::read_from(data, &mut offset)?);
         }

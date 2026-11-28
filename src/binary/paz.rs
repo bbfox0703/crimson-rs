@@ -25,27 +25,67 @@ pub fn compress(data: &[u8], compression: Compression) -> io::Result<Vec<u8>> {
     }
 }
 
+/// Largest output an LZ4 block of `input_len` bytes can decode to. A
+/// sequence of 1 token byte plus up to 254 length bytes encodes at most
+/// 255 bytes per input byte, plus the trailing literals.
+pub(crate) fn lz4_max_output(input_len: usize) -> usize {
+    input_len.saturating_mul(255).saturating_add(64)
+}
+
+/// Largest output a zlib stream of `input_len` bytes can inflate to
+/// (deflate's maximum ratio is about 1032:1).
+fn zlib_max_output(input_len: usize) -> usize {
+    input_len.saturating_mul(1032).saturating_add(64)
+}
+
+/// Decompress `data` to exactly `uncompressed_size` bytes. The size comes
+/// from the PAMT, an untrusted file, so it is checked before anything is
+/// allocated (a size the input cannot possibly expand to is an error, not a
+/// multi-GB allocation that aborts the process) and the output must match it
+/// exactly; a short or long stream is an error (audit A-03).
 pub fn decompress(
     data: &[u8],
     compression: Compression,
     uncompressed_size: usize,
 ) -> io::Result<Vec<u8>> {
-    match compression {
-        Compression::None => Ok(data.to_vec()),
-        Compression::Lz4 => lz4_flex::block::decompress(data, uncompressed_size)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)),
+    let size_error = |what: &str| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{compression:?}: {what} (declared {uncompressed_size} bytes, input {} bytes)", data.len()),
+        )
+    };
+    let out = match compression {
+        Compression::None => data.to_vec(),
+        Compression::Lz4 => {
+            if uncompressed_size > lz4_max_output(data.len()) {
+                return Err(size_error("declared size is more than LZ4 can expand to"));
+            }
+            lz4_flex::block::decompress(data, uncompressed_size)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
+        }
         Compression::Zlib => {
             use std::io::Read;
-            let mut decoder = flate2::read::ZlibDecoder::new(data);
+            if uncompressed_size > zlib_max_output(data.len()) {
+                return Err(size_error("declared size is more than zlib can expand to"));
+            }
+            // One byte past the declared size tells an over-long stream apart
+            // without inflating a decompression bomb to the end.
+            let mut decoder = flate2::read::ZlibDecoder::new(data).take(uncompressed_size as u64 + 1);
             let mut out = Vec::with_capacity(uncompressed_size);
             decoder.read_to_end(&mut out)?;
-            Ok(out)
+            out
         }
-        _ => Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            format!("decompression {:?} not supported", compression),
-        )),
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("decompression {:?} not supported", compression),
+            ));
+        }
+    };
+    if out.len() != uncompressed_size {
+        return Err(size_error(&format!("produced {} bytes", out.len())));
     }
+    Ok(out)
 }
 
 /// Partial-compression scheme used by Pearl Abyss PAZ archives when
@@ -96,6 +136,19 @@ pub(crate) fn decompress_partial(
                 PARTIAL_HEADER_BYTES,
                 decrypted.len(),
                 uncompressed_size,
+            ),
+        ));
+    }
+
+    // Every strategy below decodes LZ4, which cannot expand past
+    // `lz4_max_output`; refuse a declared size beyond that before any
+    // strategy allocates it (audit A-02 / A-12).
+    if uncompressed_size > lz4_max_output(decrypted.len()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "partial PAZ entry declares {uncompressed_size} bytes, more than {} input bytes can expand to",
+                decrypted.len()
             ),
         ));
     }
@@ -712,7 +765,20 @@ pub fn extract_file(
         std::io::SeekFrom::Start(file.file.chunk_offset as u64),
     )?;
 
-    // Read the compressed/encrypted data
+    // Read the compressed/encrypted data. The size comes from the PAMT: check
+    // it against the chunk file before allocating (audit A-02).
+    let chunk_len = fh.metadata()?.len();
+    let end = u64::from(file.file.chunk_offset) + u64::from(file.file.compressed_size);
+    if end > chunk_len {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{}: entry {}..{end} runs past the chunk ({chunk_len} bytes)",
+                paz_path.display(),
+                file.file.chunk_offset
+            ),
+        ));
+    }
     let mut raw = vec![0u8; file.file.compressed_size as usize];
     fh.read_exact(&mut raw)?;
 
@@ -1025,6 +1091,23 @@ mod tests {
         let compressed = compress(data, Compression::Zlib).unwrap();
         let decompressed = decompress(&compressed, Compression::Zlib, data.len()).unwrap();
         assert_eq!(decompressed, data.as_ref());
+    }
+
+    /// The declared size comes from the PAMT. A size the input cannot expand
+    /// to is refused before allocating, and the output must match it exactly
+    /// (audit A-03).
+    #[test]
+    fn test_decompress_checks_the_declared_size() {
+        let data = vec![7u8; 4096];
+        for c in [Compression::Lz4, Compression::Zlib] {
+            let z = compress(&data, c).unwrap();
+            assert!(decompress(&z, c, 1 << 40).is_err(), "{c:?}: huge size");
+            assert!(decompress(&z, c, data.len() - 1).is_err(), "{c:?}: short size");
+            assert!(decompress(&z, c, data.len() + 1).is_err(), "{c:?}: long size");
+            assert_eq!(decompress(&z, c, data.len()).unwrap(), data);
+        }
+        assert!(decompress(&data, Compression::None, data.len() + 1).is_err());
+        assert!(decompress_partial(&[0u8; 200], 1 << 40).is_err());
     }
 
     #[test]
