@@ -25,6 +25,63 @@ landed together. **Reading tip:** grep `^## ` for the index, then read from the 
 
 -----
 
+## 2026-11-28 — Code audit, its verification, and the P0/P1 fixes
+
+- **Audit:** [`code-audit-2026-11-28-plan.md`](code-audit-2026-11-28-plan.md) split the crate into
+  nine blocks (A–I), and one report per block lists 149 findings. A second, independent pass,
+  [`code-audit-2026-11-28-verification.md`](code-audit-2026-11-28-verification.md), checked every
+  finding against the code and against live data (the 2.06 install, the `X:` version archive, the
+  private fixtures): 115 confirmed, 32 partly right, 1 refuted (A-07), 1 still needs a run (G-09). It
+  also found one defect the audit missed (NEW-1, below) and ends with a fix order. P0 and the four P1
+  items shipped here; P2 and later are not started.
+- **CI runs the `c_abi` tests** (P0; A-14 / D-03 / E-08 / I-01). `cargo test --lib` without features
+  compiled in 111 of the 399 tests; every gamedata bridge and the save ABI are behind `c_abi`. All of
+  them pass on a machine with no install, fixtures or saves (4.6 s), so the Linux runner can take
+  them. The job name, which is the required check on `main`, is unchanged.
+- **Skill on 2.06 (NEW-1):** 2.06 also inlined conditions into skill. `BuffData.field_60`, a
+  `u32 ConditionInfoKey` through 2.05.01, is now `00` or `01` + bytecode, and the parser kept reading
+  a `u32`. 1,683 of 2,163 entries (78%) fell to the raw fallback while the byte round-trip, the
+  `_probe_skill_entry_failures` probe and `validated-patches.md` all said clean. The bytecode's length
+  depends on each function's argument layout, which is not decoded, so it is probed like the subclass
+  tail: a length counts only if the rest of the entry then parses to its end (memoized branch points,
+  no recursion on long buff lists). Measured: raw fallback 308 of 2,163, the 2.04–2.05.01 level
+  (303–304). 3,018 of 3,028 decoded buffs match 2.05.01 in every other field; the other 10 are real
+  2.06 changes (nested buffs inside raw tails, one longer list). The 2.06 table still round-trips byte
+  for byte. The live skill test now fails above 20% raw fallback. Python gains
+  `field_60_condition` and the format string `"inline_condition"`.
+- **2.06 name-only bridges (D-01, D-02):** the mission, quest, stage, knowledge, gimmick, questgauge
+  and sublevel `_with_header` parsers rebuilt the old body and anchor-scanned it, dropping mission
+  2,444, stage 3,198, gimmick 140 and quest 1 row, and adding 2 junk stage keys. They now return the
+  header's rows (`static_header::header_row_names`); a pre-2.06 pair still scans. characterinfo's
+  `lookup_string_key`, `lookup_display_name` and `resolve_portrait` now match the key as given before
+  stripping the cat-byte, so the 359 hashed 32-bit rows resolve (their names sit at PALOC
+  `(full_key << 32) | 0x30`). No hashed key's lo24 is another row's key, so nothing that resolved
+  before changes.
+- **Save editing (G-01, G-03, G-04, G-06):**
+  - `crimson_save_list_all_items` and `_list_field_positions` take the save lock. CrimsonAtomtic calls
+    them from `Task.Run` beside bulk mutations.
+  - `mutation_version` now moves with every mutation inside a deferred batch, and forward on
+    abort or a failed commit. Reads see the in-progress tree, and the old "restore on abort" could
+    hand a later state a number a mid-batch snapshot already carried.
+  - Making a present object list present again is a no-op (it used to replace the elements with one
+    default element).
+  - Length-changing list edits refuse a list whose header count exceeds its decoded elements, with
+    the new `LIST_PARTIALLY_DECODED` (−26).
+- **Measured on this PC:** 404 passed, 48 ignored, with the live install and the private fixtures;
+  the same 404 pass with no game data, which is what CI now runs. Strict clippy and the bare-default
+  `cargo check` are clean.
+- **Not established:** the skill condition probe accepts the first length that fits; it agrees with
+  2.05.01 on every buff that could be checked, but a buff whose condition is new in 2.06 has no older
+  value to check against. The full condition bytecode grammar is not decoded. The P2+ findings in the
+  verification doc (dye slot count semantics, transplant/encoder safety net, `pack_mod` safety,
+  untrusted-input bounds, test and doc drift) are still open.
+- **CrimsonAtomtic:** no signature changed, nothing must change to keep working. It should map the
+  new error code −26 (`LIST_PARTIALLY_DECODED`) where it reports save-edit failures. The bridges
+  above now return more rows and more names, and snapshot readers see extra version bumps (more
+  refreshes, never stale data). Refresh the vendored copy when convenient.
+
+-----
+
 ## 2026-11-28 — Start the dev log; every CLAUDE.md under 40 KB
 
 - **Dev log:** this file. Each PR adds an entry here, newest first, the way the sibling UE5CEDumper

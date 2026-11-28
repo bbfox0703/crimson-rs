@@ -340,6 +340,8 @@ PARTLY 多半是計數、行號、來源或後果的細節修正，缺陷本身�
 | P3 | 測試與基礎設施：live iteminfo byte roundtrip 測試（base + `dlc_01`）、`CRIMSON_GAME_ROOT` 一致採用、`G:` 死測試、`repo_doc_budget` 改量 git 位元組、腳本覆寫保護 | C-02、C-18／I-04、I-02、I-03、I-05、I-13、I-14、I-16 | |
 | P4 | 文件與註解脫節（一次處理）：`c-abi-surface.md` 補符號、過時列數與版本註解、`allow(dead_code)` 清理 | A-18、B-12、C-13～C-17、D-08～D-11、E-14～E-16、G-13、G-16、H-13～H-15、I-07、I-10～I-12 等 nit | |
 
+**進度（2026-11-28）：** P0 與四項 P1 已在 `dev` 完成：CI 改跑 `--features c_abi`（404 個測試）；skill 2.06 inline condition（raw fallback 1,683 → 308）；D 區塊七個 `_with_header` 改讀 header 列與 characterinfo 先比對完整 key；存檔 FFI 的 G-01／G-03／G-04／G-06。細節見 [`dev-log.md`](dev-log.md)。P2 以下尚未開始。
+
 **不修：** A-07（REFUTED）。**併入他項：** E-07 → A-01／A-02；B-01 → B-02。
 
 **仍待執行的驗證：** C-01（預設執行緒數已通過一次，需多跑幾次並量記憶體峰值）、G-09（legacy-walk block 的 presence toggle）、I-21（`cargo audit`，需要先安裝 `cargo-audit`，屬於新工具，未經同意不安裝）。
