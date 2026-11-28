@@ -4,8 +4,8 @@
 //! by save-side fields that carry a "faction spawn" reference (a
 //! per-location spawn manifest naming an NPC, a guard kit, or a
 //! mercenary mix). Rows are named after the spawn theme + location,
-//! e.g. `FactionSpawn_GlenbrightManor_Grace_ReedDevil`. Roughly 117
-//! rows in 1.07.
+//! e.g. `FactionSpawn_GlenbrightManor_Grace_ReedDevil`. 131 rows in
+//! 2.06.
 //!
 //! Schema (verified against the live 1.07 install via the
 //! `_probe_faction_pabgh_shapes` ignored probe):

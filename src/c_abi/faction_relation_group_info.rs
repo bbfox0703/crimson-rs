@@ -175,7 +175,7 @@ pub unsafe extern "C" fn crimson_factionrelationgroup_free(
 // ── Scalar getters ─────────────────────────────────────────────────────────
 
 /// Total number of `factionrelationgroup` rows in the loaded table
-/// (always 5 in 1.07).
+/// (5 on 2.06).
 ///
 /// # Safety
 /// `handle` must be live; `out_count` must be non-null.
@@ -198,11 +198,10 @@ pub unsafe extern "C" fn crimson_factionrelationgroup_entry_count(
 // ── Lookups ────────────────────────────────────────────────────────────────
 
 /// Look up the internal name for a given `FactionRelationGroupKey`
-/// (passed as u32 — only the low 16 bits are meaningful). Two-call
-/// pattern.
+/// (a u16 key widened to u32). Two-call pattern.
 ///
-/// Returns `NOT_FOUND` when `faction_relation_group_key` isn't in the
-/// table.
+/// The whole u32 is compared, not masked: a key with any of the high
+/// 16 bits set returns `NOT_FOUND`, as does a key that isn't in the table.
 ///
 /// # Safety
 /// `handle` and `required` must be non-null; `buf` may be null iff

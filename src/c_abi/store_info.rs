@@ -9,7 +9,7 @@
 //! save-layer's stable identifier is the internal template name, which
 //! is what the Save Editor surfaces in its store browser.
 //!
-//! 292 rows in 1.07. PABGH layout is the same custom 6-byte
+//! 441 rows in 2.06. The pre-2.06 PABGH layout is the same custom 6-byte
 //! `(u16 key, u32 offset)*` shape used by `factionrelationgroup`. See
 //! `src/store_info/mod.rs` for byte-level schema notes.
 

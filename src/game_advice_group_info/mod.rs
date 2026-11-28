@@ -3,7 +3,7 @@
 //! Resolves `GameAdviceGroupKey (u32)` — the parent grouping template
 //! (`GameAdviceGroup_ControlBasics`, `GameAdviceGroup_Interaction`,
 //! `GameAdviceGroup_AdventureBasics`, …). 8 rows in 1.07. Pairs with
-//! `gameadviceinfo` to break the 461 tips into UI categories.
+//! `gameadviceinfo` to break the 482 tips into UI categories.
 //!
 //! Row body starts with `[u32 name_len][name][u32 key]` (2.04 swapped key
 //! and name).

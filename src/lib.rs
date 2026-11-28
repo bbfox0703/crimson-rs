@@ -1042,16 +1042,11 @@ mod tests {
     /// block, encode it standalone and check the byte count matches
     /// the original.
     ///
-    /// We deliberately don't assert byte-identity here because the
-    /// engine writes a few items' `payload_offset` u32 with values
-    /// that don't point at the wrapper-end (the decoder falls back to
-    /// wrapper-end and parses correctly anyway). The encoder always
-    /// writes the canonical wrapper-end value, so those specific
-    /// bytes differ from the engine's quirky originals — but the
-    /// game tolerates canonical output, and our subsequent
-    /// encode→re-parse→re-encode is stable (idempotent). See
-    /// `test_save_body_full_roundtrip_is_idempotent` for the
-    /// stronger stability check.
+    /// This test checks sizes only. Byte identity of a no-op re-encode is
+    /// asserted by `test_save_encoder_refuses_undecoded_bytes`, the
+    /// FactionSaveData relocation tests and the C ABI clone-then-remove
+    /// tests, on the saves they read; `test_save_body_full_roundtrip`
+    /// checks that the encoder is idempotent on every save.
     #[test]
     fn test_save_body_block_roundtrip_per_block() {
         use crate::save::{Body, Save, encode_top_level_block};
@@ -1080,9 +1075,8 @@ mod tests {
                     )
                 });
                 // Size invariant: encoder must produce the same number
-                // of bytes the original block occupied. Byte-identity
-                // is asserted by the full-body idempotence test, not
-                // here — see the test's docstring above for why.
+                // of bytes the original block occupied. Byte identity
+                // is asserted by other tests (see the docstring above).
                 if encoded.len() != original.len() {
                     let _ = original; // keep `original` in scope for the
                                        // diagnostic block that follows.
@@ -1194,17 +1188,17 @@ mod tests {
     /// Full-body round-trip stability: Body::write should be IDEMPOTENT —
     /// the second write of an already-encoded body equals the first.
     ///
-    /// Note: we can't assert byte-identity against the raw engine bytes
-    /// directly because the engine writes some items' `payload_offset`
-    /// u32 with non-canonical values. The decoder tolerates these
-    /// (falls back to wrapper_end), and the encoder always emits the
-    /// canonical wrapper_end. The first re-emit therefore differs
-    /// from the raw bytes; subsequent re-emits match the first
-    /// (idempotent stable state).
+    /// The first write is not compared with the raw bytes here; it must
+    /// keep the body length, and a second write must equal the first.
+    /// The encoder writes every wrapper's `payload_offset` as its own
+    /// wrapper end, which is what the game writes in the saves the
+    /// byte-identity tests read (`test_save_encoder_refuses_undecoded_bytes`,
+    /// the FactionSaveData relocation tests, the C ABI clone-then-remove
+    /// tests); a save with any other stored offset would differ on the
+    /// first write and match from the second on.
     ///
-    /// This still proves the encoder is a deterministic structural
-    /// inverse of the decoder — the property we actually need for
-    /// length-changing edits.
+    /// This proves the encoder is a deterministic structural inverse of
+    /// the decoder — the property length-changing edits need.
     #[test]
     fn test_save_body_full_roundtrip() {
         use crate::save::{Body, Save};
@@ -1218,7 +1212,7 @@ mod tests {
             let body = Body::parse(&save.body).unwrap();
             let blocks = body.decode_blocks(&save.body);
 
-            // First write: may differ from raw (engine quirks).
+            // First write: not compared with raw here (see the doc comment).
             let first = body.write(&save.body, &blocks).unwrap_or_else(|e| {
                 panic!("{}: body.write failed: {}", path.display(), e)
             });

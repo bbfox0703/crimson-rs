@@ -1,4 +1,4 @@
-> Titles are the live English display strings as of **Crimson Desert 2.04**, and every row is tied to the game
+> Titles are the live English display strings as of **Crimson Desert 2.06** (unchanged since 2.04), and every row is tied to the game
 > row its title comes from (`MissionKey` / `QuestKey`) in
 > [`src/c_abi/main_quest_chapter.rs`](../../src/c_abi/main_quest_chapter.rs). The live-install test
 > `curated_titles_match_live_install` fails when a key's title drifts, so future retitles surface on the next

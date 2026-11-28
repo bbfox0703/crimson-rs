@@ -2,7 +2,7 @@
 //!
 //! Resolves `GlobalGameEventInfoKey (u16-widened-u32)` — server-side
 //! global event templates (`Drought_Varnian`, `Flood_Demenissian`,
-//! `Typhoon_Delesyian`, …). 103 rows in 1.07. The save layer
+//! `Typhoon_Delesyian`, …). 191 rows in 2.06. The save layer
 //! references these as active-event identifiers.
 //!
 //! `u16 count + (u16 key, u32 offset)*` PABGH. Body: `[u32 name_len]
@@ -21,7 +21,7 @@
 //!
 //! - `key + name` — universal, 100% coverage (was the v0 surface).
 //! - `group_key` (u32, widened from u16) — universal, 100% coverage.
-//!   Cross-references the 7-row `globalgameeventgroup` table (e.g.
+//!   Cross-references the 12-row `globalgameeventgroup` table (e.g.
 //!   `WeatherEventGroup`, `FactionBlockEventGroup`).
 //! - `paloc_key` (u64, parsed from a 14-char ASCII decimal string
 //!   embedded in the body) — present on most rows but absent on the
@@ -94,9 +94,8 @@ pub fn parse_global_game_event_info_lossy(
 }
 
 /// Pull `group_key` from `payload[1..3]` (u16 LE → u32). Returns `None`
-/// when the payload is too short. Universal across all 103 rows in
-/// 1.07 — the 7 distinct values match the 7 rows in
-/// `globalgameeventgroup.pabgb`.
+/// when the payload is too short. Present on every row; on 2.06 the
+/// 191 rows use the 12 keys of `globalgameeventgroup.pabgb`.
 fn extract_group_key(payload: &[u8]) -> Option<u32> {
     if payload.len() < 3 {
         return None;

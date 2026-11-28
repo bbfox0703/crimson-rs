@@ -10,7 +10,7 @@
 //! `(SubLevelKey, _level, _experience, _maxAchievedLevel)`. Examples:
 //! `Contribution_Graymane`, `Contribution_Pailunese`,
 //! `SkillPoint_Kliff`, `Religion_Hernand`, `LiberationRefugee`,
-//! `AchievementHP`. Roughly 40 rows total in 1.06.
+//! `AchievementHP`. 44 rows in 2.06.
 //!
 //! Like [`crate::quest_gauge_info`], **no PALOC entries** were found
 //! at any namespace for these row keys — neither raw (Pattern A) nor
@@ -66,10 +66,10 @@ pub fn parse_sub_level_info_lossy_with_header(data: &[u8], header: &[u8]) -> Vec
 /// - All other bytes must be identifier-shape (alphanumeric / `_` /
 ///   space / UTF-8 high byte).
 ///
-/// Returns entries in the order they appear in the file. The bridge's
-/// HashMap deduplicates by last-wins, but `or_insert` in the loader
-/// preserves first-wins to keep the real row (which appears first at
-/// offset 0) over any later body-byte false-positive.
+/// Returns entries in the order they appear in the file, duplicates
+/// included. The bridge deduplicates first-wins, which keeps a real row
+/// over a later body-byte false-positive with the same key, but not over
+/// one that comes before it.
 pub fn parse_sub_level_info_lossy(data: &[u8]) -> Vec<SubLevelInfoEntry> {
     let mut entries = Vec::new();
     let mut cursor = 0;

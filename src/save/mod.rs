@@ -31,9 +31,11 @@
 //!
 //! ## Roundtrip
 //!
-//! [`Save::parse`] / [`Save::write`] preserve the header bytes that aren't
-//! part of the dynamic fields. With the **same nonce** an unmodified save
-//! round-trips byte-for-byte (subject to LZ4 determinism for identical input).
+//! [`Save::parse`] / [`Save::write_with_nonce`] preserve the header bytes
+//! that aren't part of the dynamic fields. With the **same nonce** an
+//! unmodified save decodes back to the same body, but the file bytes
+//! differ from the game's: lz4_flex does not compress like the game's
+//! writer, so the compressed payload (and with it the HMAC) changes.
 
 mod body;
 mod crypto;

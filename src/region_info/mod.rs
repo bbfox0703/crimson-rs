@@ -2,7 +2,7 @@
 //!
 //! Resolves `RegionKey (u16-widened-u32)` — the named map regions
 //! (`Region_Pywel`, `Region_Kweiden`, `Region_Pailunese_Territory`,
-//! …). 1,004 rows in 1.07. The save layer references these as
+//! …). 1,014 rows in 2.06. The save layer references these as
 //! discovery / map-state keys.
 //!
 //! `u16 count + (u16 key, u32 offset)*` PABGH. Body: `[u32 name_len]

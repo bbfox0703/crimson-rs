@@ -3,7 +3,7 @@
 //! Resolves save-side `HouseKey (u16-widened-u32)` to the row's
 //! template internal name (`"DefaultHouse_Lv1"` etc.). Name-only,
 //! mirrors [`super::store_info`] / [`super::faction_node_info`].
-//! 4 rows in 1.07.
+//! 4 rows in 2.06.
 
 use std::collections::HashMap;
 use std::ffi::CStr;

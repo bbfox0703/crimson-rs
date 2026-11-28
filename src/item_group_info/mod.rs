@@ -3,7 +3,7 @@
 //! Resolves `ItemGroupKey (u16-widened-u32)` — item group / category
 //! templates (`ItemGroup_Category_Equipment`,
 //! `ItemGroup_Category_Food`, `ItemGroup_Category_Material`, …).
-//! 1,500 rows in 1.07. The save layer references these as inventory-
+//! 1,682 rows in 2.06. The save layer references these as inventory-
 //! filter / drop-table identifiers; ItemInfo also exposes them via
 //! `item_group_info_list`.
 //!

@@ -2,7 +2,7 @@
 //!
 //! Resolves `CraftToolGroupKey (u16-widened-u32)` — the parent group
 //! template for crafting tools (`CraftTool_Equip_Enchant`,
-//! `CraftTool_Kukupot`, `CraftTool_Cook`, …). 10 rows in 1.07. Each
+//! `CraftTool_Kukupot`, `CraftTool_Cook`, …). 12 rows in 2.06. Each
 //! group references the `crafttoolinfo` rows that belong to it.
 //!
 //! `u16 count + (u16 key, u32 offset)*` PABGH. Body starts with

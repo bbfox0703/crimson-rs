@@ -252,8 +252,9 @@ pub struct ObjectBlock {
     ///   - 232 blocks have exactly 1 byte (FieldNPCSaveData + 6 other classes).
     ///   - 1 block (MercenaryClanSaveData) has 3 bytes of `01 01 01`.
     ///
-    /// Empty `Vec` when no such trailer exists for this block. See
-    /// `docs/save-body-format.md` for the empirical analysis.
+    /// Empty `Vec` when no such trailer exists for this block. The
+    /// per-class census is `_probe_save_trailing_pad_census` (listed in
+    /// `docs/save-side-probes.md`).
     pub trailing_pad: Vec<u8>,
     /// Byte ranges inside the block that no decoder placed (start, end).
     pub undecoded_ranges: Vec<(usize, usize)>,

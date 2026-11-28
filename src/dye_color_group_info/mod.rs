@@ -2,15 +2,15 @@
 //!
 //! Resolves `DyeColorGroupInfoKey (u32)` — the gamedata key stored as
 //! `ItemDyeSaveData._dyeColorGroupInfoKey` in the save's
-//! `_itemDyeDataList`. The 10 rows in 1.07 are the **themed color
+//! `_itemDyeDataList`. The 10 rows in 2.06 are the **themed color
 //! palettes** the in-game NPC dye menu offers (e.g.
 //! `Her_Color_Group_I` = 埃爾南德, `Por_Color_Group_I` = 波羅琳).
 //!
 //! ## Schema (verified against the live 2.04 install, every row, byte-perfect)
 //!
-//! 2.04 moved `key` after the name and `row_hash` (formerly the row's last
-//! 4 bytes) up in front of `color_count`. Against 2.03, all 10 rows carry
-//! the same flag, hash, palette and trailer.
+//! 2.04 moved `key` after the name and the 4-byte `icon_key` (formerly the
+//! row's last 4 bytes) up in front of `color_count`. Against 2.03, all 10
+//! rows carry the same flag, icon key, palette and trailer.
 //!
 //! ```text
 //! Row {
@@ -18,9 +18,10 @@
 //!     u8 name[name_len],        // ASCII, e.g. "Her_Color_Group_I"
 //!     u32 key,                  // matches PABGH key
 //!     u8 flag,                  // always 0
-//!     u8 row_hash[4],           // per-row hash value
-//!     u32 color_count,          // always 109
-//!     u8 color_data[8 * color_count],  // palette (BGRA + 4-byte tail per record; 22-byte records from 2.06)
+//!     u32 icon_key,             // StringInfoKey of the theme's map icon (see below)
+//!     u32 color_count,          // 109 on every row
+//!     Color colors[color_count],  // BGRA + unlock condition: 8 bytes per
+//!                               //   record through 2.05.01, 22 from 2.06
 //!     // trailer:
 //!     u8 trailer_marker[5],     // 23 31 02 00 00 — constant across rows
 //!     u32 key_copy,             // = key
@@ -47,13 +48,14 @@
 //! condition would compile to a different length, so the parser does not
 //! assume one size: it locates the trailer (marker + the row key), walks the
 //! records between one by one, reading each condition as `00` (none) or `01` +
-//! a `CheckKnowledge` bytecode, and only when that fails splits them into equal
-//! sizes (the 8-byte records through 2.05.01). A row that fits neither gets an
+//! a `CheckKnowledge` bytecode, and only when that fails splits them into the
+//! 8-byte records of 2.05.01 and earlier. A row that fits neither gets an
 //! empty palette rather than a misread one.
 //!
 //! ## Byte order — **BGRA, not RGBA** (verified 2026-05-17)
 //!
-//! Each 8-byte color record is `[B, G, R, A, tail0, tail1, tail2, tail3]`.
+//! Each color record opens with `[B, G, R, A]`, followed by its unlock
+//! condition (4 bytes through 2.05.01, 18 from 2.06).
 //! The save's `_dyeColorR/G/B/A` are u8 scalars stored in logical RGB
 //! order, so the gradient bytes MUST be swapped before comparison
 //! (`gradient_record[0]` = B, `[1]` = G, `[2]` = R, `[3]` = A).
@@ -91,11 +93,9 @@
 //! is a discrete picker, not a continuous one. Off-grid RGB values
 //! aren't reachable through normal gameplay.
 //!
-//! The 4-byte tail per record carries a per-row lightness key (byte 0)
-//! plus a constant `e1 ff ff` (bytes 1-3). The lightness key bytes
-//! observed in 1.07: `d4..cf` for Pororin, `fe..f9` for Hernand. Not
-//! exposed by the bridge — included in the per-record dump for
-//! diagnostic purposes only.
+//! The bytes after `BGRA` in each record are the color's unlock condition
+//! (see "2.06: 22-byte color records" above), parsed into
+//! [`DyeColorGroupInfoEntry::conditions`].
 //!
 //! The file ships with a matching `dyecolorgroupinfo.pabgh` so the
 //! row offsets are explicit — we don't need anchor-scanning here. The
@@ -155,7 +155,7 @@ pub struct DyeColorGroupInfoEntry {
     /// of this — extending PALOC lookup is a v2 task; for v1 the C#
     /// editor can render the raw internal name.
     pub name: String,
-    /// Logical-RGBA palette (109 records in 1.07). Stored as
+    /// Logical-RGBA palette (109 records per row on 2.06). Stored as
     /// `(R, G, B, A)` post-swap from the on-disk BGRA byte order, so
     /// each entry can be compared directly against the save's u8
     /// `_dyeColorR/G/B/A` scalars. See module docs for the layout
@@ -203,10 +203,10 @@ pub fn parse_dye_color_group_info_lossy(
         }
 
         // Parse the 109-record palette body.
-        // Layout after the key: `u8 flag + 4-byte hash + u32 color_count +
-        // 8 * color_count bytes`.
-        // Bytes per record: [B, G, R, A, tail0..tail3]; we keep only the
-        // logical RGBA (post-swap) so palette comparisons against the
+        // Layout after the key: `u8 flag + u32 icon_key + u32 color_count +
+        // color_count records`.
+        // Each record is [B, G, R, A] + its unlock condition; the palette
+        // keeps the logical RGBA (post-swap) so comparisons against the
         // save's u8 _dyeColorR/G/B/A are direct.
         let row = parse_row_after_key(body, head.body_at).unwrap_or_default();
 
@@ -281,7 +281,7 @@ struct RowBody {
 }
 
 fn parse_row_after_key(body: &[u8], after_key_off: usize) -> Option<RowBody> {
-    // `u8 flag + 4-byte row hash`.
+    // `u8 flag + u32 icon_key`.
     let count_off = after_key_off + 5;
     if count_off + 4 > body.len() {
         return None;
@@ -496,6 +496,12 @@ mod tests {
     /// Run: `cargo test --lib --features c_abi
     ///       dye_gradient_vs_slot103_rgbs -- --ignored --nocapture`
     /// (no c_abi gate strictly needed — it's a pure parser probe.)
+    ///
+    /// This probe reads the pre-2.06 layout only: it parses the raw PABGH
+    /// (no `legacy_pair` rebuild), steps fixed 8-byte records, and compares
+    /// the stored bytes to RGB without the BGRA swap. On 2.06 data its
+    /// positions are wrong. The palette tests below go through
+    /// [`parse_dye_color_group_info_lossy`] and are the ones to trust.
     #[test]
     #[ignore = "investigation only — dye gradient vs slot103 observed RGBs"]
     fn dye_gradient_vs_slot103_rgbs() {
@@ -547,7 +553,8 @@ mod tests {
             if body.len() < 12 { continue; }
             let head = read_row_head(body, 4).expect("row head");
             assert_eq!(head.key, target_key);
-            // After key + 1-byte flag + 4-byte hash we hit color_count then 8*N bytes.
+            // After key + 1-byte flag + 4-byte icon key we hit color_count,
+            // then the records (8 bytes each before 2.06).
             let flag = body[head.body_at];
             let color_count_off = head.body_at + 5;
             let color_count = u32::from_le_bytes([

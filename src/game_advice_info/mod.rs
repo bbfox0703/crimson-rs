@@ -2,7 +2,7 @@
 //!
 //! Resolves `GameAdviceInfoKey (u32)` — gameplay-tip / hint
 //! templates surfaced by the in-game advice system (`Advice_Control_Move`,
-//! `Advice_Control_Battle`, …). 461 rows in 1.07. Each row carries a
+//! `Advice_Control_Battle`, …). 482 rows in 2.06. Each row carries a
 //! pair of 20-byte ASCII PALOC numeric keys that resolve to the
 //! localized tip body / title via `localizationstring_eng.paloc`, in
 //! the same hash-hop pattern used by mission / quest / stage / knowledge.

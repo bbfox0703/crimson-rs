@@ -656,9 +656,10 @@ fn emit_mercenary_lists(block: &ObjectBlock, block_idx: u32, out: &mut Vec<Crims
 
 }
 
-/// Flat-list every player-owned item across the save's container
-/// classes (active equip, active reserve, inventory, mercenary equip,
-/// mercenary inventory). Single-call companion to
+/// Flat-list every item across the save's container classes (active
+/// equip, active reserve, inventory, mercenary equip, mercenary
+/// inventory), NPC mercenaries' items included;
+/// [`item_record_flags::IS_PLAYER_OWNED`] marks the player's own. Single-call companion to
 /// [`super::crimson_save_list_inventory_items`], which only covers
 /// the `INVENTORY` slice. See [`CrimsonItemRecord`] for the per-row
 /// shape and [`container_kind`] for the container classification.

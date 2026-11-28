@@ -7,17 +7,18 @@
 //! - `crimson_global_game_event_info_lookup_string_key` — internal
 //!   template name (e.g. `"Drought_Varnian"`). Universal coverage.
 //! - `crimson_global_game_event_info_lookup_group_key` — the
-//!   `GlobalGameEventGroupKey` cross-reference (1 of 7 distinct
-//!   values: `WeatherEventGroup`, `FactionBlockEventGroup`, …).
+//!   `GlobalGameEventGroupKey` cross-reference (one of the 12
+//!   `globalgameeventgroup` rows on 2.06: `WeatherEventGroup`,
+//!   `FactionBlockEventGroup`, …).
 //!   Universal coverage.
 //! - `crimson_global_game_event_info_lookup_paloc_key` — the 64-bit
 //!   PALOC localization key (in `(hi32 = event_key, lo32 = namespace)`
 //!   form) that resolves the event's localized display name through
 //!   the existing PALOC bridge. Returns `0` for rows that lack the
 //!   embedded `PalocStringRef` (the `RoyalSupply` + `FactionBlockEvent_*`
-//!   groups — ~24 of 103 rows in 1.07).
+//!   groups).
 //!
-//! 103 rows in 1.07. **NOT** macro-generated (unlike most niche
+//! 191 rows in 2.06. **NOT** macro-generated (unlike most niche
 //! bridges) because the additional `group_key` + `paloc_key` lookups
 //! need per-entry data beyond the `(key, name)` pair the macro
 //! supports.
@@ -212,9 +213,9 @@ pub unsafe extern "C" fn crimson_global_game_event_info_lookup_string_key(
 }
 
 /// Look up the `GlobalGameEventGroupKey` for a given event key.
-/// Universal across all 103 rows in 1.07 — the returned value is one
-/// of 7 distinct group keys that the editor can resolve through the
-/// existing `crimson_global_game_event_group_info_*` bridge.
+/// Every row carries one; on 2.06 it is one of the 12 group keys, which
+/// the editor can resolve through the existing
+/// `crimson_global_game_event_group_info_*` bridge.
 ///
 /// Returns `NOT_FOUND` when the event key isn't in the table.
 ///
@@ -244,13 +245,13 @@ pub unsafe extern "C" fn crimson_global_game_event_info_lookup_group_key(
 /// Look up the 64-bit PALOC key for a given event's localized display
 /// name. Returns `0` (via `*out_paloc_key`) for rows whose body lacks
 /// the embedded `PalocStringRef` (the `RoyalSupply` and
-/// `FactionBlockEvent_*` groups in 1.07 — ~24 of 103 rows). The caller
-/// should treat 0 as "no localized name available" and fall back to
-/// the internal-name surface.
+/// `FactionBlockEvent_*` groups). The caller should treat 0 as "no
+/// localized name available" and fall back to the internal-name surface.
 ///
 /// When present, the key has the standard PALOC shape
-/// `(hi32 = event_key) << 32 | lo32 = namespace`, suitable for direct
-/// lookup through `crimson_paloc_lookup_string_key`.
+/// `(hi32 = event_key) << 32 | lo32 = namespace`. To look it up, format
+/// it as a decimal string and pass that to `crimson_paloc_lookup`, which
+/// takes the string key, not a `u64`.
 ///
 /// Returns `NOT_FOUND` when the event key isn't in the table
 /// (distinct from a present-but-zero PALOC key, which returns `OK`

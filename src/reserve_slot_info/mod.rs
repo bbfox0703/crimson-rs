@@ -1,7 +1,7 @@
 //! `reserveslot.pabgb` parser — standard PABGH (u32-key).
 //!
 //! Resolves `ReserveSlotKey (u32)` — equip-reserve / hot-slot template
-//! IDs (`ArrowItem`, `BulletItem`, `BombItem`, …). 27 rows in 1.07.
+//! IDs (`ArrowItem`, `BulletItem`, `BombItem`, …). 28 rows in 2.06.
 //! Save references these from the hot-slot UI's reserve-slot
 //! assignments. Each row body also carries an inline Korean (Hangul)
 //! display string, which a PALOC chain could surface in a follow-on

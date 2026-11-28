@@ -2,7 +2,7 @@
 //!
 //! Resolves `CraftToolKey (u16-widened-u32)` — the per-tool crafting
 //! template (`CraftTool_Enchant`, `CraftTool_Enchant_Kukupot`,
-//! `CraftTool_Burn_Kukupot`, …). 17 rows in 1.07. Each row groups a
+//! `CraftTool_Burn_Kukupot`, …). 19 rows in 2.06. Each row groups a
 //! crafting-station tool name with its parent group key (via
 //! `crafttoolgroupinfo`).
 //!

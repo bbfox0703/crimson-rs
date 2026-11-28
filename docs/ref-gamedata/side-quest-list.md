@@ -114,7 +114,7 @@
 
 ## Reconciliation against 2.02
 
-Titles are the live English display strings as of Crimson Desert 2.02; each row is tied to its game row in
+Titles are the live English display strings, reconciled against Crimson Desert 2.02 and unchanged through 2.06 except for the 2.03 retitle below; each row is tied to its game row in
 [`src/c_abi/side_quest_faction.rs`](../../src/c_abi/side_quest_faction.rs). The list follows the in-game
 journal, so most entries are **missions** (`MissionKey`, PALOC `0x101`) and 20 are quests (`QuestKey`,
 `0x100`). On 2.02 these 9 titles matched nothing live and were corrected:

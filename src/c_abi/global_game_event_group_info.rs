@@ -1,7 +1,7 @@
 //! `globalgameeventgroup.pabgb` bridge — C ABI surface.
 //!
 //! Resolves save-side `GlobalGameEventGroupKey (u16-widened-u32)` to
-//! template names (`"WeatherEventGroup"`, …). Name-only, 7 rows in 1.07.
+//! template names (`"WeatherEventGroup"`, …). Name-only, 12 rows in 2.06.
 
 crate::impl_name_only_bridge! {
     handle = CrimsonGlobalGameEventGroupInfoHandle,

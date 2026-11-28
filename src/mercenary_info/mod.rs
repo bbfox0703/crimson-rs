@@ -7,16 +7,16 @@
 //! lineage of each instance (e.g. "this rename targets a Vehicle_Horse
 //! template").
 //!
-//! 1.07 ships **18 rows** — `Mercenary_Main` (player avatar template)
-//! plus 17 mount / vehicle variants (`Vehicle_Horse`, `Vehicle_Dragon`,
+//! 2.06 ships **21 rows** — `Mercenary_Main` (player avatar template)
+//! plus mount / vehicle variants (`Vehicle_Horse`, `Vehicle_Dragon`,
 //! `Vehicle_WarMachine`, `Vehicle_WarMachine_Raptor`, …).
 //!
-//! **PABGH layout** — custom 5-byte entries (`u16 count + (u8 key, u32 offset)*`).
-//! New variant for this codebase; previously seen shapes were
-//! `(u16, u32)` (factionrelationgroup, storeinfo,
+//! **PABGH layout** (pre-2.06; a 2.06 header is rebuilt into it in
+//! memory by `static_header::legacy_pair`) — custom 5-byte entries
+//! (`u16 count + (u8 key, u32 offset)*`). New variant for this codebase;
+//! other shapes are `(u16, u32)` (factionrelationgroup, storeinfo,
 //! partprefabdyetexturepalleteinfo) and `(u32, u32)` (skill, dye color
-//! group, etc.). 18 entries × 5 + 2 header = 92 bytes (matches the live
-//! file).
+//! group, etc.). `count` entries × 5 + 2 header bytes.
 //!
 //! **PABGB row layout** — bridge consumes the leading
 //! `(u32 name_len, name, u8 key)` triple (2.04 swapped key and name). The
@@ -106,13 +106,14 @@ pub fn parse_mercenary_info_lossy(
 #[cfg(test)]
 mod tests {
     //! Live-install integration test against the real
-    //! `mercenaryinfo.pabgb` + `.pabgh`. Pins every 1.07 row.
+    //! `mercenaryinfo.pabgb` + `.pabgh`. Pins five known rows and the row
+    //! count.
 
     use crate::binary::gamedata_layout;
     use super::*;
 
-    /// All 18 1.07 rows. Pins the schema in both directions —
-    /// `(key, name)` plus expected row count.
+    /// Five known `(key, name)` rows; the live test also pins the row
+    /// count.
     const KNOWN: &[(u32, &str)] = &[
         (64, "Mercenary_Main"),
         (78, "Vehicle_Horse"),

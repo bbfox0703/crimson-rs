@@ -6,17 +6,18 @@
 //! these by `u16`, so the same bridge surfaces the value widened to
 //! `u32` to keep the C ABI uniform across the project.
 //!
-//! 1.07 ships **292 rows** ranging across every store family: general
+//! 2.06 ships **441 rows** ranging across every store family: general
 //! stores (`Store_Her_General` / `Store_Cal_General`), per-region
 //! suppliers, blacksmiths, fishing vendors, basecamp shops, and the
 //! various non-standard formats (BlackMarket, StreetVendor, Church
 //! camp, etc.) the hexpat-RE pass in [`references/store_info.hexpat`]
 //! catalogued.
 //!
-//! **PABGH layout** — custom 6-byte entries (`u16 count + (u16 key, u32 offset)*`),
-//! same shape as `factionrelationgroup.pabgh` and
-//! `partprefabdyetexturepalleteinfo.pabgh`. 292 entries × 6 + 2 header =
-//! 1,754 bytes (matches the live file).
+//! **PABGH layout** (pre-2.06; a 2.06 header is rebuilt into it in
+//! memory by `static_header::legacy_pair`) — custom 6-byte entries
+//! (`u16 count + (u16 key, u32 offset)*`), same shape as
+//! `factionrelationgroup.pabgh` and `partprefabdyetexturepalleteinfo.pabgh`.
+//! `count` entries × 6 + 2 header bytes.
 //!
 //! **PABGB row layout** — the bridge only consumes the leading
 //! `(u32 name_len, name, u16 key)` triple (2.04 swapped key and name, and
@@ -127,7 +128,7 @@ mod tests {
 
     /// (StoreKey, expected internal_name). Taken from the
     /// `_probe_store_mercenary_partprefab` output — the first two
-    /// entries by on-disk PABGH order. The 1.07 file has 292 rows.
+    /// entries by on-disk PABGH order. The 2.06 file has 441 rows.
     const KNOWN: &[(u32, &str)] = &[
         (3101, "Store_Her_General"),
         (3201, "Store_Cal_General"),

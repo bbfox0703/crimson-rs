@@ -515,8 +515,8 @@ Remaining work is **optional follow-ons only**:
 
 ```
 src/
-├── lib.rs                   # Crate root (mission/quest/stage/knowledge/questgauge/
-│                            #   sub_level/gimmick/character modules gated behind #[cfg(feature = "c_abi")])
+├── lib.rs                   # Crate root (every gamedata table module except item_info /
+│                            #   skill_info / string_info is gated behind #[cfg(feature = "c_abi")])
 ├── python.rs                # PyO3 bindings
 ├── binary/                  # Container formats
 │   ├── pamt.rs, papgt.rs    # PAMT / PAPGT parse + write
@@ -604,8 +604,8 @@ src/
     ├── faction_spawn_data_info.rs             # FactionSpawnDataKey (u32) → "FactionSpawn_GlenbrightManor_Grace_ReedDevil" etc.
     ├── faction_relation_group_info.rs         # FactionRelationGroupKey (u16-widened-u32) → "Graymane"/"FriendlyCombat"/"HostileCombat"/"NPC_Common"/"Monster_Common", + group-to-group FactionRelationType
     │                                           #   + lookup_related_count/_at for the per-row sibling-reference matrix
-    ├── store_info.rs                          # StoreKey (u16-widened-u32) → "Store_Her_General" etc. (292 rows, name-only, no PALOC chain)
-    ├── mercenary_info.rs                      # MercenaryKey (u8-widened-u32) → "Mercenary_Main"/"Vehicle_Horse"/... (18 rows, NEW (u8,u32) PABGH variant)
+    ├── store_info.rs                          # StoreKey (u16-widened-u32) → "Store_Her_General" etc. (441 rows in 2.06, name-only, no PALOC chain)
+    ├── mercenary_info.rs                      # MercenaryKey (u8-widened-u32) → "Mercenary_Main"/"Vehicle_Horse"/... (21 rows in 2.06, NEW (u8,u32) PABGH variant before 2.06)
     ├── item_part_prefab.rs                    # ItemKey → list of PartPrefabKey. 2026-11-27 prefab join
     │                                           #   (load_*_with_prefab_pamt): item prefab name → .prefab in the
     │                                           #   character PAMT (0009) → .pac paths → key = checksum(lower(pac));
@@ -620,23 +620,23 @@ src/
     │                                           #   "how many dye slots does this item have?": popcount of the item's
     │                                           #   dye slot bits since 2026-11-28 (was the first row's sub-mesh count),
     │                                           #   returns (slot_count, resolve_source) with NOT_RESOLVED states)
-    ├── house_info.rs                          # HouseKey (u16) → "DefaultHouse_Lv1"/... (4 rows, name-only)
-    ├── royal_supply_info.rs                   # RoyalSupplyKey (u16) → "RoyalSupply_Hernand"/... (4 rows, name-only)
-    ├── craft_tool_info.rs                     # CraftToolKey (u16) → "CraftTool_Enchant"/... (17 rows, name-only)
-    ├── craft_tool_group_info.rs               # CraftToolGroupKey (u16) → "CraftTool_Equip_Enchant"/... (10 rows, name-only)
-    ├── trigger_region_info.rs                 # TriggerRegionKey (u32) → "Swamp"/"IceTerrain"/... (12 rows, name-only)
-    ├── gameplay_variable_info.rs              # GamePlayVariableKey (u32) → "CD_Live"/"BaseCamp_Ranch_Lv1"/... (47 rows, name-only)
-    ├── global_game_event_info.rs              # GlobalGameEventInfoKey (u16) → "Drought_Varnian"/... (103 rows).
+    ├── house_info.rs                          # HouseKey (u16) → "DefaultHouse_Lv1"/... (4 rows, name-only; hand-written, same shape as the macro)
+    ├── royal_supply_info.rs                   # RoyalSupplyKey (u16) → "RoyalSupply_Hernand"/... (4 rows, name-only; hand-written, same shape as the macro)
+    ├── craft_tool_info.rs                     # CraftToolKey (u16) → "CraftTool_Enchant"/... (19 rows in 2.06, name-only)
+    ├── craft_tool_group_info.rs               # CraftToolGroupKey (u16) → "CraftTool_Equip_Enchant"/... (12 rows in 2.06, name-only)
+    ├── trigger_region_info.rs                 # TriggerRegionKey (u32) → "Swamp"/"IceTerrain"/... (14 rows in 2.06, name-only)
+    ├── gameplay_variable_info.rs              # GamePlayVariableKey (u32) → "CD_Live"/"BaseCamp_Ranch_Lv1"/... (68 rows in 2.06, name-only)
+    ├── global_game_event_info.rs              # GlobalGameEventInfoKey (u16) → "Drought_Varnian"/... (191 rows in 2.06).
     │                                           #   Hand-written (not macro) — exposes per-row body fields:
     │                                           #   group_key (100% coverage, cross-refs globalgameeventgroup) +
-    │                                           #   paloc_key (76.7% coverage; 0 for RoyalSupply/FactionBlockEvent_*).
+    │                                           #   paloc_key (0 for the RoyalSupply/FactionBlockEvent_* groups).
     │                                           #   See archive/globalgameevent-body-re.md.
-    ├── global_game_event_group_info.rs        # GlobalGameEventGroupKey (u16) → "WeatherEventGroup"/... (7 rows, name-only)
-    ├── game_advice_info.rs                    # GameAdviceInfoKey (u32) → "Advice_Control_Move"/... (461 rows, name-only; PALOC chain deferred)
+    ├── global_game_event_group_info.rs        # GlobalGameEventGroupKey (u16) → "WeatherEventGroup"/... (12 rows in 2.06, name-only)
+    ├── game_advice_info.rs                    # GameAdviceInfoKey (u32) → "Advice_Control_Move"/... (482 rows in 2.06, name-only; PALOC chain deferred)
     ├── game_advice_group_info.rs              # GameAdviceGroupKey (u32) → "GameAdviceGroup_ControlBasics"/... (8 rows, name-only)
-    ├── reserve_slot_info.rs                   # ReserveSlotKey (u32) → "ArrowItem"/"BulletItem"/"BombItem"/... (27 rows, name-only; PALOC chain deferred)
-    ├── region_info.rs                         # RegionKey (u16) → "Region_Pywel"/"Region_Kweiden"/... (1,004 rows, name-only)
-    ├── item_group_info.rs                     # ItemGroupKey (u16) → "ItemGroup_Category_Equipment"/... (1,500 rows, name-only)
+    ├── reserve_slot_info.rs                   # ReserveSlotKey (u32) → "ArrowItem"/"BulletItem"/"BombItem"/... (28 rows in 2.06, name-only; PALOC chain deferred)
+    ├── region_info.rs                         # RegionKey (u16) → "Region_Pywel"/"Region_Kweiden"/... (1,014 rows in 2.06, name-only)
+    ├── item_group_info.rs                     # ItemGroupKey (u16) → "ItemGroup_Category_Equipment"/... (1,682 rows in 2.06, name-only)
     ├── main_quest_chapter.rs                  # Curated (chapter, arc, mission) rollup from docs/ref-gamedata/main-quest-list.md
     │                                          #   (170 rows, static table — no file load, no handle). Every row carries
     │                                          #   the game row its title comes from (MissionKey / QuestKey). Lookups:
@@ -653,11 +653,15 @@ src/
 
 The `impl_name_only_bridge!` macro in `src/c_abi/mod.rs` generates the standard
 6-function ABI surface (`load_from_file`/`_bytes`, `free`, `entry_count`,
-`lookup_string_key`, `get_entry`) for the niche name-only bridges above. Each
-`c_abi/<name>.rs` file becomes a ~15-line macro invocation + a live-install
-integration test. The earlier bridges (`store_info`, `mercenary_info`,
-`faction_node_info`, …) predate the macro and remain hand-written; they can be
-migrated later if a cross-cutting ABI change ever lands.
+`lookup_string_key`, `get_entry`) for ten of the niche name-only bridges above:
+`craft_tool_info`, `craft_tool_group_info`, `trigger_region_info`,
+`gameplay_variable_info`, `global_game_event_group_info`, `game_advice_info`,
+`game_advice_group_info`, `reserve_slot_info`, `region_info` and
+`item_group_info`. Each of those `c_abi/<name>.rs` files is a ~15-line macro
+invocation + a live-install integration test. The other name-only bridges
+(`store_info`, `mercenary_info`, `faction_node_info`, `house_info`,
+`royal_supply_info`, …) are hand-written; `house_info` and `royal_supply_info`
+behave exactly like the macro output.
 
 Lossy anchor-scan parsers used by the c_abi bridges live alongside in
 `src/<table>_info/mod.rs`. Each parser is feature-gated to the c_abi bridge that
@@ -667,13 +671,13 @@ consumes it.
 
 <!-- symbol-index:start -->
 
-Every exported `crimson_*` function, 375 in all, grouped by source file, with the first line
+Every exported `crimson_*` function, 369 in all, grouped by source file, with the first line
 of its rustdoc. `repo_doc_budget::c_abi_surface_lists_every_symbol` fails when a symbol is
 missing from this file, so add a line here (or a mention above) with any new export.
 
 **`src/c_abi/all_items.rs`**
 
-- `crimson_save_list_all_items` — Flat-list every player-owned item across the save's container classes (active equip, active reserve, inventory, mercenary equip, mercenary…
+- `crimson_save_list_all_items` — Flat-list every item across the save's container classes (active equip, active reserve, inventory, mercenary equip, mercenary inventory),…
 
 **`src/c_abi/character_info.rs`**
 
@@ -764,8 +768,8 @@ missing from this file, so add a line here (or a mention above) with any new exp
 - `crimson_factionrelationgroup_load_from_file` — Parse `factionrelationgroup.pabgb` + `.pabgh` from disk.
 - `crimson_factionrelationgroup_load_from_bytes` — Parse factionrelationgroup pabgb + pabgh bytes already in memory.
 - `crimson_factionrelationgroup_free` — Free a handle returned by either loader.
-- `crimson_factionrelationgroup_entry_count` — Total number of `factionrelationgroup` rows in the loaded table (always 5 in 1.07).
-- `crimson_factionrelationgroup_lookup_string_key` — Look up the internal name for a given `FactionRelationGroupKey` (passed as u32 — only the low 16 bits are meaningful).
+- `crimson_factionrelationgroup_entry_count` — Total number of `factionrelationgroup` rows in the loaded table (5 on 2.06).
+- `crimson_factionrelationgroup_lookup_string_key` — Look up the internal name for a given `FactionRelationGroupKey` (a u16 key widened to u32).
 - `crimson_factionrelationgroup_lookup_relation` — The `FactionRelationType` between two relation groups: 1 War or 3 BloodAlly for every pair of distinct groups on 2.06 (0 Neutral and 2 Agr…
 - `crimson_factionrelationgroup_lookup_related_count` — Total number of groups a row lists, across all its relation lists (War, then BloodAlly); `Graymane` returns 4.
 - `crimson_factionrelationgroup_lookup_related_at` — Read a single sibling-row reference at `idx`.
@@ -974,21 +978,15 @@ missing from this file, so add a line here (or a mention above) with any new exp
 - `crimson_save_set_scalar_fields_present_batch` — Apply many [`CrimsonScalarPresentBatchOp`] mutations in one FFI round trip, sharing a single post-batch re-emit + re-decode.
 - `crimson_save_make_empty_element_bytes` — Produce the minimal valid bytes for a list element of `class_index`.
 - `crimson_save_list_insert_element` — Insert a caller-supplied list-element bytes blob into an `object_list` field at `insert_at`.
-- `crimson_save_dynamic_array_set_u32_elements` — Serialize the in-memory save back to `path` using the original nonce.
+- `crimson_save_dynamic_array_set_u32_elements` — Wholesale-replace the contents of a `dynamic_array<u32>` field.
 - `crimson_save_dynamic_array_get_u32_elements` — Read the contents of a `dynamic_array<u32>` field as a flat little-endian `u32` sequence.
 - `crimson_save_set_inline_bytes_field` — Wholesale-replace the contents of an `inline_bytes` field (the schema's `meta_kind == 1` shape: a `u32 count` header followed by `count *…
 - `crimson_save_get_inline_bytes_field` — Read the raw payload bytes of an `inline_bytes` field — the read counterpart to [`crimson_save_set_inline_bytes_field`].
-- `crimson_save_write_to_file` — Uses `Save::write_with_nonce` so the on-disk layout matches what the game produced — HMAC re-computed, ChaCha20 re-applied.
+- `crimson_save_write_to_file` — Serialize the in-memory save back to `path` using the original nonce.
 - `crimson_save_begin_deferred_redecode` — Open a deferred-redecode batch on the save handle.
 - `crimson_save_end_deferred_redecode` — Commit the deferred-redecode batch opened by [`crimson_save_begin_deferred_redecode`].
 - `crimson_save_abort_deferred_redecode` — Abort the deferred-redecode batch opened by [`crimson_save_begin_deferred_redecode`], discarding every in-memory mutation since `begin_*`…
 - `crimson_save_is_deferred_redecode_open` — Returns `1` (in `*out_open`) if a deferred-redecode batch is currently open on the handle, `0` otherwise.
-- `crimson_house_info_load_from_file` — Load from a `.staticinfobody` path (the header beside it is read too). (`impl_name_only_bridge!`)
-- `crimson_house_info_load_from_bytes` — Load from body + header bytes. (`impl_name_only_bridge!`)
-- `crimson_house_info_free` — Free the handle. (`impl_name_only_bridge!`)
-- `crimson_house_info_entry_count` — Number of rows. (`impl_name_only_bridge!`)
-- `crimson_house_info_lookup_string_key` — Key → internal name (two-call buffer). (`impl_name_only_bridge!`)
-- `crimson_house_info_get_entry` — Row at an index: key + internal name. (`impl_name_only_bridge!`)
 
 **`src/c_abi/paloc.rs`**
 
@@ -1032,7 +1030,7 @@ missing from this file, so add a line here (or a mention above) with any new exp
 - `crimson_part_prefab_dye_texture_pallete_entry_count` — Total number of palette rows in the table.
 - `crimson_part_prefab_dye_texture_pallete_lookup_sub_count` — Number of sub-records inside the palette row keyed by `palette_key`.
 - `crimson_part_prefab_dye_texture_pallete_lookup_sub_material_name` — Material identifier — `"cloth"`, `"leather"`, `"metal"`, … # Safety `handle` and `required` must be non-null; `buf` may be null iff `buf_l…
-- `crimson_part_prefab_dye_texture_pallete_lookup_sub_icon_path` — UI icon DDS path (falls back to texture path for `palette_key=0`).
+- `crimson_part_prefab_dye_texture_pallete_lookup_sub_icon_path` — UI icon DDS path, as stored in the row (no fallback to the texture path).
 - `crimson_part_prefab_dye_texture_pallete_lookup_sub_texture_path` — Material texture DDS path used at runtime.
 - `crimson_part_prefab_dye_texture_pallete_lookup_sub_variant_name` — Variant label inside a material — empty when absent, or `"wool"` / `"velvet"` / `"silk"`.
 - `crimson_part_prefab_dye_texture_pallete_lookup_sub_variant_value` — Variant strength — `-1.0` is the "no variant" sentinel.

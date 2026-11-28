@@ -2,8 +2,8 @@
 //!
 //! Resolves `PartPrefabDyeTexturePalleteKey (u16)` — the gamedata
 //! key stored as `ItemDyeSaveData._texturePalleteKey` in the save's
-//! `_itemDyeDataList`. 11 rows in 1.07 (key 0..=10). Each row defines
-//! a "palette tier" — a set of 2 or 3 material sub-records (cloth /
+//! `_itemDyeDataList`. 11 rows in 2.06 (key 0..=10). Each row defines
+//! a "palette tier" — a set of 3 material sub-records (cloth /
 //! leather / metal) with paired icon + texture DDS paths.
 //!
 //! Lookup keys here are exposed as `u32` for cross-bridge consistency
@@ -285,7 +285,7 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_texture_pallete_lookup_sub_mate
     }
 }
 
-/// UI icon DDS path (falls back to texture path for `palette_key=0`).
+/// UI icon DDS path, as stored in the row (no fallback to the texture path).
 ///
 /// # Safety
 /// `handle` and `required` must be non-null; `buf` may be null iff
@@ -427,7 +427,7 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_texture_pallete_get_entry_key(
 #[cfg(test)]
 mod tests {
     //! Live-install integration test. Pins the 11-row count, the
-    //! per-row sub_count invariants (key=0 → 2; key=1..=10 → 3), and
+    //! per-row sub_count invariant (3 on every key), and
     //! the cloth/wool variant on key=1 sub=0 (positive variant_value).
 
     use crate::binary::gamedata_layout;

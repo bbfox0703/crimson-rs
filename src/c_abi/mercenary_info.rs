@@ -6,12 +6,12 @@
 //! per-save instance ID — the editor's "Rename Mercenary" UI uses this
 //! bridge to surface the template lineage cleanly.
 //!
-//! Mirrors [`super::faction_node_info`] in shape — name-only, **no
-//! `lookup_display_name` function**, no PALOC chain probed yet.
+//! Name-only, **no `lookup_display_name` function**, no PALOC chain
+//! probed yet.
 //!
-//! 18 rows in 1.07. PABGH is a NEW variant: `u16 count + (u8 key, u32 offset)*`
-//! (5-byte entries). See `src/mercenary_info/mod.rs` for byte-level
-//! schema notes.
+//! 21 rows in 2.06. The pre-2.06 PABGH is a NEW variant:
+//! `u16 count + (u8 key, u32 offset)*` (5-byte entries). See
+//! `src/mercenary_info/mod.rs` for byte-level schema notes.
 
 use std::collections::HashMap;
 use std::ffi::CStr;

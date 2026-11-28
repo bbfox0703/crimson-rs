@@ -6,11 +6,11 @@
 //! gamedata-driven slot counts so the C# editor doesn't drift when
 //! Pearl Abyss adds new dyeable gear.
 //!
-//! Row counts drift per patch (1,105 in 1.07; 1,111 in 1.10/1.11;
-//! **968 in 1.12** after −143 rows were removed). The cross-reference
+//! Row counts drift per patch (1,703 on 2.06). The cross-reference
 //! between an `_itemKey` and its `_partPrefabKey` is NOT in this
-//! file — that bridge lives in `iteminfo.pabgb` (joined via
-//! `stringinfo.pabgb`; see [`crate::c_abi::item_part_prefab`]).
+//! file: an item reaches its rows through its `.prefab` meshes, and the
+//! row key is the checksum of the mesh's lower-case `.pac` path (see
+//! [`crate::c_abi::item_part_prefab`]).
 //!
 //! Schema (every row of the live 2.05 table walks it exactly):
 //!
@@ -84,9 +84,9 @@
 //! [`PartPrefabDyeSlot::active_channels`] and
 //! [`PartPrefabDyeSlotInfoEntry::dye_slot_bits`].
 //!
-//! For the v1 dye editor we only consume `(key, prefab_name, slot_count)`.
-//! The per-slot material list (a v2 task) lets us also render the
-//! "default material per slot" suggestions in the dye UI.
+//! The bridge exposes the whole row: `(key, prefab_name, slot_count)`, the
+//! per-slot default materials, `mat_indices`, the mask and its decoded dye
+//! slot bits, and the extra layers.
 //!
 //! Each `CString` is `[u32 len][len bytes]` with NO trailing NUL.
 
@@ -159,8 +159,8 @@ pub struct DyeExtraLayer {
 /// One parsed `partprefabdyeslotinfo` row.
 #[derive(Debug, Clone)]
 pub struct PartPrefabDyeSlotInfoEntry {
-    /// `PartPrefabKey` as stored in the prefab cross-reference (which
-    /// itself sits in `iteminfo.pabgb` — not yet bridged).
+    /// `PartPrefabKey`: the Jenkins checksum of the mesh's `.pac` path in
+    /// lower case (the last slot's `tail_name`).
     pub key: u32,
     /// Prefab internal name (e.g. `"cd_phm_00_lb_00_0054"`,
     /// `"cd_phw_00_vest_belt_0137_00"`).

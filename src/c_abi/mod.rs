@@ -415,25 +415,27 @@ pub(crate) unsafe fn entry_source_ffi<H>(
 /// standard handle struct + six `extern "C"` functions (load_from_file,
 /// load_from_bytes, free, entry_count, lookup_string_key, get_entry).
 ///
-/// Used by the 2026-05-16 niche-bridge batch (HouseKey, RoyalSupplyKey,
-/// CraftToolKey, ... ). The earlier bridges (store_info, faction_node_info,
-/// etc.) predate the macro and remain hand-written; they can be migrated
-/// later if a cross-cutting ABI change ever lands.
+/// Used by ten bridges: CraftToolKey, CraftToolGroupKey, TriggerRegionKey,
+/// GamePlayVariableKey, GlobalGameEventGroupKey, GameAdviceInfoKey,
+/// GameAdviceGroupKey, ReserveSlotKey, RegionKey and ItemGroupKey. The
+/// other name-only bridges (store_info, faction_node_info, house_info,
+/// royal_supply_info, etc.) are hand-written; house_info and
+/// royal_supply_info behave exactly like the macro output.
 ///
-/// Usage:
+/// Usage (`<table>` stands for the bridge's name):
 ///
 /// ```ignore
 /// crate::impl_name_only_bridge! {
-///     handle = CrimsonHouseInfoHandle,
-///     parser = crate::house_info::parse_house_info_lossy,
-///     entry_ty = crate::house_info::HouseInfoEntry,
-///     load_from_file = crimson_house_info_load_from_file,
-///     load_from_bytes = crimson_house_info_load_from_bytes,
-///     free = crimson_house_info_free,
-///     entry_count = crimson_house_info_entry_count,
-///     lookup_string_key = crimson_house_info_lookup_string_key,
-///     get_entry = crimson_house_info_get_entry,
-///     key_param = house_key,
+///     handle = Crimson<Table>InfoHandle,
+///     parser = crate::<table>_info::parse_<table>_info_lossy,
+///     entry_ty = crate::<table>_info::<Table>InfoEntry,
+///     load_from_file = crimson_<table>_info_load_from_file,
+///     load_from_bytes = crimson_<table>_info_load_from_bytes,
+///     free = crimson_<table>_info_free,
+///     entry_count = crimson_<table>_info_entry_count,
+///     lookup_string_key = crimson_<table>_info_lookup_string_key,
+///     get_entry = crimson_<table>_info_get_entry,
+///     key_param = <table>_key,
 /// }
 /// ```
 #[macro_export]
@@ -1011,8 +1013,8 @@ pub unsafe extern "C" fn crimson_save_free(handle: *mut CrimsonSaveHandle) {
 ///
 /// **Performance**: O(total items × small constant). For the 1.07
 /// reference save (543 items across 18 containers), end-to-end cost
-/// is under 1 ms. No allocation beyond the output buffer the caller
-/// owns.
+/// is under 1 ms. Each call collects the records into an internal `Vec`
+/// first, then copies them into the caller's buffer.
 ///
 /// Return codes:
 /// - `OK` — list written. `*out_count_records` and `*out_version` are
@@ -1229,7 +1231,8 @@ pub struct CrimsonCharacterRefRecord {
 ///
 /// **Performance**: O(blocks × fields × nesting_depth). For the 1.07
 /// reference save this scans ~10k blocks × ~30 fields each in well
-/// under 100 ms. Single allocation up front; no per-record allocs.
+/// under 100 ms. Each call collects the records into an internal `Vec`
+/// first, then copies them into the caller's buffer.
 ///
 /// Return codes:
 /// - `OK` — written. Populates `*out_count_records` and `*out_version`.
@@ -1583,6 +1586,7 @@ pub unsafe extern "C" fn crimson_save_get_block_class_name(
 /// ```json
 /// {
 ///   "class_index": u32,
+///   "class_name":  "string",
 ///   "data_offset": u32,
 ///   "data_size":   u32,
 ///   "mask_bytes_hex":    "hex",   // empty when mask is empty
@@ -1590,15 +1594,21 @@ pub unsafe extern "C" fn crimson_save_get_block_class_name(
 ///   "fields": [
 ///     { "field_index", "name", "type_name",
 ///       "meta_kind", "meta_size", "meta_aux",
-///       "present", "kind", "value", "start", "end", "note" }
+///       "present", "kind", "value", "start", "end", "note",
+///       "child",       // inline locator child: a nested block object, else null
+///       "elements" }   // object_list elements: nested block objects, else null
 ///   ],
 ///   "undecoded_ranges": [[start, end], ...]
 /// }
 /// ```
 ///
-/// `value` is a pre-formatted human string mirroring
-/// `tools/inspect/inspect_save_section.py --pretty`. Empty for fields
-/// whose `present` is false (or `kind` is `absent`).
+/// Nested block objects have this same shape. `value` is a
+/// pre-formatted human string mirroring
+/// `tools/inspect/inspect_save_section.py --pretty`: `"(absent)"` for an
+/// absent field, `"<unknown>"` for one the decoder could not read. The
+/// JSON carries no raw `bytes` / `count` keys; read raw contents through
+/// the typed getters (`crimson_save_dynamic_array_get_u32_elements`,
+/// `crimson_save_get_inline_bytes_field`).
 ///
 /// Uses the standard two-call pattern: pass `buf=NULL, buf_len=0` to
 /// learn the required size (including NUL), then allocate and call
@@ -2627,7 +2637,8 @@ pub unsafe extern "C" fn crimson_save_list_remove_element(
 ///    run N sequential single-op removes. Earlier removes shift later
 ///    indexes in the same list, so the caller is expected to pre-sort
 ///    ops targeting the same list by descending `element_idx`.
-/// 2. **All-or-nothing on failure.** On the first op that fails any
+/// 2. **All-or-nothing on failure** (outside a deferred-redecode batch,
+///    where earlier ops stay applied). On the first op that fails any
 ///    of the same checks as the single-op API (`NOT_SCALAR` /
 ///    `OUT_OF_RANGE` / `LIST_VARIANT_UNSUPPORTED` / `NOT_NAVIGABLE`),
 ///    the in-memory body is rolled back to its pre-batch state and
@@ -2639,8 +2650,9 @@ pub unsafe extern "C" fn crimson_save_list_remove_element(
 ///    quest-reward items in one Tools-menu action).
 ///
 /// `out_failed_op_index` (optional, may be NULL):
-/// - On error, written with the index of the failing op.
-/// - On success, written with `usize::MAX` as a "no failure" sentinel.
+/// - On an op's failure, written with that op's index.
+/// - When the ops all apply but the re-emit fails (`MUTATION_INVALID`),
+///   and on success, written with `usize::MAX` ("no failing op").
 ///
 /// # Safety
 /// `handle` must be a live, exclusive handle. `ops` must point to
@@ -2752,9 +2764,8 @@ fn remove_one_list_element_in_place(
 /// copy at `dst_element_idx`. The list's `count` is incremented and the
 /// variant header's count bytes are rewritten.
 ///
-/// `dst_element_idx` must be in `0..=new_count` (i.e. `0..=count + 1`
-/// after the clone). `dst_element_idx == count + 1` would be illegal
-/// — pass `dst_element_idx == count` to append.
+/// `dst_element_idx` must be in `0..=count`, where `count` is the
+/// element count before the clone; `dst_element_idx == count` appends.
 ///
 /// After cloning, the new element is byte-identical to the source.
 /// Callers typically follow up with
@@ -2763,9 +2774,10 @@ fn remove_one_list_element_in_place(
 ///
 /// Validation:
 /// - The leaf field must be `FieldKind::ObjectList`; else `NOT_SCALAR`.
+/// - The list must be fully decoded (`count` equals the decoded element
+///   count); else `LIST_PARTIALLY_DECODED`.
 /// - `src_element_idx` must be `< current count`; else `OUT_OF_RANGE`.
-/// - `dst_element_idx` must be `<= count + 1`; else `OUT_OF_RANGE`.
-///   (`<= count` is also OK; the comparison uses the post-clone count.)
+/// - `dst_element_idx` must be `<= current count`; else `OUT_OF_RANGE`.
 /// - The list's `header_variant` must be count-patchable — a fixed-size
 ///   variant or `marker_run_plus_zeros`; else `LIST_VARIANT_UNSUPPORTED`.
 ///
@@ -2814,7 +2826,7 @@ pub unsafe extern "C" fn crimson_save_list_clone_element(
             if (src_element_idx as usize) >= elements.len() {
                 return Err(error::OUT_OF_RANGE);
             }
-            // Post-clone count is elements.len() + 1; dst must be <= that.
+            // dst may be any index up to the current count (== count appends).
             if (dst_element_idx as usize) > elements.len() {
                 return Err(error::OUT_OF_RANGE);
             }
@@ -3027,14 +3039,15 @@ pub unsafe extern "C" fn crimson_save_transplant_list_element(
 ///
 /// Validation:
 /// - The field's schema `meta_kind` must be `0` or `2` (fixed scalar);
-///   else `NOT_SCALAR_FIELD_KIND`. Toggling list / locator / inline
-///   field presence requires the template-builder ABI (Phase B.3).
+///   else `NOT_SCALAR_FIELD_KIND`. Object lists toggle through
+///   [`crimson_save_set_object_list_present`].
 /// - When `present_flag == 1`, `init_len` must equal the field's
 ///   `meta_size`; else `LENGTH_MISMATCH`.
-/// - When `present_flag == 0` AND the field is already absent (or
-///   `present_flag == 1` AND already present), the call is a no-op
-///   that still re-emits the body. Cheap, but the caller can short-
-///   circuit by checking `crimson_save_get_block_json` first.
+/// - When `present_flag == 1` AND the field is already present, its
+///   value is overwritten with `init_bytes`. When `present_flag == 0`
+///   AND the field is already absent, nothing changes, but the body is
+///   still re-emitted; the caller can short-circuit by checking
+///   `crimson_save_get_block_json` first.
 ///
 /// # Safety
 /// `handle` must be a live, exclusive handle. `path` must point to
@@ -3158,9 +3171,9 @@ fn toggle_one_scalar_presence_in_place(
 /// the decoder's body_offset-probing loop (see
 /// [`decode_object_list`](crate::save::body::decoder)) accepts any of
 /// {0,1,2,3} byte leading skip and picks the "furthest reaching"
-/// success — so an all-zero header (count=0) is genuinely ambiguous
-/// and round-trips as `marker_run_plus_zeros`, which the encoder
-/// can't re-emit with a different count. Lists with count >= 1 in
+/// success — so an all-zero header (count=0) is genuinely ambiguous:
+/// the probe can read it as `marker_run_plus_zeros` and take bytes of
+/// the field that follows. Lists with count >= 1 in
 /// `zero1_count_u24` disambiguate via the count u24 bytes themselves,
 /// so the round-trip is well-defined; this is why
 /// `set_object_list_present(make_present=1)` always materializes the
@@ -3189,7 +3202,9 @@ fn build_zero1_count_u24_header(count: u32) -> Result<Vec<u8>, i32> {
 /// - The mask bit at `field_idx` in the enclosing block is set.
 /// - The field is initialised as a `count = 1` [`FieldValue::ObjectList`]
 ///   containing one default-empty element of the field's element class
-///   (per the schema's `meta_aux`). This is the natural flow for the
+///   (taken from another block of the same class that holds this list
+///   with elements; the schema does not record it). This is the
+///   natural flow for the
 ///   dye-editor use case ("add the first dye element") and keeps the
 ///   byte layout unambiguous for the decoder's body-offset probing — a
 ///   `count = 0` header would be greedily reclassified as
@@ -3217,6 +3232,8 @@ fn build_zero1_count_u24_header(count: u32) -> Result<Vec<u8>, i32> {
 ///   [`crimson_save_set_scalar_field_present`] /
 ///   [`crimson_save_set_inline_bytes_field`] /
 ///   [`crimson_save_dynamic_array_set_u32_elements`] respectively.
+/// - When `present_flag == 1` and no block of the same class holds this
+///   list with elements to take the element class from, `NOT_FOUND`.
 /// - When `present_flag == 1` and the schema can't build the default
 ///   element bytes (e.g. an unknown element class index), the call is
 ///   rolled back and returns `BODY_PARSE`.
@@ -3453,7 +3470,8 @@ fn toggle_one_object_list_presence_in_place(
 ///    successive `classify_scalar_after_mask_toggle` call sees the
 ///    earlier toggles reflected — same end state as running N single
 ///    ops back-to-back.
-/// 2. **All-or-nothing on failure.** On the first op that fails any
+/// 2. **All-or-nothing on failure** (outside a deferred-redecode batch,
+///    where earlier ops stay applied). On the first op that fails any
 ///    of the single-op API's checks (`NOT_SCALAR_FIELD_KIND` /
 ///    `LENGTH_MISMATCH` / `OUT_OF_RANGE` / `NOT_NAVIGABLE`), the
 ///    in-memory body is rolled back to its pre-batch state and the
@@ -3467,8 +3485,9 @@ fn toggle_one_object_list_presence_in_place(
 ///    and instead amortizes to a single re-emit (~seconds).
 ///
 /// `out_failed_op_index` (optional, may be NULL):
-/// - On error, written with the index of the failing op.
-/// - On success, written with `usize::MAX` as a "no failure" sentinel.
+/// - On an op's failure, written with that op's index.
+/// - When the ops all apply but the re-emit fails (`MUTATION_INVALID`),
+///   and on success, written with `usize::MAX` ("no failing op").
 ///
 /// # Safety
 /// `handle` must be a live, exclusive handle. `ops` must point to
@@ -3804,8 +3823,6 @@ fn build_empty_element_bytes(class_index: u32, body: &Body) -> Result<Vec<u8>, i
     Ok(out)
 }
 
-/// Serialize the in-memory save back to `path` using the original nonce.
-///
 /// Wholesale-replace the contents of a `dynamic_array<u32>` field. The
 /// existing element bytes are dropped and replaced with
 /// `[new_elements[0..new_count]]` (each element written little-endian);
@@ -4302,6 +4319,8 @@ fn update_dynamic_array_count_in_header(
     }
 }
 
+/// Serialize the in-memory save back to `path` using the original nonce.
+///
 /// Uses `Save::write_with_nonce` so the on-disk layout matches what the
 /// game produced — HMAC re-computed, ChaCha20 re-applied. The header's
 /// `uncompressed_size` and `payload_size` get patched to match the
@@ -4891,8 +4910,9 @@ fn write_field_json(s: &mut String, f: &DecodedField) {
 }
 
 /// Pre-formatted, human-readable value mirroring Python's
-/// `format_field_value` in `inspect_save_section.py`. Empty when the
-/// field is absent / unknown.
+/// `format_field_value` in `inspect_save_section.py`. `"(absent)"` for an
+/// absent field, `"<unknown>"` for an undecoded one, empty for any other
+/// kind / value pairing.
 fn format_field_value(f: &DecodedField) -> String {
     match (&f.kind, &f.value) {
         (FieldKind::FixedPrefix | FieldKind::FixedSuffix, FieldValue::Scalar(v)) => {
@@ -4946,8 +4966,8 @@ fn format_field_value(f: &DecodedField) -> String {
 /// Caveat: the typed read API
 /// [`crimson_save_dynamic_array_get_u32_elements`] remains the canonical
 /// accessor — the display string here is best-effort and not part of
-/// the stable JSON value contract. Callers parsing JSON should still
-/// rely on the field's `bytes`/`count` payload for round-trip safety.
+/// the stable JSON value contract. The JSON has no raw `bytes` /
+/// `count` keys, so callers that need the elements use the typed getter.
 fn format_dynamic_array(
     count: u32,
     bytes: &[u8],

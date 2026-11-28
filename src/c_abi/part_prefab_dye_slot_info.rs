@@ -26,9 +26,9 @@
 //!   1.07-1.12 rows, 1 on the new dyeable gear).
 //!
 //! The cross-reference between an `_itemKey` and its `PartPrefabKey`
-//! is NOT in this file — it lives in `iteminfo.pabgb` (or a sibling
-//! `partprefab*` table not yet RE'd). That linkage is the next-session
-//! blocker for the C# editor to actually consume these slot counts.
+//! is NOT in this file. [`super::item_part_prefab`] resolves it: an item's
+//! `.prefab` lists `.pac` meshes, and each mesh's row key is the checksum of
+//! its lower-case path.
 //!
 //! See [`crate::part_prefab_dye_slot_info`] for the row + slot schema.
 

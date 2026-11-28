@@ -111,8 +111,9 @@ fn decode_one_block(
     // for round-trip rather than dropping them.
     //
     // Cap at 16 bytes so a real decode failure (which produces much
-    // larger residuals) is still surfaced via `undecoded_ranges`. See
-    // docs/save-body-format.md for the empirical analysis.
+    // larger residuals) is still surfaced via `undecoded_ranges`. The
+    // per-class census is `_probe_save_trailing_pad_census` (listed in
+    // docs/save-side-probes.md).
     const TRAILING_PAD_MAX: usize = 16;
     let trailing_pad: Vec<u8> = if undecoded.len() == 1 {
         let (s, e) = undecoded[0];
@@ -809,12 +810,10 @@ fn decode_inline_object_locator(
     if let Some(td) = child_type_def {
         let child_mask_owned = raw[body_cursor + 2..body_cursor + 2 + mbc].to_vec();
 
-        // The wrapper's `child_payload_offset` is informational: most of
-        // the time it equals `wrapper_end` (truly inline), but in some
-        // blocks the engine writes a different value while the actual
-        // payload still sits at wrapper_end (observed in FactionSaveData
-        // list elements). So we always try inline first, then fall back
-        // to the stated offset.
+        // The wrapper's `child_payload_offset` normally equals
+        // `wrapper_end` (the payload is inline), and the encoder always
+        // writes it so. We try inline first and fall back to the stated
+        // offset only when the inline decode fails.
         let try_payload = |start: usize, tail: usize| {
             if start + 8 > tail {
                 return None;

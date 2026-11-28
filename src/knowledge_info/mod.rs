@@ -190,10 +190,11 @@ mod tests {
         // Sanity: at least 95% of names start with Knowledge_. The
         // scanner can pick up a small number of body-byte
         // false-positives (e.g. region-name-shaped sequences like
-        // `Valley_of_Vultures` lurking inside row bodies) but they're
-        // harmless — the HashMap dedupes by key, so real
-        // KnowledgeKey lookups return the correct name. Strict
-        // `starts_with` would flake on those rare hits.
+        // `Valley_of_Vultures` lurking inside row bodies). The bridge
+        // dedupes first-wins, so a real KnowledgeKey keeps its name
+        // unless a false-positive with the same key comes before it;
+        // the KNOWN pins above check that. Strict `starts_with` would
+        // flake on those rare hits.
         let knowledge_prefixed = entries
             .iter()
             .filter(|e| e.name.starts_with("Knowledge_"))

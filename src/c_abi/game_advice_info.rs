@@ -2,7 +2,7 @@
 //!
 //! Resolves save-side `GameAdviceInfoKey (u32)` to template names
 //! (`"Advice_Control_Move"`, …). Name-only; PALOC chain deferred.
-//! 461 rows in 1.07.
+//! 482 rows in 2.06.
 
 crate::impl_name_only_bridge! {
     handle = CrimsonGameAdviceInfoHandle,

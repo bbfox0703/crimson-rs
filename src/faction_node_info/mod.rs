@@ -4,8 +4,8 @@
 //! save-side fields that carry a "faction node" reference (a
 //! per-location entry in the faction system; e.g. encampments, manors,
 //! tribe hubs). Rows are named after the location they tag,
-//! `Node_Her_Temporary_Camp`, `Node_Her_HernandCastle`, ... Roughly
-//! 1,158 rows in 1.07.
+//! `Node_Her_Temporary_Camp`, `Node_Her_HernandCastle`, ... 1,120 rows
+//! in 2.06.
 //!
 //! ## The player-facing name: a KnowledgeKey (2026-11-27)
 //!
@@ -51,14 +51,13 @@
 //! PABGH layout matches the standard `u16 count + (u32 key, u32 offset)*`
 //! used by `skill.pabgh` (re-used here via [`crate::skill_info::parse_pabgh`]).
 //!
-//! **PALOC chain**: none. The exhaustive probe in
+//! **PALOC chain**: none keyed by the node itself. The exhaustive probe in
 //! `_probe_faction_paloc_chains` scanned every plausible namespace at
 //! both identity and hashlittle hash-hop and returned only
-//! coincidental collisions with iteminfo / character / skill keys at
-//! `lo32 = 0x70 / 0x30 / 0x200` — no real localized faction-node names
-//! exist. The bridge mirrors [`crate::sub_level_info`] / [`crate::quest_gauge_info`]
-//! in shape: **no `lookup_display_name` surface**, the internal name
-//! is the only resolution.
+//! coincidental collisions with the item / character / gimmick display
+//! namespaces at `lo32 = 0x70 / 0x30 / 0x200`. The place name comes
+//! through the row's knowledge key instead (above), which
+//! `crimson_factionnode_lookup_display_name` resolves.
 
 use crate::binary::row_head::read_row_head;
 
@@ -140,7 +139,7 @@ mod tests {
 
     /// (FactionNodeKey, expected internal_name). Taken from the
     /// `_probe_faction_pabgh_shapes` output — these are the first
-    /// entries by on-disk PABGH order. The 1.07 file has 1,158 rows.
+    /// entries by on-disk PABGH order. The 2.06 file has 1,120 rows.
     const KNOWN: &[(u32, &str)] = &[
         (1000401, "Node_Her_Temporary_Camp"),
         (1000044, "Node_Her_HernandCastle"),

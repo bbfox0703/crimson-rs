@@ -29,8 +29,9 @@
 //! the live strings and were re-paired with their game rows (the source
 //! MD's "Reconciliation against 2.02" lists each one with its evidence),
 //! and follow the live strings since: 2.03 retitled six missions and two
-//! arcs. `curated_titles_match_live_install` fails the next time a key's
-//! live title stops matching. Five wiki-only titles with no live
+//! arcs, and 2.04 one mission. `curated_titles_match_live_install` fails
+//! the next time a key's live title stops matching. Five wiki-only titles
+//! with no live
 //! counterpart are kept as [`Entry::Unresolved`]: the title lookups still
 //! answer for them, the key lookups cannot.
 //!
@@ -205,8 +206,9 @@ const JOURNEYS_END: Option<Arc> = arc("Journey's End", Quest(1_000_358));
 
 /// The curated table in story order. Titles are the live English display
 /// strings (reconciled against Crimson Desert 2.02 and updated for 2.03's
-/// eight retitles — see the "Reconciliation against 2.02" and "Retitles in
-/// 2.03" sections of the source MD); `curated_titles_match_live_install`
+/// eight retitles and 2.04's one — see the "Reconciliation against 2.02",
+/// "Retitles in 2.03" and "Retitles in 2.04" sections of the source MD);
+/// `curated_titles_match_live_install`
 /// fails as soon as a key's live title stops matching its row.
 const ROWS: &[Row] = &[
     // ── Prologue: Dead of Night ────────────────────────────────────────

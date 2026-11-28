@@ -2,7 +2,7 @@
 //!
 //! Resolves save-side `ItemGroupKey (u16-widened-u32)` to template
 //! names (`"ItemGroup_Category_Equipment"`, `"ItemGroup_Category_Food"`,
-//! `"ItemGroup_Category_Material"`, …). Name-only, 1,500 rows in 1.07.
+//! `"ItemGroup_Category_Material"`, …). Name-only, 1,682 rows in 2.06.
 
 crate::impl_name_only_bridge! {
     handle = CrimsonItemGroupInfoHandle,

@@ -2,7 +2,7 @@
 //!
 //! Resolves save-side `ReserveSlotKey (u32)` to template names
 //! (`"ArrowItem"`, `"BulletItem"`, `"BombItem"`, …). Name-only,
-//! 27 rows in 1.07.
+//! 28 rows in 2.06.
 
 crate::impl_name_only_bridge! {
     handle = CrimsonReserveSlotInfoHandle,

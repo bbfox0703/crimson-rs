@@ -13,10 +13,9 @@
 //! Body::parse(raw) -> blocks  -> Body::write(blocks) == raw
 //! ```
 //!
-//! This is the foundation for length-changing edits (PR B). For Phase B.1
-//! the only consumer is the round-trip golden test in `lib.rs`; later
-//! phases add a C ABI surface that lets callers mutate list shape (add /
-//! remove elements) and re-emit through the same encoder.
+//! This holds as long as every wrapper's stored `payload_offset` equals its
+//! wrapper end, since the encoder recomputes that value (it is what the game
+//! writes in every save the byte-identity tests read).
 //!
 //! ## Field-walk ordering
 //!

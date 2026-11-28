@@ -2,7 +2,7 @@
 //!
 //! Resolves `GlobalGameEventGroupKey (u16-widened-u32)` — the parent
 //! group template (`WeatherEventGroup`, `RoyalSupplyEventGroup`,
-//! `FactionBlockEventGroup_Her`, …). 7 rows in 1.07. Each group
+//! `FactionBlockEventGroup_Her`, …). 12 rows in 2.06. Each group
 //! references the `globalgameevent` rows that belong to it.
 //!
 //! `u16 count + (u16 key, u32 offset)*` PABGH. Body: `[u32 name_len]

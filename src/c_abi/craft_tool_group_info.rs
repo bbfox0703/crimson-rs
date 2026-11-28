@@ -3,7 +3,7 @@
 //! Resolves save-side `CraftToolGroupKey (u16-widened-u32)` to the
 //! row's template name (`"CraftTool_Equip_Enchant"`,
 //! `"CraftTool_Kukupot"`, `"CraftTool_Cook"`, …). Name-only,
-//! 10 rows in 1.07.
+//! 12 rows in 2.06.
 
 crate::impl_name_only_bridge! {
     handle = CrimsonCraftToolGroupInfoHandle,

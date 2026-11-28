@@ -1,7 +1,7 @@
 //! `triggerregioninfo.pabgb` parser — standard PABGH (u32-key).
 //!
 //! Resolves `TriggerRegionKey (u32)` — terrain-effect zone templates
-//! (`Swamp`, `IceTerrain`, `WaterPoison`, …). 12 rows in 1.07. The
+//! (`Swamp`, `IceTerrain`, `WaterPoison`, …). 14 rows in 2.06. The
 //! save layer references these from `FieldGimmickSaveData` blocks that
 //! tag a tile-region with one of the engine's hazard / terrain modes.
 //!

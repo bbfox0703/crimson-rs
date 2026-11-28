@@ -28,9 +28,13 @@ invalidate the positions:
 
 Every successful mutation through any of those entry points bumps
 the save handle's internal `mutation_version: u64` counter by exactly
-1. Pure read entry points do not bump it. Failed mutations do not
-bump it (the handle is rolled back to its pre-call state, including
-the version).
+1. Pure read entry points do not bump it. Outside a deferred-redecode
+batch a failed mutation does not bump it either: the handle is rolled
+back to its pre-call state, including the version. That includes a
+panic inside a length-changing mutation, which restores the blocks
+before the call returns `PANIC`. Inside a deferred batch a failed op
+can leave the tree partly changed, and it bumps the version (see the
+last section).
 
 Snapshot readers stamp the version at read time and compare against
 the live version before each reuse. This is O(1) regardless of save

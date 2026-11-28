@@ -26,7 +26,7 @@ pub struct Save {
 #[derive(Debug)]
 pub enum SaveError {
     Io(io::Error),
-    /// File is too small to hold a header + at least one body byte.
+    /// File is too small to hold the header.
     TooSmall { len: usize, need: usize },
     /// Magic at offset 0 is not `b"SAVE"`.
     BadMagic([u8; 4]),
@@ -156,14 +156,16 @@ impl Save {
     /// (magic, version, flags, the two padding regions) are preserved
     /// from the in-memory header.
     ///
-    /// For byte-perfect round-trip of an unmodified save, pass the
-    /// original header's `nonce()` here.
+    /// Pass the original header's `nonce()` to keep the nonce. The file
+    /// still differs from the game's, because lz4_flex compresses
+    /// differently, but it decodes back to the same body.
     pub fn write_with_nonce(&self, nonce: [u8; NONCE_LEN]) -> Result<Vec<u8>, SaveError> {
         let key = derive_key(self.header.version())
             .ok_or(SaveError::UnsupportedVersion(self.header.version()))?;
 
-        // LZ4 block compression. Use the same high-compression level as
-        // the Python writer (compression=9, store_size=False).
+        // LZ4 block compression with lz4_flex's standard compressor (no
+        // size prefix). Its output differs from the game's compressor;
+        // only the decompressed body is the same.
         let compressed = lz4_flex::block::compress(&self.body);
 
         let tag = hmac_sha256(&key, &compressed);

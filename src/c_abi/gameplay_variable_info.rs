@@ -1,7 +1,7 @@
 //! `gameplayvariableinfo.pabgb` bridge — C ABI surface.
 //!
 //! Resolves save-side `GamePlayVariableKey (u32)` to template names
-//! (`"CD_Live"`, `"BaseCamp_Ranch_Lv1"`, …). Name-only, 47 rows in 1.07.
+//! (`"CD_Live"`, `"BaseCamp_Ranch_Lv1"`, …). Name-only, 68 rows in 2.06.
 
 crate::impl_name_only_bridge! {
     handle = CrimsonGamePlayVariableInfoHandle,

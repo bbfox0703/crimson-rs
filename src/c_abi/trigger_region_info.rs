@@ -2,7 +2,7 @@
 //!
 //! Resolves save-side `TriggerRegionKey (u32)` to the row's template
 //! name (`"Swamp"`, `"IceTerrain"`, `"WaterPoison"`, …). Name-only,
-//! 12 rows in 1.07.
+//! 14 rows in 2.06.
 
 crate::impl_name_only_bridge! {
     handle = CrimsonTriggerRegionInfoHandle,

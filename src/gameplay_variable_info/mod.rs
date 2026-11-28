@@ -2,7 +2,7 @@
 //!
 //! Resolves `GamePlayVariableKey (u32)` — engine-level gameplay
 //! switches and progression flags (`CD_Live`, `BaseCamp_Ranch_Lv1`,
-//! `BaseCamp_Farm_Lv1`, …). 47 rows in 1.07. The save layer
+//! `BaseCamp_Farm_Lv1`, …). 68 rows in 2.06. The save layer
 //! references these as toggle / progression keys.
 //!
 //! Standard `u16 count + (u32 key, u32 offset)*` PABGH. Row body

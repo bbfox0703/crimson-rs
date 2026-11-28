@@ -63,9 +63,9 @@ pub fn parse_quest_gauge_info_lossy_with_header(data: &[u8], header: &[u8]) -> V
 /// false-positives the looser scanners would otherwise produce.
 ///
 /// The same tightening could be applied to the mission / quest /
-/// stage parsers; for now they stay looser because their HashMap
-/// deduplication makes the false positives harmless and the tests
-/// assert against real keys.
+/// stage parsers. They stay looser: their bridges dedupe first-wins,
+/// which keeps a real row over a later false positive with the same key
+/// (not over an earlier one), and the tests assert against real keys.
 pub fn parse_quest_gauge_info_lossy(data: &[u8]) -> Vec<QuestGaugeInfoEntry> {
     let mut entries = Vec::new();
     let mut cursor = 0;

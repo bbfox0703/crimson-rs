@@ -148,11 +148,8 @@ const ROWS: &[Row] = &[
     ("Antumbra's Sword", "Antumbra Order", Mission(1_000_757)),
     ("The Witch of Wisdom", "Antumbra Order", Quest(1_000_335)),
     ("Veil of the Yard", "Giant's Yard", Mission(1_002_129)),
-    // Source MD spells it "Encirlement" — preserve as-is so this matches
-    // whatever the QuestKey display title actually resolves to. If the
-    // PALOC strings use the standard "Encirclement" spelling, the bridge
-    // will need a one-row fix-up; flag during the live-cross-check pass.
-    // was "Encirlement on the Cliff"
+    // The live title is "Encirclement"; the wiki source spelled it
+    // "Encirlement" (see the source MD's reconciliation table).
     ("Encirclement on the Cliff", "Giant's Yard", Mission(1_002_130)),
     ("Dangerous Saltroad", "Goldenscales on the Saltroad", Mission(1_000_118)),
     (

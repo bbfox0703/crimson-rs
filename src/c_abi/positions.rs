@@ -73,11 +73,13 @@
 //! ## Yaw extraction
 //!
 //! - Mercenary: `_spawnYaw` is a direct `float` in the save — pass through.
-//! - Gimmick: derived from the quaternion at `_originSpawnTransform`
-//!   bytes `[12..28]` as `2 * atan2(qy, qw)`. Assumes Y-up rotation,
-//!   which matches every observed transform (qx ≈ qz ≈ 0). Mixed-axis
-//!   rotations are rare for world gimmicks and degrade gracefully —
-//!   the marker just points in a slightly off direction.
+//! - Gimmick: derived from the quaternion at bytes `[12..28]` of the
+//!   transform the position came from (`_transform`, else
+//!   `_originSpawnTransform`) as the Y-up yaw
+//!   `atan2(2(qw·qy + qx·qz), 1 − 2(qy² + qz²))`. For a pure Y-axis
+//!   rotation (qx ≈ qz ≈ 0, every observed transform) that equals
+//!   `2 * atan2(qy, qw)`. Mixed-axis rotations are rare for world
+//!   gimmicks; the marker then points slightly off.
 //! - Active char: derived from `TransformFieldSaveData._rotation`
 //!   (F32x4 quaternion) the same way.
 
@@ -106,9 +108,11 @@ pub mod position_kind {
     /// when `_spawnPosition` is present (76 of 96 mercenaries in
     /// the slot103 baseline carry a present position).
     pub const MERCENARY: u32 = 1;
-    /// A field gimmick — top-level `FieldGimmickSaveData` block.
-    /// Position decoded from the 40-byte `Transform`-typed inline
-    /// bytes at field 11 (`_transform`) if present, else field 12
+    /// A field gimmick — an element of
+    /// `FieldSaveData._fieldGimmickSaveDataList`: `block_idx` is the
+    /// enclosing `FieldSaveData` block and `element_index` the list index.
+    /// Position decoded from the 40-byte `Transform` scalar (held as
+    /// `ScalarValue::Bytes`) at field 11 (`_transform`) if present, else field 12
     /// (`_originSpawnTransform`). Bytes [28..40] of the transform
     /// are the position float3; bytes [12..28] are the rotation
     /// quaternion. `gimmick_info_key` carries `_gimmickInfoKey`
@@ -162,11 +166,11 @@ pub mod position_flags {
 /// | 16 | `character_key` | u32 | For `MERCENARY`: `_characterKey & 0xFFFFFF`. For `ACTIVE_CHAR`: `MercenaryClanSaveData._lastFocusCharacterKey & 0xFFFFFF`. 0 for `GIMMICK`. |
 /// | 20 | `gimmick_info_key` | u32 | For `GIMMICK`: `_gimmickInfoKey`. 0 otherwise. Resolves through `crimson_gimmickinfo_lookup_*`. |
 /// | 24 | `gimmick_save_data_key` | u32 | For `GIMMICK`: `_fieldGimmickSaveDataKey` (per-save slot id). 0 otherwise. |
-/// | 28 | `element_index` | u32 | Within-list index (e.g. mercenary slot N). For `ACTIVE_CHAR`: the index into `_fieldSaveDataList`. For `GIMMICK`: 0 (top-level block — use `block_idx`). |
+/// | 28 | `element_index` | u32 | Within-list index (e.g. mercenary slot N). For `ACTIVE_CHAR`: the index into `_fieldSaveDataList`. For `GIMMICK`: the index into the enclosing `FieldSaveData._fieldGimmickSaveDataList` (`block_idx` is that `FieldSaveData` block). |
 /// | 32 | `pos_x` | f32 | World X (east-west); apply affine `0.432044 * X + 5937.50` for basemap pixel |
 /// | 36 | `pos_y` | f32 | World Y (height); ignore for top-down plotting |
 /// | 40 | `pos_z` | f32 | World Z (north-south); apply affine `-0.433071 * Z + 1864.08` for basemap pixel |
-/// | 44 | `yaw` | f32 | Rotation around Y axis in radians. Mercenaries: from `_spawnYaw` direct. Active char + gimmicks: derived from quaternion `2 * atan2(qy, qw)`. |
+/// | 44 | `yaw` | f32 | Rotation around Y axis in radians. Mercenaries: from `_spawnYaw` direct. Active char + gimmicks: the Y-up yaw of the quaternion, `atan2(2(qw·qy + qx·qz), 1 − 2(qy² + qz²))` (equals `2 * atan2(qy, qw)` for a pure Y rotation). |
 /// | 48 | `mercenary_no` | u64 | For `MERCENARY`: `_mercenaryNo` (per-save unique instance id). 0 otherwise. |
 ///
 /// **Validity window**: positional fields (`block_idx`,
@@ -235,7 +239,7 @@ fn pull_bool_true(b: &ObjectBlock, name: &str) -> bool {
     })
 }
 
-/// Decode the 40-byte `Transform`-typed InlineBytes payload. Returns
+/// Decode the 40-byte `Transform` payload (a `ScalarValue::Bytes` scalar). Returns
 /// `(position, quaternion)`. The layout is
 /// `scale(3) + quaternion(4) + position(3)` — 10 f32s, verified
 /// against the slot103 active character (cross-checked against the
@@ -426,8 +430,7 @@ fn emit_field_gimmicks(
     };
     for (elem_idx, gimmick) in elements.iter().enumerate() {
         // Prefer the "current" _transform if present; fall back to
-        // _originSpawnTransform. In slot103 100% of gimmicks use the
-        // fallback — _transform is uniformly absent.
+        // _originSpawnTransform.
         let (pos, quat, from_origin) = match pull_transform(gimmick, "_transform") {
             Some((p, q)) => (p, q, false),
             None => match pull_transform(gimmick, "_originSpawnTransform") {

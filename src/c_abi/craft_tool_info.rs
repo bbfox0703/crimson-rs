@@ -3,7 +3,7 @@
 //! Resolves save-side `CraftToolKey (u16-widened-u32)` to the row's
 //! template internal name (`"CraftTool_Enchant"`,
 //! `"CraftTool_Enchant_Kukupot"`, `"CraftTool_Burn_Kukupot"`, …).
-//! Name-only, 17 rows in 1.07. Built via the shared
+//! Name-only, 19 rows in 2.06. Built via the shared
 //! `impl_name_only_bridge!` macro — see `c_abi/mod.rs` for the
 //! generated function shape.
 

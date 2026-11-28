@@ -2,9 +2,9 @@
 //!
 //! Resolves `PartPrefabDyeTexturePalleteKey (u16)` — the gamedata key
 //! stored as `ItemDyeSaveData._texturePalleteKey` in the save's
-//! `_itemDyeDataList`. There are 11 rows in 1.07 (`key ∈ 0..=10`);
-//! each row defines a "palette" — a set of 2 or 3 materials (cloth /
-//! leather / metal etc.) with paired icon + texture DDS paths.
+//! `_itemDyeDataList`. There are 11 rows in 2.06 (`key ∈ 0..=10`);
+//! each row defines a "palette" — a set of 3 materials (cloth /
+//! leather / metal) with paired icon + texture DDS paths.
 //!
 //! The PA/Crimson Desert in-game dye UI groups these as "material
 //! variants" — choosing a different `_texturePalleteKey` swaps the
@@ -37,13 +37,13 @@
 //!     u16 key,                 // matches PABGH key
 //!     u8 pad,                  // = 00
 //!     u32 key_copy,            // = key
-//!     u32 sub_count,           // 2 for key=0, 3 for key=1..10
+//!     u32 sub_count,           // 3 on every row (key=0's subs all use the
+//!                              //   white default dye texture)
 //!     Sub sub[sub_count],
 //! }
 //! Sub {
 //!     CString material_name,   // "cloth"/"leather"/"metal"/"wool"/"velvet"/"silk"
-//!     CString icon_path,       // "ui/.../itemicon_*.dds" — on key=0 this is a
-//!                              //   duplicate of texture_path (no UI icon)
+//!     CString icon_path,       // "ui/.../itemicon_*.dds"
 //!     CString texture_path,    // "character/texture/cd_texturelayer_*.dds"
 //!     CString variant_name,    // empty by default, or "wool"/"velvet"/"silk"
 //!     f32 variant_value,       // -1.0 default; positive when variant_name set
@@ -60,9 +60,7 @@ use crate::binary::row_head::read_row_head;
 pub struct PaletteSub {
     /// Material identifier — e.g. `"cloth"`, `"leather"`, `"metal"`.
     pub material_name: String,
-    /// Path to the UI icon DDS. For `key=0` (the "default" palette)
-    /// this is the same string as `texture_path` — the game falls
-    /// back to the texture itself when no icon is provided.
+    /// Path to the UI icon DDS, as stored in the row.
     pub icon_path: String,
     /// Path to the material texture DDS used at runtime.
     pub texture_path: String,
@@ -251,7 +249,7 @@ pub fn parse_part_prefab_dye_texture_pallete_info_lossy(
 mod tests {
     //! Live-install integration test. Pins enough invariants to catch
     //! schema drift in future patches: every key 0..=10 must parse;
-    //! `key=0` has 2 subs; `key=1..=10` have 3 subs each; the materials
+    //! every key has 3 subs (`key=0`'s use the white default texture); the materials
     //! in `key=1` are `cloth/leather/metal` in that order; the variant
     //! `"wool"` on `key=1` cloth sub has a positive variant_value.
 
