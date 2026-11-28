@@ -365,7 +365,7 @@ two dyed fixture items. Through the prefab join ("Item → mesh join
 | `crimson_part_prefab_dye_slot_info_lookup_slot_dye_slot_bits(handle, prefab_key, slot_idx, *out_bits)` | The slot's mask as a `u32` bitset (bit `n` = dye slot `n`). |
 | `crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_dye_slot_bits(handle, prefab_key, slot_idx, layer_idx, *out_bits)` | Same for a 1.13 extra layer. |
 | `crimson_part_prefab_dye_slot_info_lookup_dye_slot_bits(handle, prefab_key, *out_bits)` | Union over the prefab's slots and extra layers: the `_dyeSlotNo` values to offer. |
-| `crimson_part_prefab_dye_slot_info_lookup_dye_slot_material(handle, prefab_key, dye_slot_no, buf, buf_len, *required)` | Default material name of a dye slot number (`""` if unnamed; `OUT_OF_RANGE` if no channel uses it). |
+| `crimson_part_prefab_dye_slot_info_lookup_dye_slot_material(handle, prefab_key, uint32_t dye_slot_no, buf, buf_len, *required)` | Default material name of a dye slot number (`""` if unnamed; `OUT_OF_RANGE` if no channel uses it or the number is over 255). |
 
 Rust: `PartPrefabDyeSlot::{active_channels, dye_slot_bits, channel_dye_slot}`,
 `DyeExtraLayer::dye_slot_bits`,
@@ -493,7 +493,7 @@ owners.
 | `crimson_item_part_prefab_load_from_file_with_prefab_pamt(4 table paths, prefab_pamt_path, *out)` | Same, from files. |
 | `crimson_item_part_prefab_lookup_dye_slot_bits(h, item_key, tribe_gender, *out_bits)` | Union of the dye slot bits of the item's rows: the `_dyeSlotNo` values to offer. `tribe_gender` is nullable (`"player_1"`, ...). `NOT_FOUND` if no rows or no variant lists `tribe_gender`. |
 | `crimson_item_part_prefab_lookup_channel_dye_slot_bits(h, item_key, tribe_gender, *out_bits)` | Union of every channel number (`mat_indices`), dyeable or not. A superset of the above: numbers a save may carry from an older patch. |
-| `crimson_item_part_prefab_lookup_dye_slot_material(h, item_key, tribe_gender, dye_slot_no, buf, len, *required)` | Default material of a number over the selected rows (first non-empty, variant then mesh order). `""` if unnamed, `OUT_OF_RANGE` if unused. |
+| `crimson_item_part_prefab_lookup_dye_slot_material(h, item_key, tribe_gender, uint8_t dye_slot_no, buf, len, *required)` | Default material of a number over the selected rows (first non-empty, variant then mesh order). `""` if unnamed, `OUT_OF_RANGE` if unused. **`dye_slot_no` is a byte here but a `uint32_t` in the slot-info function of the same name**: declare it `byte` in C#, since a `uint` declaration leaves the callee reading only the low 8 bits (256 would read as 0). |
 | `crimson_item_part_prefab_merge_dlc_from_bytes(h, iteminfo_dlc, len, stringinfo_dlc, len, dlc_prefab_pamt_path /*nullable*/, *out_added)` | Optional DLC merge (above). Atomic: an error changes nothing. |
 | `crimson_item_part_prefab_lookup_source(h, item_key, *out_source)` | 0 = base, `n` = the `n`-th merged DLC; `NOT_FOUND` if the item has no rows. |
 

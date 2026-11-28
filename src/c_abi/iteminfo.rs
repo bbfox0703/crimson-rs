@@ -39,6 +39,9 @@ pub const CRIMSON_ITEMINFO_FLAG_IS_HOUSING_ONLY: u32 = 1 << 3;
 /// `src/item_info/item.rs` for the value-distribution analysis behind
 /// the naming guess.
 pub const CRIMSON_ITEMINFO_FLAG_IS_EQUIP_QUICK_SLOT_VISIBLE: u32 = 1 << 4;
+/// Set when `item_importance_kind == 0`. 2.04 replaced the old boolean with
+/// a three-valued byte: 0 where the boolean read 1, 2 where it read 0, and 1
+/// on a single item, which this flag counts as not important.
 pub const CRIMSON_ITEMINFO_FLAG_IS_IMPORTANT_ITEM: u32 = 1 << 5;
 pub const CRIMSON_ITEMINFO_FLAG_IS_SHIELD_ITEM: u32 = 1 << 6;
 pub const CRIMSON_ITEMINFO_FLAG_IS_TOWER_SHIELD_ITEM: u32 = 1 << 7;
@@ -199,6 +202,8 @@ pub struct CrimsonItemInfoSummary {
     pub max_endurance: u16,
     pub item_type: u8,
     pub item_tier: u8,
+    /// Always 0 since 2.04, which removed the field from iteminfo;
+    /// `crimson_iteminfo_lookup_quick_slot_index` still returns `OK`.
     pub quick_slot_index: u8,
     pub item_charge_type: u8,
     pub usable_alert_type: u8,

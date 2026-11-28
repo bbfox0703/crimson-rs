@@ -354,7 +354,8 @@ pub unsafe extern "C" fn crimson_dye_color_group_info_palette_at(
 /// exact match (e.g. the save's RGB was set by a tool like Cheat
 /// Engine off-grid), [`error::NOT_FOUND`] when the key is unknown.
 /// Alpha is not part of the match (every observed position uses
-/// `0xFF`).
+/// `0xFF`). The first matching position wins; no 2.06 palette repeats an
+/// RGB, so the answer is unique there.
 ///
 /// The C# editor uses this to highlight which palette cell a
 /// currently-applied dye came from in its picker grid.
