@@ -55,6 +55,9 @@ int32_t crimson_<table>_load_from_bytes_with_header(
   `crimson_questgaugeinfo_`, `crimson_sublevelinfo_load_from_bytes_with_header`
   — **required from 2.06**: the old body-only `*_load_from_bytes` finds no rows
   on a 2.06 body. On an older install the header is not needed and is ignored.
+  With a 2.06 header every one of these returns exactly the rows the header
+  lists (since 2026-11-28; before that seven of them anchor-scanned the rebuilt
+  body and dropped rows: mission 2,444, stage 3,198, gimmick 140, quest 1).
 - `crimson_iteminfo_load_from_bytes_with_header` — without the header iteminfo
   still parses every row, but `string_key` comes back empty on 2.06. Here the
   header must be the 2.06 shape: an older install's index returns `BODY_PARSE`,
@@ -117,7 +120,12 @@ int32_t crimson_faction_info_lookup_display_name(
   `Faction_Graymane` 172 (Kliff, Damian, …), `Faction_Bandit` 170,
   `Faction_Roberts` 2, `Faction_Serkis` 0. With a 2.06 header the characterinfo
   bridge now reads every row from the header, so the 359 rows with a hashed
-  32-bit key are included too.
+  32-bit key are included too. Every lookup matches the key as given first,
+  then with the cat-byte stripped, so `..._lookup_string_key`,
+  `..._lookup_display_name` and `..._resolve_portrait` reach those rows as well
+  (their names sit at PALOC `(full_key << 32) | 0x30`; no hashed key's low 24
+  bits are another row's key). Before 2026-11-28 only `get_entry` and
+  `..._lookup_faction_key` did.
 - **Groups**: 128 of 135 factions have a group; the 7 groups all have a name in
   every language (`faction.paloc`). Several factions share a group, so
   `..._lookup_display_name` is not unique; keep the internal name

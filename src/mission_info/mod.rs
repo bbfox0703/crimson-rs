@@ -23,9 +23,10 @@
 //! in spirit to `python::scan_next_item_start` (which underpins the
 //! iteminfo lossy parser). False-positive rate on the live 2.04 file is
 //! zero against its `.pabgh` (4,428 anchors, every one an indexed row).
-//! The other 2,444 indexed rows are `Challenge_*` rows whose keys read as
-//! 0xFFFFFFxx (negative i32), outside the key rule below; 2.03 had the
-//! same 2,444.
+//! The other 2,444 indexed rows (1,826 `Mission_*`, 531 `Challenge_*`, …)
+//! have keys from 0xFFFFF3EE to 0xFFFFFFFE, outside the key rule below; 2.03
+//! had the same 2,444. On 2.06 the header lists every row, and
+//! [`parse_mission_info_lossy_with_header`] returns them all from it.
 
 use crate::binary::row_head::{is_row_name_byte, read_row_head};
 
@@ -40,12 +41,13 @@ pub struct MissionInfoEntry {
     pub name: String,
 }
 
-/// 2.06+: row names live in the `.staticinfoheader`, so the body alone no
-/// longer carries them. Rebuilds the pre-2.06 layout from both and scans that;
-/// a pre-2.06 pair (or a header that is not the 2.06 shape) scans `data` as is.
+/// 2.06+: row names live in the `.staticinfoheader`, which lists every row,
+/// so with a 2.06 header the rows come from it, in header order (the anchor
+/// scan used to drop rows its key and name rules did not expect). A pre-2.06
+/// pair, or a header that is not the 2.06 shape, scans `data` as before.
 pub fn parse_mission_info_lossy_with_header(data: &[u8], header: &[u8]) -> Vec<MissionInfoEntry> {
-    match crate::binary::static_header::to_legacy_layout(data, header) {
-        Some(t) => parse_mission_info_lossy(&t.body),
+    match crate::binary::static_header::header_row_names(data, header) {
+        Some(rows) => rows.into_iter().map(|(key, name)| MissionInfoEntry { key, name }).collect(),
         None => parse_mission_info_lossy(data),
     }
 }
@@ -178,7 +180,11 @@ mod tests {
             eprintln!("skipping mission_info_lossy_live: no game install");
             return;
         };
-        let entries = parse_mission_info_lossy_with_header(&data, &find_missioninfo_header());
+        let header = find_missioninfo_header();
+        let entries = parse_mission_info_lossy_with_header(&data, &header);
+        // A 2.06 header lists every row, keys >= 2^24 included (2,444 on 2.06),
+        // so the key rule below only holds for the anchor scan.
+        let scanned = crate::binary::static_header::header_row_names(&data, &header).is_none();
         println!("parsed {} missioninfo entries from {} bytes", entries.len(), data.len());
 
         // 1.06 sample showed ~4,300 mission entries; just assert plausible
@@ -205,8 +211,8 @@ mod tests {
             );
         }
 
-        // Every key should be 7-digit-ish (< 2^24).
-        for e in &entries {
+        // Every scanned key should be 7-digit-ish (< 2^24).
+        for e in entries.iter().filter(|_| scanned) {
             assert!(
                 e.key < (1 << 24),
                 "MissionKey {} ({:?}) exceeds 2^24 — scanner constraint violated",

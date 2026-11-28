@@ -59,6 +59,19 @@ pub struct CrimsonCharacterInfoHandle {
 }
 
 impl CrimsonCharacterInfoHandle {
+    /// The row key `character_key` names: the key as given when it is a row
+    /// (the 359 rows with a hashed 32-bit key on 2.06), else the key with the
+    /// save-side cat-byte stripped (`& 0xFFFFFF`) when that is a row. `None`
+    /// when neither is in the table. No 2.06 hashed key's low 24 bits are
+    /// another row's key, so the two readings never compete.
+    fn resolve_key(&self, character_key: u32) -> Option<u32> {
+        if self.by_key.contains_key(&character_key) {
+            return Some(character_key);
+        }
+        let lo24 = character_key & 0x00FF_FFFF;
+        self.by_key.contains_key(&lo24).then_some(lo24)
+    }
+
     /// Build from the body, plus (2.06+) the `.staticinfoheader` that holds
     /// the row names. Without a header only a pre-2.06 body yields rows.
     fn from_bytes(data: &[u8], header: Option<&[u8]>) -> Self {
@@ -238,11 +251,12 @@ pub unsafe extern "C" fn crimson_characterinfo_entry_count(
 // ── Internal-name lookup (fallback) ────────────────────────────────────────
 
 /// Look up the internal name for a given `CharacterKey (u32)` and
-/// write it into `buf` (NUL-terminated UTF-8). The cat-byte in the
-/// save-side key's hi-byte is stripped before the lookup so any value
-/// of the form `0xXX_NNNNNN` resolves identically.
+/// write it into `buf` (NUL-terminated UTF-8). The key is matched as given
+/// first (rows with a hashed 32-bit key), then with the save-side cat-byte
+/// stripped (`& 0xFFFFFF`), so any value of the form `0xXX_NNNNNN` whose lo24
+/// is a row resolves identically.
 ///
-/// Returns `NOT_FOUND` when the stripped lo24 isn't in the table.
+/// Returns `NOT_FOUND` when neither the key nor its lo24 is in the table.
 ///
 /// # Safety
 /// `handle` and `required` must be non-null; `buf` may be null iff
@@ -264,8 +278,7 @@ pub unsafe extern "C" fn crimson_characterinfo_lookup_string_key(
     unsafe { *required = 0 };
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &*handle };
-        let lo24 = character_key & 0x00FF_FFFF;
-        let Some(name) = h.by_key.get(&lo24) else {
+        let Some(name) = h.resolve_key(character_key).and_then(|k| h.by_key.get(&k)) else {
             return error::NOT_FOUND;
         };
         write_str_to_buf(name, buf, buf_len, required)
@@ -351,10 +364,7 @@ pub unsafe extern "C" fn crimson_characterinfo_lookup_faction_key(
     unsafe { *out_faction_key = 0 };
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &*handle };
-        let found = h
-            .faction_by_key
-            .get(&character_key)
-            .or_else(|| h.faction_by_key.get(&(character_key & 0x00FF_FFFF)));
+        let found = h.resolve_key(character_key).and_then(|k| h.faction_by_key.get(&k));
         match found {
             Some(&faction) => {
                 unsafe { *out_faction_key = faction };
@@ -394,11 +404,14 @@ pub unsafe extern "C" fn crimson_characterinfo_faction_member_count(
 // ── Display-name lookup ────────────────────────────────────────────────────
 
 /// One-shot display name resolution: `CharacterKey → PALOC at
-/// `((charkey & 0xFFFFFF) << 32) | lo32_namespace` → localized string`.
-/// Strips the cat-byte before composing the PALOC key. Writes the
-/// result into `buf` (NUL-terminated UTF-8).
+/// `(row_key << 32) | lo32_namespace` → localized string`, where `row_key` is
+/// the table row the key names (matched as given first, then with the cat-byte
+/// stripped, as [`crimson_characterinfo_lookup_string_key`] does). A hashed
+/// 32-bit row key is its own PALOC hi32 (all 359 such rows on 2.06 have their
+/// name at `(full_key << 32) | 0x30`); a key the table does not hold falls
+/// back to its lo24. Writes the result into `buf` (NUL-terminated UTF-8).
 ///
-/// **No hash hop** — the save's lo24 is the PALOC hi32 directly,
+/// **No hash hop** — the row key is the PALOC hi32 directly,
 /// matching the gimmickinfo/sublevel pattern.
 ///
 /// `lo32_namespace = 0x30` (= [`CHARACTER_DISPLAY_NAME_LO32`]) is the
@@ -406,10 +419,8 @@ pub unsafe extern "C" fn crimson_characterinfo_faction_member_count(
 /// secondary text (faction title etc.) but haven't been mapped out
 /// systematically.
 ///
-/// The `handle` parameter is retained for API symmetry with sibling
-/// bridges and so a future cat-byte transform (e.g. variant-specific
-/// display) can hook in without an ABI break. It is not consulted on
-/// the resolution path today.
+/// The `handle` tells a hashed 32-bit row key from a save key carrying a
+/// cat-byte.
 ///
 /// Return codes:
 /// - `OK` — chain resolved; bytes written.
@@ -441,9 +452,10 @@ pub unsafe extern "C" fn crimson_characterinfo_lookup_display_name(
     }
     unsafe { *required = 0 };
     catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
         let paloc = unsafe { &*paloc_handle };
-        let lo24 = u64::from(character_key & 0x00FF_FFFF);
-        let u64_key = (lo24 << 32) | u64::from(lo32_namespace);
+        let row_key = h.resolve_key(character_key).unwrap_or(character_key & 0x00FF_FFFF);
+        let u64_key = (u64::from(row_key) << 32) | u64::from(lo32_namespace);
         let decimal = format!("{u64_key}");
         let Some(display) = paloc.lookup_str(&decimal) else {
             return error::NOT_FOUND;
@@ -562,14 +574,14 @@ pub unsafe extern "C" fn crimson_characterinfo_resolve_portrait(
     catch_unwind(AssertUnwindSafe(|| {
         let cinfo = unsafe { &*handle };
         let paloc = unsafe { &*paloc_handle };
-        let lo24 = character_key & 0x00FF_FFFF;
+        let row_key = cinfo.resolve_key(character_key).unwrap_or(character_key & 0x00FF_FFFF);
 
         // ── Pull names (display + internal) ────────────────────────────
         let display_name: Option<String> = {
-            let u64_key = (u64::from(lo24) << 32) | u64::from(CHARACTER_DISPLAY_NAME_LO32);
+            let u64_key = (u64::from(row_key) << 32) | u64::from(CHARACTER_DISPLAY_NAME_LO32);
             paloc.lookup_str(&format!("{u64_key}")).map(str::to_owned)
         };
-        let internal_name: Option<&str> = cinfo.by_key.get(&lo24).map(String::as_str);
+        let internal_name: Option<&str> = cinfo.by_key.get(&row_key).map(String::as_str);
         if display_name.is_none() && internal_name.is_none() {
             return error::NOT_FOUND;
         }
@@ -8123,5 +8135,61 @@ mod dlc_tests {
         assert_eq!(unsafe { crimson_characterinfo_entry_source(ch, base, &mut src) }, error::OK);
         assert_eq!(src, 1);
         unsafe { crimson_characterinfo_free(ch) };
+    }
+}
+
+#[cfg(test)]
+mod hashed_key_tests {
+    //! The 359 rows with a hashed 32-bit key on 2.06 (audit D-02): every lookup
+    //! must reach them, not only `get_entry` and `lookup_faction_key`.
+    use super::*;
+    use crate::binary::gamedata_layout::{self, body, extract_bin, header};
+    use crate::c_abi::paloc::{crimson_paloc_free, crimson_paloc_load_from_bytes};
+    use std::ptr;
+
+    fn name_of(h: *const CrimsonCharacterInfoHandle, key: u32) -> (i32, String) {
+        let mut buf = vec![0u8; 512];
+        let mut req = 0usize;
+        let rc = unsafe { crimson_characterinfo_lookup_string_key(h, key, buf.as_mut_ptr(), buf.len(), &mut req) };
+        let s = if rc == error::OK { String::from_utf8_lossy(&buf[..req.saturating_sub(1)]).into_owned() } else { String::new() };
+        (rc, s)
+    }
+
+    #[test]
+    fn every_row_key_resolves_live() {
+        let (Some(b), Some(hd)) = (extract_bin(&body("characterinfo")), extract_bin(&header("characterinfo"))) else {
+            eprintln!("skipping every_row_key_resolves_live: no game install");
+            return;
+        };
+        let mut h: *mut CrimsonCharacterInfoHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { crimson_characterinfo_load_from_bytes_with_header(b.as_ptr(), b.len(), hd.as_ptr(), hd.len(), &mut h) },
+            error::OK
+        );
+        let entries = unsafe { &*h }.entries.clone();
+        let hashed = entries.iter().filter(|(k, _)| k >> 24 != 0).count();
+        eprintln!("characterinfo: {} rows, {hashed} with a hashed 32-bit key", entries.len());
+        for (key, name) in &entries {
+            assert_eq!(name_of(h, *key), (error::OK, name.clone()), "CharacterKey {key:#x}");
+        }
+        // A save key with a cat-byte still reaches its 24-bit row.
+        assert_eq!(name_of(h, 0x0a00_0001), name_of(h, 1));
+
+        const NOBLE_1: u32 = 2_000_248_813; // NHM_Noble_1, a hashed 32-bit key
+        if let Some(pb) = gamedata_layout::paloc_bytes("0020", "eng") {
+            let mut p: *mut CrimsonPalocHandle = ptr::null_mut();
+            assert_eq!(unsafe { crimson_paloc_load_from_bytes(pb.as_ptr(), pb.len(), &mut p) }, error::OK);
+            let mut buf = vec![0u8; 256];
+            let mut req = 0usize;
+            let rc = unsafe {
+                crimson_characterinfo_lookup_display_name(
+                    h, p, NOBLE_1, CHARACTER_DISPLAY_NAME_LO32, buf.as_mut_ptr(), buf.len(), &mut req,
+                )
+            };
+            assert_eq!(rc, error::OK, "display name of NHM_Noble_1");
+            eprintln!("NHM_Noble_1 display name: {}", String::from_utf8_lossy(&buf[..req.saturating_sub(1)]));
+            unsafe { crimson_paloc_free(p) };
+        }
+        unsafe { crimson_characterinfo_free(h) };
     }
 }

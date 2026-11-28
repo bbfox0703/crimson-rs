@@ -223,6 +223,18 @@ pub fn from_legacy_layout(
     Some((new_body, new_header))
 }
 
+/// The `(key, name)` of every row a 2.06 header lists, in header order. This
+/// is the table's authoritative key list, so a name-only bridge reads it
+/// instead of anchor-scanning the body. `None` when `header` is not a 2.06
+/// header for `body`, or when its keys are wider than a `u32`.
+pub fn header_row_names(body: &[u8], header: &[u8]) -> Option<Vec<(u32, String)>> {
+    let (_, key_width, rows) = detect_named_header(header, body.len())?;
+    if key_width > 4 {
+        return None;
+    }
+    Some(rows.iter().map(|r| (r.key as u32, r.name.to_owned())).collect())
+}
+
 /// Parsers that take `(body, header)` call this first: a 2.06 pair comes back
 /// rebuilt in the pre-2.06 layout, anything else unchanged.
 pub fn legacy_pair<'a>(

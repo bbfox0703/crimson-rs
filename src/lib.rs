@@ -1530,3 +1530,42 @@ mod tests {
         probe_one(&slot_b);
     }
 }
+
+/// The 2.06 `_with_header` parsers of the name-only bridges (audit D-01): with
+/// a 2.06 header they must return every row it lists. The anchor scan they
+/// used before dropped mission 2,444, stage 3,198, gimmick 140 and quest 1 row.
+#[cfg(all(test, feature = "c_abi"))]
+mod with_header_tests {
+    use crate::binary::gamedata_layout::{body, extract_bin, header};
+    use crate::binary::static_header::header_row_names;
+
+    macro_rules! check {
+        ($table:expr, $parse:path) => {
+            'table: {
+                let (Some(b), Some(h)) = (extract_bin(&body($table)), extract_bin(&header($table))) else {
+                    eprintln!("skipping {}: no game install", $table);
+                    break 'table;
+                };
+                let Some(rows) = header_row_names(&b, &h) else {
+                    eprintln!("skipping {}: not a 2.06 header", $table);
+                    break 'table;
+                };
+                let got: Vec<(u32, String)> = $parse(&b, &h).into_iter().map(|e| (e.key, e.name)).collect();
+                assert_eq!(got.len(), rows.len(), "{}: rows", $table);
+                assert_eq!(got, rows, "{}: (key, name) in header order", $table);
+                eprintln!("{}: {} rows", $table, got.len());
+            }
+        };
+    }
+
+    #[test]
+    fn with_header_returns_every_header_row_live() {
+        check!("missioninfo", crate::mission_info::parse_mission_info_lossy_with_header);
+        check!("questinfo", crate::quest_info::parse_quest_info_lossy_with_header);
+        check!("stageinfo", crate::stage_info::parse_stage_info_lossy_with_header);
+        check!("knowledgeinfo", crate::knowledge_info::parse_knowledge_info_lossy_with_header);
+        check!("gimmickinfo", crate::gimmick_info::parse_gimmick_info_lossy_with_header);
+        check!("questgaugeinfo", crate::quest_gauge_info::parse_quest_gauge_info_lossy_with_header);
+        check!("sublevelinfo", crate::sub_level_info::parse_sub_level_info_lossy_with_header);
+    }
+}

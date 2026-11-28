@@ -53,12 +53,13 @@ pub struct GimmickInfoEntry {
     pub name: String,
 }
 
-/// 2.06+: row names live in the `.staticinfoheader`, so the body alone no
-/// longer carries them. Rebuilds the pre-2.06 layout from both and scans that;
-/// a pre-2.06 pair (or a header that is not the 2.06 shape) scans `data` as is.
+/// 2.06+: row names live in the `.staticinfoheader`, which lists every row,
+/// so with a 2.06 header the rows come from it, in header order (the anchor
+/// scan used to drop rows its key and name rules did not expect). A pre-2.06
+/// pair, or a header that is not the 2.06 shape, scans `data` as before.
 pub fn parse_gimmick_info_lossy_with_header(data: &[u8], header: &[u8]) -> Vec<GimmickInfoEntry> {
-    match crate::binary::static_header::to_legacy_layout(data, header) {
-        Some(t) => parse_gimmick_info_lossy(&t.body),
+    match crate::binary::static_header::header_row_names(data, header) {
+        Some(rows) => rows.into_iter().map(|(key, name)| GimmickInfoEntry { key, name }).collect(),
         None => parse_gimmick_info_lossy(data),
     }
 }
@@ -188,7 +189,11 @@ mod tests {
             eprintln!("skipping gimmick_info_lossy_live: no game install");
             return;
         };
-        let entries = parse_gimmick_info_lossy_with_header(&data, &find_gimmickinfo_header());
+        let header = find_gimmickinfo_header();
+        let entries = parse_gimmick_info_lossy_with_header(&data, &header);
+        // A 2.06 header lists every row (140 the scanner rules drop on 2.06),
+        // so the name and key rules below only hold for the anchor scan.
+        let scanned = crate::binary::static_header::header_row_names(&data, &header).is_none();
         println!(
             "parsed {} gimmickinfo entries from {} bytes",
             entries.len(),
@@ -219,7 +224,7 @@ mod tests {
 
         // Sanity: no entry leads with a digit, and no entry has a
         // hi-byte ≥ 0x10 (the noise filter from the scanner).
-        for e in &entries {
+        for e in entries.iter().filter(|_| scanned) {
             assert!(
                 e.name.bytes().next().is_some_and(|b| b.is_ascii_alphabetic()),
                 "non-letter-leading name: key=0x{:08x}, name={:?}",

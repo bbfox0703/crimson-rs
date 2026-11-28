@@ -715,7 +715,12 @@ mod tests {
         let rc_pabgh = unsafe {
             crimson_questinfo_lookup_string_key(pabgh_h, key, ptr::null_mut(), 0, &mut req)
         };
-        assert_eq!(rc_anchor, error::NOT_FOUND);
+        // A 2.06 header lists the row, so `_with_header` finds it too; the
+        // anchor scan of a pre-2.06 body still drops it.
+        let header_lists_rows =
+            crate::binary::static_header::header_row_names(&q_pabgb, &q_pabgb_header).is_some();
+        let expect_anchor = if header_lists_rows { error::BUFFER_TOO_SMALL } else { error::NOT_FOUND };
+        assert_eq!(rc_anchor, expect_anchor);
         assert_eq!(rc_pabgh, error::BUFFER_TOO_SMALL);
 
         unsafe { crimson_questinfo_free(anchor_h) };

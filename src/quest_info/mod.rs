@@ -81,12 +81,13 @@ pub fn parse_quest_info_via_pabgh(pabgh: &[u8], pabgb: &[u8]) -> Vec<QuestInfoEn
     entries
 }
 
-/// 2.06+: row names live in the `.staticinfoheader`, so the body alone no
-/// longer carries them. Rebuilds the pre-2.06 layout from both and scans that;
-/// a pre-2.06 pair (or a header that is not the 2.06 shape) scans `data` as is.
+/// 2.06+: row names live in the `.staticinfoheader`, which lists every row,
+/// so with a 2.06 header the rows come from it, in header order (the anchor
+/// scan used to drop rows its key and name rules did not expect). A pre-2.06
+/// pair, or a header that is not the 2.06 shape, scans `data` as before.
 pub fn parse_quest_info_lossy_with_header(data: &[u8], header: &[u8]) -> Vec<QuestInfoEntry> {
-    match crate::binary::static_header::to_legacy_layout(data, header) {
-        Some(t) => parse_quest_info_lossy(&t.body),
+    match crate::binary::static_header::header_row_names(data, header) {
+        Some(rows) => rows.into_iter().map(|(key, name)| QuestInfoEntry { key, name }).collect(),
         None => parse_quest_info_lossy(data),
     }
 }
