@@ -75,7 +75,16 @@ PABGH_TABLES = [
     ("reserveslot",                         "reserveslot.pabgh",                  "reserveslot.pabgb",                  None),
     ("regioninfo",                          "regioninfo.pabgh",                   "regioninfo.pabgb",                   None),
     ("itemgroupinfo",                       "itemgroupinfo.pabgh",                "itemgroupinfo.pabgb",                None),
+    ("faction",                             "faction.pabgh",                      "faction.pabgb",                      None),
+    ("stringinfo",                          "stringinfo.pabgh",                   "stringinfo.pabgb",                   None),
 ]
+
+# Also dumped from every installed DLC (`<install>/dlc/<dlc>/0008`), as
+# `<table>.<dlc>.txt`: every table above plus iteminfo, whose base keys live
+# in `data/keys-<ver>.txt`. A DLC table is its own row set (its row index is
+# not the row's position), and a layout drift has shown up only in a DLC
+# table before, so these are diffed like the base ones.
+DLC_EXTRA_TABLES = ["iteminfo"]
 
 # Tables with PABGH backing (questinfo / stageinfo use the u32-count
 # variant, picked up by parse_pabgh_keys above). The c_abi bridges for
@@ -238,6 +247,27 @@ def main() -> None:
         write_keys(out_path, keys)
         print(f"  {label:<35} {len(keys):>6} keys  (pabgh u32cnt) -> {out_path.name}")
         summary.append((label, len(keys), "pabgh u32cnt"))
+
+    dlc_root = Path(game) / "dlc"
+    dlcs = sorted(d.name for d in dlc_root.iterdir() if (d / PABGB_GROUP / "0.pamt").is_file()) if dlc_root.is_dir() else []
+    labels = [t[0] for t in PABGH_TABLES] + [t[0] for t in PABGH_TABLES_U32_COUNT] + DLC_EXTRA_TABLES
+    for dlc in dlcs:
+        dlc_game = str(dlc_root / dlc)
+        dlc_layout = resolve_bin_layout(dlc_game)
+        for label in labels:
+            name = f"{label}.{dlc}"
+            pabgh = extract_safe(dlc_game, PABGB_GROUP, dlc_layout.dir, dlc_layout.header(name))
+            if pabgh is None:
+                continue  # the DLC ships only the tables it changes
+            keys = parse_pabgh_keys(pabgh)
+            if keys is None:
+                print(f"  {name:<35} <pabgh shape unknown — extend parse_pabgh_keys>")
+                summary.append((name, None, "shape unknown"))
+                continue
+            out_path = out_dir / f"{name}.txt"
+            write_keys(out_path, keys)
+            print(f"  {name:<35} {len(keys):>6} keys  (pabgh) -> {out_path.name}")
+            summary.append((name, len(keys), "pabgh"))
 
     print("-" * 80)
     total = sum(c or 0 for _, c, _ in summary)
