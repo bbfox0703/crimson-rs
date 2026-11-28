@@ -1002,6 +1002,31 @@ mod tests {
         out
     }
 
+    /// [`collect_all_saves`] plus every `save.save` in the private fixtures
+    /// (`test_fixtures::saves_dir`), so the encoder round-trips also run where
+    /// the fixtures are present and no game is installed (audit I-05).
+    fn collect_saves_with_fixtures() -> Vec<(std::path::PathBuf, Vec<u8>)> {
+        fn walk(dir: &std::path::Path, out: &mut Vec<(std::path::PathBuf, Vec<u8>)>) {
+            let Ok(entries) = std::fs::read_dir(dir) else { return };
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.file_name().is_some_and(|n| n == "save.save")
+                    && let Ok(data) = std::fs::read(&p)
+                {
+                    out.push((p, data));
+                }
+            }
+        }
+        let mut out = collect_all_saves();
+        let mut fixtures = Vec::new();
+        walk(&crate::test_fixtures::saves_dir(), &mut fixtures);
+        fixtures.sort_by(|a, b| a.0.cmp(&b.0));
+        out.extend(fixtures);
+        out
+    }
+
     /// Walk a decoded ObjectBlock tree looking for the smallest sub-element
     /// whose stored `data_offset..data_offset+data_size` range straddles the
     /// given body offset. Useful for narrowing down a roundtrip failure.
@@ -1056,7 +1081,7 @@ mod tests {
     #[test]
     fn test_save_body_block_roundtrip_per_block() {
         use crate::save::{Body, Save, encode_top_level_block};
-        let saves = collect_all_saves();
+        let saves = collect_saves_with_fixtures();
         if saves.is_empty() {
             eprintln!("skipping per-block roundtrip: no saves found");
             return;
@@ -1209,7 +1234,7 @@ mod tests {
     #[test]
     fn test_save_body_full_roundtrip() {
         use crate::save::{Body, Save};
-        let saves = collect_all_saves();
+        let saves = collect_saves_with_fixtures();
         if saves.is_empty() {
             eprintln!("skipping full-body roundtrip: no saves found");
             return;
