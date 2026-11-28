@@ -260,14 +260,25 @@ pub fn parse_iteminfo_tracked(py: Python<'_>, data: &[u8]) -> PyResult<Py<PyAny>
 ///   - abs_start, abs_end: absolute byte range of the field
 ///   - hit_offset: `abs_pos - abs_start` (offset into the field)
 ///   - hit_length: echo of input `length` (default 0 if not provided)
+///
+/// `header`: on 2.06+ the row names live in `iteminfo.staticinfoheader`, so
+/// pass it to match patches by name (without it every 2.06 row is nameless and
+/// every patch resolves to `None`; audit H-01).
 #[pyfunction]
+#[pyo3(signature = (vanilla_bytes, patches, header=None))]
 pub fn inspect_legacy_patches(
     py: Python<'_>,
     vanilla_bytes: &[u8],
     patches: &Bound<'_, PyList>,
+    header: Option<&[u8]>,
 ) -> PyResult<Py<PyAny>> {
     use crate::binary::{BinaryReadTracked, FieldRange};
     use std::collections::HashMap;
+    let header_names: Option<Vec<String>> = header.map(|h| {
+        crate::binary::static_header::parse_named_header(h, 2, 4)
+            .map(|rows| rows.iter().map(|r| r.name.to_string()).collect())
+            .ok_or_else(|| PyValueError::new_err("header is not a 2.06 iteminfo header"))
+    }).transpose()?;
 
     // Parse vanilla once, recording (string_key, span_start, span_end, ranges)
     // per item. First occurrence wins on duplicate string_keys (none expected
@@ -287,8 +298,11 @@ pub fn inspect_legacy_patches(
                     offset, e
                 ))
             })?;
-        let key = item.string_key.data.to_string();
         let i = entries.len();
+        let key = match &header_names {
+            Some(names) => names.get(i).cloned().unwrap_or_default(),
+            None => item.string_key.data.to_string(),
+        };
         index.entry(key.clone()).or_insert(i);
         entries.push((key, span_start, offset, ranges));
     }
@@ -356,6 +370,36 @@ pub fn write_iteminfo_to_file(items: &Bound<'_, PyList>, path: &str) -> PyResult
 pub fn serialize_iteminfo(py: Python<'_>, items: &Bound<'_, PyList>) -> PyResult<Py<PyAny>> {
     let data = serialize_iteminfo_impl(items)?;
     Ok(PyBytes::new(py, &data).into_any().unbind())
+}
+
+/// Serialize items to a 2.06 pair: `(body, header)`. The header is rebuilt
+/// from each item's `key` and `string_key` with fresh offsets and sizes, so a
+/// length-changing edit and a renamed `string_key` both survive, which
+/// `serialize_iteminfo` (body only) cannot do on 2.06 (audit H-02).
+#[pyfunction]
+pub fn serialize_iteminfo_with_header(py: Python<'_>, items: &Bound<'_, PyList>) -> PyResult<Py<PyAny>> {
+    let mut body = Vec::new();
+    let count = u16::try_from(items.len())
+        .map_err(|_| PyValueError::new_err(format!("{} items do not fit a u16 row count", items.len())))?;
+    let mut header = count.to_le_bytes().to_vec();
+    for item in items.iter() {
+        let d = item.cast::<PyDict>()?;
+        let key: u32 = get(d, "key")?;
+        let name: String = get(d, "string_key")?;
+        let offset = body.len();
+        wr_item(&mut body, &item)?;
+        let size = body.len() - offset;
+        header.extend_from_slice(&key.to_le_bytes());
+        header.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        header.extend_from_slice(name.as_bytes());
+        header.extend_from_slice(&(offset as u32).to_le_bytes());
+        header.extend_from_slice(&(size as u32).to_le_bytes());
+    }
+    let tup = pyo3::types::PyTuple::new(
+        py,
+        [PyBytes::new(py, &body).into_any(), PyBytes::new(py, &header).into_any()],
+    )?;
+    Ok(tup.into_any().unbind())
 }
 
 pub fn serialize_iteminfo_impl(items: &Bound<'_, PyList>) -> PyResult<Vec<u8>> {
@@ -684,7 +728,11 @@ pub fn wr_pamt_from_dict(d: &Bound<'_, PyDict>) -> PyResult<Vec<u8>> {
         extensions_buffer,
     };
 
-    pamt.to_bytes()
+    // Recompute the header checksum: the dict's stored one goes stale on any
+    // edit and parse always validates it (audit H-03). An unedited PAMT still
+    // round-trips byte for byte, its stored checksum being the right one.
+    let _ = checksum;
+    pamt.to_bytes_with_checksum()
         .map_err(|e| PyIOError::new_err(e.to_string()))
 }
 
@@ -1501,9 +1549,17 @@ pub fn serialize_skillinfo(
             offset: get(d, "offset")?,
         });
     }
+    // `None` is a pre-2.06 table; a missing key used to fall through to the
+    // pre-2.06 layout too, so a dict without it wrote a 2.06 table in the old
+    // shape (audit H-19).
     let row_indices: Option<Vec<u32>> = match data.get_item("row_indices")? {
         Some(v) if !v.is_none() => Some(v.extract()?),
-        _ => None,
+        Some(_) => None,
+        None => {
+            return Err(PyKeyError::new_err(
+                "row_indices: pass the dict from parse_skillinfo_from_bytes (None for a pre-2.06 table)",
+            ));
+        }
     };
     let sd = SkillData {
         entries,
@@ -1915,6 +1971,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_iteminfo_from_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(parse_iteminfo_tracked, m)?)?;
     m.add_function(wrap_pyfunction!(parse_iteminfo_lossy, m)?)?;
+    m.add_function(wrap_pyfunction!(serialize_iteminfo_with_header, m)?)?;
     m.add_function(wrap_pyfunction!(inspect_legacy_patches, m)?)?;
     m.add_function(wrap_pyfunction!(write_iteminfo_to_file, m)?)?;
     m.add_function(wrap_pyfunction!(serialize_iteminfo, m)?)?;

@@ -78,6 +78,11 @@ impl ToPyValue for [f32; 3] {
 impl WritePyValue for [f32; 3] {
     fn write_from_py(w: &mut Vec<u8>, obj: &Bound<'_, PyAny>) -> PyResult<()> {
         let list = obj.cast::<PyList>()?;
+        // A list of the wrong length wrote a short or long row that only
+        // failed on the next parse (audit H-10).
+        if list.len() != 3 {
+            return Err(PyValueError::new_err(format!("expected 3 values, got {}", list.len())));
+        }
         for item in list.iter() {
             let v: f32 = item.extract()?;
             w.extend_from_slice(&v.to_le_bytes());
@@ -95,6 +100,11 @@ impl ToPyValue for [u32; 2] {
 impl WritePyValue for [u32; 2] {
     fn write_from_py(w: &mut Vec<u8>, obj: &Bound<'_, PyAny>) -> PyResult<()> {
         let list = obj.cast::<PyList>()?;
+        // A list of the wrong length wrote a short or long row that only
+        // failed on the next parse (audit H-10).
+        if list.len() != 2 {
+            return Err(PyValueError::new_err(format!("expected 2 values, got {}", list.len())));
+        }
         for item in list.iter() {
             let v: u32 = item.extract()?;
             w.extend_from_slice(&v.to_le_bytes());
@@ -139,6 +149,11 @@ impl ToPyValue for [u32; 4] {
 impl WritePyValue for [u32; 4] {
     fn write_from_py(w: &mut Vec<u8>, obj: &Bound<'_, PyAny>) -> PyResult<()> {
         let list = obj.cast::<PyList>()?;
+        // A list of the wrong length wrote a short or long row that only
+        // failed on the next parse (audit H-10).
+        if list.len() != 4 {
+            return Err(PyValueError::new_err(format!("expected 4 values, got {}", list.len())));
+        }
         for item in list.iter() {
             let v: u32 = item.extract()?;
             w.extend_from_slice(&v.to_le_bytes());

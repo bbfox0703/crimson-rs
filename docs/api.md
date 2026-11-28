@@ -417,6 +417,13 @@ crimson_rs.write_iteminfo_to_file(items, "output.pabgb")
 
 ---
 
+### `serialize_iteminfo_with_header(items: list[dict]) -> tuple[bytes, bytes]`
+
+2.06+: write `(staticinfobody, staticinfoheader)`. The header is rebuilt from each item's `key`
+and `string_key` with fresh offsets and sizes, so length-changing edits and renamed items survive;
+`serialize_iteminfo` writes the body only, which leaves the game's header stale after any length
+change. An unedited list round-trips both files byte for byte (checked on 2.06).
+
 ### `serialize_iteminfo(items: list[dict]) -> bytes`
 
 Serialize items to raw bytes.

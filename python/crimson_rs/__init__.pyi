@@ -755,6 +755,7 @@ class LegacyPatchHit(TypedDict):
 def inspect_legacy_patches(
     vanilla_bytes: bytes,
     patches: list[LegacyPatch],
+    header: bytes | None = None,
 ) -> list[LegacyPatchHit | None]:
     """Resolve JSON v2 byte patches to field-path attributions.
 
@@ -768,6 +769,9 @@ def inspect_legacy_patches(
         vanilla_bytes: A vanilla ``iteminfo.pabgb`` blob.
         patches: List of dicts with ``entry``, ``rel_offset``, optional
             ``length``.
+        header: 2.06+: the ``iteminfo.staticinfoheader``, which holds the row
+            names ``entry`` is matched against. Without it every 2.06 patch
+            resolves to None.
 
     Returns:
         Same-length list. Entry is ``None`` when the entry name is not
@@ -790,6 +794,14 @@ def write_iteminfo_to_file(items: list[ItemInfo], path: str) -> None:
         KeyError: If a required field is missing.
         ValueError: On invalid data.
     """
+    ...
+
+
+def serialize_iteminfo_with_header(items: list[ItemInfo]) -> tuple[bytes, bytes]:
+    """Serialize items to a 2.06 ``(body, header)`` pair. The header is
+    rebuilt from each item's ``key`` and ``string_key`` with fresh offsets and
+    sizes, so length-changing edits and renamed ``string_key`` values survive.
+    An unedited list round-trips both files byte for byte."""
     ...
 
 

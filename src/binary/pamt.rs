@@ -447,7 +447,10 @@ impl PackMeta {
         Ok(post_header)
     }
 
-    /// Serialize back to bytes (roundtrip).
+    /// Serialize back to bytes with the stored checksum (byte-exact
+    /// roundtrip; the round-trip tests use it). Writers of edited data use
+    /// [`Self::to_bytes_with_checksum`].
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn to_bytes(&self) -> io::Result<Vec<u8>> {
         let post_header = self.post_header_bytes()?;
 
