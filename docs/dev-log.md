@@ -25,6 +25,57 @@ landed together. **Reading tip:** grep `^## ` for the index, then read from the 
 
 -----
 
+## 2026-11-28 — Audit P2: dye slot count, save-edit safety net, pack helpers
+
+The second batch from the audit verification's fix order, on the same branch as the P0/P1 entry
+below.
+
+- **Dye slot count (E-01):** `crimson_item_part_prefab_resolve_dye_slot_count` returned the first
+  row's `slot_count`, which counts that mesh's sub-meshes, not dye slots. On 2.06 the two agree on
+  392 of 1,703 rows (item 121013: one row, one sub-mesh, three dye slots). It now returns the number
+  of `_dyeSlotNo` values the item offers, the popcount of the union of its rows' dye slot bits
+  (= `crimson_item_part_prefab_lookup_dye_slot_bits`). The live test checks all 59 resolved items in
+  1..1M against that popcount and pins 121013 at 3. `..._lookup_slot_count` and the wrapper's docs
+  now say what they count; `DyeExtraLayer::flag` records the 2.06 values (1, 2, 19; never 0).
+- **Encoder refuses an incomplete decode (F-01):** the encoder rebuilds a block from its decoded
+  fields, so bytes the decoder could not place vanished. One changed absence-marker byte in the 1.10
+  fixture left 809 undecoded bytes and `Body::write` returned `Ok` with a body 809 bytes short.
+  `encode_body` now fails on undecoded ranges, `Unknown` fields, placeholder list elements and
+  locator children away from their wrapper (which the decoder counted as decoded). The C ABI maps
+  that to `MUTATION_INVALID` with rollback. All 30 fixture and live saves decode with none of these
+  and still re-encode byte for byte; a fixture test pins both.
+- **Each commit's re-decode is checked (G-02):** after a length-changing edit or a deferred
+  batch's `end_*`, the re-decoded tree must decode completely, or the edit rolls back with
+  `MUTATION_INVALID`. That is what the transplant docs had promised for a definition mismatch.
+- **No mixed-class lists (G-11):** insert, transplant and template insert return the new
+  `ELEMENT_CLASS_MISMATCH` (−27) for an element whose class differs from the list's. Measured first:
+  no game save mixes classes in a list (0 of 213,171 lists in 21 saves).
+- **Templates (G-10, part):** exporting a placeholder element returns `BODY_PARSE`.
+- **Pack helpers (H-06 to H-09):**
+  - `pack_mod` and `create_pack_group*` refuse a `group_name` already in `0.papgt`. They used to
+    replace that entry. On 2.06 `0036` to `0040` are listed (the optional language groups) with no
+    folder on disk, and the docs' example was `"0036"`, the vanilla French group.
+  - They also refuse a name that is not four digits, so `..` or an absolute path can't escape the
+    target folder.
+  - The in-place writers (`create_pack_group*`, `validate_game_dir`) copy `0.papgt` to
+    `0.papgt.bak-<timestamp>` first, and `validate_game_dir --dry-run` only reports.
+  - A pack that fails partway removes its half-built group folder.
+  - Smoke-tested on a scratch copy of the live `0.papgt`. Examples now use `"0099"`.
+- **Measured on this PC:** 405 passed, 48 ignored, with the live install and fixtures; the same 405
+  pass with no game data (what CI runs). Strict clippy and the bare-default `cargo check` are clean.
+- **Not established / still open:**
+  - The template compares a scalar's kind and size but not its type name; CRET v1 does not record
+    it, so a fix needs a format bump.
+  - G-10's kind-4 default and zero4-header points are not changed.
+  - The Python pack helpers have no automated tests, only the smoke run above.
+  - P3 and later in the verification doc are not started.
+- **CrimsonAtomtic:** no signature changed. New codes −27 (`ELEMENT_CLASS_MISMATCH`, alongside −26
+  from the batch below) and more `MUTATION_INVALID` on saves that do not decode fully. Its
+  `ResolveDyeSlotCount` wrapper now gets the real dye slot count (nothing in its UI calls it today).
+  The maintainer handles that repo separately, after this round of fixes.
+
+-----
+
 ## 2026-11-28 — Code audit, its verification, and the P0/P1 fixes
 
 - **Audit:** [`code-audit-2026-11-28-plan.md`](code-audit-2026-11-28-plan.md) split the crate into
