@@ -3237,6 +3237,9 @@ fn build_zero1_count_u24_header(count: u32) -> Result<Vec<u8>, i32> {
 /// - When `present_flag == 1` and the schema can't build the default
 ///   element bytes (e.g. an unknown element class index), the call is
 ///   rolled back and returns `BODY_PARSE`.
+/// - When `present_flag == 1` on an absent list that was read without its
+///   `0x01` absence marker, `MUTATION_INVALID` and nothing changes: the
+///   marker byte sits in a neighbouring field and would stay there.
 ///
 /// # Safety
 /// `handle` must be a live, exclusive handle. `path` must point to
@@ -3418,6 +3421,13 @@ fn toggle_one_object_list_presence_in_place(
     // element (audit G-03).
     if field.present == make_present {
         return Ok(());
+    }
+    // An absent list read without its 0x01 marker left that byte inside a
+    // neighbouring field, so making it present would keep the byte and add
+    // the list: the body grows by one byte the engine does not expect.
+    // Game-written saves mark every absent list.
+    if make_present && !field.absent_marker {
+        return Err(error::MUTATION_INVALID);
     }
 
     let byte_idx = target_idx / 8;
@@ -4640,6 +4650,57 @@ mod load_check_tests {
         assert_eq!(sibling_header(body.to_str().unwrap()).unwrap().as_deref(), Some(&b"h"[..]));
         assert_eq!(sibling_header(dir.join("T.txt").to_str().unwrap()).unwrap(), None);
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod concurrency_tests {
+    use super::*;
+    use crate::c_abi::all_items::{CrimsonItemRecord, crimson_save_list_all_items};
+    use std::ffi::CString;
+
+    struct SendPtr(*mut CrimsonSaveHandle);
+    unsafe impl Send for SendPtr {}
+    unsafe impl Sync for SendPtr {}
+
+    /// Two threads on one handle: one opens and aborts deferred batches,
+    /// which swap the handle's state under the save lock, while the other
+    /// enumerates every item. Each call must see a whole state, so every
+    /// enumeration returns OK with the same records.
+    #[test]
+    fn enumeration_beside_batch_open_abort_on_another_thread() {
+        let rel = "1.10/save.save";
+        if crate::test_fixtures::save(rel).is_none() {
+            return;
+        }
+        let path = CString::new(crate::test_fixtures::saves_dir().join(rel).to_str().unwrap()).unwrap();
+        let mut h: *mut CrimsonSaveHandle = std::ptr::null_mut();
+        assert_eq!(unsafe { crimson_save_load_from_file(path.as_ptr(), &mut h) }, error::OK);
+
+        let mut count = 0usize;
+        let rc = unsafe { crimson_save_list_all_items(h, std::ptr::null_mut(), 0, &mut count, std::ptr::null_mut()) };
+        assert!(rc == error::BUFFER_TOO_SMALL || rc == error::OK);
+        assert!(count > 0);
+
+        let shared = std::sync::Arc::new(SendPtr(h));
+        let writer = {
+            let shared = std::sync::Arc::clone(&shared);
+            std::thread::spawn(move || {
+                let h = shared.0;
+                for _ in 0..20 {
+                    assert_eq!(unsafe { crimson_save_begin_deferred_redecode(h) }, error::OK);
+                    assert_eq!(unsafe { crimson_save_abort_deferred_redecode(h) }, error::OK);
+                }
+            })
+        };
+        let mut records: Vec<CrimsonItemRecord> = std::iter::repeat_with(|| unsafe { std::mem::zeroed() }).take(count).collect();
+        for _ in 0..20 {
+            let mut n = 0usize;
+            let rc = unsafe { crimson_save_list_all_items(shared.0, records.as_mut_ptr(), count, &mut n, std::ptr::null_mut()) };
+            assert_eq!((rc, n), (error::OK, count));
+        }
+        writer.join().unwrap();
+        unsafe { crimson_save_free(h) };
     }
 }
 
