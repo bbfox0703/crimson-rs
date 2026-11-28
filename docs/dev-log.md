@@ -25,6 +25,51 @@ landed together. **Reading tip:** grep `^## ` for the index, then read from the 
 
 -----
 
+## 2026-11-28 — Audit P4: C ABI symbol index, doc drift, dead code, Python stub; status table
+
+The fourth batch from the audit verification's fix order, on the same branch as the entries below.
+
+- **Status table:** [`code-audit-2026-11-28-verification.md`](code-audit-2026-11-28-verification.md)
+  gains a "修正狀態總表": one row per finding with its status (fixed / partly / open / not fixing /
+  merged) and the fixing commit. After this batch: 45 fixed, 17 partly, 84 open (mostly the low / nit
+  items no batch has taken yet), 1 not fixing (A-07, refuted), 2 merged, plus the new findings.
+- **C ABI catalog (A-18, C-14, D-11, E-14, G-16):**
+  - 272 of the 311 directly exported `crimson_*` functions were named nowhere in
+    [`c-abi-surface.md`](c-abi-surface.md). A "Symbol index" now lists all 373, the macro-generated
+    ones included, each with its rustdoc's first sentence.
+  - `repo_doc_budget::c_abi_surface_lists_every_symbol` fails on any export the doc does not
+    mention. Negative-controlled: dropping one line fails it and names the symbol.
+- **Doc and comment drift (C-01, C-13, D-08, F-13, I-07, I-10, I-11):**
+  - The CLAUDE.md and runbook CI / test-thread notes match the current CI and the fixed TailSizeCache
+    cause.
+  - `.cargo/config.toml` no longer cites the deleted wheel workflow, and `toc.rs` describes
+    `stream_size` correctly.
+  - The stale version labels in tests are gone.
+  - `CrimsonItemInfoSummary`'s comments had `_reserved` at offset 71 of 72; it is 75 of 80. Every
+    field's offset is now a build-time assert.
+  - The globalgameevent paloc key accepts the 1..=20 digits its length field declares. It used to
+    take only 14, on a premise no snapshot held; all 2.06 keys are still 14.
+- **Dead code (C-17, F-14, I-12):**
+  - Module-wide and "until Phase B.2" `allow(dead_code)` hid dead code from the strict lint.
+  - Removed them, and with them `SkillGroupKey`, the pre-1.13 `PrefabData` /
+    `GimmickVisualPrefabData`, `into_lookup_map` and `scalar_as_i128`.
+  - string_info keeps a test-only allow for its round-trip writers.
+- **Python (H-13, H-14, H-15):**
+  - The `.pyi` matches the runtime: six missing functions declared, `ItemInfo` corrected to its 124
+    real keys, nested fields and `MergedPrefabVisualData` added, plus a `py.typed` marker.
+  - `crimson_rs.__version__` and `PARSER_TARGET` (`(2, 6, 0)`) let a script catch a stale wheel.
+  - `docs/api.md`'s Language table was a wrong bit set; it now matches `enums.py`. ICE/AES are marked
+    as rejected, and the field count is corrected.
+- **Measured on this PC:** 413 passed, 48 ignored, with the install, fixtures and archive; the same
+  413 pass with none of them. Strict clippy, the bare-default build and the `c_abi`- and
+  `python`-only builds all compile clean.
+- **Not established / still open:** the doc items the reports list beyond the symbol catalog
+  (individual function docs in D-11, E-14, F-13, G-16) and every ⬜ row in the status table.
+- **CrimsonAtomtic:** nothing changes for it. Documentation and test guards only, plus
+  `CrimsonItemInfoSummary` offsets now asserted at their existing values.
+
+-----
+
 ## 2026-11-28 — Audit P3: untrusted-input bounds, live tests, script guards
 
 The third batch from the audit verification's fix order, on the same branch as the two entries
