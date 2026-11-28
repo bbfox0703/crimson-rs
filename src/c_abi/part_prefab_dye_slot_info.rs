@@ -401,8 +401,8 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_mask(
     .unwrap_or(error::PANIC)
 }
 
-/// Read a slot's **complete** mask into `buf` (12 bytes on 2.01+, 3 on
-/// 1.07-2.00), sized-buffer style.
+/// Read a slot's **complete** mask into `buf` (12 bytes; the parser reads
+/// 2.01+ only), sized-buffer style.
 ///
 /// Prefer this over [`crimson_part_prefab_dye_slot_info_lookup_slot_mask`],
 /// which only ever copies the first 3 bytes.
@@ -755,8 +755,8 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_extra_lay
     .unwrap_or(error::PANIC)
 }
 
-/// Read an extra layer's **complete** mask into `buf` (12 bytes on 2.01+,
-/// 3 on 1.13-2.00), sized-buffer style. Full-width companion to
+/// Read an extra layer's **complete** mask into `buf` (12 bytes; the parser
+/// reads 2.01+ only), sized-buffer style. Full-width companion to
 /// [`crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_mask`];
 /// same two-call contract as
 /// [`crimson_part_prefab_dye_slot_info_lookup_slot_mask_full`].
@@ -1095,9 +1095,8 @@ mod tests {
             error::OK
         );
 
-        // Full-width mask: two-call sizing, then the bytes. The width is
-        // 12 on 2.01+ and 3 on 1.07-2.00, so assert against whatever the
-        // install reports rather than pinning a number.
+        // Full-width mask: two-call sizing, then the bytes (12 since 2.01,
+        // the only width this parser reads).
         let mut need: usize = 0;
         assert_eq!(
             unsafe {

@@ -1,18 +1,16 @@
 //! `iteminfo.pabgb` bridge — C ABI surface.
 //!
 //! Parses an in-memory `iteminfo.pabgb` blob (after PAZ extraction
-//! from group `0008`, directory `gamedata/binary__/client/bin/`) and
+//! from group `0008`, the static-info directory `gamedata/binarystaticinfo__/bin`) and
 //! exposes a single primitive the downstream editor needs: map an
 //! `ItemKey (u32)` to its `string_key (String)`. The string key then
 //! feeds into the PALOC catalog from [`super::paloc`] to yield a
 //! localized display name.
 //!
-//! Memory cost: ~6,400 items in 1.06 × ~30 bytes per string key ≈
-//! 200 KB resident plus HashMap overhead. The full `ItemInfo` parse
-//! runs once at load time, but only the `(key, string_key)` pair is
-//! retained — the other 100+ fields are dropped. A future PR can
-//! expose richer queries (icon path, item description, …) without
-//! reshaping this handle.
+//! The full `ItemInfo` parse runs once at load time; the handle keeps the
+//! `(key, string_key)` map plus per-key indexes (max stack, icon, the
+//! mission links both ways, socket caps, allowed gems, the canonical gem
+//! set and the summary struct). The rest of each row is dropped.
 
 use std::collections::HashMap;
 use std::io;
@@ -413,9 +411,9 @@ impl CrimsonItemInfoHandle {
                     material_key: item.material_key,
                     gimmick_info: item.gimmick_info.0,
                     category_info: item.category_info.0,
-                    // 1.16 relocated `inventory_info` to the item end and
-                    // widened it to 8 slots; slot 0 is byte-for-byte the value
-                    // this field carried pre-1.16, so the ABI is unchanged.
+                    // `inventory_info` is a list now (up to 12 slots); slot 0
+                    // is the value this field carried when it was a scalar,
+                    // so the ABI is unchanged.
                     inventory_info: item.inventory_info_list[0],
                     minimum_extract_enchant_level: item.minimum_extract_enchant_level,
                     max_endurance: item.max_endurance,
@@ -944,7 +942,8 @@ pub unsafe extern "C" fn crimson_iteminfo_lookup_socket_caps(
 }
 
 /// Check whether `gem_key` is in `item_key`'s gamedata-defined
-/// allowed-gem list (`DropDefaultData::socket_item_list`). Writes
+/// allowed-gem list (`DropDefaultData::socket_item_list` plus the items of
+/// `add_socket_material_item_list`, duplicates dropped). Writes
 /// `*out_allowed` as 1 if allowed, 0 if not.
 ///
 /// **Advisory only**: returns `OK` in both the allowed and
@@ -1023,8 +1022,8 @@ pub unsafe extern "C" fn crimson_iteminfo_socket_allowed_gem_count(
 }
 
 /// Read the allowed-gem itemkey at insertion index `idx` for
-/// `item_key`. Order matches `DropDefaultData::socket_item_list` on
-/// disk so enumerations are deterministic.
+/// `item_key`. Order is `socket_item_list` on disk, then the new items of
+/// `add_socket_material_item_list`, so enumerations are deterministic.
 ///
 /// Returns `NOT_FOUND` when `item_key` is missing from iteminfo,
 /// `OUT_OF_RANGE` when `idx >= allowed_gem_count(item_key)`,
@@ -1062,9 +1061,9 @@ pub unsafe extern "C" fn crimson_iteminfo_socket_allowed_gem_at(
 
 // ── Canonical gem set (the gem-picker dropdown source) ─────────────────────
 //
-// The "canonical gem set" = sorted-ascending union of every item's
-// `socket_item_list`. Every itemkey that ANY weapon accepts as a gem
-// is a gem by this definition. Computed once at handle-load time,
+// The "canonical gem set" = every itemkey whose row has `item_type == 74`
+// and `category_info == 2501`, sorted ascending (see the handle field for
+// why not the union of the socket lists). Computed once at handle-load time,
 // available as a flat enumeration so the C# editor can drive a
 // gem-picker dropdown without reinventing the gem catalog itself.
 //

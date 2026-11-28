@@ -1,9 +1,9 @@
 //! `skill.pabgb` + `skill.pabgh` bridge — C ABI surface.
 //!
 //! Parses an in-memory skill data pair (after PAZ extraction from group
-//! `0008`, directory `gamedata/binary__/client/bin/`) and exposes the
+//! `0008`, the static-info directory `gamedata/binarystaticinfo__/bin`) and exposes the
 //! single primitive the Save Editor needs: map a `SkillKey (u32)` to its
-//! entry name (a BString-shape ASCII identifier like `"PowerStrike"` or
+//! entry name (an ASCII identifier like `"PowerStrike"` or
 //! `"BatPunch"`). The caller then prefixes the name into a PALOC lookup
 //! (e.g. `"SkillName_PowerStrike"`) to obtain a localized display name —
 //! exactly the same two-hop pattern that [`super::iteminfo`] uses for
@@ -19,8 +19,8 @@
 //! parse once, retains only the pair, and drops the rest. Same trade as
 //! [`super::iteminfo`].
 //!
-//! Memory cost: ~250 skills on 1.06 × ~20 bytes per name ≈ 5 KB resident
-//! plus HashMap overhead. Negligible compared to the iteminfo bridge.
+//! Memory cost: about 2,160 skills on 2.06 × ~20 bytes per name, some
+//! 45 KB plus HashMap overhead.
 
 use std::collections::HashMap;
 use std::io;
@@ -47,7 +47,7 @@ impl CrimsonSkillInfoHandle {
         let data = SkillData::parse(pabgh, pabgb)?;
         let mut entries: Vec<(u32, String)> = Vec::with_capacity(data.entries.len());
         for entry in &data.entries {
-            // `name_bytes` is the BString-shape entry name. Internal
+            // `name_bytes` is the entry name (`u32 len + bytes`). Internal
             // names are ASCII by convention (`"PowerStrike"`, etc.);
             // `from_utf8_lossy` is defensive — a non-UTF-8 byte in a
             // future format wouldn't crash the bridge, it would just

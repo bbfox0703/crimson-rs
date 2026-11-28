@@ -89,6 +89,70 @@ header but loses the names), to the `_with_header` variants above, passing
 the table's `.staticinfoheader`, or those bridges come up empty (and item names
 blank) on 2.06.
 
+### `CrimsonItemInfoSummary` and the item flags
+
+`crimson_iteminfo_lookup_summary(handle, item_key, *out)` fills this 80-byte, 8-aligned struct; `crimson_iteminfo_lookup_flags` returns the `flags` word alone. Size, alignment and every offset below are asserted at build time in `src/c_abi/iteminfo.rs`, so a reordering fails the Rust build rather than C#'s reads. Bytes 76..80 are padding. `quick_slot_index` is always 0 since 2.04.
+
+| Offset | Field | Type |
+|---:|---|---|
+| 0 | `max_stack_count` | `u64` |
+| 8 | `cooltime` | `i64` |
+| 16 | `respawn_time_seconds` | `i64` |
+| 24 | `key` | `u32` |
+| 28 | `flags` | `u32` |
+| 32 | `icon_path_hash` | `u32` |
+| 36 | `equip_type_info` | `u32` |
+| 40 | `equipable_hash` | `u32` |
+| 44 | `equipable_level` | `u32` |
+| 48 | `knowledge_info` | `u32` |
+| 52 | `material_key` | `u32` |
+| 56 | `gimmick_info` | `u32` |
+| 60 | `category_info` | `u16` |
+| 62 | `inventory_info` | `u16` |
+| 64 | `minimum_extract_enchant_level` | `u16` |
+| 66 | `max_endurance` | `u16` |
+| 68 | `item_type` | `u8` |
+| 69 | `item_tier` | `u8` |
+| 70 | `quick_slot_index` | `u8` |
+| 71 | `item_charge_type` | `u8` |
+| 72 | `usable_alert_type` | `u8` |
+| 73 | `knowledge_obtain_type` | `u8` |
+| 74 | `apply_drop_stat_type` | `u8` |
+| 75 | `_reserved` | `u8` |
+
+| Bit | `CRIMSON_ITEMINFO_FLAG_` |
+|---:|---|
+| 0 | `IS_BLOCKED` |
+| 1 | `IS_DYEABLE` |
+| 2 | `IS_DESTROY_WHEN_BROKEN` |
+| 3 | `IS_HOUSING_ONLY` |
+| 4 | `IS_EQUIP_QUICK_SLOT_VISIBLE` |
+| 5 | `IS_IMPORTANT_ITEM` |
+| 6 | `IS_SHIELD_ITEM` |
+| 7 | `IS_TOWER_SHIELD_ITEM` |
+| 8 | `IS_WILD` |
+| 9 | `HIDE_FROM_INVENTORY_ON_POP_ITEM` |
+| 10 | `DISCARDABLE` |
+| 11 | `IS_REGISTER_TRADE_MARKET` |
+| 12 | `IS_EDITOR_USABLE` |
+| 13 | `IS_EDITABLE_GRIME` |
+| 14 | `USE_IMMEDIATELY` |
+| 15 | `APPLY_MAX_STACK_CAP` |
+| 16 | `IS_BLOCKED_STORE_SELL` |
+| 17 | `IS_PREORDER_ITEM` |
+| 18 | `IS_HAS_ITEM_USE_DATA_INVENTORY_BUFF` |
+| 19 | `IS_PRESERVED_ON_EXTRACT` |
+| 20 | `ENABLE_ALERT_SYSTEM_TO_UI` |
+| 21 | `IS_SAVE_GAME_DATA_AT_USE_ITEM` |
+| 22 | `IS_LOGOUT_AT_USE_ITEM` |
+| 23 | `ENABLE_EQUIP_IN_CLONE_ACTOR` |
+| 24 | `CAN_DISASSEMBLE` |
+| 25 | `IS_ALL_GIMMICK_SEALABLE` |
+| 26 | `DELETE_BY_GIMMICK_UNLOCK` |
+| 27 | `USE_DROP_SET_TARGET` |
+
+`IS_IMPORTANT_ITEM` is `item_importance_kind == 0`; `IS_EQUIP_QUICK_SLOT_VISIBLE` is a naming guess (see `src/item_info/item.rs`).
+
 ### Factions: character membership, groups and relation types (2026-11-27)
 
 The save records which factions exist and their relations
@@ -693,7 +757,7 @@ missing from this file, so add a line here (or a mention above) with any new exp
 - `crimson_factionnode_merge_dlc_from_bytes` — Merge a DLC copy of the table (`<install>/dlc/<name>/0008`, e.g. `factionnode.dlc_01.staticinfobody` + `.staticinfoheader`) into a loaded…
 - `crimson_factionnode_entry_source` — Where entry `idx` came from: 0 = the base table, `n` = the `n`-th DLC merged with [`crimson_factionnode_merge_dlc_from_bytes`].
 - `crimson_factionnode_lookup_knowledge_key` — The `KnowledgeKey` naming a node: the knowledge row whose title is the place name the game shows (`Node_Her_HernandCastle` 1000044 → 10000…
-- `crimson_factionnode_lookup_display_name` — The node's localized place name: `FactionNodeKey → KnowledgeKey →` knowledge name `→ PALOC (hashlittle(name) << 32) | 0x490`, the knowled…
+- `crimson_factionnode_lookup_display_name` — The node's localized place name: `FactionNodeKey → KnowledgeKey →` knowledge name `→ PALOC (hashlittle(name) << 32) | 0x490`, the knowledg…
 
 **`src/c_abi/faction_relation_group_info.rs`**
 
@@ -823,7 +887,7 @@ missing from this file, so add a line here (or a mention above) with any new exp
 - `crimson_iteminfo_lookup_look_detail_mission_info` — Look up the `look_detail_mission_info` (a `MissionKey` u32) for a given `ItemKey (u32)` and write it into `*out_mission_key`.
 - `crimson_iteminfo_lookup_artifact_for_mission` — Reverse of [`crimson_iteminfo_lookup_look_detail_mission_info`]: given a `MissionKey (u32)`, return the `ItemKey (u32)` of the artifact wh…
 - `crimson_iteminfo_lookup_socket_caps` — Look up the gamedata socket caps for `item_key`.
-- `crimson_iteminfo_socket_allows_gem` — Check whether `gem_key` is in `item_key`'s gamedata-defined allowed-gem list (`DropDefaultData::socket_item_list`).
+- `crimson_iteminfo_socket_allows_gem` — Check whether `gem_key` is in `item_key`'s gamedata-defined allowed-gem list (`DropDefaultData::socket_item_list` plus the items of `add_s…
 - `crimson_iteminfo_socket_allowed_gem_count` — Number of entries in `item_key`'s gamedata allowed-gem list.
 - `crimson_iteminfo_socket_allowed_gem_at` — Read the allowed-gem itemkey at insertion index `idx` for `item_key`.
 - `crimson_iteminfo_canonical_gem_count` — Number of itemkeys in the canonical gem set (sorted-ascending union of every item's `socket_item_list`).
@@ -874,7 +938,7 @@ missing from this file, so add a line here (or a mention above) with any new exp
 - `crimson_missioninfo_free` — Free a handle returned by either loader.
 - `crimson_missioninfo_entry_count` — Total number of missions in the loaded table.
 - `crimson_missioninfo_lookup_string_key` — Look up the internal name for a given `MissionKey (u32)` and write it into `buf` (NUL-terminated UTF-8).
-- `crimson_missioninfo_lookup_display_name` — One-shot title resolution: chain `MissionKey → internal name → hashlittle → PALOC u64 key → localized string` and write the result into `…
+- `crimson_missioninfo_lookup_display_name` — One-shot title resolution: chain `MissionKey → internal name → hashlittle → PALOC u64 key → localized string` and write the result into `b…
 - `crimson_missioninfo_get_entry` — Get the `(mission_key, internal_name)` pair at insertion index `idx`.
 
 **`src/c_abi/mod.rs`**
@@ -930,7 +994,7 @@ missing from this file, so add a line here (or a mention above) with any new exp
 
 - `crimson_paloc_load_from_file` — Load and parse a `.paloc` file from disk.
 - `crimson_paloc_load_from_bytes` — Load and parse PALOC bytes that already live in memory.
-- `crimson_paloc_free` — Free a handle returned by [`crimson_paloc_load_from_file`].
+- `crimson_paloc_free` — Free a handle returned by [`crimson_paloc_load_from_file`] or [`crimson_paloc_load_from_bytes`].
 - `crimson_paloc_entry_count` — Total number of (key, value) pairs in the table.
 - `crimson_paloc_lookup` — Look up the value for `key` and copy its UTF-8 bytes into `buf`.
 - `crimson_paloc_get_entry` — Get the (key, value) pair at index `idx` in insertion order.
@@ -947,7 +1011,7 @@ missing from this file, so add a line here (or a mention above) with any new exp
 - `crimson_part_prefab_dye_slot_info_lookup_slot_tail_name` — Tail name — next sub-prefab for non-final slots, full `.pac` path for the last slot.
 - `crimson_part_prefab_dye_slot_info_lookup_slot_mat_indices` — Read the 3 material-index bytes into `out_indices[0..3]`.
 - `crimson_part_prefab_dye_slot_info_lookup_slot_mask` — Read the first 3 mask bytes into `out_mask[0..3]`.
-- `crimson_part_prefab_dye_slot_info_lookup_slot_mask_full` — Read a slot's **complete** mask into `buf` (12 bytes on 2.01+, 3 on 1.07-2.00), sized-buffer style.
+- `crimson_part_prefab_dye_slot_info_lookup_slot_mask_full` — Read a slot's **complete** mask into `buf` (12 bytes; the parser reads 2.01+ only), sized-buffer style.
 - `crimson_part_prefab_dye_slot_info_lookup_slot_active_channels` — Which of `slot_idx`'s three material channels are dyeable, one byte (0 or 1) per channel into `out_flags[0..3]`: channel `ch` is active wh…
 - `crimson_part_prefab_dye_slot_info_lookup_slot_dye_slot_bits` — `slot_idx`'s mask as bits: bit `n` of `*out_bits` is set when dye slot number `n` is dyeable on this slot.
 - `crimson_part_prefab_dye_slot_info_lookup_dye_slot_bits` — The prefab's dye slots: bit `n` of `*out_bits` is set when any slot or extra layer of the prefab enables dye slot number `n`.
@@ -956,7 +1020,7 @@ missing from this file, so add a line here (or a mention above) with any new exp
 - `crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_count` — Number of extra (secondary) dye layers on `slot_idx`.
 - `crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_material` — Default material name for extra layer `layer_idx`'s `mat_idx` channel (`mat_idx ∈ {0, 1, 2}`) on `slot_idx`.
 - `crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_mask` — Read the first 3 of extra layer `layer_idx`'s mask bytes on `slot_idx` into `out_mask[0..3]`.
-- `crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_mask_full` — Read an extra layer's **complete** mask into `buf` (12 bytes on 2.01+, 3 on 1.13-2.00), sized-buffer style.
+- `crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_mask_full` — Read an extra layer's **complete** mask into `buf` (12 bytes; the parser reads 2.01+ only), sized-buffer style.
 - `crimson_part_prefab_dye_slot_info_lookup_slot_extra_layer_flag` — Read extra layer `layer_idx`'s trailing flag byte on `slot_idx`.
 - `crimson_part_prefab_dye_slot_info_get_entry_key` — Read the prefab key at insertion index `idx` (PABGH on-disk order).
 

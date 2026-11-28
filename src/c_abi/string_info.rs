@@ -1,7 +1,7 @@
 //! `stringinfo.pabgb` bridge — C ABI surface.
 //!
 //! Parses an in-memory `stringinfo.pabgb` blob (after PAZ extraction
-//! from group `0008`, directory `gamedata/binary__/client/bin/`) and
+//! from group `0008`, the static-info directory `gamedata/binarystaticinfo__/bin`) and
 //! exposes the lookup the icon-extraction pipeline needs: map a
 //! `StringInfoKey` (u32 hash, harvested from `iteminfo.pabgb`'s
 //! `icon_path` / `map_icon_path` fields) to its resolved string value.
@@ -13,8 +13,8 @@
 //! agrees can do so via the Rust API ([`super::super::string_info::
 //! StringInfoData::parse_pair`]).
 //!
-//! Memory cost: ~30,206 entries in 1.06 × ~30 bytes per string ≈
-//! 900 KB resident plus HashMap overhead. The reserved-zero + reserved-
+//! Memory cost: 33,855 entries on 2.06 × ~30 bytes per string, about
+//! 1 MB plus HashMap overhead. The reserved-zero + reserved-
 //! flag bytes are dropped — only `(hash, value)` is retained.
 
 use std::collections::HashMap;
