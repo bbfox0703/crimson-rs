@@ -25,6 +25,78 @@ landed together. **Reading tip:** grep `^## ` for the index, then read from the 
 
 -----
 
+## 2026-11-28 — Audit P6: archive builder and flags, bridge detection, save layout and rollback, scripts
+
+The sixth batch, on the same branch as the entries below: the low / nit code findings left after P5.
+Status table after it: 89 fixed, 19 partly, 37 open (mostly nits and doc items), 2 not fixing,
+2 merged.
+
+- **Archive and crypto:**
+  - `PackGroupBuilder` writes its own `encrypt_info` into the PAMT header instead of a hardcoded
+    `[2,14,97]`, so a ChaCha20 pack now reads back through its own PAMT (A-04; new round-trip test).
+    Sizes and counts go through checked conversions, and a trie segment longer than 255 bytes is
+    refused (A-15).
+  - `Papgt::add_entry` returns `io::Result` and refuses a NUL in a name and a 256th entry (A-15).
+    Python raises `ValueError`.
+  - ChaCha20 pack and save crypto use `try_apply_keystream`, so a counter overflow is an error, not
+    a panic (A-06 / F-06). A known-answer test pins the pack cipher (A-14). How the game carries the
+    counter past 2³² is still unknown; we refuse instead of guessing.
+  - Presence bytes other than 0/1 and a flagged array with flag 1 and count 0 are errors. Both used to
+    read and then write back different bytes (A-10 / C-10; real data has only 0 and 1).
+  - A paver stamp longer than 10 bytes that is not a DLC list is an error, not a 10-byte reading with
+    the DLC count in `build` (A-17). `BinaryRead` no longer panics on an offset past the end.
+  - The version gate is a function: `paver::parser_supports` and the C ABI
+    `crimson_parser_supports(major, minor, patch)` (A-13).
+- **Bridges:**
+  - Width detection on 2.06 checks that the header and body keys agree (`detect_named_pair`), so the
+    first width that happens to fit no longer wins (B-08).
+  - `EntrySources::next_merge` only peeks, so a failed merge no longer uses up a source number (B-10).
+  - A DLC merge with an empty header returns `BODY_PARSE`. It used to scan the 2.06 body without one
+    and add noise rows (D-05).
+  - `crimson_iteminfo_lookup_string_key` returns `NOT_FOUND` for an empty name (C-06).
+  - `artifact_by_mission` is built from sorted pairs, so the lowest ItemKey wins, and the DLL no
+    longer writes to stderr (C-12).
+- **Dye, prefab and save:**
+  - The equal-split fallback for dye colour records applies only when the span is exactly
+    `count × 8` (E-02).
+  - The prefab join reports an extraction failure instead of caching it as "no prefab" and falling
+    back to a same-named base prefab during a DLC merge (E-05). A DLC merge still uses the PAMT
+    parsed at load time.
+  - `encode_body` checks that the blocks are back to back, from the end of the TOC to `stream_size`,
+    before it relocates anything (F-11). The reader still checks bounds only.
+  - A length-changing mutation that panics restores the blocks it backed up, then resumes the panic
+    (G-05).
+- **Python writers:**
+  - `serialize_papgt` from a dict refuses overlapping or out-of-range name offsets and NUL in names
+    (H-05).
+  - The iteminfo writers re-parse each written row and raise `ValueError` when one no longer reads
+    back as one item. Example: `equip_type_info` changed without its conditional field (H-12). They
+    do not recompute the condition.
+- **Scripts and tests:**
+  - `test_full_roundtrip` and the item_info tests read iteminfo from the live install, not from
+    whatever `export_for_ce.py` last left in `out\` (I-08).
+  - `update_ce_table.py`: an empty `inventory_info_list` no longer raises `IndexError`, the
+    `--props-bin` example no longer names a version the parser cannot read, and `read_paver` honours
+    `CRIMSON_GAME_ROOT` (I-17).
+  - `setup-fork-guards.ps1` stops when `gh` or `git` fails, and its summary says when it left an
+    existing `pre-push` hook alone (I-19). The hook still does not cover `gh` API calls.
+- **Not fixing:** D-04. The PALOC lookup by key also names rows that exist only in the DLC, so
+  limiting it to keys in the base table would lose them.
+- **Already fixed:** B-03, in `d541ce2` (an unknown layout now panics).
+- **Found while testing:** on this PC `.git/hooks/pre-push` is a Git LFS hook, so the fork-guard hook
+  has never been installed here. The repo tracks no LFS files. Until that hook is replaced, only
+  `remote.pushDefault` and the disabled upstream push URL guard this clone.
+- **Measured on this PC:** 426 passed, 48 ignored, with the install and fixtures; the same 426 pass
+  with neither. Strict clippy and the bare-default build are clean. Python: the iteminfo and PAPGT
+  round-trips are identical, and the H-05 / H-12 checks raise.
+- **CrimsonAtomtic:**
+  - New export: `crimson_parser_supports`.
+  - `*_merge_dlc_from_bytes` with `header_len == 0` returns `BODY_PARSE`.
+  - `crimson_iteminfo_lookup_string_key` returns `NOT_FOUND` for rows without a name.
+  - The prefab load fails when a prefab cannot be extracted, instead of leaving those items empty.
+  - A save whose blocks are not contiguous is refused on write.
+  - No existing C signature changed.
+
 ## 2026-11-28 — Audit P5: reader bounds, 2.06 header checks, save FFI, Python writers, test data
 
 The fifth batch, on the same branch as the entries below: the medium findings left after P1–P4 and
