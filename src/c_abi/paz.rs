@@ -14,13 +14,10 @@
 //! `0.pamt`. Once extracted, the bytes get fed straight into
 //! [`super::paloc::crimson_paloc_load_from_bytes`].
 //!
-//! Partial-compression entries (`is_partial`) ARE supported: the bulk
-//! of `0012/ui/texture/icon/` lives in that layout (header(128) +
-//! LZ4-with-prefix-dict, or identity when LZ4 declined). Some other
-//! 1.06 subtrees (notably `0012/ui/texture/image/worldmap/` SDFs and
-//! large mesh assets in 0009/0015) use an additional chunked variant
-//! the decoder doesn't yet understand — those still surface as
-//! `BODY_PARSE`, the same code as any other PAZ extraction failure.
+//! Partial-compression entries (`is_partial`) are supported, including the
+//! per-mip variant the worldmap SDFs use (`crate::binary::paz`); a file the
+//! decoder still cannot read surfaces as `BODY_PARSE`, the same code as any
+//! other extraction failure.
 //!
 //! Not exposed here (future PR if needed):
 //! - Full PAMT enumeration across every directory in one call.
@@ -127,10 +124,10 @@ fn is_npc_portrait_name(name: &str) -> bool {
 /// - `BUFFER_TOO_SMALL` when `out_buf_len < required`. `*out_required`
 ///   carries the needed size.
 /// - `NOT_FOUND` when `directory` or `file_name` isn't in the PAMT.
-/// - `IO` when the PAMT or `.paz` chunk can't be read from disk.
-/// - `BODY_PARSE` when the PAMT bytes don't parse, or extraction
-///   fails downstream (bad checksum, unsupported crypto, partial-
-///   compression file, decompression error).
+/// - `IO` when the PAMT can't be read from disk.
+/// - `BODY_PARSE` when the PAMT bytes don't parse, or extraction fails
+///   downstream: a missing or short `.paz`, bad checksum, unsupported
+///   crypto, decompression error.
 /// - `NULL_ARG` on any null pointer; `INVALID_PATH` on bad UTF-8.
 ///
 /// # Safety

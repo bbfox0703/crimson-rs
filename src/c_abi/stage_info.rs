@@ -1,7 +1,7 @@
 //! `stageinfo.pabgb` bridge — C ABI surface.
 //!
 //! Sibling of [`super::mission_info`] and [`super::quest_info`]. Same
-//! resolution chain (`StageKey → name → hashlittle2 → u64 PALOC key
+//! resolution chain (`StageKey → name → hashlittle → u64 PALOC key
 //! → display title`).
 //!
 //! Highest-volume bridge in the family: ~46k StageKey instances in a
@@ -366,7 +366,7 @@ pub unsafe extern "C" fn crimson_stageinfo_lookup_string_key(
 // ── Display-name lookup (production — one-shot chain) ──────────────────────
 
 /// One-shot title resolution: chain `StageKey → internal name →
-/// hashlittle2 → PALOC u64 key → localized string`.
+/// hashlittle → PALOC u64 key → localized string`.
 ///
 /// Common `lo32_namespace` values for stageinfo rows:
 /// - `0x101` (257) — stage title (the typical case)

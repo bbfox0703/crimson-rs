@@ -2,7 +2,8 @@
 //!
 //! Through 2.03 a named row opened `[key][u32 len][name]`. 2.04 swapped the two
 //! in every such table: `[u32 len][name][key]`, with the key still as wide as
-//! the table's `.staticinfoheader` makes it (1, 2 or 4 bytes).
+//! the table's `.staticinfoheader` makes it (1, 2, 4, 8 or 12 bytes; `key`
+//! holds the low four bytes of a wider one, and no caller passes one).
 
 /// A decoded row head, and where the row carries on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

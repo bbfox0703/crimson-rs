@@ -14,7 +14,7 @@
 //!
 //! Like [`crate::quest_gauge_info`], **no PALOC entries** were found
 //! at any namespace for these row keys — neither raw (Pattern A) nor
-//! via hashlittle2 hash-hop. The handful of raw-key collisions that
+//! via hashlittle hash-hop. The handful of raw-key collisions that
 //! surface (e.g. hi32=522 lo32=0x402f1 = "Unavailable during combat")
 //! are coincidental matches with generic UI tooltip slots, not real
 //! sub-level localizations. The localized track name a player sees

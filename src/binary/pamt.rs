@@ -456,8 +456,8 @@ impl PackMeta {
         // Build full output
         let mut out = Vec::new();
 
-        // Header (checksum field is from the original - the actual post-header
-        // checksum is validated by the papgt entry, not stored in the pamt header itself)
+        // The header keeps its stored checksum, which covers the bytes after
+        // it; parse validates it, and a writer of edited data recomputes it.
         self.header.write_to(&mut out)?;
         out.write_all(&post_header)?;
 

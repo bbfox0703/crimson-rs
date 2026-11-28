@@ -156,7 +156,8 @@ pub unsafe extern "C" fn crimson_paloc_load_from_bytes(
     .unwrap_or(error::PANIC)
 }
 
-/// Free a handle returned by [`crimson_paloc_load_from_file`].
+/// Free a handle returned by [`crimson_paloc_load_from_file`] or
+/// [`crimson_paloc_load_from_bytes`].
 ///
 /// # Safety
 /// `handle` must either be null or a pointer previously returned by

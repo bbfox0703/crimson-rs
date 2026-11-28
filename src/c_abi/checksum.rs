@@ -1,4 +1,4 @@
-//! Jenkins hashlittle2 checksum — C ABI surface.
+//! Jenkins hashlittle checksum — C ABI surface.
 //!
 //! Thin extern "C" wrapper over [`crate::crypto::checksum::calculate_checksum`].
 //! The same hash is used inside crimson-rs for PAMT / PAPGT integrity, and —
@@ -6,7 +6,7 @@
 //! from gamedata internal-name strings:
 //!
 //! ```text
-//! PALOC u64 key = (hashlittle2_c(internal_name) << 32) | lo32_namespace
+//! PALOC u64 key = (hashlittle_c(internal_name) << 32) | lo32_namespace
 //! ```
 //!
 //! That two-hop chain is what lets the Save Editor map a save-side
@@ -25,7 +25,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use super::error;
 use crate::crypto::checksum::calculate_checksum;
 
-/// Compute the Jenkins hashlittle2 `c` output (Pearl Abyss variant — init
+/// Compute the Jenkins hashlittle `c` output (Pearl Abyss variant — init
 /// constant `0xDEBA1DCD`) over `data`. The result is the primary 32-bit
 /// hash used everywhere in the file format.
 ///

@@ -12,7 +12,7 @@
 //!   return generic UI tooltip strings ("Unavailable during combat.",
 //!   "Cannot be used at the moment.") that share the small hi32 with
 //!   our row keys by coincidence — not real localizations.
-//! - hashlittle2(name) hash-hop probe: zero hits at any namespace.
+//! - hashlittle(name) hash-hop probe: zero hits at any namespace.
 //!
 //! The localized UI label a player sees (e.g. "Demenissian Reputation")
 //! is composed at runtime from the row's prefix

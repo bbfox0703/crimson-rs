@@ -42,7 +42,7 @@ pub struct KnowledgeInfoEntry {
     /// `_knowledgeStateList[N]._key`).
     pub key: u32,
     /// ASCII internal name (e.g. `"Knowledge_Node_Dem_Ruins_0007"`).
-    /// Feeds the PALOC u64 lookup chain via `hashlittle2(name) << 32
+    /// Feeds the PALOC u64 lookup chain via `hashlittle(name) << 32
     /// | lo32`.
     pub name: String,
 }

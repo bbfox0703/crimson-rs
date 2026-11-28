@@ -875,7 +875,7 @@ def wrap_paloc_bytes(data: bytes) -> bytes:
 
 
 def calculate_checksum(data: bytes) -> int:
-    """Compute the Jenkins hashlittle2 checksum used by Crimson Desert file formats.
+    """Compute the Jenkins hashlittle checksum used by Crimson Desert file formats.
 
     Args:
         data: Raw bytes to checksum.

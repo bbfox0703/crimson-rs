@@ -28,7 +28,7 @@ pub struct QuestInfoEntry {
     /// `_questStateList[N]._questKey`).
     pub key: u32,
     /// ASCII internal name (e.g. `"Quest_Node_Her_RootFort_Normal"`).
-    /// Feeds the PALOC u64 lookup chain via `hashlittle2(name) << 32 |
+    /// Feeds the PALOC u64 lookup chain via `hashlittle(name) << 32 |
     /// lo32`.
     pub name: String,
 }

@@ -314,7 +314,7 @@ pub unsafe extern "C" fn crimson_gimmickinfo_lookup_display_name(
     catch_unwind(AssertUnwindSafe(|| {
         // The gimmickinfo handle is intentionally not consulted — the
         // save's _gimmickInfoKey is already the PALOC hi32 directly,
-        // no internal-name → hashlittle2 detour needed (unlike
+        // no internal-name → hashlittle detour needed (unlike
         // mission/quest/stage/knowledge). We still validate that the
         // handle is live (above) so the surface matches its siblings
         // and future cat-byte transforms can hook in here without

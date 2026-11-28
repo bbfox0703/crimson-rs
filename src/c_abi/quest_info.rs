@@ -1,7 +1,7 @@
 //! `questinfo.pabgb` bridge — C ABI surface.
 //!
 //! Sibling of [`super::mission_info`]. Same architecture and same
-//! resolution chain (`QuestKey → name → hashlittle2 → u64 PALOC key
+//! resolution chain (`QuestKey → name → hashlittle → u64 PALOC key
 //! → display title`). The terminology / namespace defaults differ
 //! per Pearl Abyss's internal model:
 //!
@@ -371,7 +371,7 @@ pub unsafe extern "C" fn crimson_questinfo_lookup_string_key(
 // ── Display-name lookup (production — one-shot chain) ──────────────────────
 
 /// One-shot title resolution: chain `QuestKey → internal name →
-/// hashlittle2 → PALOC u64 key → localized string`. Same shape as
+/// hashlittle → PALOC u64 key → localized string`. Same shape as
 /// [`super::mission_info::crimson_missioninfo_lookup_display_name`].
 ///
 /// Common `lo32_namespace` values for questinfo rows:

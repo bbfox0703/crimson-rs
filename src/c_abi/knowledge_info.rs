@@ -2,7 +2,7 @@
 //!
 //! Sibling of [`super::mission_info`] / [`super::quest_info`] /
 //! [`super::stage_info`]. Same resolution chain (`KnowledgeKey → name
-//! → hashlittle2 → u64 PALOC key → display title`).
+//! → hashlittle → u64 PALOC key → display title`).
 //!
 //! The editor's earlier hypothesis (status.md item #6) was that
 //! KnowledgeKey wouldn't resolve through PALOC. The
@@ -326,7 +326,7 @@ pub unsafe extern "C" fn crimson_knowledgeinfo_entry_source(
 // ── Display-name lookup (production — one-shot chain) ──────────────────────
 
 /// One-shot title resolution: chain `KnowledgeKey → internal name →
-/// hashlittle2 → PALOC u64 key → localized string`.
+/// hashlittle → PALOC u64 key → localized string`.
 ///
 /// Common `lo32_namespace` values for knowledge rows (confirmed by
 /// the probe in `docs/save-editor-keys-plan.md`):

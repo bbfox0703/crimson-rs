@@ -3955,7 +3955,7 @@ mod tests {
     /// | `0x150b14d0` | 252   | Idle / decoration — standstones, artifacts, ambient abyss pieces |
     ///
     /// The hash → state-name decode is NOT pinned yet. None of Jenkins
-    /// hashlittle / hashlittle2 / FNV-1a / SDBM / DJB2 / CRC32 with the
+    /// hashlittle / hashlittle / FNV-1a / SDBM / DJB2 / CRC32 with the
     /// seeds we tried produced a match against either common state-name
     /// candidates (Locked / Unlocked / Active / Root / Idle / …) or the
     /// ASCII strings harvested from the matching `.binarygimmick` files
@@ -6150,7 +6150,7 @@ mod tests {
             }
 
             // Identity chain: (key << 32) | lo32
-            // Hash hop:       (hashlittle2(name) << 32) | lo32
+            // Hash hop:       (hashlittle(name) << 32) | lo32
             // Try lo32 values we've seen for other tables.
             let los: &[u32] = &[
                 0x00, 0x30, 0x60, 0x70, 0x71, 0x80, 0x90, 0xc1, 0x100, 0x101, 0x102,
@@ -7192,7 +7192,7 @@ mod tests {
     /// derivation rule like "prepend cd_ + lowercase" is in play).
     ///
     /// Also tests the Jenkins-hash hypothesis: for the first few
-    /// partprefab row keys, brute-force Jenkins hashlittle2 of the
+    /// partprefab row keys, brute-force Jenkins hashlittle of the
     /// row's `prefab_name` field with seed 0 / 0xDEBA1DCD / 1, see if
     /// any match the row key.
     #[test]

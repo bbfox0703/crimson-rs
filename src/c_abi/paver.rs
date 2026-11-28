@@ -9,7 +9,8 @@
 //! Two entry points: [`crimson_paver_read_from_file`] takes a path
 //! (either the `.paver` file directly or the game-install root, with
 //! `meta/0.paver` auto-appended); [`crimson_paver_read_from_bytes`]
-//! parses a 10-byte buffer the caller already has in memory.
+//! parses the bytes the caller already has in memory (10 bytes, or longer
+//! with the 2.04+ DLC list).
 //!
 //! Both surfaces return the four version components via out-pointers
 //! and write nothing on failure. See [`crate::binary::paver`] for the

@@ -50,7 +50,7 @@ Update docs when adding new features or changing binary-format understanding.
 # Rules
 - Ask before adding new dependencies to Cargo.toml.
 - Binary format must roundtrip (read and write back identically).
-- Custom types for binary serialization: `CString` (u32 len + len bytes — NO trailing NUL; this is what `iteminfo.pabgb` uses), `BString`-shape (u32 len + len bytes + u8 NUL terminator — used by `skill.pabgb` entry names + the PAPGT group_names_buffer; no shared Rust type yet, handled inline in `src/skill_info/mod.rs`), `optional<T>` (u8 flag + T if nonzero), `array<T>` (u32 count + count × T), `Variant` (u8 tag + match on tag).
+- Custom types for binary serialization: `CString` (u32 len + len bytes — NO trailing NUL; this is what `iteminfo.pabgb` uses), `BString`-shape (u32 len + len bytes + u8 NUL terminator — the PAPGT group_names_buffer; skill entry names have been plain `u32 len + bytes` since 2.04, the byte after them is `EntryHead::unk_post_key`), `optional<T>` (u8 flag + T if nonzero), `array<T>` (u32 count + count × T), `Variant` (u8 tag + match on tag).
 
 # Working conventions
 The maintainer works on two Windows PCs. These rules used to live in one machine's Claude memory; they are here so both clones share them. Machine and archive specifics (archive paths, the Steam manifest, reading the Google Drive archive) are under "Machine notes" in [`scripts/CLAUDE.md`](scripts/CLAUDE.md).

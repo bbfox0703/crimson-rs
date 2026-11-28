@@ -1,7 +1,7 @@
 //! Live display titles for the curated-table drift tests (test-only).
 //!
 //! Resolves a `MissionKey` / `QuestKey` to its current English display title
-//! through the chain the bridges use — key → internal name → `hashlittle2` →
+//! through the chain the bridges use — key → internal name → `hashlittle` →
 //! `(hash << 32) | lo32` → PALOC — read straight from the live install.
 //! [`LiveTitles::load`] returns `None` when the install is absent, so the
 //! tests built on it skip cleanly on CI — and panics when the install is

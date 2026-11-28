@@ -53,8 +53,10 @@ int32_t crimson_<table>_load_from_bytes_with_header(
 - `crimson_missioninfo_`, `crimson_characterinfo_`, `crimson_knowledgeinfo_`,
   `crimson_stageinfo_`, `crimson_gimmickinfo_`, `crimson_questinfo_`,
   `crimson_questgaugeinfo_`, `crimson_sublevelinfo_load_from_bytes_with_header`
-  — **required from 2.06**: the old body-only `*_load_from_bytes` finds no rows
-  on a 2.06 body and returns `BODY_PARSE`.
+  — **required from 2.06**: the old body-only `*_load_from_bytes` reads no
+  names from a 2.06 body. Most return `BODY_PARSE` for it; the stage and
+  character scanners can still turn up noise rows (39 and 223 on 2.06) and
+  return those, so do not use the body-only loaders on 2.06.
   With a 2.06 header every one of these returns exactly the rows the header
   lists (since 2026-11-28; before that seven of them anchor-scanned the rebuilt
   body and dropped rows: mission 2,444, stage 3,198, gimmick 140, quest 1).
@@ -81,8 +83,9 @@ int32_t crimson_<table>_load_from_bytes_with_header(
   `_load_from_*_with_pabgh` loaders — did not change: they rebuild the
   pre-2.06 layout internally (`src/binary/static_header.rs`).
 
-**Downstream:** the C# editor (CrimsonAtomtic) must switch its nine
-body-only `*_load_from_bytes` calls to the `_with_header` variants above, passing
+**Downstream:** the C# editor (CrimsonAtomtic) must switch its eight
+body-only `*_load_from_bytes` calls, and iteminfo's (which parses without the
+header but loses the names), to the `_with_header` variants above, passing
 the table's `.staticinfoheader`, or those bridges come up empty (and item names
 blank) on 2.06.
 
@@ -193,7 +196,7 @@ int32_t crimson_factionnode_lookup_knowledge_key(
     const CrimsonFactionNodeInfoHandle *handle, uint32_t node_key,
     uint32_t *out_knowledge_key);
 
-/* Localized place name: knowledge title, PALOC (hashlittle2(name) << 32) | 0x490.
+/* Localized place name: knowledge title, PALOC (hashlittle(name) << 32) | 0x490.
    The language is the PALOC handle's. Two-call over buf. */
 int32_t crimson_factionnode_lookup_display_name(
     const CrimsonFactionNodeInfoHandle *handle,
@@ -453,7 +456,7 @@ src/
 ├── python.rs                # PyO3 bindings
 ├── binary/                  # Container formats
 │   ├── pamt.rs, papgt.rs    # PAMT / PAPGT parse + write
-│   ├── paz.rs               # PackGroupBuilder, compression, PAZ creation
+│   ├── paz.rs               # extraction (incl. partial / per-mip decode), compression, PackGroupBuilder
 │   ├── paloc.rs             # PALOC parse/write (numeric + symbolic keys) + the
 │   │                        #   2.03 LZ4 container (unwrap_container / wrap_container)
 │   ├── gamedata_layout.rs   # #[cfg(test)] — which archive layout the live install
@@ -464,7 +467,7 @@ src/
 │   │                        #   rebuilds the pre-2.06 layout for the table parsers
 │   └── trie.rs              # Trie buffer read + build (radix-compressed)
 ├── crypto/
-│   ├── checksum.rs          # Jenkins hashlittle2 (init = 0xDEBA1DCD)
+│   ├── checksum.rs          # Jenkins hashlittle (init = 0xDEBA1DCD)
 │   └── chacha20.rs          # ChaCha20 encrypt/decrypt
 ├── item_info/               # iteminfo.pabgb parser (byte-roundtrip)
 ├── skill_info/              # skill.pabgb + skill.pabgh parser (byte-roundtrip,
@@ -626,7 +629,7 @@ missing from this file, so add a line here (or a mention above) with any new exp
 
 **`src/c_abi/checksum.rs`**
 
-- `crimson_calculate_checksum` — Compute the Jenkins hashlittle2 `c` output (Pearl Abyss variant — init constant `0xDEBA1DCD`) over `data`.
+- `crimson_calculate_checksum` — Compute the Jenkins hashlittle `c` output (Pearl Abyss variant — init constant `0xDEBA1DCD`) over `data`.
 
 **`src/c_abi/craft_tool_group_info.rs`**
 
@@ -690,7 +693,7 @@ missing from this file, so add a line here (or a mention above) with any new exp
 - `crimson_factionnode_merge_dlc_from_bytes` — Merge a DLC copy of the table (`<install>/dlc/<name>/0008`, e.g. `factionnode.dlc_01.staticinfobody` + `.staticinfoheader`) into a loaded…
 - `crimson_factionnode_entry_source` — Where entry `idx` came from: 0 = the base table, `n` = the `n`-th DLC merged with [`crimson_factionnode_merge_dlc_from_bytes`].
 - `crimson_factionnode_lookup_knowledge_key` — The `KnowledgeKey` naming a node: the knowledge row whose title is the place name the game shows (`Node_Her_HernandCastle` 1000044 → 10000…
-- `crimson_factionnode_lookup_display_name` — The node's localized place name: `FactionNodeKey → KnowledgeKey →` knowledge name `→ PALOC (hashlittle2(name) << 32) | 0x490`, the knowled…
+- `crimson_factionnode_lookup_display_name` — The node's localized place name: `FactionNodeKey → KnowledgeKey →` knowledge name `→ PALOC (hashlittle(name) << 32) | 0x490`, the knowled…
 
 **`src/c_abi/faction_relation_group_info.rs`**
 
@@ -839,7 +842,7 @@ missing from this file, so add a line here (or a mention above) with any new exp
 - `crimson_knowledgeinfo_lookup_string_key` — Look up the internal name for a given `KnowledgeKey (u32)` and write it into `buf` (NUL-terminated UTF-8).
 - `crimson_knowledgeinfo_merge_dlc_from_bytes` — Merge a DLC copy of the table (`<install>/dlc/<name>/0008`, e.g. `knowledgeinfo.dlc_01.staticinfobody` + `.staticinfoheader`) into a loade…
 - `crimson_knowledgeinfo_entry_source` — Where entry `idx` came from: 0 = the base table, `n` = the `n`-th DLC merged with [`crimson_knowledgeinfo_merge_dlc_from_bytes`].
-- `crimson_knowledgeinfo_lookup_display_name` — One-shot title resolution: chain `KnowledgeKey → internal name → hashlittle2 → PALOC u64 key → localized string`.
+- `crimson_knowledgeinfo_lookup_display_name` — One-shot title resolution: chain `KnowledgeKey → internal name → hashlittle → PALOC u64 key → localized string`.
 - `crimson_knowledgeinfo_get_entry` — Get the `(knowledge_key, internal_name)` pair at insertion index `idx`.
 
 **`src/c_abi/main_quest_chapter.rs`**
@@ -871,7 +874,7 @@ missing from this file, so add a line here (or a mention above) with any new exp
 - `crimson_missioninfo_free` — Free a handle returned by either loader.
 - `crimson_missioninfo_entry_count` — Total number of missions in the loaded table.
 - `crimson_missioninfo_lookup_string_key` — Look up the internal name for a given `MissionKey (u32)` and write it into `buf` (NUL-terminated UTF-8).
-- `crimson_missioninfo_lookup_display_name` — One-shot title resolution: chain `MissionKey → internal name → hashlittle2 → PALOC u64 key → localized string` and write the result into `…
+- `crimson_missioninfo_lookup_display_name` — One-shot title resolution: chain `MissionKey → internal name → hashlittle → PALOC u64 key → localized string` and write the result into `…
 - `crimson_missioninfo_get_entry` — Get the `(mission_key, internal_name)` pair at insertion index `idx`.
 
 **`src/c_abi/mod.rs`**
@@ -1011,7 +1014,7 @@ missing from this file, so add a line here (or a mention above) with any new exp
 - `crimson_questinfo_free` — Free a handle returned by either loader.
 - `crimson_questinfo_entry_count` — Total number of quests in the loaded table.
 - `crimson_questinfo_lookup_string_key` — Look up the internal name for a given `QuestKey (u32)` and write it into `buf` (NUL-terminated UTF-8).
-- `crimson_questinfo_lookup_display_name` — One-shot title resolution: chain `QuestKey → internal name → hashlittle2 → PALOC u64 key → localized string`.
+- `crimson_questinfo_lookup_display_name` — One-shot title resolution: chain `QuestKey → internal name → hashlittle → PALOC u64 key → localized string`.
 - `crimson_questinfo_get_entry` — Get the `(quest_key, internal_name)` pair at insertion index `idx`.
 
 **`src/c_abi/region_info.rs`**
@@ -1071,7 +1074,7 @@ missing from this file, so add a line here (or a mention above) with any new exp
 - `crimson_stageinfo_free` — Free a handle returned by either loader.
 - `crimson_stageinfo_entry_count` — Total number of stages in the loaded table.
 - `crimson_stageinfo_lookup_string_key` — Look up the internal name for a given `StageKey (u32)` and write it into `buf` (NUL-terminated UTF-8).
-- `crimson_stageinfo_lookup_display_name` — One-shot title resolution: chain `StageKey → internal name → hashlittle2 → PALOC u64 key → localized string`.
+- `crimson_stageinfo_lookup_display_name` — One-shot title resolution: chain `StageKey → internal name → hashlittle → PALOC u64 key → localized string`.
 - `crimson_stageinfo_get_entry` — Get the `(stage_key, internal_name)` pair at insertion index `idx`.
 
 **`src/c_abi/store_info.rs`**

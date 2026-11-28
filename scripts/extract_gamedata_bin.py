@@ -117,7 +117,7 @@ def extract_paloc(game_dir: str, version: str, t: PalocTarget, out_dir: Path) ->
         "concatenating their entry lists reproduces the pre-2.01 single",
         f"localizationstring_{t.lang}.paloc blob. Read with crimson_rs.parse_paloc_bytes();",
         "a string_key is either a name or the decimal (hash << 32) | namespace, where",
-        "hash = hashlittle2 of the owning row's internal name (0x100 quest titles,",
+        "hash = hashlittle of the owning row's internal name (0x100 quest titles,",
         "0x101 mission and stage titles).",
     ]
     if wrapped:

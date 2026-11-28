@@ -9,7 +9,7 @@
 //!    fallback. Mirror of [`super::iteminfo`] /
 //!    [`super::skill_info`]'s string-key getters.
 //! 2. [`crimson_missioninfo_lookup_display_name`] — chains internally
-//!    through `hashlittle2(name) → u64 PALOC key → PALOC string`,
+//!    through `hashlittle(name) → u64 PALOC key → PALOC string`,
 //!    returning the localized display title in one FFI call.
 //!    Implements the "Option B" shape from
 //!    `docs/save-editor-keys-plan.md` §3 (editor's stated preference:
@@ -22,7 +22,7 @@
 //! ```text
 //! MissionKey 1000157
 //!   └─► missioninfo row → "Mission_Intro_Tutorial_I"
-//!          └─► hashlittle2_c = 1891183967
+//!          └─► hashlittle_c = 1891183967
 //!                └─► (1891183967 << 32) | 0x101 = 8122573288984543489
 //!                      └─► PALOC.lookup_str("8122573288984543489")
 //!                            └─► "Unfamiliar Lands"
@@ -298,7 +298,7 @@ pub unsafe extern "C" fn crimson_missioninfo_lookup_string_key(
 // ── Display-name lookup (production — one-shot chain) ──────────────────────
 
 /// One-shot title resolution: chain `MissionKey → internal name →
-/// hashlittle2 → PALOC u64 key → localized string` and write the
+/// hashlittle → PALOC u64 key → localized string` and write the
 /// result into `buf` (NUL-terminated UTF-8).
 ///
 /// `lo32_namespace` selects the PALOC sub-namespace:
@@ -353,7 +353,7 @@ pub unsafe extern "C" fn crimson_missioninfo_lookup_display_name(
             return error::NOT_FOUND;
         };
 
-        // Step 2: hashlittle2(name) → u64 PALOC key
+        // Step 2: hashlittle(name) → u64 PALOC key
         let hi32 = calculate_checksum(name.as_bytes()) as u64;
         let u64_key = (hi32 << 32) | u64::from(lo32_namespace);
 

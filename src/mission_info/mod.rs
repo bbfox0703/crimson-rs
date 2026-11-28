@@ -37,7 +37,7 @@ pub struct MissionInfoEntry {
     /// `_missionStateList[N]._key`).
     pub key: u32,
     /// ASCII internal name (e.g. `"Mission_Intro_Tutorial_I"`). Feeds the
-    /// PALOC u64 lookup chain via `hashlittle2(name) << 32 | lo32`.
+    /// PALOC u64 lookup chain via `hashlittle(name) << 32 | lo32`.
     pub name: String,
 }
 

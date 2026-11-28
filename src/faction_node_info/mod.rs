@@ -12,7 +12,7 @@
 //! Every row names a `knowledgeinfo` row — the node's map / discovery entry
 //! (`Knowledge_Node_Her_HernandCastle`; 1,014 of 1,120 are `"Knowledge_" +` the
 //! node name, the rest differ) — and that knowledge's title is the place name
-//! the game shows: PALOC `(hashlittle2(knowledge name) << 32) | 0x490`, as the
+//! the game shows: PALOC `(hashlittle(knowledge name) << 32) | 0x490`, as the
 //! `knowledge_info` bridge resolves it. `Node_Her_HernandCastle` → "Hernand
 //! Castle", `Node_Her_GreymaneCamp` → "Howling Hill", `Node_Her_GlenbrightFarm`
 //! → "Glenbright Farm"; all 1,120 nodes have a title in all 15 languages.
@@ -53,7 +53,7 @@
 //!
 //! **PALOC chain**: none. The exhaustive probe in
 //! `_probe_faction_paloc_chains` scanned every plausible namespace at
-//! both identity and hashlittle2 hash-hop and returned only
+//! both identity and hashlittle hash-hop and returned only
 //! coincidental collisions with iteminfo / character / skill keys at
 //! `lo32 = 0x70 / 0x30 / 0x200` — no real localized faction-node names
 //! exist. The bridge mirrors [`crate::sub_level_info`] / [`crate::quest_gauge_info`]

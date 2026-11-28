@@ -76,8 +76,8 @@ pub fn parse_pabgh(data: &[u8]) -> io::Result<StringInfoIndex> {
     if data.len() >= 2 {
         let mut offset = 0usize;
         let count16 = u16::read_from(data, &mut offset)? as usize;
-        let needed = 2 + count16 * 8;
-        if needed == data.len() {
+        let needed = count16.checked_mul(8).and_then(|n| n.checked_add(2));
+        if needed == Some(data.len()) {
             let entries = read_entries(data, offset, count16)?;
             return Ok(StringInfoIndex { entries, count_width: CountWidth::U16, named: false });
         }
@@ -86,8 +86,9 @@ pub fn parse_pabgh(data: &[u8]) -> io::Result<StringInfoIndex> {
     if data.len() >= 4 {
         let mut offset = 0usize;
         let count32 = u32::read_from(data, &mut offset)? as usize;
-        let needed = 4 + count32 * 8;
-        if needed == data.len() {
+        // Checked so a huge count cannot wrap on a 32-bit target and pass.
+        let needed = count32.checked_mul(8).and_then(|n| n.checked_add(4));
+        if needed == Some(data.len()) {
             let entries = read_entries(data, offset, count32)?;
             return Ok(StringInfoIndex { entries, count_width: CountWidth::U32, named: false });
         }

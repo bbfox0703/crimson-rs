@@ -29,7 +29,7 @@ pub struct StageInfoEntry {
     /// `_stageStateData[N]._key`).
     pub key: u32,
     /// ASCII internal name. Feeds the PALOC u64 lookup chain via
-    /// `hashlittle2(name) << 32 | lo32`.
+    /// `hashlittle(name) << 32 | lo32`.
     pub name: String,
 }
 

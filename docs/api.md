@@ -193,7 +193,7 @@ Decompress data.
 
 ### `calculate_checksum(data: bytes) -> int`
 
-Compute Jenkins hashlittle2 checksum (seed `0xDEBA1DCD`).
+Compute Jenkins hashlittle checksum (seed `0xDEBA1DCD`).
 
 ---
 

@@ -345,7 +345,7 @@ pub unsafe extern "C" fn crimson_factionnode_lookup_knowledge_key(
 }
 
 /// The node's localized place name: `FactionNodeKey → KnowledgeKey →`
-/// knowledge name `→ PALOC (hashlittle2(name) << 32) | 0x490`, the knowledge
+/// knowledge name `→ PALOC (hashlittle(name) << 32) | 0x490`, the knowledge
 /// title (`crimson_knowledgeinfo_lookup_display_name` at `0x490`). The
 /// language is the PALOC handle's: every node has a title in all 15 shipped
 /// languages. Two-call pattern.
