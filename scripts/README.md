@@ -33,7 +33,7 @@ One command, three deliverables (`out\items.jsonl`, a `paloc_*.json` per languag
 |---|---|
 | [`anchor_diff.py`](anchor_diff.py) | Locate every item from `keys.txt` in the current binary and cross-reference with a baseline `items.jsonl` (any version). Reports added/removed/renamed items + per-item byte sizes. |
 | [`analyze_per_item.py`](analyze_per_item.py) | For each anchored item chunk, run the parser independently and classify the result as `ok` / `leftover:N` / `fail:<path>`. Used to drive parser improvements. |
-| [`probe_runtime_items.py`](probe_runtime_items.py) | **Read-only** (`ReadProcessMemory`) check of the running game: walks the in-memory item key array and reports which runtime item-object offsets hold the key, `max_stack_count`, `item_importance_kind` and the inventory tab, verified against `items.jsonl`. Re-run on a patch to see whether the offsets in [`CLAUDE.md`](CLAUDE.md) ("Runtime item objects") still hold. Takes `--array <key array address>`. |
+| [`probe_runtime_items.py`](probe_runtime_items.py) | **Read-only** (`ReadProcessMemory`) check of the running game: walks the in-memory item key array and reports which runtime item-object offsets hold the key, `max_stack_count`, `item_importance_kind` and the inventory tab, verified against `items.jsonl`. Re-run on a patch to see whether the offsets in [`../docs/runtime-item-objects.md`](../docs/runtime-item-objects.md) ("Runtime item objects") still hold. Takes `--array <key array address>`. |
 | [`inspect_leftover_bytes.py`](inspect_leftover_bytes.py) | For each `leftover:N` bucket, print the exact bytes the parser left unconsumed — tells you what new fields are missing. |
 
 ### Localization / paloc scripts
