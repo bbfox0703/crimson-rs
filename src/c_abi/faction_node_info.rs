@@ -784,7 +784,8 @@ mod dlc_tests {
         unsafe {
             assert_eq!(crimson_factionnode_merge_dlc_from_bytes(ptr::null_mut(), ptr::null(), 0, ptr::null(), 0, &mut added), error::NULL_ARG);
             assert_eq!(crimson_factionnode_merge_dlc_from_bytes(sh, ptr::null(), 4, ptr::null(), 0, &mut added), error::NULL_ARG);
-            assert_eq!(crimson_factionnode_merge_dlc_from_bytes(sh, ptr::null(), 0, ptr::null(), 0, &mut added), error::OK);
+            // No header: refused, nothing added (audit D-05).
+            assert_eq!(crimson_factionnode_merge_dlc_from_bytes(sh, ptr::null(), 0, ptr::null(), 0, &mut added), error::BODY_PARSE);
             assert_eq!(added, 0);
             let mut src = 0u32;
             assert_eq!(crimson_factionnode_entry_source(sh, 0, &mut src), error::OUT_OF_RANGE);

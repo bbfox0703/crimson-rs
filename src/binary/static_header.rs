@@ -100,6 +100,23 @@ pub fn detect_named_header(
     })
 }
 
+/// [`detect_named_header`] with the body at hand: among the width pairs that
+/// consume the header and tile the body, the first whose header keys all
+/// equal the keys opening their body rows. A short header can parse under
+/// more than one pair (2.06 `autospawnfilterinfo` passes `(2, 1)` and
+/// `(1, 2)`); the keys settle it instead of list order (audit B-08).
+pub fn detect_named_pair<'h>(hdr: &'h [u8], body: &[u8]) -> Option<(usize, usize, Vec<HeaderRow<'h>>)> {
+    WIDTHS.iter().find_map(|&(cw, kw)| {
+        let rows = parse_named_header(hdr, cw, kw)?;
+        if !rows_are_packed(&rows, body.len()) {
+            return None;
+        }
+        rows.iter()
+            .all(|r| body.get(r.offset as usize..r.offset as usize + kw).is_some_and(|k| read_uint(k) == r.key))
+            .then_some((cw, kw, rows))
+    })
+}
+
 /// True when the rows tile `0..body_len` in order with no gaps.
 pub fn rows_are_packed(rows: &[HeaderRow<'_>], body_len: usize) -> bool {
     let mut next = 0usize;
@@ -144,7 +161,7 @@ pub struct LegacyTable {
 /// `None` when `header` is not a 2.06 header for `body` (an older install, for
 /// which the parsers need no help) or a row is too short for its key and index.
 pub fn to_legacy_layout(body: &[u8], header: &[u8]) -> Option<LegacyTable> {
-    let (count_width, key_width, rows) = detect_named_header(header, body.len())?;
+    let (count_width, key_width, rows) = detect_named_pair(header, body)?;
     let mut new_body = Vec::with_capacity(body.len() + header.len());
     let mut new_header = Vec::with_capacity(count_width + rows.len() * (key_width + 4));
     new_header.extend_from_slice(&(rows.len() as u64).to_le_bytes()[..count_width]);
@@ -171,7 +188,7 @@ pub fn to_legacy_layout(body: &[u8], header: &[u8]) -> Option<LegacyTable> {
 /// The row indices of a 2.06 table, in header order (for
 /// [`from_legacy_layout`]). `None` when it is not a 2.06 pair.
 pub fn row_indices(body: &[u8], header: &[u8]) -> Option<Vec<u32>> {
-    let (_, kw, rows) = detect_named_header(header, body.len())?;
+    let (_, kw, rows) = detect_named_pair(header, body)?;
     rows.iter()
         .map(|r| read_body_row(body.get(r.range())?, kw).map(|b| b.index))
         .collect()
@@ -240,7 +257,7 @@ pub fn from_legacy_layout(
 /// instead of anchor-scanning the body. `None` when `header` is not a 2.06
 /// header for `body`, or when its keys are wider than a `u32`.
 pub fn header_row_names(body: &[u8], header: &[u8]) -> Option<Vec<(u32, String)>> {
-    let (_, key_width, rows) = detect_named_header(header, body.len())?;
+    let (_, key_width, rows) = detect_named_pair(header, body)?;
     if key_width > 4 {
         return None;
     }
@@ -263,6 +280,19 @@ pub fn legacy_pair<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// With the body at hand the keys pick the width pair; a body whose key
+    /// disagrees with every parse yields nothing (audit B-08).
+    #[test]
+    fn detect_named_pair_checks_keys() {
+        let mut body = vec![0x40];
+        body.extend_from_slice(&0u32.to_le_bytes());
+        body.push(9);
+        let h = header(2, 1, &[(0x40, "A", 0, 6)]);
+        assert_eq!(detect_named_pair(&h, &body).map(|(c, k, _)| (c, k)), Some((2, 1)));
+        body[0] = 0x41;
+        assert!(detect_named_pair(&h, &body).is_none());
+    }
 
     /// A row whose body key disagrees with its header key is not a valid
     /// 2.06 pair (audit B-06 / C-09).

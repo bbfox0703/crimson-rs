@@ -213,8 +213,9 @@ without the DLC has no `dlc/dlc_01` folder. Five bridges can merge it:
 
 ```c
 /* Add the DLC table's rows whose key the handle lacks; *out_added = how many.
-   header may be empty (null, 0) only for knowledge / characterinfo on a
-   pre-2.06 body. */
+   The header is required: an empty one returns BODY_PARSE (since 2026-11-28;
+   before, knowledge / characterinfo body-scanned the 2.06 body and added junk
+   rows). A merge that adds nothing no longer uses up a source number. */
 int32_t crimson_factionnode_merge_dlc_from_bytes(CrimsonFactionNodeInfoHandle *handle,
     const uint8_t *body, size_t body_len, const uint8_t *header, size_t header_len,
     uint32_t *out_added);

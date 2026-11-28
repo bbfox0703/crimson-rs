@@ -119,8 +119,8 @@ fn read_faction(rest: &[u8], at: usize) -> u32 {
 /// order (hashed 32-bit keys included); otherwise `data` is anchor-scanned as a
 /// pre-2.06 body.
 pub fn parse_character_info_lossy_with_header(data: &[u8], header: &[u8]) -> Vec<CharacterInfoEntry> {
-    use crate::binary::static_header::{detect_named_header, read_body_row};
-    let Some((_, key_width, rows)) = detect_named_header(header, data.len()) else {
+    use crate::binary::static_header::{detect_named_pair, read_body_row};
+    let Some((_, key_width, rows)) = detect_named_pair(header, data) else {
         return parse_character_info_lossy(data);
     };
     rows.iter()

@@ -280,20 +280,26 @@ pub(crate) struct EntrySources {
 }
 
 impl EntrySources {
-    /// The source number for the next merge (1 for the first DLC).
-    pub(crate) fn next_merge(&mut self) -> u8 {
-        self.merges = self.merges.saturating_add(1);
-        self.merges
+    /// The source number the next merge will use (1 for the first DLC). It is
+    /// taken only when that merge adds a row (see [`Self::push`]), so a merge
+    /// that adds nothing does not use a number up (audit B-10).
+    pub(crate) fn next_merge(&self) -> u8 {
+        self.merges.saturating_add(1)
     }
 
     pub(crate) fn push(&mut self, source: u8) {
         self.per_entry.push(source);
+        self.merges = self.merges.max(source);
     }
 }
 
 /// Shared body of every `*_merge_dlc_from_bytes`: argument checks, slices
 /// and the panic guard. `merge` adds the rows whose key the handle lacks and
 /// returns how many it added.
+///
+/// The DLC table's `.staticinfoheader` is required (`BODY_PARSE` without it):
+/// a 2.06 body carries no names, and the body-only scan the merges fell back
+/// to added junk rows (18 into characterinfo; audit D-05).
 ///
 /// # Safety
 /// `handle` must be a live handle of type `H` or null; `body` / `header`
@@ -315,6 +321,9 @@ pub(crate) unsafe fn merge_dlc_ffi<H>(
         return error::NULL_ARG;
     }
     unsafe { *out_added = 0 };
+    if header_len == 0 {
+        return error::BODY_PARSE;
+    }
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &mut *handle };
         let body = unsafe { slice_from_raw_or_empty(body, body_len) };

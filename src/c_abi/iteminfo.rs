@@ -499,21 +499,16 @@ impl CrimsonItemInfoHandle {
         // Canonical gem set is the (item_type=74, category=2501) bucket
         // — collected during the parse loop above.
         let canonical_gem_list: Vec<u32> = canonical_gems_set.into_iter().collect();
-        // Inverse of look_detail_mission_by_key. The forward map is
-        // verified 1:1 against the live 1.07 install, so this inverse
-        // is unambiguous; if a future patch broke the 1:1 invariant
-        // we'd silently overwrite earlier entries — surface a warning
-        // in that case so we know to revisit the schema.
-        let mut artifact_by_mission: HashMap<u32, u32> =
-            HashMap::with_capacity(look_detail_mission_by_key.len());
-        for (&item_key, &mission_key) in &look_detail_mission_by_key {
-            if artifact_by_mission.insert(mission_key, item_key).is_some() {
-                eprintln!(
-                    "warn: look_detail_mission_info 1:1 invariant broken — \
-                     mission {mission_key} pointed at by multiple artifacts; \
-                     keeping last-write-wins"
-                );
-            }
+        // Inverse of look_detail_mission_by_key, which is 1:1 on every
+        // install checked (the live test pins it). Should a patch break that,
+        // the lowest ItemKey wins: iterating the HashMap made the winner
+        // random, and a DLL has no business printing to stderr (audit C-12).
+        let mut pairs: Vec<(u32, u32)> =
+            look_detail_mission_by_key.iter().map(|(&item, &mission)| (item, mission)).collect();
+        pairs.sort_unstable();
+        let mut artifact_by_mission: HashMap<u32, u32> = HashMap::with_capacity(pairs.len());
+        for (item_key, mission_key) in pairs {
+            artifact_by_mission.entry(mission_key).or_insert(item_key);
         }
         Ok(CrimsonItemInfoHandle {
             by_key,
@@ -575,8 +570,9 @@ pub unsafe extern "C" fn crimson_iteminfo_load_from_file(
     .unwrap_or(error::PANIC)
 }
 
-/// Parse iteminfo bytes already in memory (preferred — the editor pulls
-/// them through PAZ extraction first).
+/// Parse iteminfo bytes already in memory. On 2.06+ the row names live in
+/// the `.staticinfoheader`: use `crimson_iteminfo_load_from_bytes_with_header`,
+/// or every name lookup returns `NOT_FOUND`.
 ///
 /// # Safety
 /// `data` must point to `data_len` readable bytes; `out_handle` must
@@ -703,7 +699,10 @@ pub unsafe extern "C" fn crimson_iteminfo_entry_count(
 /// - Allocate, call again to receive the bytes and `OK`.
 ///
 /// Returns `NOT_FOUND` when `item_key` doesn't match any item in the
-/// loaded table.
+/// loaded table, or when the item has no name: a 2.06 table loaded without
+/// its `.staticinfoheader` holds every row nameless, and this used to return
+/// `OK` with an empty string (audit C-06). Load 2.06 tables with
+/// `crimson_iteminfo_load_from_bytes_with_header`.
 ///
 /// # Safety
 /// `handle` and `required` must be non-null; `buf` may be null iff
@@ -725,7 +724,7 @@ pub unsafe extern "C" fn crimson_iteminfo_lookup_string_key(
     unsafe { *required = 0 };
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &*handle };
-        let Some(name) = h.by_key.get(&item_key) else {
+        let Some(name) = h.by_key.get(&item_key).filter(|n| !n.is_empty()) else {
             return error::NOT_FOUND;
         };
         let needed = name.len() + 1;
