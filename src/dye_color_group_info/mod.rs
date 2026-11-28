@@ -334,9 +334,11 @@ const TRAILER_MARKER: [u8; 5] = [0x23, 0x31, 0x02, 0x00, 0x00];
 
 /// The start of each of the `count` color records in `body[from..to]`: a
 /// record-by-record walk over `BGRA` + an inline condition (2.06) first, then
-/// equal sizes (the 8-byte records through 2.05.01, or any one size). `None`
-/// when neither fits. The flag says whether the walk (inline conditions)
-/// placed them.
+/// the 8-byte records (`BGRA` + `u32` ConditionInfoKey) through 2.05.01.
+/// `None` when neither fits. Equal sizes other than 8 used to be accepted
+/// too, which read colors from the wrong offsets when records of mixed length
+/// happened to divide the span evenly (audit E-02). The flag says whether the
+/// walk (inline conditions) placed them.
 fn record_starts(body: &[u8], from: usize, to: usize, count: usize) -> Option<(Vec<usize>, bool)> {
     let span = to.checked_sub(from)?;
     if count == 0 {
@@ -352,8 +354,7 @@ fn record_starts(body: &[u8], from: usize, to: usize, count: usize) -> Option<(V
         (at == to).then_some(starts)
     };
     walk().map(|s| (s, true)).or_else(|| {
-        (span % count == 0 && span / count >= 4)
-            .then(|| ((0..count).map(|i| from + i * (span / count)).collect(), false))
+        (span == count * 8).then(|| ((0..count).map(|i| from + i * 8).collect(), false))
     })
 }
 

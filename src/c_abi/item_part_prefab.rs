@@ -169,10 +169,15 @@ impl PrefabArchive {
         Ok(PrefabArchive { group_dir, meta, by_stem })
     }
 
-    /// The `.pac` paths of prefab `name`, or `None` when the group has no
-    /// such prefab or it cannot be extracted.
-    fn pac_paths(&self, name: &str) -> Option<Vec<String>> {
-        let &(di, fi) = self.by_stem.get(&name.to_ascii_lowercase())?;
+    /// The `.pac` paths of prefab `name`: `Ok(None)` when the group has no
+    /// such prefab, `Err` when it has one that cannot be extracted. An
+    /// extraction failure used to read as "no prefab", be cached for every
+    /// item using it, and let a DLC merge fall back to a same-named base
+    /// prefab (audit E-05).
+    fn pac_paths(&self, name: &str) -> io::Result<Option<Vec<String>>> {
+        let Some(&(di, fi)) = self.by_stem.get(&name.to_ascii_lowercase()) else {
+            return Ok(None);
+        };
         let d = &self.meta.directories[di];
         let bytes = crate::binary::paz::extract_file(
             &self.group_dir,
@@ -180,8 +185,8 @@ impl PrefabArchive {
             &d.path,
             &self.meta.header.encrypt_info.encrypt_info,
         )
-        .ok()?;
-        Some(prefab_pac_paths(&bytes))
+        .map_err(|e| io::Error::new(e.kind(), format!("prefab {name}: {e}")))?;
+        Ok(Some(prefab_pac_paths(&bytes)))
     }
 }
 
@@ -194,14 +199,30 @@ enum Resolver {
 }
 
 impl Resolver {
-    fn keys(&self, name: &str, rows: &HashMap<u32, PartPrefabDyeSlotInfoEntry>) -> Vec<u32> {
+    /// Row keys for prefab `name`. A prefab that exists but cannot be
+    /// extracted is recorded in `failure` (first one kept) and resolves to
+    /// nothing; the load then fails with it.
+    fn keys(
+        &self,
+        name: &str,
+        rows: &HashMap<u32, PartPrefabDyeSlotInfoEntry>,
+        failure: &mut Option<io::Error>,
+    ) -> Vec<u32> {
         match self {
             Resolver::Names(by_name) => by_name.get(name).copied().into_iter().collect(),
-            Resolver::Prefabs(archives) => archives
-                .iter()
-                .find_map(|a| a.pac_paths(name))
-                .map(|paths| pac_keys(&paths, rows))
-                .unwrap_or_default(),
+            Resolver::Prefabs(archives) => {
+                for a in archives {
+                    match a.pac_paths(name) {
+                        Ok(Some(paths)) => return pac_keys(&paths, rows),
+                        Ok(None) => {}
+                        Err(e) => {
+                            failure.get_or_insert(e);
+                            return Vec::new();
+                        }
+                    }
+                }
+                Vec::new()
+            }
         }
     }
 }
@@ -317,7 +338,11 @@ impl CrimsonItemPartPrefabHandle {
         add_strings(&mut strings, stringinfo_pabgb)?;
         let rows: HashMap<u32, PartPrefabDyeSlotInfoEntry> =
             rows.into_iter().map(|e| (e.key, e)).collect();
-        let items = join_items(iteminfo_pabgb, &strings, |name| resolver.keys(name, &rows))?;
+        let mut failure = None;
+        let items = join_items(iteminfo_pabgb, &strings, |name| resolver.keys(name, &rows, &mut failure))?;
+        if let Some(e) = failure {
+            return Err(e);
+        }
         let mut h = CrimsonItemPartPrefabHandle {
             part_prefab_keys_by_item: HashMap::new(),
             prefab_names_by_item: HashMap::new(),
@@ -366,12 +391,21 @@ impl CrimsonItemPartPrefabHandle {
         let items = {
             let (rows, resolver) = (&self.rows, &self.resolver);
             let dlc = prefabs.as_ref().filter(|_| matches!(resolver, Resolver::Prefabs(_)));
-            join_items(iteminfo_pabgb, &strings, |name| {
-                match dlc.and_then(|d| d.pac_paths(name)) {
-                    Some(paths) => pac_keys(&paths, rows),
-                    None => resolver.keys(name, rows),
+            let mut failure = None;
+            let items = join_items(iteminfo_pabgb, &strings, |name| {
+                match dlc.map(|d| d.pac_paths(name)).transpose() {
+                    Ok(Some(Some(paths))) => pac_keys(&paths, rows),
+                    Ok(_) => resolver.keys(name, rows, &mut failure),
+                    Err(e) => {
+                        failure.get_or_insert(e);
+                        Vec::new()
+                    }
                 }
-            })?
+            })?;
+            if let Some(e) = failure {
+                return Err(e);
+            }
+            items
         };
         // Commit.
         self.dlc_count += 1;

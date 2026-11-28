@@ -96,6 +96,28 @@ fn check_fully_decoded(block: &ObjectBlock) -> Result<(), String> {
     Ok(())
 }
 
+/// The encoder lays the data section out as the TOC's blocks back to back,
+/// from the end of the TOC to `stream_size`. A save whose blocks overlap,
+/// leave gaps or stop short of `stream_size` would lose those bytes on
+/// re-encode (audit F-11); every save measured (30) is contiguous.
+fn check_contiguous_layout(body: &Body) -> Result<(), String> {
+    let entries = &body.toc.entries;
+    let mut next = body.schema.schema_end + 12 + entries.len() * 20;
+    for e in entries {
+        if e.data_offset as usize != next {
+            return Err(format!(
+                "TOC entry {} starts at {} where the previous block ended at {next}",
+                e.index, e.data_offset
+            ));
+        }
+        next += e.data_size as usize;
+    }
+    if next != body.toc.stream_size as usize {
+        return Err(format!("blocks end at {next}, stream_size says {}", body.toc.stream_size));
+    }
+    Ok(())
+}
+
 /// [`check_fully_decoded`] over a whole decoded tree, for callers that need
 /// to know a re-decode explained every byte (the C ABI's post-commit check).
 #[cfg_attr(not(feature = "c_abi"), allow(dead_code))]
@@ -227,6 +249,9 @@ pub fn encode_body(
             )
         })?;
     }
+    check_contiguous_layout(body).map_err(|why| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("{why}; refusing to re-encode the body"))
+    })?;
 
     // Encode each block first so we know its size. To compute the
     // absolute body offset to pass each `encode_top_level_block` call,

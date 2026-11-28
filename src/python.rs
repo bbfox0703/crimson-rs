@@ -387,7 +387,7 @@ pub fn serialize_iteminfo_with_header(py: Python<'_>, items: &Bound<'_, PyList>)
         let key: u32 = get(d, "key")?;
         let name: String = get(d, "string_key")?;
         let offset = body.len();
-        wr_item(&mut body, &item)?;
+        wr_item_checked(&mut body, &item)?;
         let size = body.len() - offset;
         header.extend_from_slice(&key.to_le_bytes());
         header.extend_from_slice(&(name.len() as u32).to_le_bytes());
@@ -405,9 +405,30 @@ pub fn serialize_iteminfo_with_header(py: Python<'_>, items: &Bound<'_, PyList>)
 pub fn serialize_iteminfo_impl(items: &Bound<'_, PyList>) -> PyResult<Vec<u8>> {
     let mut buf = Vec::new();
     for item in items.iter() {
-        wr_item(&mut buf, &item)?;
+        wr_item_checked(&mut buf, &item)?;
     }
     Ok(buf)
+}
+
+/// [`wr_item`], then parse the written row back: it must read as one item
+/// that consumes exactly its own bytes. A conditional field out of step with
+/// the fields that gate it (`unk_pre_gimmick_visual` after editing
+/// `equip_type_info` / `item_type`, audit H-12) or a wrong-length value used
+/// to produce a row that only failed on the next parse.
+fn wr_item_checked(buf: &mut Vec<u8>, item: &Bound<'_, PyAny>) -> PyResult<()> {
+    let start = buf.len();
+    wr_item(buf, item)?;
+    let row = &buf[start..];
+    let mut off = 0;
+    let ok = ItemInfo::read_from(row, &mut off).is_ok() && off == row.len();
+    if !ok {
+        let key: Option<u32> = item.cast::<PyDict>().ok().and_then(|d| get(d, "key").ok());
+        return Err(PyValueError::new_err(format!(
+            "item {}: the written row does not parse back as one item (a conditional field such as unk_pre_gimmick_visual out of step with equip_type_info / item_type, or a value of the wrong size)",
+            key.map_or_else(|| "?".to_string(), |k| k.to_string())
+        )));
+    }
+    Ok(())
 }
 
 // ── PAPGT to/from Python ───────────────────────────────────────────────────
@@ -454,6 +475,7 @@ pub fn wr_papgt_from_dict(d: &Bound<'_, PyDict>) -> PyResult<Vec<u8>> {
 
     let mut entries = Vec::new();
     let mut group_names_buffer = Vec::new();
+    let mut claimed: Vec<bool> = Vec::new();
 
     for item in entries_list.iter() {
         let ed = item.cast::<PyDict>()?;
@@ -464,16 +486,37 @@ pub fn wr_papgt_from_dict(d: &Bound<'_, PyDict>) -> PyResult<Vec<u8>> {
         let group_name_offset: u32 = get(ed, "group_name_offset")?;
         let pack_meta_checksum: u32 = get(ed, "pack_meta_checksum")?;
 
-        // Write group name to buffer at the offset
-        // For new entries, we'd need to append. For roundtrip, offsets are preserved.
-        // Ensure the buffer is large enough
-        let needed = group_name_offset as usize + group_name.len() + 1;
-        if group_names_buffer.len() < needed {
-            group_names_buffer.resize(needed, 0);
+        // Write the name (plus its NUL) at its stored offset. Names used to
+        // overwrite each other silently when two offsets overlapped, and one
+        // huge offset allocated that much (audit H-05): a slot may be shared
+        // only by identical names, and an offset has to stay within reach of
+        // the names given.
+        if group_name.as_bytes().contains(&0) {
+            return Err(PyValueError::new_err(format!("group name {group_name:?} contains a NUL byte")));
         }
         let off = group_name_offset as usize;
-        group_names_buffer[off..off + group_name.len()].copy_from_slice(group_name.as_bytes());
-        group_names_buffer[off + group_name.len()] = 0; // null terminator
+        if off > entries_list.len() * 256 {
+            return Err(PyValueError::new_err(format!(
+                "group_name_offset {off} for {group_name:?} is past any buffer {} names could fill",
+                entries_list.len()
+            )));
+        }
+        let mut slot = group_name.as_bytes().to_vec();
+        slot.push(0);
+        let end = off + slot.len();
+        if group_names_buffer.len() < end {
+            group_names_buffer.resize(end, 0);
+            claimed.resize(end, false);
+        }
+        for (i, &b) in slot.iter().enumerate() {
+            if claimed[off + i] && group_names_buffer[off + i] != b {
+                return Err(PyValueError::new_err(format!(
+                    "group name {group_name:?} at offset {off} overlaps another name in the buffer"
+                )));
+            }
+            group_names_buffer[off + i] = b;
+            claimed[off + i] = true;
+        }
 
         entries.push(ResolvedEntry {
             group_name,

@@ -1720,34 +1720,34 @@ where
     // if `Body::write` or `Body::parse` fails on bytes we produced.
     let blocks_backup = h.blocks.clone();
 
-    if let Err(code) = mutator(&mut h.blocks) {
-        // Mutator already gave up; restore and return.
-        h.blocks = blocks_backup;
-        return code;
-    }
-
-    let new_body = match h.body.write(&h.save.body, &h.blocks) {
-        Ok(b) => b,
-        Err(_) => {
+    // A panic inside the mutator or the encode / re-parse used to leave
+    // `h.blocks` half-edited while the outer guard reported PANIC (audit
+    // G-05). Catch it here, restore the snapshot, then let it continue to the
+    // outer guard.
+    let attempt = catch_unwind(AssertUnwindSafe(|| -> Result<(Vec<u8>, Body, Vec<ObjectBlock>), i32> {
+        mutator(&mut h.blocks)?;
+        let new_body = h.body.write(&h.save.body, &h.blocks).map_err(|_| error::MUTATION_INVALID)?;
+        let new_body_parsed = Body::parse(&new_body).map_err(|_| error::MUTATION_INVALID)?;
+        let new_blocks = new_body_parsed.decode_blocks(&new_body);
+        // The re-decode is the check: the bytes just produced must decode
+        // back completely, or the edit wrote something the decoder cannot
+        // read (e.g. an element transplanted from a different schema).
+        if crate::save::blocks_fully_decoded(&new_blocks).is_err() {
+            return Err(error::MUTATION_INVALID);
+        }
+        Ok((new_body, new_body_parsed, new_blocks))
+    }));
+    let (new_body, new_body_parsed, new_blocks) = match attempt {
+        Ok(Ok(parts)) => parts,
+        Ok(Err(code)) => {
             h.blocks = blocks_backup;
-            return error::MUTATION_INVALID;
+            return code;
+        }
+        Err(panic) => {
+            h.blocks = blocks_backup;
+            std::panic::resume_unwind(panic);
         }
     };
-    let new_body_parsed = match Body::parse(&new_body) {
-        Ok(b) => b,
-        Err(_) => {
-            h.blocks = blocks_backup;
-            return error::MUTATION_INVALID;
-        }
-    };
-    let new_blocks = new_body_parsed.decode_blocks(&new_body);
-    // The re-decode is the check: the bytes just produced must decode back
-    // completely, or the edit wrote something the decoder cannot read (e.g.
-    // an element transplanted from a different schema). Roll back.
-    if crate::save::blocks_fully_decoded(&new_blocks).is_err() {
-        h.blocks = blocks_backup;
-        return error::MUTATION_INVALID;
-    }
 
     h.save.body = new_body;
     h.body = new_body_parsed;
