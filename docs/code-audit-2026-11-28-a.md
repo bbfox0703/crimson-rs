@@ -191,7 +191,7 @@
 - **問題與根因：** 這些乘法和加法在 debug 會溢位 panic，在 release 會 wrap。`mip_count` 最大到 2³²，`expected_total_size` 就會跑 2³² 次迴圈（數秒的 CPU）。如果再搭配宣告約 4 GiB 的 `uncompressed_size`，讓 `expected_total_size == uncompressed_size` 成立（例如 1×1 DXT1、約 5 億層），`raw_mip_sizes` 會配置約 4 GB。這些都要先解密出一個構造的 DDS，而且策略 2（`:124`）會先依宣告值配置（A-02），所以實際影響被 A-02 蓋過。
 - **嚴重度：** low。
 - **確信度：** plausible。
-- **來源：** 既有問題（partial 解碼器，`8623be0` 之後的 PAZ partial 支援）。
+- **來源：** 既有問題（`ad7596e`，2026-05-13，PAZ partial-compression 解碼器；`mip_count` 首次出現在這個 commit）。
 
 ### A-13 — 版本閘門沒有實作成函式
 

@@ -241,7 +241,7 @@
 |---|---:|---|---:|
 | crafttoolinfo | 17 | `src/craft_tool_info/mod.rs:5`、`src/c_abi/craft_tool_info.rs:6`、`docs/c-abi-surface.md:508` | 19 |
 | crafttoolgroupinfo | 10 | `src/craft_tool_group_info/mod.rs:5`、`src/c_abi/craft_tool_group_info.rs:6`、`c-abi-surface.md:509` | 12 |
-| gameadviceinfo | 461 | `src/game_advice_info/mod.rs:5`、`:6-7`（「break the 461 tips」見 group 模組 `:6`）、`src/c_abi/game_advice_info.rs:5`、`c-abi-surface.md:518` | 482 |
+| gameadviceinfo | 461 | `src/game_advice_info/mod.rs:5`、`src/game_advice_group_info/mod.rs:6`（「break the 461 tips」）、`src/c_abi/game_advice_info.rs:5`、`c-abi-surface.md:518` | 482 |
 | gameplayvariableinfo | 47 | `src/gameplay_variable_info/mod.rs:5`、`src/c_abi/gameplay_variable_info.rs:4`、`c-abi-surface.md:511` | 68 |
 | globalgameevent | 103（含「~24 of 103」、「1 of 7 distinct」） | `src/global_game_event_info/mod.rs:5`、`src/c_abi/global_game_event_info.rs:11,18,20,210-212`、`c-abi-surface.md:512` | 191（12 個 group） |
 | globalgameeventgroup | 7 | `src/global_game_event_group_info/mod.rs:5`、`src/c_abi/global_game_event_group_info.rs:4`、`c-abi-surface.md:517` | 12 |
