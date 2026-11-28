@@ -305,6 +305,18 @@ int32_t crimson_factionnode_entry_source(const CrimsonFactionNodeInfoHandle *han
   instead of being reinterpreted. Written for CrimsonAtomtic's dragon unlock,
   whose captured 1.09-era element no longer fit `MercenarySaveData` after
   2.00 (`_occupationState` removed, `_shipStationSaveList` added in 2.01).
+- **Save-editing safety fixes (2026-11-28, audit G-01 / G-03 / G-04 / G-06)** — no
+  signature changed, but four behaviours did:
+  `crimson_save_list_all_items` and `crimson_save_list_field_positions` now take
+  the same process-global lock as every other `crimson_save_*` call, so they are
+  safe beside a mutation on another thread. `crimson_save_set_object_list_present`
+  leaves a list already in the requested state alone (making a present list
+  present again used to replace its elements with one default element). Every
+  length-changing list edit (remove, clone, insert, transplant, template insert)
+  returns the new `LIST_PARTIALLY_DECODED` (−26) instead of editing a list whose
+  header count exceeds the elements the decoder read. And `mutation_version` now
+  moves with every mutation inside a deferred batch and forward on abort, see
+  [`save-mutation-version.md`](save-mutation-version.md).
 
 **Absence markers.** The engine writes one `0x01` byte for every *absent*
 dynamic array (`meta_kind` 3) and object list (6 / 7), and nothing for other

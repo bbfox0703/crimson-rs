@@ -62,7 +62,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use crate::save::{FieldValue, ObjectBlock, ScalarValue};
 
-use super::{CrimsonSaveHandle, error};
+use super::{CrimsonSaveHandle, error, save_ffi_lock};
 
 /// Container-kind classification for [`CrimsonItemRecord::container_kind`].
 ///
@@ -718,6 +718,10 @@ pub unsafe extern "C" fn crimson_save_list_all_items(
     }
     unsafe { *out_count_records = 0 };
     catch_unwind(AssertUnwindSafe(|| {
+        // Same process-global lock as every other save entry point: the
+        // walk reads `h.blocks`, which a length-changing edit on another
+        // thread replaces.
+        let _ffi_guard = save_ffi_lock();
         let h = unsafe { &*handle };
         if !out_version.is_null() {
             unsafe { *out_version = h.mutation_version };

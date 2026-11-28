@@ -175,6 +175,12 @@ pub mod error {
     /// instance to learn from. Nothing is reinterpreted; the save is
     /// untouched.
     pub const TEMPLATE_MISMATCH: i32 = -25;
+    /// A length-changing list edit targeted an `object_list` the decoder
+    /// read only part of: its header `count` is larger than the elements it
+    /// decoded (the legacy walk stops at the first element it can't read).
+    /// Rewriting `count` from the decoded elements would drop the rest, so
+    /// the edit is refused and the save is untouched.
+    pub const LIST_PARTIALLY_DECODED: i32 = -26;
     pub const PANIC: i32 = -99;
 }
 
@@ -1685,8 +1691,11 @@ where
         // Deferred path: the begin_* snapshot already captured the
         // pre-batch state, so we don't pay a per-op clone. A failed
         // mutator leaves `h.blocks` partially mutated; abort_* will
-        // restore. Caller's contract.
-        return match mutator(&mut h.blocks) {
+        // restore. Caller's contract. Reads see the in-progress tree, so
+        // the version moves with it, even on a failed (partial) mutation.
+        let result = mutator(&mut h.blocks);
+        h.bump_version();
+        return match result {
             Ok(()) => error::OK,
             Err(code) => code,
         };
@@ -1895,15 +1904,17 @@ pub unsafe extern "C" fn crimson_save_set_scalar_field(
         if h.is_deferred() {
             // Deferred path: update the field's ScalarValue in place;
             // the encode at end_deferred_redecode emits the new bytes.
-            // No body patch, no decode_blocks, no version bump (the
-            // batch's end_* bumps once for the whole transaction).
-            return match apply_scalar_mutation_in_blocks(
+            // No body patch, no decode_blocks. Reads see the in-progress
+            // tree, so the version moves with it.
+            let result = apply_scalar_mutation_in_blocks(
                 &mut h.blocks,
                 block_idx,
                 &[],
                 field_idx,
                 src,
-            ) {
+            );
+            h.bump_version();
+            return match result {
                 Ok(()) => error::OK,
                 Err(code) => code,
             };
@@ -1985,13 +1996,15 @@ pub unsafe extern "C" fn crimson_save_set_scalar_field_path(
         };
         let src = unsafe { slice_from_raw_or_empty(bytes, bytes_len) };
         if h.is_deferred() {
-            return match apply_scalar_mutation_in_blocks(
+            let result = apply_scalar_mutation_in_blocks(
                 &mut h.blocks,
                 block_idx,
                 steps,
                 field_idx,
                 src,
-            ) {
+            );
+            h.bump_version();
+            return match result {
                 Ok(()) => error::OK,
                 Err(code) => code,
             };
@@ -2343,6 +2356,9 @@ pub unsafe extern "C" fn crimson_save_set_scalar_fields_batch(
         // batch's abort_* call will roll back if the caller wants
         // all-or-nothing semantics.
         if h.is_deferred() {
+            // Reads see the in-progress tree, so the version moves with it,
+            // also when an op fails after earlier ones were applied.
+            h.bump_version();
             for (i, op) in ops_slice.iter().enumerate() {
                 let steps: &[CrimsonPathStep] = if op.path_len == 0 {
                     &[]
@@ -2487,6 +2503,9 @@ pub unsafe extern "C" fn crimson_save_list_remove_element(
             else {
                 return Err(error::NOT_SCALAR);
             };
+            if *count as usize != elements.len() {
+                return Err(error::LIST_PARTIALLY_DECODED);
+            }
             if (element_idx as usize) >= elements.len() {
                 return Err(error::OUT_OF_RANGE);
             }
@@ -2619,6 +2638,9 @@ fn remove_one_list_element_in_place(
     else {
         return Err(error::NOT_SCALAR);
     };
+    if *count as usize != elements.len() {
+        return Err(error::LIST_PARTIALLY_DECODED);
+    }
     if (element_idx as usize) >= elements.len() {
         return Err(error::OUT_OF_RANGE);
     }
@@ -2687,6 +2709,9 @@ pub unsafe extern "C" fn crimson_save_list_clone_element(
             else {
                 return Err(error::NOT_SCALAR);
             };
+            if *count as usize != elements.len() {
+                return Err(error::LIST_PARTIALLY_DECODED);
+            }
             if (src_element_idx as usize) >= elements.len() {
                 return Err(error::OUT_OF_RANGE);
             }
@@ -2863,6 +2888,9 @@ pub unsafe extern "C" fn crimson_save_transplant_list_element(
             else {
                 return Err(error::NOT_OBJECT_LIST);
             };
+            if *count as usize != elements.len() {
+                return Err(error::LIST_PARTIALLY_DECODED);
+            }
             if insert_at as usize > elements.len() {
                 return Err(error::OUT_OF_RANGE);
             }
@@ -3075,6 +3103,9 @@ fn build_zero1_count_u24_header(count: u32) -> Result<Vec<u8>, i32> {
 ///   was before the matching `make_present == 1` call — `present(1)
 ///   → present(0)` is byte-identical to the original.
 ///
+/// A field already in the requested state is left untouched (`OK`): making
+/// a present list present again keeps its elements.
+///
 /// Validation:
 /// - The field's schema `meta_kind` must be `6` or `7` (ObjectList);
 ///   else `NOT_OBJECT_LIST`. Scalar / inline-bytes / dynamic-array
@@ -3260,6 +3291,12 @@ fn toggle_one_object_list_presence_in_place(
     }
     if target_idx / 8 >= parent.mask_bytes.len() {
         return Err(error::OUT_OF_RANGE);
+    }
+    // Already in the requested state: leave it alone. Making a present list
+    // present again used to replace its N elements with the one default
+    // element (audit G-03).
+    if field.present == make_present {
+        return Ok(());
     }
 
     let byte_idx = target_idx / 8;
@@ -3584,6 +3621,9 @@ pub unsafe extern "C" fn crimson_save_list_insert_element(
             else {
                 return Err(error::NOT_SCALAR);
             };
+            if *count as usize != elements.len() {
+                return Err(error::LIST_PARTIALLY_DECODED);
+            }
             if (insert_at as usize) > elements.len() {
                 return Err(error::OUT_OF_RANGE);
             }
@@ -4224,10 +4264,12 @@ pub unsafe extern "C" fn crimson_save_write_to_file(
 /// `crimson_save_write_to_file` is rejected with `BATCH_IN_PROGRESS`
 /// while a batch is open (`h.save.body` is stale until end).
 ///
-/// `mutation_version` is bumped exactly **once** by a successful
-/// `crimson_save_end_deferred_redecode` (regardless of how many
-/// mutations ran inside the batch). `crimson_save_abort_deferred_redecode`
-/// does not bump it.
+/// `mutation_version` moves with what the read entry points see: every
+/// mutation inside the batch bumps it (reads return the in-progress tree),
+/// a successful `crimson_save_end_deferred_redecode` bumps it once more,
+/// and `crimson_save_abort_deferred_redecode` bumps it when the batch
+/// changed anything. It never returns to an earlier value, so a snapshot
+/// stamped mid-batch can never match a later, different state.
 ///
 /// Returns:
 /// - `OK` on success.
@@ -4300,26 +4342,28 @@ pub unsafe extern "C" fn crimson_save_end_deferred_redecode(
         // Try to commit: encode_body(h.blocks) → fresh bytes → parse →
         // decode. On any step's failure, restore blocks from the
         // snapshot and surface MUTATION_INVALID.
+        // A failed commit restores the pre-begin tree; like abort_*, it moves
+        // the version forward past any mid-batch value readers may hold.
+        let roll_back = |h: &mut CrimsonSaveHandle, state: DeferredState| {
+            h.blocks = state.blocks_backup;
+            if h.mutation_version != state.version_at_begin {
+                h.bump_version();
+            }
+            error::MUTATION_INVALID
+        };
         let new_body = match h.body.write(&h.save.body, &h.blocks) {
             Ok(b) => b,
-            Err(_) => {
-                h.blocks = state.blocks_backup;
-                return error::MUTATION_INVALID;
-            }
+            Err(_) => return roll_back(h, state),
         };
         let new_body_parsed = match Body::parse(&new_body) {
             Ok(b) => b,
-            Err(_) => {
-                h.blocks = state.blocks_backup;
-                return error::MUTATION_INVALID;
-            }
+            Err(_) => return roll_back(h, state),
         };
         let new_blocks = new_body_parsed.decode_blocks(&new_body);
         h.save.body = new_body;
         h.body = new_body_parsed;
         h.blocks = new_blocks;
         h.bump_version();
-        let _ = state.version_at_begin; // captured but unused on the success path
         error::OK
     }))
     .unwrap_or(error::PANIC)
@@ -4329,8 +4373,10 @@ pub unsafe extern "C" fn crimson_save_end_deferred_redecode(
 /// [`crimson_save_begin_deferred_redecode`], discarding every
 /// in-memory mutation since `begin_*` and restoring the snapshot.
 ///
-/// `mutation_version` is reset to its pre-begin value (an aborted
-/// batch is observationally identical to one that never opened).
+/// `mutation_version` is bumped when the batch changed anything (reads
+/// during the batch may have stamped the in-progress tree with a
+/// mid-batch version, so the counter moves forward rather than back) and
+/// left alone when it changed nothing.
 ///
 /// Returns:
 /// - `OK` on success.
@@ -4353,7 +4399,13 @@ pub unsafe extern "C" fn crimson_save_abort_deferred_redecode(
             return error::BATCH_NOT_OPEN;
         };
         h.blocks = state.blocks_backup;
-        h.mutation_version = state.version_at_begin;
+        // Readers may have stamped the in-progress tree with a mid-batch
+        // version; going back to the pre-begin number would let a later
+        // mutation reuse one of those. Move forward instead, unless the
+        // batch changed nothing.
+        if h.mutation_version != state.version_at_begin {
+            h.bump_version();
+        }
         error::OK
     }))
     .unwrap_or(error::PANIC)
@@ -7576,6 +7628,61 @@ mod tests {
             "body bytes must be byte-identical to original after the full round-trip"
         );
 
+        // ── G-03: making the (present, non-empty) `_itemList` present again
+        //    is a no-op. It used to replace every item with one default
+        //    element.
+        let item_list_path = [CrimsonPathStep { field_idx: inv_field_idx, element_idx: inv_elem_idx }];
+        let item_list_len = |h: &CrimsonSaveHandle| {
+            let FieldValue::ObjectList { elements: containers, .. } =
+                &h.blocks[block_idx as usize].fields[inv_field_idx as usize].value
+            else { panic!("inv field shape changed") };
+            let FieldValue::ObjectList { count, elements, .. } =
+                &containers[inv_elem_idx as usize].fields[item_field_idx as usize].value
+            else { panic!("item field shape changed") };
+            (*count, elements.len())
+        };
+        let before = item_list_len(unsafe { &*handle });
+        assert!(before.1 > item_elem_idx as usize, "the target item sits in this list");
+        let rc = unsafe {
+            crimson_save_set_object_list_present(
+                handle,
+                block_idx,
+                item_list_path.as_ptr(),
+                item_list_path.len(),
+                item_field_idx,
+                1,
+            )
+        };
+        assert_eq!(rc, error::OK);
+        assert_eq!(item_list_len(unsafe { &*handle }), before, "present(1) on a present list keeps it");
+        assert_eq!(unsafe { (*handle).save.body.clone() }, original_body);
+
+        // ── G-06: a list whose header count exceeds the decoded elements
+        //    (what the legacy walk leaves when it stops early) must not be
+        //    edited, or the undecoded elements would be dropped.
+        unsafe {
+            let h = &mut *handle;
+            let FieldValue::ObjectList { elements: containers, .. } =
+                &mut h.blocks[block_idx as usize].fields[inv_field_idx as usize].value
+            else { panic!("inv field shape changed") };
+            let FieldValue::ObjectList { count, .. } =
+                &mut containers[inv_elem_idx as usize].fields[item_field_idx as usize].value
+            else { panic!("item field shape changed") };
+            *count += 1;
+        }
+        let rc = unsafe {
+            crimson_save_list_remove_element(
+                handle,
+                block_idx,
+                item_list_path.as_ptr(),
+                item_list_path.len(),
+                item_field_idx,
+                0,
+            )
+        };
+        assert_eq!(rc, error::LIST_PARTIALLY_DECODED);
+        assert_eq!(unsafe { (*handle).save.body.clone() }, original_body, "a refused edit changes nothing");
+
         unsafe { crimson_save_free(handle) };
     }
 
@@ -8976,21 +9083,19 @@ mod tests {
                 error::OK
             );
         }
-        // Mid-batch the version must NOT have bumped — single bump on end.
+        // Mid-batch mutations bump the version (reads see the
+        // in-progress tree), then end bumps once more.
         let mut mid_version: u64 = u64::MAX;
         unsafe { crimson_save_get_mutation_version(hb, &mut mid_version) };
-        assert_eq!(
-            mid_version, 0,
-            "mid-batch mutations must not bump the version counter"
-        );
+        assert!(mid_version > 0, "mid-batch mutations must bump the version counter");
 
         // End commits.
         assert_eq!(unsafe { crimson_save_end_deferred_redecode(hb) }, error::OK);
 
-        // Exactly one version bump for the whole batch.
+        // End bumps exactly once more.
         let mut end_version: u64 = u64::MAX;
         unsafe { crimson_save_get_mutation_version(hb, &mut end_version) };
-        assert_eq!(end_version, 1, "end_deferred_redecode bumps version once");
+        assert_eq!(end_version, mid_version + 1, "end_deferred_redecode bumps version once");
 
         // Body image must equal the normal-mode reference (same ops,
         // same target, same bytes — encoder is deterministic).
@@ -9086,17 +9191,22 @@ mod tests {
             },
             error::OK
         );
+        let mut v_mid: u64 = u64::MAX;
+        unsafe { crimson_save_get_mutation_version(handle, &mut v_mid) };
+        assert_eq!(v_mid, v_before + 1, "a mid-batch mutation bumps the version");
         assert_eq!(
             unsafe { crimson_save_abort_deferred_redecode(handle) },
             error::OK
         );
 
-        // Version restored to its pre-begin value.
+        // The version moves forward past every mid-batch value, so no
+        // snapshot stamped inside the batch can match the restored tree.
         let mut v_after_abort: u64 = u64::MAX;
         unsafe { crimson_save_get_mutation_version(handle, &mut v_after_abort) };
         assert_eq!(
-            v_after_abort, v_before,
-            "abort_deferred_redecode must restore the pre-begin version"
+            v_after_abort,
+            v_mid + 1,
+            "abort_deferred_redecode must move the version forward"
         );
 
         // Walk the same nested scalar and confirm it still holds the

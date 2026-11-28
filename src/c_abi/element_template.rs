@@ -738,6 +738,9 @@ pub unsafe extern "C" fn crimson_save_list_insert_element_template(
             else {
                 return Err(error::NOT_OBJECT_LIST);
             };
+            if *count as usize != elements.len() {
+                return Err(error::LIST_PARTIALLY_DECODED);
+            }
             if insert_at as usize > elements.len() {
                 return Err(error::OUT_OF_RANGE);
             }

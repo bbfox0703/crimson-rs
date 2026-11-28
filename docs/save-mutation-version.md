@@ -121,8 +121,12 @@ the safe move.
 - It is **not** persistent. A fresh handle from
   [`crimson_save_load_from_file`](../src/c_abi/mod.rs) starts at 0
   regardless of the on-disk save's history.
-- It is **not** thread-safe. The C ABI surface is single-threaded by
-  contract — `CrimsonSaveHandle` is not `Send` / `Sync`.
+- It is **not** a lock. Every `crimson_save_*` entry point serializes on
+  one process-global mutex (`save_ffi_lock` in `src/c_abi/mod.rs`; the two
+  enumerators `crimson_save_list_all_items` / `_list_field_positions` took
+  it only from 2026-11-28), so concurrent calls on a handle are safe, but a
+  snapshot taken on one thread can still go stale because of a mutation on
+  another. Compare versions, as above.
 - It does **not** auto-refresh snapshots. The caller is responsible
   for re-issuing the read when the version mismatches.
 
@@ -154,22 +158,24 @@ transactional batch (`crimson_save_begin_deferred_redecode` →
 every mutation entry point. From the mutation-version reader's
 perspective:
 
-- **Mid-batch mutations DO NOT bump `mutation_version`**. The version
-  reflects "the on-disk-equivalent state changed"; while a batch is
-  open the disk-equivalent state is still the pre-begin image. The
-  in-memory tree is ahead of disk, but no observer outside the
-  current FFI call has seen it.
-- **A successful `end_*` bumps `mutation_version` exactly once** —
-  regardless of how many mutations ran inside. Snapshot readers
-  invalidate against this single bump, not against each in-batch
-  call.
-- **An aborted batch (`abort_*`) does not bump** — observationally
-  the state hasn't changed since `begin_*`. Snapshot readers see
-  the same version they did before the batch opened.
-- **A failed `end_*` (`MUTATION_INVALID`)** does not bump either —
-  the handle is rolled back to its pre-begin state, equivalent to
-  an abort.
+The version tracks what the read entry points return, and reads during a
+batch return the in-progress tree. So, since 2026-11-28:
+
+- **Every mutation inside a batch bumps `mutation_version`**, including
+  one that fails after changing part of the tree.
+- **A successful `end_*` bumps it once more.**
+- **`abort_*` and a failed `end_*` (`MUTATION_INVALID`) bump it when the
+  batch changed anything**, and leave it alone when it changed nothing.
+  They restore the pre-begin tree, but a reader may hold a snapshot
+  stamped with a mid-batch version, so the counter moves forward rather
+  than back. It never returns to an earlier value.
+
+Before 2026-11-28 mid-batch mutations did not bump and abort restored the
+pre-begin value. A snapshot taken mid-batch then carried the pre-batch
+version, and after an abort the next mutation could reuse a mid-batch
+number for a different tree (audit G-04).
 
 The snapshot-reader pattern from this doc keeps working unchanged
-under deferred batches. Each commit produces one bump; snapshots
-re-walk once per commit, not once per mutation.
+under deferred batches. A reader that only polls between batches still
+sees one change per batch; one that polls inside a batch re-walks as the
+batch progresses.

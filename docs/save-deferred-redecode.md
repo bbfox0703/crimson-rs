@@ -42,7 +42,7 @@ encode + parse + decode_blocks pass for the whole batch.
 
 ```c
 int32_t crimson_save_begin_deferred_redecode(handle);
-int32_t crimson_save_end_deferred_redecode(handle);      // commits + bumps version once
+int32_t crimson_save_end_deferred_redecode(handle);      // commits + bumps version
 int32_t crimson_save_abort_deferred_redecode(handle);    // rolls back
 int32_t crimson_save_is_deferred_redecode_open(handle, *out_open);
 ```
@@ -66,11 +66,11 @@ While a batch is open:
 - **`write_to_file`**: rejected with `BATCH_IN_PROGRESS`. The cached
   `save.body` is still at its pre-batch byte image; writing would
   silently drop every mutation. Caller must end / abort first.
-- **`mutation_version`**: bumps exactly once on a successful `end_*`
-  (regardless of how many mutations ran inside). `abort_*` restores
-  the pre-begin value. Snapshot readers (see
-  [`save-mutation-version.md`](./save-mutation-version.md)) only
-  observe the post-batch state, never an intermediate.
+- **`mutation_version`**: reads return the in-progress tree, so every
+  mutation inside the batch bumps it, a successful `end_*` bumps it once
+  more, and `abort_*` (or a failed `end_*`) bumps it when the batch changed
+  anything. It never goes back to an earlier value (since 2026-11-28; see
+  [`save-mutation-version.md`](./save-mutation-version.md)).
 
 ## Error codes
 
@@ -95,7 +95,8 @@ abort the outer batch before starting a new one.
   `Body::parse`. The handle's `blocks` is restored from the
   snapshot captured by `begin_*`; `save.body` and `body` were
   untouched throughout the batch, so the handle is left in its
-  exact pre-begin state. `mutation_version` is not bumped.
+  exact pre-begin tree. `mutation_version` moves forward if the batch
+  changed anything, as for `abort_*`.
 - **Caller drops the handle mid-batch**: harmless. The
   `DeferredState` snapshot is freed along with the handle. No leak,
   no corruption — the on-disk file is never written without an
@@ -161,12 +162,12 @@ RunDeferred(_save, () =>
         SetCloneBranchedTime(challenge);       // set_scalar_field
     }
 });
-// One bump on `mutation_version`, one decode_blocks pass total.
+// One decode_blocks pass total; `mutation_version` bumped per mutation + once at end.
 ```
 
 After the batch, the snapshot reader pattern from
 [`save-mutation-version.md`](./save-mutation-version.md) just works
-— there's exactly one version bump to invalidate against.
+— compare the version before and after the batch.
 
 ## Round-trip contract
 
