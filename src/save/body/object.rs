@@ -291,6 +291,11 @@ pub(crate) fn decode_scalar(data: &[u8], field: &FieldDef) -> ScalarValue {
 /// full [`FieldDef`] — used by the c_abi mutation surface (Phase B.2)
 /// when synthesizing a `ScalarValue` for a newly-present field.
 pub fn scalar_from_bytes(data: &[u8], type_name: &str, size: usize) -> ScalarValue {
+    // Callers check the length, but one path could hand over a short slice
+    // (audit F-12): keep it as raw bytes rather than index past it or read 0.
+    if data.len() != size {
+        return ScalarValue::Bytes(data.to_vec());
+    }
     let lower = type_name.to_ascii_lowercase();
     if lower == "bool" && size == 1 {
         // Preserve the exact byte (0x00 / 0x01 / 0xff / …) for round-trip;
@@ -355,6 +360,14 @@ pub fn scalar_from_bytes(data: &[u8], type_name: &str, size: usize) -> ScalarVal
 #[cfg(test)]
 mod scalar_from_bytes_tests {
     use super::*;
+
+    /// A slice of the wrong length stays raw bytes instead of panicking on
+    /// `data[0]` or reading as 0 (audit F-12).
+    #[test]
+    fn wrong_length_is_kept_as_bytes() {
+        assert!(matches!(scalar_from_bytes(&[], "bool", 1), ScalarValue::Bytes(b) if b.is_empty()));
+        assert!(matches!(scalar_from_bytes(&[1, 2], "uint32", 4), ScalarValue::Bytes(b) if b == [1, 2]));
+    }
 
     #[test]
     fn float3_decodes_three_f32() {

@@ -95,9 +95,18 @@ pub struct PackMetaFile {
 }
 
 impl PackMetaFile {
-    fn from_raw(raw: PackMetaFileRaw) -> Self {
+    /// Decode the flags. A compression nibble of 5..=15 or a crypto nibble of
+    /// 4..=15 is an error: reading it as "none" turned format drift into
+    /// garbage output instead of a failure (audit A-05).
+    fn from_raw(raw: PackMetaFileRaw) -> io::Result<Self> {
         let raw_compression = raw.flags & 0x0F;
         let raw_crypto = raw.flags >> 4;
+        if raw_compression > 4 || raw_crypto > 3 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unknown PAMT file flags {:#04x} (compression {raw_compression}, crypto {raw_crypto})", raw.flags),
+            ));
+        }
 
         let (compression, is_partial) = if raw_compression == 1 {
             (Compression::None, true)
@@ -107,8 +116,7 @@ impl PackMetaFile {
                     0 => Compression::None,
                     2 => Compression::Lz4,
                     3 => Compression::Zlib,
-                    4 => Compression::QuickLz,
-                    _ => Compression::None,
+                    _ => Compression::QuickLz,
                 },
                 false,
             )
@@ -118,11 +126,10 @@ impl PackMetaFile {
             0 => CryptoType::None,
             1 => CryptoType::Ice,
             2 => CryptoType::Aes,
-            3 => CryptoType::ChaCha20,
-            _ => CryptoType::None,
+            _ => CryptoType::ChaCha20,
         };
 
-        PackMetaFile {
+        Ok(PackMetaFile {
             name_offset: raw.name_offset,
             chunk_offset: raw.chunk_offset,
             compressed_size: raw.compressed_size,
@@ -133,7 +140,7 @@ impl PackMetaFile {
             compression,
             crypto,
             is_partial,
-        }
+        })
     }
 }
 
@@ -350,7 +357,8 @@ impl PackMeta {
                 }
 
                 let chunk = chunk_map[&(raw_file.chunk_id as u32)];
-                if raw_file.chunk_offset + raw_file.compressed_size > chunk.size {
+                // u64: the u32 sum wrapped in release builds (audit A-08).
+                if u64::from(raw_file.chunk_offset) + u64::from(raw_file.compressed_size) > u64::from(chunk.size) {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!(
@@ -369,7 +377,7 @@ impl PackMeta {
                     chunk_id: raw_file.chunk_id,
                     flags: raw_file.flags,
                     extension_index: raw_file.extension_index,
-                });
+                })?;
 
                 resolved_files.push(ResolvedFile {
                     name: file_name,
@@ -475,5 +483,31 @@ impl PackMeta {
         out.write_all(&post_header)?;
 
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn raw(flags: u8) -> PackMetaFileRaw {
+        PackMetaFileRaw {
+            name_offset: 0,
+            chunk_offset: 0,
+            compressed_size: 0,
+            uncompressed_size: 0,
+            chunk_id: 0,
+            flags,
+            extension_index: 0,
+        }
+    }
+
+    /// Unknown compression / crypto nibbles are errors, not "none" (A-05).
+    #[test]
+    fn unknown_file_flags_are_errors() {
+        assert_eq!(PackMetaFile::from_raw(raw(0x32)).unwrap().crypto, CryptoType::ChaCha20);
+        assert_eq!(PackMetaFile::from_raw(raw(0x32)).unwrap().compression, Compression::Lz4);
+        assert!(PackMetaFile::from_raw(raw(0x05)).is_err(), "compression 5");
+        assert!(PackMetaFile::from_raw(raw(0x40)).is_err(), "crypto 4");
     }
 }

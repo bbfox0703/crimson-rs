@@ -83,7 +83,7 @@ pub(crate) fn pop_path(path: &mut String, saved: usize) {
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 pub(crate) fn check_remaining(data: &[u8], offset: usize, need: usize) -> io::Result<()> {
-    if offset + need > data.len() {
+    if offset.checked_add(need).is_none_or(|end| end > data.len()) {
         Err(io::Error::new(
             io::ErrorKind::UnexpectedEof,
             "not enough data",

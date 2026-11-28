@@ -645,7 +645,8 @@ fn detect_format(
 ) -> io::Result<SkillFormat> {
     for &candidate in &[SkillFormat::WithField58, SkillFormat::NoField58] {
         for ((start, end), _idx) in ranges.iter().zip(index.iter()) {
-            let entry = &pabgb[*start..*end];
+            // A header offset past the body used to panic here (audit C-05).
+            let Some(entry) = pabgb.get(*start..*end) else { continue };
             let Some(body) = entry_body(entry) else { continue };
             let mut head_end = 0;
             if post_buff::read_entry_head(body, &mut head_end).is_err() {

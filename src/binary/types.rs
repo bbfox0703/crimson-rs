@@ -151,7 +151,11 @@ impl<'a, T: BinaryRead<'a>> BinaryRead<'a> for CArray<T> {
                 ),
             ));
         }
-        let mut items = Vec::with_capacity(count);
+        // `count <= remaining` bounds the element count, not the memory: a
+        // large `T` would still reserve remaining x size_of::<T>() (audit
+        // A-11). Reserve what the remaining bytes could hold and let a real
+        // count grow past it.
+        let mut items = Vec::with_capacity(count.min(remaining / std::mem::size_of::<T>().max(1)));
         for _ in 0..count {
             items.push(T::read_from(data, offset)?);
         }
@@ -200,7 +204,7 @@ impl<'a, T: BinaryReadTracked<'a>> BinaryReadTracked<'a> for CArray<T> {
             ));
         }
 
-        let mut items = Vec::with_capacity(count);
+        let mut items = Vec::with_capacity(count.min(remaining / std::mem::size_of::<T>().max(1)));
         for i in 0..count {
             let saved = push_index(path, i);
             items.push(T::read_tracked(data, offset, path, ranges)?);

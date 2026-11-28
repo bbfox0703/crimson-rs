@@ -1107,6 +1107,12 @@ fn try_decode_object_list_at(
     tail_cursor: usize,
     by_index: &HashMap<u32, &TypeDef>,
 ) -> io::Result<(usize, FieldValue, &'static str)> {
+    // Every header variant below is at least 18 bytes; a list starting in the
+    // last bytes of the region used to index past the body (audit F-07).
+    let tail_cursor = tail_cursor.min(raw.len());
+    if body_cursor + 18 > tail_cursor {
+        return overrun("object list header");
+    }
     let prefix_u8 = raw[body_cursor];
     let mut marker_end = body_cursor;
     while marker_end < tail_cursor && raw[marker_end] == 1 {
@@ -1116,7 +1122,7 @@ fn try_decode_object_list_at(
     let (count, header_size, header_variant): (u32, usize, &'static str);
 
     if marker_end > body_cursor
-        && marker_end + 17 <= tail_cursor
+        && marker_end + 18 <= tail_cursor
         && raw[marker_end] == 0
         && raw[marker_end + 5..marker_end + 18] == [0u8; 13]
     {

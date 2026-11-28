@@ -184,8 +184,13 @@ pub fn from_legacy_layout(
     key_width: usize,
     indices: &[u32],
 ) -> Option<(Vec<u8>, Vec<u8>)> {
+    // `count_width` past 8 panicked in the `to_le_bytes()[..count_width]`
+    // below (audit B-09).
+    if !(1..=8).contains(&count_width) || !(1..=12).contains(&key_width) {
+        return None;
+    }
     let count = read_uint(header.get(..count_width)?) as usize;
-    if header.len() != count_width + count * (key_width + 4) || indices.len() != count {
+    if header.len() != count_width + count.checked_mul(key_width + 4)? || indices.len() != count {
         return None;
     }
     let offsets: Vec<usize> = (0..count)
@@ -199,9 +204,10 @@ pub fn from_legacy_layout(
     let mut new_body = Vec::with_capacity(body.len());
     let mut new_header = (count as u64).to_le_bytes()[..count_width].to_vec();
     for (i, &start) in offsets.iter().enumerate() {
+        // Next larger offset by binary search (a linear scan per row was
+        // O(n^2) on a 53,000-row table).
         let end = sorted
-            .iter()
-            .find(|&&o| o > start)
+            .get(sorted.partition_point(|&o| o <= start))
             .copied()
             .unwrap_or(body.len());
         let row = body.get(start..end)?;
@@ -251,6 +257,14 @@ pub fn legacy_pair<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Widths out of range are refused instead of panicking on the
+    /// `to_le_bytes()[..count_width]` slice (audit B-09).
+    #[test]
+    fn from_legacy_layout_refuses_bad_widths() {
+        assert!(from_legacy_layout(&[], &[0u8; 9], 9, 4, &[]).is_none());
+        assert!(from_legacy_layout(&[], &[0u8; 2], 2, 13, &[]).is_none());
+    }
 
     #[test]
     fn rebuilds_the_legacy_layout() {

@@ -168,7 +168,10 @@ impl PackGroupTreeMeta {
 
         // Read group names buffer: i32 length prefix + data
         check_remaining(data, offset, 4)?;
-        let buf_len = i32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
+        // A negative i32 used to become a huge usize whose bounds check could
+        // wrap and then panic in the slice (audit A-09).
+        let buf_len = usize::try_from(i32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()))
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "negative PAPGT name buffer length"))?;
         offset += 4;
         check_remaining(data, offset, buf_len)?;
         let group_names_buffer = data[offset..offset + buf_len].to_vec();
@@ -287,6 +290,15 @@ impl PackGroupTreeMeta {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A negative name-buffer length in the old layout is an error, not a
+    /// wrapped bounds check that then panics (audit A-09).
+    #[test]
+    fn negative_name_buffer_length_is_an_error() {
+        let mut data = vec![0u8; 12]; // old layout: header with 0 entries
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        let _ = PackGroupTreeMeta::parse(&data); // must not panic
+    }
 
     fn signed_papgt() -> Vec<u8> {
         let mut data = vec![0xc9, 0x16, 2, 2];
