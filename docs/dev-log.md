@@ -25,6 +25,60 @@ landed together. **Reading tip:** grep `^## ` for the index, then read from the 
 
 -----
 
+## 2026-11-28 — Audit P10: docs, tooling, RustCrypto versions, last tests; every finding settled
+
+The tenth and last fix batch, on the same branch as the entries below. Status table after it: 133
+fixed, 14 not fixing (each with its reason in the table), 2 merged, none open.
+
+- **Dependencies (I-21):**
+  - `hmac` 0.12 → 0.13 and `sha2` 0.10 → 0.11, at the maintainer's request. `Cargo.lock` had two
+    RustCrypto generations (digest 0.10 / crypto-common 0.1 beside chacha20's cipher 0.5 /
+    crypto-common 0.2), and `cargo tree -d` now reports no duplicate crate.
+  - `hmac` 0.13 moved `new_from_slice` to `KeyInit`, so the code imports it. The HMAC-checking save
+    tests pass on the live saves and the fixtures.
+  - CI gained a `cargo audit` job; it is not required and was not run locally.
+- **Docs and comments matching the code:**
+  - `hashlittle`, not `hashlittle2` (62 places). paz / paloc / pamt / paver docs (A-18).
+  - The `BString` rule in `CLAUDE.md`, `row_head` key widths, checked size arithmetic in the
+    stringinfo index (B-12).
+  - The `CrimsonItemInfoSummary` table and the 28 item-flag bits in `c-abi-surface.md` (C-13).
+  - Stale bridge comments (C-15).
+  - A subagent did D-11, E-14, F-13 and G-16, comments and docs only: 54 files, every `.rs` hunk a
+    comment. Its fixes include 2.06 row counts, the save docs agreeing that a no-op re-encode is
+    byte-identical, and the macro example no longer making the symbol index list six phantom rows
+    (369 symbols now).
+  - `tools/README.md` records `git-crypt.exe`: 0.8.0, its SHA256, upstream, and why it stays
+    (I-20). Whether it equals an official release asset is not established.
+  - `store_info.hexpat` is marked as the pre-2.04 layout (I-23).
+- **Code:**
+  - A checksummed PAPGT with bytes after its name buffer is an error (A-10).
+  - The unused `[u8; 22]` / `[u8; 9]` impls are gone, and `api.md` documents
+    `MergedPrefabVisualData` (H-18).
+  - `set_object_list_present` refuses to make present an absent list read without its `0x01` marker
+    (G-09).
+- **Tests:**
+  - **F-04:** the fixture saves re-encode, unedited, byte for byte.
+    - The 1.10 crash fixture, written by the old editor, re-encodes with exactly its two stale
+      self-referential payload offsets moved 241 bytes on, and every other byte unchanged. That is
+      the relocation the old editor missed, now a regression test.
+  - **G-07:** a two-thread test runs batch open / abort beside item enumeration on one handle.
+  - **D-07:** nine live table tests (store, faction, quest, stage, mission, knowledge, character, sub
+    level, quest gauge) assert rows parsed == rows the 2.06 header lists, instead of a floor. All
+    nine hold.
+- **Correction:** `eddc8cb`'s message claims the D-07 change, but the edit never reached the files.
+  The script that applied it hung on a backtracking regex, and its lost output read as a pass. It
+  landed in `4528735`; `eddc8cb` holds only G-07 and G-09.
+- **Not fixing**, each recorded in the status table: E-04 (per-row drop signal), E-05, G-07's
+  per-mutation deferred tests, G-10 (CRET format change), G-14, H-11, H-16, I-11, I-19, I-22, F-09,
+  D-06's other tables.
+- **Measured on this PC:** 440 passed, 48 ignored, with the install and fixtures; the same 440 pass
+  with neither. Strict clippy and all four feature combinations are clean. The wheel was rebuilt.
+- **CrimsonAtomtic:**
+  - `set_object_list_present` can return `MUTATION_INVALID` for an unmarked absent list; no
+    game-written save has one.
+  - The symbol index dropped six phantom house_info rows. These were never real exports.
+  - No signature changed.
+
 ## 2026-11-28 — Audit P9: code nits (header widths, stringinfo layout, dye FFI hygiene, script lookup)
 
 The ninth batch, on the same branch as the entries below: the nit-level code findings. Status table
