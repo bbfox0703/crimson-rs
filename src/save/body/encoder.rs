@@ -723,6 +723,54 @@ fn write_u32(out: &mut Vec<u8>, v: u32) {
 mod pad_tests {
     use crate::save::{Body, Save};
 
+    /// Every fixture save re-encodes, unedited, to its exact bytes. The
+    /// fixtures stay put while live saves change with play, so this holds on
+    /// any machine that has the private repo, game installed or not.
+    #[test]
+    fn fixture_saves_reencode_byte_identical() {
+        let mut checked = 0;
+        for rel in [
+            "1.09/save.save",
+            "1.10/save.save",
+            "1.10/broken_save_after_length_change/base_sample/save.save",
+            "1.10/broken_save_after_length_change/add_2_sugar_in_game/save.save",
+        ] {
+            let Some(data) = crate::test_fixtures::save(rel) else {
+                continue;
+            };
+            let save = Save::parse(&data).unwrap();
+            let body = Body::parse(&save.body).unwrap();
+            let blocks = body.decode_blocks(&save.body);
+            let out = body.write(&save.body, &blocks).unwrap_or_else(|e| panic!("{rel}: {e}"));
+            assert!(out == save.body, "{rel}: no-op re-encode changed the body");
+            checked += 1;
+        }
+        eprintln!("{checked} fixture saves re-encoded byte for byte");
+    }
+
+    /// The length-change crash fixture was written by an editor that did not
+    /// relocate two self-referential payload offsets after growing a list.
+    /// Re-encoding it rewrites exactly those two, each 241 bytes further on,
+    /// and leaves every other byte alone.
+    #[test]
+    fn crash_fixture_reencode_fixes_its_two_stale_offsets() {
+        let rel = "1.10/broken_save_after_length_change/use_editor_add_sugar/save.save";
+        let Some(data) = crate::test_fixtures::save(rel) else {
+            return;
+        };
+        let save = Save::parse(&data).unwrap();
+        let body = Body::parse(&save.body).unwrap();
+        let out = body.write(&save.body, &body.decode_blocks(&save.body)).unwrap();
+        assert_eq!(out.len(), save.body.len());
+        let differ: Vec<usize> = (0..out.len()).filter(|&i| out[i] != save.body[i]).collect();
+        // Two offsets, each changed in its low two bytes.
+        assert_eq!(differ.len(), 4, "{differ:?}");
+        for at in [differ[0], differ[2]] {
+            let read = |b: &[u8]| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+            assert_eq!(read(&out) - read(&save.body), 241, "offset at {at}");
+        }
+    }
+
     /// A block that changed length while carrying pad is refused.
     #[test]
     fn length_change_with_pad_is_refused() {
