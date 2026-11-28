@@ -693,6 +693,14 @@ pub fn parse_iteminfo_with_header<'a>(
     use std::io::{Error, ErrorKind};
     let rows = crate::binary::static_header::parse_named_header(header, 2, 4)
         .ok_or_else(|| Error::new(ErrorKind::InvalidData, "not a 2.06 iteminfo header"))?;
+    // The rows must tile the body: a header that skips a row or leaves bytes
+    // after the last one parsed fine and lost them on write-back (audit C-08).
+    if !crate::binary::static_header::rows_are_packed(&rows, body.len()) {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            "iteminfo header rows do not tile the body (gap, overlap or trailing bytes)",
+        ));
+    }
     let mut out = Vec::with_capacity(rows.len());
     for (i, r) in rows.iter().enumerate() {
         let row = body.get(r.range()).ok_or_else(|| {
@@ -793,6 +801,18 @@ mod tests {
                 assert!(out == b[row.range()], "{name}: row {} ({}) differs on write-back", item.key.0, row.name);
             }
             eprintln!("{name}: {} rows write back byte for byte", items.len());
+
+            // A header that drops the last row no longer tiles the body and is
+            // refused (audit C-08: it used to parse and lose the row).
+            let mut short = ((rows.len() - 1) as u16).to_le_bytes().to_vec();
+            for r in &rows[..rows.len() - 1] {
+                short.extend_from_slice(&(r.key as u32).to_le_bytes());
+                short.extend_from_slice(&(r.name.len() as u32).to_le_bytes());
+                short.extend_from_slice(r.name.as_bytes());
+                short.extend_from_slice(&r.offset.to_le_bytes());
+                short.extend_from_slice(&r.size.to_le_bytes());
+            }
+            assert!(parse_iteminfo_with_header(&b, &short).is_err(), "{name}: short header");
         }
     }
 }

@@ -151,6 +151,12 @@ pub fn to_legacy_layout(body: &[u8], header: &[u8]) -> Option<LegacyTable> {
     for r in &rows {
         let row = body.get(r.range())?;
         let key = row.get(..key_width)?;
+        // The header and the row each carry the key; the rebuild keeps the
+        // row's, so a disagreement would be written back silently (audit
+        // B-06 / C-09). Keys wider than 8 bytes compare their low 8.
+        if read_uint(key) != r.key {
+            return None;
+        }
         let rest = row.get(key_width + 4..)?;
         new_header.extend_from_slice(key);
         new_header.extend_from_slice(&(new_body.len() as u32).to_le_bytes());
@@ -257,6 +263,19 @@ pub fn legacy_pair<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A row whose body key disagrees with its header key is not a valid
+    /// 2.06 pair (audit B-06 / C-09).
+    #[test]
+    fn key_mismatch_between_header_and_row_is_refused() {
+        let mut body = vec![0x10, 0x00];
+        body.extend_from_slice(&0u32.to_le_bytes());
+        body.push(1);
+        let good = header(2, 2, &[(0x10, "A", 0, 7)]);
+        assert!(to_legacy_layout(&body, &good).is_some());
+        let bad = header(2, 2, &[(0x11, "A", 0, 7)]);
+        assert!(to_legacy_layout(&body, &bad).is_none());
+    }
 
     /// Widths out of range are refused instead of panicking on the
     /// `to_le_bytes()[..count_width]` slice (audit B-09).
