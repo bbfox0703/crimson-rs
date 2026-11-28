@@ -77,6 +77,22 @@ jobs:
       - name: cargo test --lib --features c_abi
         run: cargo test --lib --features c_abi -- --test-threads=4
 
+  # RustSec advisories against Cargo.lock. Not a required check: a new
+  # advisory should be read, not block an unrelated push.
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: cargo audit
+        run: cargo audit
+
   # The shipped artifact: the MSVC release dll / lib, with the static CRT from
   # .cargo/config.toml. Fails if the dll imports anything beyond system DLLs
   # (a CRT DLL, python3.dll, or a native dependency). Not a required check.
