@@ -1058,7 +1058,7 @@ class PackGroupBuilder:
 
     Usage::
 
-        builder = PackGroupBuilder("/path/to/0036", compression=2)
+        builder = PackGroupBuilder("/path/to/0099", compression=2)
         builder.add_file("textures", "icon.dds", raw_bytes)
         builder.add_file_from_path("models", "mesh.obj", "/path/to/mesh.obj")
         pamt_bytes = builder.finish()  # writes .paz + 0.pamt to output_dir
@@ -1099,7 +1099,7 @@ def add_papgt_entry(
 
     Args:
         papgt_data: Existing PAPGT data dict.
-        group_name: Pack group name (e.g. "0036").
+        group_name: Pack group name (e.g. "0099"). An existing entry of that name is replaced.
         pack_meta_checksum: Checksum of the group's 0.pamt post-header data.
         is_optional: Whether this group is optional (0 or 1).
         language: Language bitmask (0x7FFF for ALL).

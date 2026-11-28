@@ -61,7 +61,7 @@ pack_mod(
     game_dir="/path/to/Crimson Desert",
     mod_folder="/path/to/modified/files",
     output_dir="/path/to/output",
-    group_name="0036",
+    group_name="0099",  # four digits, not already in meta/0.papgt
     compression=Compression.LZ4,    # default
     crypto=Crypto.NONE,             # default
     language=Language.ALL,           # default
@@ -72,7 +72,7 @@ pack_mod(
 - `game_dir` — Path to the Crimson Desert installation (to read original `meta/0.papgt`)
 - `mod_folder` — Directory containing mod files in game directory structure
 - `output_dir` — Where to write the packed output (paz + pamt + papgt)
-- `group_name` — Pack group name (e.g. `"0036"`)
+- `group_name` — Pack group name: four digits not already listed in the game's `meta/0.papgt` (e.g. `"0099"`). On 2.06 the PAPGT lists `0036`–`0040` (the optional language groups) with no folder on disk, so a free folder name is not enough; `pack_mod` and `create_pack_group*` refuse a listed name (they used to replace that entry) and anything that is not four digits
 - `compression` — `Compression.LZ4` (default), `.ZLIB`, or `.NONE`
 - `crypto` — `Crypto.NONE` (default), `.ICE`, `.AES`, or `.CHACHA20`
 - `encrypt_info` — 3 bytes of encryption key material (default: `b"\x00\x00\x00"`)
@@ -90,6 +90,14 @@ output_dir/
 └── meta/
     └── 0.papgt    # Updated with mod entry at front
 ```
+
+**Writing into the game folder.** `pack_mod` only reads the game folder. Its siblings
+`crimson_rs.create_pack.create_pack_group` / `create_pack_group_from_folder` write the group into
+the game folder and rewrite `meta/0.papgt` **in place**, and `python -m crimson_rs.validate_game_dir`
+rewrites stale checksums in place. Since 2026-11-28 each copies `0.papgt` to
+`0.papgt.bak-<timestamp>` first (the 2.04+ trailer cannot be recomputed, so the original bytes are
+the only way back), `validate_game_dir --dry-run` only reports, and a pack that fails partway
+removes the half-built group folder instead of leaving one that blocks the next run.
 
 ---
 
@@ -117,7 +125,7 @@ Upsert a pack group entry. Inserts at front for mod priority (see [Mod Loading](
 
 ```python
 papgt = crimson_rs.parse_papgt_file("meta/0.papgt")
-updated = crimson_rs.add_papgt_entry(papgt, "0036", checksum, 0, 0x7FFF)
+updated = crimson_rs.add_papgt_entry(papgt, "0099", checksum, 0, 0x7FFF)
 crimson_rs.write_papgt_file(updated, "output/meta/0.papgt")
 ```
 
@@ -149,7 +157,7 @@ Streaming builder that creates `.paz` chunks and `0.pamt` index on disk.
 
 ```python
 builder = crimson_rs.PackGroupBuilder(
-    output_dir="/path/to/0036",
+    output_dir="/path/to/0099",
     compression=int(Compression.LZ4),
     crypto=int(Crypto.NONE),
     encrypt_info=b"\x00\x00\x00",

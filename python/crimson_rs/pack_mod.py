@@ -1,9 +1,10 @@
-
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import crimson_rs
+from crimson_rs._pack_safety import TRAILER_WARNING, check_group_free, check_group_name, mod_files
 from crimson_rs.enums import Compression, Crypto, Language
 
 
@@ -19,10 +20,16 @@ def pack_mod(
     is_optional: bool = False,
     language: Language = Language.ALL,
 ) -> None:
+    """Pack ``mod_folder`` into a new group ``output_dir/<group_name>`` and write
+    ``output_dir/meta/0.papgt`` with an entry for it. The game directory is only
+    read. ``group_name`` must be four digits and not already in the game's
+    ``0.papgt``. Whether a 2.04+ game loads the result is not established (see
+    the trailer warning)."""
     game_path = Path(game_dir)
     mod_path = Path(mod_folder)
     out_path = Path(output_dir)
 
+    check_group_name(group_name)
     if not game_path.is_dir():
         raise FileNotFoundError(f"Game directory not found: {game_path}")
 
@@ -33,57 +40,49 @@ def pack_mod(
     if not mod_path.is_dir():
         raise FileNotFoundError(f"Mod folder not found: {mod_path}")
 
+    papgt = crimson_rs.parse_papgt_file(str(original_papgt))
+    check_group_free(papgt, group_name, original_papgt)
+
     group_path = out_path / group_name
     if group_path.exists():
         raise FileExistsError(f"Group directory already exists: {group_path}")
-
-    group_path.mkdir(parents=True, exist_ok=True)
-    meta_dir = out_path / "meta"
-    meta_dir.mkdir(parents=True, exist_ok=True)
+    files = mod_files(mod_path)
 
     print(f"Packing files from: {mod_path}")
     print(f"Output group dir:   {group_path}")
 
-    builder = crimson_rs.PackGroupBuilder(
-        output_dir=str(group_path),
-        compression=int(compression),
-        crypto=int(crypto),
-        encrypt_info=encrypt_info,
-        max_chunk_size=max_chunk_size,
-    )
+    group_path.mkdir(parents=True)
+    try:
+        builder = crimson_rs.PackGroupBuilder(
+            output_dir=str(group_path),
+            compression=int(compression),
+            crypto=int(crypto),
+            encrypt_info=encrypt_info,
+            max_chunk_size=max_chunk_size,
+        )
+        for count, file_path in enumerate(files, 1):
+            rel = file_path.relative_to(mod_path)
+            dir_path = str(rel.parent).replace("\\", "/")
+            if dir_path == ".":
+                dir_path = ""
+            builder.add_file_from_path(dir_path, rel.name, str(file_path))
+            if count % 100 == 0:
+                print(f"  Added {count} files...")
+        pamt_bytes = builder.finish()
+    except BaseException:
+        # Don't leave a half-built group behind: a rerun would hit
+        # FileExistsError on it.
+        shutil.rmtree(group_path, ignore_errors=True)
+        raise
 
-    count = 0
-    for file_path in sorted(mod_path.rglob("*")):
-        if not file_path.is_file():
-            continue
-
-        rel = file_path.relative_to(mod_path)
-        dir_path = str(rel.parent).replace("\\", "/")
-        if dir_path == ".":
-            dir_path = ""
-        file_name = rel.name
-
-        builder.add_file_from_path(dir_path, file_name, str(file_path))
-        count += 1
-
-        if count % 100 == 0:
-            print(f"  Added {count} files...")
-
-    if count == 0:
-        raise ValueError(f"No files found in {mod_path}")
-
-    print(f"Packed {count} file(s) into group '{group_name}'")
-    pamt_bytes = builder.finish()
+    print(f"Packed {len(files)} file(s) into group '{group_name}'")
     print(f"  .paz chunk(s) + 0.pamt written to {group_path}")
 
     pamt_post_header = pamt_bytes[12:]
     pamt_checksum = crimson_rs.calculate_checksum(pamt_post_header)
     print(f"  PAMT checksum: 0x{pamt_checksum:08X}")
 
-    print(f"Loading original PAPGT: {original_papgt}")
-    papgt = crimson_rs.parse_papgt_file(str(original_papgt))
-    print(f"  Original has {len(papgt['entries'])} entries")
-
+    print(f"  Original PAPGT {original_papgt} has {len(papgt['entries'])} entries")
     updated_papgt = crimson_rs.add_papgt_entry(
         papgt_data=papgt,
         group_name=group_name,
@@ -93,17 +92,16 @@ def pack_mod(
     )
     print(f"  Added entry for '{group_name}', now {len(updated_papgt['entries'])} entries")
     if papgt.get("_trailer"):
-        print(
-            "  WARNING: this 0.papgt ends in a 64-byte trailer that looks like a signature over the"
-            " file. It cannot be recomputed, so it no longer matches the edited entries. Whether"
-            " the game still loads it is not established."
-        )
+        print(TRAILER_WARNING)
 
+    meta_dir = out_path / "meta"
+    meta_dir.mkdir(parents=True, exist_ok=True)
     output_papgt = meta_dir / "0.papgt"
     crimson_rs.write_papgt_file(updated_papgt, str(output_papgt))
     print(f"  Written updated PAPGT to: {output_papgt}")
 
     print()
-    print("Done! To install, copy these into the game directory:")
+    print("Done! To install, copy these into the game directory (keep a copy of the")
+    print("game's own meta/0.papgt first):")
     print(f"  {group_path}  ->  {game_path / group_name}")
     print(f"  {output_papgt}  ->  {game_path / 'meta' / '0.papgt'}")

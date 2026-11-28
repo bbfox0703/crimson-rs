@@ -856,7 +856,7 @@ fn parse_crypto(crypto: u8) -> PyResult<crate::binary::pamt::CryptoType> {
 /// Streaming pack group builder that writes .paz files to disk incrementally.
 ///
 /// Usage:
-///     builder = PackGroupBuilder("/path/to/0036", compression=2)
+///     builder = PackGroupBuilder("/path/to/0099", compression=2)
 ///     builder.add_file("textures", "icon.dds", raw_bytes)
 ///     builder.add_file_from_path("models", "mesh.obj", "/path/to/mesh.obj")
 ///     pamt_bytes = builder.finish()  # writes .paz + 0.pamt to output_dir

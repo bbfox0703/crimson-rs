@@ -265,7 +265,7 @@ Used in:
 The game resolves files by scanning PAPGT entries front-to-back. First match wins.
 
 ### How It Works
-1. **Create a new pack group** (e.g., `0036/`) containing modified files packed into `.paz` + `0.pamt`
+1. **Create a new pack group** under a number the PAPGT does not list (e.g. `0099/`; on 2.06 `0036`–`0040` are listed vanilla language groups with no folder) containing modified files packed into `.paz` + `0.pamt`
 2. **Insert the mod entry at the front** of both the PAPGT entries list and the group_names buffer
 3. **Replace `meta/0.papgt`** with the updated version
 
