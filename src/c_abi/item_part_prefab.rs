@@ -1104,9 +1104,8 @@ pub unsafe extern "C" fn crimson_item_part_prefab_lookup_dye_slot_material(
 /// and MUST NOT be reassigned. Add new states with the next free
 /// integer; never reuse a retired one.
 pub mod resolve_dye_slot_count_source {
-    /// Slot count came from a direct
-    /// `(item_key → partprefab[0] → slot_count)` chain. The
-    /// `out_slot_count` value is authoritative.
+    /// `out_slot_count` is the number of dye slot numbers the item
+    /// offers: the bits set in the union of its rows' dye slot masks.
     pub const DIRECT: u32 = 0;
     /// `item_key` has no entry in the `item_part_prefab` join — its
     /// mesh prefab(s) aren't in `partprefabdyeslotinfo`. Typically a
@@ -1128,26 +1127,26 @@ pub mod resolve_dye_slot_count_source {
     pub const NOT_RESOLVED_NO_SLOT_INFO: u32 = 2;
 }
 
-/// One-shot "how many dye slots does this item have?" — chains the
-/// existing `item_part_prefab` join and `partprefabdyeslotinfo`
-/// lookups into a single call. Saves the C# editor from orchestrating
-/// the 3-call sequence
-/// (`lookup_count` → `lookup_key_at(0)` →
-/// `crimson_part_prefab_dye_slot_info_lookup_slot_count`) for every
-/// dyeable item it surfaces.
+/// One-shot "how many dye slots does this item have?": the number of
+/// `_dyeSlotNo` values the item offers, i.e. the bits set in the union of
+/// [`crimson_part_prefab_dye_slot_info_lookup_dye_slot_bits`] over every
+/// row key the join gives the item (all body variants and meshes). For
+/// the numbers themselves, which need not be contiguous, use
+/// [`crimson_item_part_prefab_lookup_dye_slot_bits`]; this count is its
+/// popcount when both handles come from the same install.
 ///
-/// **Resolution policy**: always uses `partprefab[0]` — the first
-/// resolved prefab in iteminfo's `prefab_data_list` traversal order.
-/// Multi-prefab items (rare — mainly mesh variants) typically share a
-/// dye-slot layout across all variants; if a future use case needs
-/// per-variant resolution, switch to the manual chain via
-/// [`crimson_item_part_prefab_lookup_key_at`].
+/// Before 2026-11-28 this returned the first row's `slot_count`, which
+/// counts that mesh's sub-meshes, not dye slots: on 2.06 the two agree on
+/// only 392 of 1,703 rows (item 121013 has one row with one sub-mesh and
+/// three dye slots; audit E-01).
+///
+/// [`crimson_part_prefab_dye_slot_info_lookup_dye_slot_bits`]: super::part_prefab_dye_slot_info::crimson_part_prefab_dye_slot_info_lookup_dye_slot_bits
 ///
 /// **Return shape**: always returns `OK` (or `NULL_ARG` / `PANIC` for
 /// fatal call errors). The "did it resolve?" question is communicated
 /// via `out_resolve_source`:
 ///
-/// - `DIRECT` (0): `out_slot_count` is authoritative.
+/// - `DIRECT` (0): `out_slot_count` is the item's dye slot count.
 /// - `NOT_RESOLVED_NO_PARTPREFAB` (1): item has no partprefab mapping;
 ///   editor should fall back to a default or display "unknown".
 /// - `NOT_RESOLVED_NO_SLOT_INFO` (2): partprefab present but missing
@@ -1181,45 +1180,42 @@ pub unsafe extern "C" fn crimson_item_part_prefab_resolve_dye_slot_count(
     catch_unwind(AssertUnwindSafe(|| {
         let ipp = unsafe { &*item_part_prefab_handle };
 
-        // Step 1: ItemKey → partprefab[0].
+        // Step 1: ItemKey → every prefab row key of the item.
         let Some(prefab_keys) = ipp.part_prefab_keys_by_item.get(&item_key) else {
             return error::OK; // NOT_RESOLVED_NO_PARTPREFAB (already written)
         };
-        let Some(&pp_key) = prefab_keys.first() else {
-            // Empty Vec wouldn't be in the map (the join drops empties),
-            // but guard defensively.
-            return error::OK;
-        };
 
-        // Step 2: PartPrefabKey → slot_count via the slot-info bridge.
-        let mut count: u32 = 0;
-        let rc = unsafe {
-            super::part_prefab_dye_slot_info::crimson_part_prefab_dye_slot_info_lookup_slot_count(
-                slot_info_handle,
-                pp_key,
-                &mut count,
-            )
-        };
-        match rc {
-            x if x == error::OK => {
-                unsafe {
-                    *out_slot_count = count;
-                    *out_resolve_source = resolve_dye_slot_count_source::DIRECT;
+        // Step 2: OR the dye slot bits of the rows the slot-info table has.
+        let mut bits = 0u32;
+        let mut found = false;
+        for &pp_key in prefab_keys {
+            let mut row_bits = 0u32;
+            let rc = unsafe {
+                super::part_prefab_dye_slot_info::crimson_part_prefab_dye_slot_info_lookup_dye_slot_bits(
+                    slot_info_handle,
+                    pp_key,
+                    &mut row_bits,
+                )
+            };
+            match rc {
+                x if x == error::OK => {
+                    bits |= row_bits;
+                    found = true;
                 }
-                error::OK
+                x if x == error::NOT_FOUND => {}
+                // PANIC / NULL_ARG from the slot-info bridge: don't swallow it.
+                other => return other,
             }
-            x if x == error::NOT_FOUND => {
-                unsafe {
-                    *out_resolve_source =
-                        resolve_dye_slot_count_source::NOT_RESOLVED_NO_SLOT_INFO;
-                }
-                error::OK
-            }
-            // Pass through any other error (PANIC / NULL_ARG from the
-            // slot-info bridge — shouldn't happen given our guards, but
-            // don't swallow it silently).
-            other => other,
         }
+        unsafe {
+            if found {
+                *out_slot_count = bits.count_ones();
+                *out_resolve_source = resolve_dye_slot_count_source::DIRECT;
+            } else {
+                *out_resolve_source = resolve_dye_slot_count_source::NOT_RESOLVED_NO_SLOT_INFO;
+            }
+        }
+        error::OK
     }))
     .unwrap_or(error::PANIC)
 }
@@ -1557,36 +1553,36 @@ mod tests {
             wrapper_source, resolve_dye_slot_count_source::DIRECT,
             "resolved item should report DIRECT",
         );
-        // Slot counts are positive small ints — typical range 1..=16
-        // observed in 1.07 (some equipment has many independently-dyeable
-        // parts). 32 is a generous defensive cap to flag schema drift.
-        assert!(
-            (1..=32).contains(&wrapper_count),
-            "slot_count {wrapper_count} out of plausible range [1, 32] for item {item}",
-        );
+        // A dye slot number is one of the 12 mask flags (2.01+), so the
+        // count is at most 12; an item whose meshes have no dyeable channel
+        // offers none.
+        assert!(wrapper_count <= 12, "dye slot count {wrapper_count} > 12 for item {item}");
 
-        // Manual chain: lookup_key_at(0) → lookup_slot_count.
-        let mut manual_pp: u32 = 0;
-        assert_eq!(
-            unsafe { crimson_item_part_prefab_lookup_key_at(ipp_handle, item, 0, &mut manual_pp) },
-            error::OK,
-        );
-        let mut manual_count: u32 = 0;
+        // The count is the popcount of the item's dye slot bits.
+        let dye_bits = |k: u32| {
+            let mut b = 0u32;
+            let rc = unsafe { crimson_item_part_prefab_lookup_dye_slot_bits(ipp_handle, k, ptr::null(), &mut b) };
+            (rc, b)
+        };
+        assert_eq!(dye_bits(item).1.count_ones(), wrapper_count, "item {item}");
+
+        // 121013: one mesh row with one sub-mesh (`slot_count` 1) but three
+        // dye slots. The old answer was the sub-mesh count (audit E-01).
+        let mut c121013 = 0u32;
+        let mut s121013 = 99u32;
         assert_eq!(
             unsafe {
-                crimson_part_prefab_dye_slot_info_lookup_slot_count(
-                    slot_handle, manual_pp, &mut manual_count,
+                crimson_item_part_prefab_resolve_dye_slot_count(
+                    ipp_handle, slot_handle, 121_013, &mut c121013, &mut s121013,
                 )
             },
             error::OK,
         );
-        // The wrapper must agree with the manual chain.
-        assert_eq!(
-            wrapper_count, manual_count,
-            "wrapper and manual chain disagree on slot_count for item {item}",
-        );
+        if s121013 == resolve_dye_slot_count_source::DIRECT {
+            assert_eq!(c121013, 3, "121013 has three dye slots");
+        }
 
-        // Full sweep: every resolved item should give DIRECT + [1, 8] count.
+        // Full sweep: every resolved item gives DIRECT and its popcount.
         let mut direct_count = 0u32;
         let mut not_resolved_no_partprefab = 0u32;
         let mut not_resolved_no_slot_info = 0u32;
@@ -1612,10 +1608,8 @@ mod tests {
             );
             match s {
                 x if x == resolve_dye_slot_count_source::DIRECT => {
-                    assert!(
-                        (1..=32).contains(&c),
-                        "item {k} slot_count {c} out of plausible range [1, 32]",
-                    );
+                    assert!(c <= 12, "item {k} dye slot count {c} > 12");
+                    assert_eq!(dye_bits(k).1.count_ones(), c, "item {k}");
                     direct_count += 1;
                 }
                 x if x == resolve_dye_slot_count_source::NOT_RESOLVED_NO_PARTPREFAB => {

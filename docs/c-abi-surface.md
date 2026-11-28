@@ -520,9 +520,9 @@ src/
     │                                           #   dlc 0009 PAMT) + lookup_source (0 base / n-th DLC).
     │                                           #   precomputed at load; lookup_count/_key_at/_prefab_name_at per item +
     │                                           #   resolve_dye_slot_count (v3 convenience wrapper — one-shot
-    │                                           #   "how many dye slots does this item have?" chaining both bridges,
-    │                                           #   returns (slot_count, resolve_source) with NOT_RESOLVED states
-    │                                           #   for the 76% fallback path)
+    │                                           #   "how many dye slots does this item have?": popcount of the item's
+    │                                           #   dye slot bits since 2026-11-28 (was the first row's sub-mesh count),
+    │                                           #   returns (slot_count, resolve_source) with NOT_RESOLVED states)
     ├── house_info.rs                          # HouseKey (u16) → "DefaultHouse_Lv1"/... (4 rows, name-only)
     ├── royal_supply_info.rs                   # RoyalSupplyKey (u16) → "RoyalSupply_Hernand"/... (4 rows, name-only)
     ├── craft_tool_info.rs                     # CraftToolKey (u16) → "CraftTool_Enchant"/... (17 rows, name-only)

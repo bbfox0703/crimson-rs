@@ -151,7 +151,8 @@ pub struct DyeExtraLayer {
     /// `mat_indices`; the 2.01 re-encode reproduces all 18 extra layers
     /// common to 2.00 and 2.01 that way).
     pub mask: [u8; 12],
-    /// Trailing flag byte (0/1 observed; exact meaning not yet RE'd).
+    /// Trailing flag byte; meaning not RE'd. 2.06's 18 extra layers carry 1
+    /// (15), 2 (2) and 19 (1), never 0, so don't validate it as a 0/1 flag.
     pub flag: u8,
 }
 

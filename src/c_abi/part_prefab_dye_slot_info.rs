@@ -185,8 +185,10 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_entry_count(
     .unwrap_or(error::PANIC)
 }
 
-/// Number of dye slots on the prefab identified by `prefab_key`.
-/// **Direct replacement for `dye_slot_counts.json[item_id]`.**
+/// Number of slots on the mesh row identified by `prefab_key`: one per
+/// sub-mesh. **Not** the number of dye slots: that is the popcount of
+/// [`crimson_part_prefab_dye_slot_info_lookup_dye_slot_bits`] (on 2.06 the
+/// two agree on 392 of 1,703 rows).
 ///
 /// # Safety
 /// `handle` and `out_count` must be non-null.
