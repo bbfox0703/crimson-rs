@@ -1,10 +1,7 @@
 //! Save body encoder — the structural inverse of [`super::decoder`].
 //!
-//! Phase B.1 ships only the encoder + golden tests; no in-crate caller
-//! reaches into these functions yet (B.2 adds the C ABI wrappers). The
-//! `#![allow(dead_code)]` below holds the door open without polluting
-//! individual items.
-#![allow(dead_code)]
+//! Reached from the C ABI's length-changing edits and deferred batches
+//! through [`super::Body::write`].
 //!
 //! Takes a decoded `ObjectBlock` tree and re-emits the byte sequence the
 //! decoder would have parsed. With the decoder's full set of preservation

@@ -89,13 +89,6 @@ impl FieldKind {
 }
 
 /// Typed payload attached to a [`DecodedField`].
-//
-// Some preservation fields below (header_bytes / trailer_bytes / wrapper_prefix)
-// are only consumed by the encoder, which itself is dead in non-test builds
-// until the Phase B.2 C ABI wrapper lands. `allow(dead_code)` keeps clippy
-// quiet for the field-read warning in the meantime — the bytes ARE captured
-// at decode time so a future round-trip writer sees them.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum FieldValue {
     /// Field was absent in the presence mask, or the decoder gave up here.

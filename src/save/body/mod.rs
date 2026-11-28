@@ -109,10 +109,6 @@ impl Body {
     /// byte-for-byte. For mutated blocks (after a length-changing edit)
     /// the data section grows / shrinks accordingly and TOC offsets +
     /// `stream_size` reflect the new layout.
-    ///
-    /// `allow(dead_code)` until Phase B.2 wires a C ABI consumer; the
-    /// golden round-trip tests exercise this path via `cfg(test)` code.
-    #[allow(dead_code)]
     pub fn write(&self, raw: &[u8], blocks: &[ObjectBlock]) -> io::Result<Vec<u8>> {
         if raw.len() < self.schema.schema_end {
             return Err(io::Error::new(

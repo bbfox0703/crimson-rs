@@ -44,16 +44,14 @@
 //! size) or a non-zero `reserved_zero` / `reserved_flag` in `pabgb`;
 //! the latter currently parses (we keep the bytes) but the round-trip
 //! test below will start exercising the non-zero path.
-
-// Most of this module is public API + round-trip helpers exercised only
-// by `#[cfg(test)]` callers (the live integration tests below). The
-// `c_abi` bridge consumes a strict subset (`parse_pabgb`). Match the
-// `item_info` precedent and silence dead-code warnings file-wide.
-#![allow(dead_code)]
+// The writers and the full-table readers are round-trip support: the c_abi
+// bridge uses only the lookup path, and the tests below exercise the rest.
+// Outside tests they are dead, so only there is dead code allowed; the test
+// build lints the module in full.
+#![cfg_attr(not(test), allow(dead_code))]
 
 pub mod pabgh;
 
-use std::collections::HashMap;
 use std::io::{self, Write};
 
 use crate::binary::{BinaryRead, BinaryWrite};
@@ -308,13 +306,6 @@ impl StringInfoData {
             })?;
         }
         Ok(buf)
-    }
-
-    /// Map hashes to their resolved string values. Drops the reserved
-    /// bytes — round-trip callers should hold the `Vec<StringInfoEntry>`
-    /// instead.
-    pub fn into_lookup_map(self) -> HashMap<u32, String> {
-        self.entries.into_iter().map(|e| (e.hash, e.value)).collect()
     }
 }
 

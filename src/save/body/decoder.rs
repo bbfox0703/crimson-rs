@@ -27,7 +27,7 @@ use std::io;
 
 use super::object::{
     ABSENT_MARKER, DecodedField, FieldKind, FieldValue, ObjectBlock, ObjectLocatorWrapper,
-    ScalarValue, absent_kind_has_marker, decode_scalar, field_present, type_index_map,
+    absent_kind_has_marker, decode_scalar, field_present, type_index_map,
 };
 use super::schema::{FieldDef, Schema, TypeDef};
 use super::toc::Toc;
@@ -1336,30 +1336,6 @@ pub(crate) fn decode_one_list_element_bytes(
     let by_index = type_index_map(&schema.types);
     let (_end, block) = decode_object_list_element(bytes, 0, bytes.len(), &by_index)?;
     Ok(block)
-}
-
-/// Reduce a [`ScalarValue`] to a JSON-friendly integer when possible.
-/// Lossy for `Bytes` / floats, kept for cross-language consumers (Python)
-/// that want a plain int comparison.
-#[allow(dead_code)]
-pub(crate) fn scalar_as_i128(v: &ScalarValue) -> Option<i128> {
-    match v {
-        ScalarValue::Bool(b) => Some((*b != 0) as i128),
-        ScalarValue::U8(x) => Some(*x as i128),
-        ScalarValue::U16(x) => Some(*x as i128),
-        ScalarValue::U32(x) => Some(*x as i128),
-        ScalarValue::U64(x) => Some(*x as i128),
-        ScalarValue::I8(x) => Some(*x as i128),
-        ScalarValue::I16(x) => Some(*x as i128),
-        ScalarValue::I32(x) => Some(*x as i128),
-        ScalarValue::I64(x) => Some(*x as i128),
-        ScalarValue::F32(_)
-        | ScalarValue::F64(_)
-        | ScalarValue::F32x3(_)
-        | ScalarValue::F32x4(_)
-        | ScalarValue::U32x4(_)
-        | ScalarValue::Bytes(_) => None,
-    }
 }
 
 #[cfg(test)]

@@ -307,16 +307,6 @@ impl WritePyValue for EnchantDataList {
 }
 
 py_binary_struct! {
-    pub struct GimmickVisualPrefabData {
-        pub tag_name_hash: u32,
-        pub scale: [f32; 3],
-        pub prefab_names: CArray<StringInfoKey>,
-        pub animation_path_list: CArray<StringInfoKey>,
-        pub use_gimmick_prefab: u8,
-    }
-}
-
-py_binary_struct! {
     pub struct GameEventExecuteData {
         pub game_event_type: u8,
         pub player_condition: ConditionKey,
@@ -425,15 +415,6 @@ py_binary_struct! {
     pub struct MoneyTypeDefine<'a> {
         pub price_floor_value: u64,
         pub unit_data_list_map: CArray<MoneyUnitEntry<'a>>,
-    }
-}
-
-py_binary_struct! {
-    pub struct PrefabData {
-        pub prefab_names: CArray<StringInfoKey>,
-        pub equip_slot_list: CArray<u16>,
-        pub tribe_gender_list: CArray<StringInfoKey>,
-        pub is_craft_material: u8,
     }
 }
 

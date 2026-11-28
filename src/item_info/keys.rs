@@ -78,7 +78,6 @@ define_key!(CharacterGroupKey, u16);
 define_key!(CraftToolKey, u16);
 define_key!(InventoryKey, u16);
 define_key!(ItemGroupKey, u16);
-define_key!(SkillGroupKey, u16);
 
 #[cfg(test)]
 mod tests {

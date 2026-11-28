@@ -13,12 +13,15 @@
 //! Pairs with [`super::pabgb`]: each entry's `offset` is a byte offset
 //! into the matching `stringinfo.pabgb`, where the record at that offset
 //! carries the same `hash` u32 (after the 4-byte zero since 2.04).
+// The writers and the full-table readers are round-trip support: the c_abi
+// bridge uses only the lookup path, and the tests below exercise the rest.
+// Outside tests they are dead, so only there is dead code allowed; the test
+// build lints the module in full.
+#![cfg_attr(not(test), allow(dead_code))]
 
 // Index helpers are exercised by `string_info::tests::live_pair_roundtrip`
 // and the synthetic pair test; the `c_abi` bridge intentionally ignores
-// the pabgh side (every pabgb entry is self-describing). Match the
-// `item_info` precedent and silence dead-code warnings file-wide.
-#![allow(dead_code)]
+// the pabgh side (every pabgb entry is self-describing).
 
 use std::io;
 
