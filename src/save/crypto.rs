@@ -5,7 +5,7 @@
 //! saves can both be read.
 
 use chacha20_crate::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 
 /// First 31 bytes of the hardcoded save crypto base material.
