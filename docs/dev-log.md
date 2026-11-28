@@ -25,6 +25,27 @@ landed together. **Reading tip:** grep `^## ` for the index, then read from the 
 
 -----
 
+## 2026-11-28 — Fork guards drop the upstream remote
+
+- `scripts/setup-fork-guards.ps1` now removes the `upstream` remote instead of keeping it with a
+  disabled push URL. The `potter420/crimson-rs` parent was last pushed on 2026-04-25 and nothing is
+  fetched from it, so the remote only offered a wrong target. The summary prints `STILL PRESENT` if
+  the removal did not happen. `CLAUDE.md` says the same.
+- **Checked on this PC:**
+  - `gh repo set-default` resolves to `bbfox0703/crimson-rs`, and `gh pr create --dry-run` calls
+    only `bbfox0703` APIs.
+  - The pre-push hook refuses both the https and the SSH potter420 URLs and passes origin. GitHub
+    also answers 403: this account cannot write to the parent.
+  - The parent has no PRs from `bbfox0703`.
+  - This clone's `pre-push` was a Git LFS hook, which kept the fork-guard hook from installing. It is
+    saved as `.git/hooks/pre-push.lfs-backup`, and the repo tracks no LFS files. The other PC may
+    have the same; the script's summary says `NOT installed` when it does.
+- **Not done:** the fork is still attached on GitHub, so the web UI still offers the parent as a PR
+  base. Self-serve "Leave fork network" is permanent and drops the 128 PR pages this log refers to
+  by `#N`. Support-assisted detachment keeps them. That is the maintainer's call.
+- **Other PC:** pull, then re-run the script once.
+- **Tests:** none affected. **CrimsonAtomtic:** nothing to do.
+
 ## 2026-11-28 — Audit P6: archive builder and flags, bridge detection, save layout and rollback, scripts
 
 The sixth batch, on the same branch as the entries below: the low / nit code findings left after P5.
