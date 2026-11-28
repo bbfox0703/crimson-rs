@@ -120,6 +120,19 @@ pub const COMPATIBLE_GAMEDATA_MINORS: &[u16] = &[PARSER_TARGET_GAMEDATA_MINOR];
 /// it through `crimson_parser_min_gamedata_patch()`.
 pub const PARSER_MIN_GAMEDATA_PATCH: u16 = 0;
 
+/// The version gate the constants above describe: does this build's parser
+/// read gamedata `major.minor.patch`? `major` must be the target, `minor` one
+/// of [`COMPATIBLE_GAMEDATA_MINORS`], and on the target minor `patch` at least
+/// [`PARSER_MIN_GAMEDATA_PATCH`]. The formula used to exist only in docs, for
+/// each consumer to re-implement (audit A-13).
+// `patch >= 0` is always true while the floor is 0; the floor moves per patch.
+#[allow(clippy::absurd_extreme_comparisons)]
+pub fn parser_supports(major: u16, minor: u16, patch: u16) -> bool {
+    major == PARSER_TARGET_GAMEDATA_MAJOR
+        && COMPATIBLE_GAMEDATA_MINORS.contains(&minor)
+        && (minor != PARSER_TARGET_GAMEDATA_MINOR || patch >= PARSER_MIN_GAMEDATA_PATCH)
+}
+
 /// Parsed version stamp from `meta/0.paver`.
 ///
 /// `(major, minor)` identifies the parser-compatible schema: callers
@@ -168,9 +181,11 @@ fn read_dlc_tail(bytes: &[u8], mut offset: usize) -> Option<(Vec<PaverDlc>, u32)
 
 impl Paver {
     /// Parse from a byte slice. Returns `Err(UnexpectedEof)` when fewer
-    /// than `PAVER_SIZE` bytes are available. A longer file that is not a
-    /// well-formed DLC stamp keeps the leading 10-byte reading, tolerating
-    /// PA adding fields.
+    /// than `PAVER_SIZE` bytes are available. A longer file must read exactly
+    /// as the 2.04+ DLC stamp; anything else is `InvalidData`. It used to fall
+    /// back to the 10-byte reading, which put the DLC count in `build` and
+    /// dropped the rest on write-back (audit A-17 / A-10): a new layout is
+    /// drift to look at, not something to half-read.
     pub fn from_bytes(bytes: &[u8]) -> io::Result<Self> {
         if bytes.len() < PAVER_SIZE {
             return Err(io::Error::new(
@@ -190,6 +205,12 @@ impl Paver {
         if let Some((dlcs, build)) = read_dlc_tail(bytes, offset) {
             return Ok(Self { major, minor, patch, build, dlcs: Some(dlcs) });
         }
+        if bytes.len() != PAVER_SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unrecognised {}-byte paver layout (neither the 10-byte stamp nor a DLC list)", bytes.len()),
+            ));
+        }
         let build = u32::read_from(bytes, &mut offset)?;
         Ok(Self { major, minor, patch, build, dlcs: None })
     }
@@ -207,7 +228,10 @@ impl Paver {
 impl<'a> BinaryRead<'a> for Paver {
     /// The stamp owns the whole slice: a 2.04+ one is variable-length.
     fn read_from(data: &'a [u8], offset: &mut usize) -> io::Result<Self> {
-        let paver = Self::from_bytes(&data[*offset..])?;
+        let rest = data.get(*offset..).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::UnexpectedEof, "paver offset past the end")
+        })?;
+        let paver = Self::from_bytes(rest)?;
         *offset = data.len();
         Ok(paver)
     }
@@ -233,6 +257,30 @@ impl BinaryWrite for Paver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parser_supports_follows_the_gate() {
+        let (ma, mi, pf) = (PARSER_TARGET_GAMEDATA_MAJOR, PARSER_TARGET_GAMEDATA_MINOR, PARSER_MIN_GAMEDATA_PATCH);
+        assert!(parser_supports(ma, mi, pf));
+        assert!(parser_supports(ma, mi, pf + 7));
+        if pf > 0 {
+            assert!(!parser_supports(ma, mi, pf - 1));
+        }
+        assert!(!parser_supports(ma + 1, mi, pf), "another major");
+        assert!(!parser_supports(ma, mi + 1, 0), "a minor not in the list");
+    }
+
+    /// A stamp longer than 10 bytes that is not a DLC list is an error, not a
+    /// 10-byte reading with the DLC count in `build` (audit A-17).
+    #[test]
+    fn unrecognised_long_stamp_is_an_error() {
+        let mut b = vec![2, 0, 6, 0, 0, 0];
+        b.extend_from_slice(&5u32.to_le_bytes()); // a count of 5 with no entries
+        b.extend_from_slice(&[0xAA; 3]);
+        assert!(Paver::from_bytes(&b).is_err());
+        let ten = [2, 0, 6, 0, 0, 0, 1, 0, 0, 0];
+        assert_eq!(Paver::from_bytes(&ten).unwrap().build, 1);
+    }
 
     /// Live-install hex dump (1.08.00, build 0xdc39b03e).
     const PAVER_1_08_LIVE: [u8; PAVER_SIZE] =
@@ -266,14 +314,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_extra_bytes_tolerated() {
-        // PAVER_SIZE + 6 extra; should still parse cleanly using just
-        // the leading 10 bytes.
+    fn parse_extra_bytes_is_an_error() {
+        // PAVER_SIZE + 6 bytes that are not a DLC list. This used to parse
+        // from the leading 10 bytes; a layout nothing reads is now an error
+        // (audit A-17).
         let mut bytes = PAVER_1_08_LIVE.to_vec();
         bytes.extend_from_slice(b"future");
-        let p = Paver::from_bytes(&bytes).unwrap();
-        assert_eq!(p.major, 1);
-        assert_eq!(p.minor, 8);
+        assert!(Paver::from_bytes(&bytes).is_err());
     }
 
     /// Live-install hex dump (2.04.03, build 0x3ebe7ee2).

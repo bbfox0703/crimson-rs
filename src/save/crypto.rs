@@ -52,14 +52,24 @@ pub fn derive_key(version: u16) -> Option<[u8; 32]> {
 /// In-place ChaCha20 over `buf`. The 16-byte stored nonce splits into
 /// `(initial_counter u32 LE, nonce u96)`. Encryption and decryption are the
 /// same operation for a stream cipher.
-pub fn chacha20_xor(buf: &mut [u8], key: &[u8; 32], nonce16: &[u8; 16]) {
+///
+/// Errors when the 32-bit block counter would pass 2^32 inside `buf`: the
+/// cipher panicked there, and the game's behaviour at that boundary is not
+/// known. The stored counter is random, so for a ~2 MB save this is about one
+/// write in 150,000 (audit F-06).
+pub fn chacha20_xor(buf: &mut [u8], key: &[u8; 32], nonce16: &[u8; 16]) -> std::io::Result<()> {
     let initial_counter = u32::from_le_bytes(nonce16[0..4].try_into().unwrap());
     let nonce12: [u8; 12] = nonce16[4..16].try_into().unwrap();
 
     let mut cipher = chacha20_crate::ChaCha20::new(key.into(), &nonce12.into());
     // Each ChaCha20 block is 64 bytes; seek to byte position counter * 64.
     cipher.seek(initial_counter as u64 * 64);
-    cipher.apply_keystream(buf);
+    cipher.try_apply_keystream(buf).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "ChaCha20 32-bit block counter would pass 2^32 within this save",
+        )
+    })
 }
 
 /// HMAC-SHA256 over `data` with `key`. Returns the 32-byte digest.
@@ -117,11 +127,23 @@ mod tests {
         let plain = b"hello crimson desert save file".to_vec();
 
         let mut buf = plain.clone();
-        chacha20_xor(&mut buf, &key, &nonce);
+        chacha20_xor(&mut buf, &key, &nonce).unwrap();
         assert_ne!(buf, plain, "ciphertext must differ from plaintext");
 
-        chacha20_xor(&mut buf, &key, &nonce);
+        chacha20_xor(&mut buf, &key, &nonce).unwrap();
         assert_eq!(buf, plain, "double XOR must restore plaintext");
+    }
+
+    /// A counter that would pass 2^32 inside the buffer is an error, not a
+    /// panic (audit F-06 / A-06).
+    #[test]
+    fn counter_overflow_is_an_error() {
+        let key = [7u8; 32];
+        let mut nonce = [0u8; 16];
+        nonce[..4].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(chacha20_xor(&mut [0u8; 64], &key, &nonce).is_err());
+        nonce[..4].copy_from_slice(&(u32::MAX - 1).to_le_bytes());
+        assert!(chacha20_xor(&mut [0u8; 64], &key, &nonce).is_ok());
     }
 
     #[test]

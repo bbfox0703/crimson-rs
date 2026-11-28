@@ -201,13 +201,24 @@ impl PackGroupTreeMeta {
     ///
     /// A 2.04+ PAPGT keeps its old [`Self::trailer`], which no longer matches
     /// the edited entries; whether the game accepts that is not established.
+    ///
+    /// Errors (audit A-15) on a name with a NUL byte (the buffer is
+    /// NUL-separated, so it would split the name) or when the entry count
+    /// would pass the u8 the header stores it in.
     pub fn add_entry(
         &mut self,
         group_name: &str,
         pack_meta_checksum: u32,
         is_optional: u8,
         language: u16,
-    ) {
+    ) -> io::Result<()> {
+        if group_name.as_bytes().contains(&0) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "group name contains a NUL byte"));
+        }
+        let replacing = self.entries.iter().any(|e| e.group_name == group_name);
+        if !replacing && self.entries.len() >= u8::MAX as usize {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "a PAPGT holds at most 255 groups"));
+        }
         // Remove existing entry with the same group name (if any)
         self.entries.retain(|e| e.group_name != group_name);
 
@@ -240,6 +251,7 @@ impl PackGroupTreeMeta {
         );
 
         self.header.entry_count = self.entries.len() as u8;
+        Ok(())
     }
 
     /// Serialize back to bytes (roundtrip).
@@ -328,7 +340,7 @@ mod tests {
     #[test]
     fn signed_layout_survives_add_entry() {
         let mut papgt = PackGroupTreeMeta::parse(&signed_papgt()).unwrap();
-        papgt.add_entry("0036", 0x33, 0, LanguageType::ALL);
+        papgt.add_entry("0036", 0x33, 0, LanguageType::ALL).unwrap();
         let reparsed = PackGroupTreeMeta::parse(&papgt.to_bytes().unwrap()).unwrap();
         assert_eq!(reparsed.entries.len(), 3);
         assert_eq!(reparsed.entries[0].group_name, "0036");
@@ -338,7 +350,7 @@ mod tests {
     #[test]
     fn checksummed_layout_roundtrips() {
         let mut papgt = PackGroupTreeMeta::new();
-        papgt.add_entry("0000", 0x11, 0, LanguageType::ALL);
+        papgt.add_entry("0000", 0x11, 0, LanguageType::ALL).unwrap();
         let data = papgt.to_bytes().unwrap();
         let reparsed = PackGroupTreeMeta::parse(&data).unwrap();
         assert_eq!(reparsed.trailer, None);

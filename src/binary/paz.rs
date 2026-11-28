@@ -451,7 +451,7 @@ pub fn process_file(
     let compressed = compress(data, compression)?;
 
     let processed = match crypto {
-        CryptoType::ChaCha20 => chacha20::encrypt_pack_entry(&compressed, encrypt_info, file_path),
+        CryptoType::ChaCha20 => chacha20::encrypt_pack_entry(&compressed, encrypt_info, file_path)?,
         CryptoType::None => compressed,
         _ => {
             return Err(io::Error::new(
@@ -552,16 +552,28 @@ impl PackGroupBuilder {
             self.flush_current_chunk()?;
         }
 
-        let chunk_offset = self.current_chunk_data.len() as u32;
+        // The PAMT stores these as u32 / u16, and the trie as one length byte
+        // per name fragment (every fragment lies inside one path segment); a
+        // value past those used to be truncated silently (audit A-15).
+        if dir_path.split('/').chain([file_name]).any(|s| s.len() > 255) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("a path segment of {dir_path}/{file_name} is longer than 255 bytes"),
+            ));
+        }
+        let chunk_offset = u32::try_from(self.current_chunk_data.len()).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a .paz chunk past 4 GiB"))?;
+        let chunk_id = u16::try_from(self.current_chunk_id).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "more than 65,536 .paz chunks"))?;
+        let compressed_size = u32::try_from(compressed_size).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a file past 4 GiB compressed"))?;
+        let uncompressed_size = u32::try_from(data.len()).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a file past 4 GiB"))?;
         self.current_chunk_data.extend_from_slice(&processed);
 
         self.file_metas.push(FileMeta {
             dir_path: dir_path.to_string(),
             file_name: file_name.to_string(),
-            chunk_id: self.current_chunk_id as u16,
+            chunk_id,
             chunk_offset,
-            compressed_size: compressed_size as u32,
-            uncompressed_size: data.len() as u32,
+            compressed_size,
+            uncompressed_size,
             flags,
         });
 
@@ -588,7 +600,7 @@ impl PackGroupBuilder {
         }
 
         let crc = checksum::calculate_checksum(&self.current_chunk_data);
-        let size = self.current_chunk_data.len() as u32;
+        let size = u32::try_from(self.current_chunk_data.len()).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a .paz chunk past 4 GiB"))?;
 
         // Write to disk
         let paz_path = self
@@ -731,11 +743,15 @@ impl PackGroupBuilder {
         let pamt = PackMeta {
             header: PackMetaHeader {
                 checksum: 0,
-                count: pamt_chunks.len() as u16,
+                count: u16::try_from(pamt_chunks.len()).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "more than 65,535 .paz chunks"))?,
                 unknown0: 0, // seen in real files, always the same, maybe a version or magic?
+                // The key the files were encrypted with: extraction derives the
+                // ChaCha20 key from this header, and a fixed [2, 14, 97] made a
+                // pack encrypted with any other key unreadable (audit A-04).
+                // Live PAMTs pair [2, 14, 97] with 50 and [0, 0, 0] with 0.
                 encrypt_info: PackEncryptInfo {
-                    unknown0: 50,
-                    encrypt_info: [2, 14, 97],
+                    unknown0: if self.encrypt_info == [0, 0, 0] { 0 } else { 50 },
+                    encrypt_info: self.encrypt_info,
                 },
             },
             chunks: pamt_chunks,
@@ -805,7 +821,7 @@ pub fn extract_file(
             } else {
                 format!("{}/{}", dir_path, file.name)
             };
-            chacha20::decrypt_pack_entry(&raw, encrypt_info, &full_path)
+            chacha20::decrypt_pack_entry(&raw, encrypt_info, &full_path)?
         }
         CryptoType::None => raw,
         other => {
@@ -1143,6 +1159,36 @@ mod tests {
         h[28..32].copy_from_slice(&7u32.to_le_bytes());
         h[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(DdsInfo::parse(&h).is_none(), "width");
+    }
+
+    /// A pack encrypted with a non-default key extracts back through its own
+    /// PAMT: the header now names the key the builder used, which a fixed
+    /// [2, 14, 97] did not (audit A-04). Also covers ChaCha20 + LZ4 together,
+    /// which no builder test did (A-14).
+    #[test]
+    fn test_pack_group_builder_chacha20_round_trip() {
+        let dir = make_tempdir();
+        let key = [7u8, 33, 101];
+        let mut builder = PackGroupBuilder::new(dir.path(), Compression::Lz4, CryptoType::ChaCha20, key, 1_000_000);
+        let data: Vec<u8> = (0..5000u32).flat_map(|i| (i % 251).to_le_bytes()).collect();
+        builder.add_file("ui/icons", "a.dds", &data).unwrap();
+        let pamt_bytes = builder.finish().unwrap();
+        let pamt = PackMeta::parse(&pamt_bytes, None).unwrap();
+        assert_eq!(pamt.header.encrypt_info.encrypt_info, key);
+        let d = &pamt.directories[0];
+        let out = extract_file(dir.path(), &d.files[0], &d.path, &pamt.header.encrypt_info.encrypt_info).unwrap();
+        assert_eq!(out, data);
+    }
+
+    /// A path segment over 255 bytes is refused instead of truncating the
+    /// trie length byte (audit A-15).
+    #[test]
+    fn test_pack_group_builder_refuses_long_names() {
+        let dir = make_tempdir();
+        let mut builder = PackGroupBuilder::new(dir.path(), Compression::None, CryptoType::None, [0, 0, 0], 1_000_000);
+        assert!(builder.add_file("ui", &"x".repeat(256), b"data").is_err());
+        assert!(builder.add_file(&"d".repeat(300), "a.txt", b"data").is_err());
+        assert!(builder.add_file("ui", &"x".repeat(255), b"data").is_ok());
     }
 
     #[test]

@@ -582,7 +582,7 @@ consumes it.
 
 <!-- symbol-index:start -->
 
-Every exported `crimson_*` function, 373 in all, grouped by source file, with the first line
+Every exported `crimson_*` function, 374 in all, grouped by source file, with the first line
 of its rustdoc. `repo_doc_budget::c_abi_surface_lists_every_symbol` fails when a symbol is
 missing from this file, so add a line here (or a mention above) with any new export.
 
@@ -959,6 +959,7 @@ missing from this file, so add a line here (or a mention above) with any new exp
 - `crimson_parser_target_gamedata_major` — The Crimson Desert gamedata `major` version this build's parsers target.
 - `crimson_parser_target_gamedata_minor` — The Crimson Desert gamedata `minor` version this build's parsers target.
 - `crimson_parser_min_gamedata_patch` — The lowest gamedata `patch` this build's parsers read on the target `(major, minor)`.
+- `crimson_parser_supports` — `1` when this build's parsers read gamedata `major.minor.patch` (from [`crimson_paver_read_from_file`]), else `0`: the full gate (target m…
 - `crimson_parser_compatible_gamedata_minors` — Write the full allow-list of gamedata `minor` versions this build's parsers can load into `out_buf`, and the count into `out_count`.
 
 **`src/c_abi/paz.rs`**

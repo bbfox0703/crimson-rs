@@ -121,7 +121,7 @@ impl Save {
         // ChaCha20 decrypt in place. After this `compressed` holds the
         // post-decryption (pre-decompression) blob.
         let mut compressed = file_bytes[PAYLOAD_OFFSET..payload_end].to_vec();
-        chacha20_xor(&mut compressed, &key, &nonce);
+        chacha20_xor(&mut compressed, &key, &nonce)?;
 
         let hmac_ok = verify_hmac(&key, &compressed, &stored_hmac);
 
@@ -168,7 +168,7 @@ impl Save {
 
         let tag = hmac_sha256(&key, &compressed);
         let mut encrypted = compressed.clone();
-        chacha20_xor(&mut encrypted, &key, &nonce);
+        chacha20_xor(&mut encrypted, &key, &nonce)?;
 
         let mut header = self.header.clone();
         header.set_uncompressed_size(self.body.len() as u32);

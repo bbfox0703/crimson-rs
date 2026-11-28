@@ -214,6 +214,35 @@ impl<'a, T: BinaryReadTracked<'a>> BinaryReadTracked<'a> for CArray<T> {
     }
 }
 
+// ── Presence flags ──────────────────────────────────────────────────────────
+
+/// A presence byte must be 0 or 1. Any other value used to read as "present"
+/// and write back as 1, so a drifted field was guessed at instead of failing,
+/// and the round-trip changed the byte (audit A-10 / C-10). Real data uses 0
+/// and 1 only (all of 2.06 base and DLC iteminfo).
+fn presence_flag(flag: u8, what: &str, at: usize) -> io::Result<bool> {
+    match flag {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{what}: presence byte {flag:#04x} at offset {at} (expected 0 or 1)"),
+        )),
+    }
+}
+
+/// A flagged array that says "present" and then holds no elements would write
+/// back as the lone `0x00`, changing the bytes (audit A-10).
+fn flagged_array_not_empty<T>(items: &[T], at: usize) -> io::Result<()> {
+    if items.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("CFlaggedArray at offset {at}: flag 1 with count 0"),
+        ));
+    }
+    Ok(())
+}
+
 // ── CFlaggedArray ───────────────────────────────────────────────────────────
 
 /// A 2.04 list: one presence byte, then — only when it is non-zero — the
@@ -225,10 +254,12 @@ pub struct CFlaggedArray<T> {
 
 impl<'a, T: BinaryRead<'a>> BinaryRead<'a> for CFlaggedArray<T> {
     fn read_from(data: &'a [u8], offset: &mut usize) -> io::Result<Self> {
-        if u8::read_from(data, offset)? == 0 {
+        let at = *offset;
+        if !presence_flag(u8::read_from(data, offset)?, "CFlaggedArray", at)? {
             return Ok(CFlaggedArray { items: Vec::new() });
         }
         let CArray { items } = CArray::read_from(data, offset)?;
+        flagged_array_not_empty(&items, at)?;
         Ok(CFlaggedArray { items })
     }
 }
@@ -266,10 +297,11 @@ impl<'a, T: BinaryReadTracked<'a>> BinaryReadTracked<'a> for CFlaggedArray<T> {
         });
         pop_path(path, saved);
 
-        if flag == 0 {
+        if !presence_flag(flag, "CFlaggedArray", tag_start)? {
             return Ok(CFlaggedArray { items: Vec::new() });
         }
         let CArray { items } = CArray::read_tracked(data, offset, path, ranges)?;
+        flagged_array_not_empty(&items, tag_start)?;
         Ok(CFlaggedArray { items })
     }
 }
@@ -283,8 +315,9 @@ pub struct COptional<T> {
 
 impl<'a, T: BinaryRead<'a>> BinaryRead<'a> for COptional<T> {
     fn read_from(data: &'a [u8], offset: &mut usize) -> io::Result<Self> {
+        let at = *offset;
         let flag = u8::read_from(data, offset)?;
-        let value = if flag != 0 {
+        let value = if presence_flag(flag, "COptional", at)? {
             Some(T::read_from(data, offset)?)
         } else {
             None
@@ -324,7 +357,7 @@ impl<'a, T: BinaryReadTracked<'a>> BinaryReadTracked<'a> for COptional<T> {
         });
         pop_path(path, saved);
 
-        let value = if flag != 0 {
+        let value = if presence_flag(flag, "COptional", tag_start)? {
             Some(T::read_tracked(data, offset, path, ranges)?)
         } else {
             None

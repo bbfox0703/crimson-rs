@@ -1005,7 +1005,9 @@ pub fn add_papgt_entry(
     let mut papgt =
         PackGroupTreeMeta::parse(&bytes).map_err(|e| PyValueError::new_err(e.to_string()))?;
 
-    papgt.add_entry(group_name, pack_meta_checksum, is_optional, language);
+    papgt
+        .add_entry(group_name, pack_meta_checksum, is_optional, language)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
     let new_bytes = papgt
         .to_bytes()

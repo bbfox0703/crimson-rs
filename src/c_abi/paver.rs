@@ -196,6 +196,15 @@ pub extern "C" fn crimson_parser_min_gamedata_patch() -> u16 {
     PARSER_MIN_GAMEDATA_PATCH
 }
 
+/// `1` when this build's parsers read gamedata `major.minor.patch` (from
+/// [`crimson_paver_read_from_file`]), else `0`: the full gate (target major,
+/// a compatible minor, and the patch floor on the target minor) in one call,
+/// so a consumer does not re-implement it from the constants (audit A-13).
+#[unsafe(no_mangle)]
+pub extern "C" fn crimson_parser_supports(major: u16, minor: u16, patch: u16) -> u8 {
+    u8::from(crate::binary::paver::parser_supports(major, minor, patch))
+}
+
 /// Write the full allow-list of gamedata `minor` versions this build's parsers
 /// can load into `out_buf`, and the count into `out_count`.
 ///
