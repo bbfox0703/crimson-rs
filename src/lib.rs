@@ -1298,6 +1298,36 @@ mod tests {
         }
     }
 
+    /// The encoder must refuse a block the decoder did not fully explain
+    /// (audit F-01). Changing one absence-marker byte in block 7 of the 1.10
+    /// fixture leaves 809 undecoded bytes; `Body::write` used to return `Ok`
+    /// with a body 809 bytes short. The untouched body still re-encodes byte
+    /// for byte.
+    #[test]
+    fn test_save_encoder_refuses_undecoded_bytes() {
+        let Some(bytes) = crate::test_fixtures::save("1.10/save.save") else {
+            return;
+        };
+        let save = crate::save::Save::parse(&bytes).unwrap();
+        let mut raw = save.body.clone();
+        let body = crate::save::Body::parse(&raw).unwrap();
+        let blocks = body.decode_blocks(&raw);
+        assert_eq!(body.write(&raw, &blocks).unwrap(), raw, "no-op re-encode");
+
+        let (bi, at) = blocks
+            .iter()
+            .enumerate()
+            .skip(7)
+            .find_map(|(i, b)| b.fields.iter().find(|f| f.absent_marker).map(|f| (i, f.start)))
+            .expect("a block with an absence marker");
+        raw[at] = 0x02;
+        let blocks = body.decode_blocks(&raw);
+        let undecoded: usize = blocks[bi].undecoded_ranges.iter().map(|(s, e)| e - s).sum();
+        assert!(undecoded > 0, "the changed marker leaves undecoded bytes");
+        let err = body.write(&raw, &blocks).expect_err("must refuse to drop undecoded bytes");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData, "{err}");
+    }
+
     /// Regression for the save-loader length-change crash
     /// (docs/save-loader-length-change-crash.md). A non-empty
     /// `_reviveQuestList` with no `01 01 01 01 01` trailer must decode (via the

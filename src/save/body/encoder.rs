@@ -51,6 +51,54 @@ use super::object::{
     ScalarValue,
 };
 
+/// Refuse a block the decoder did not fully explain. The encoder rebuilds a
+/// block from its decoded fields alone, so bytes the decoder could not place
+/// would silently disappear from the re-emitted body (audit F-01: one changed
+/// absence-marker byte left 809 undecoded bytes, and `Body::write` returned
+/// `Ok` with a body 809 bytes short). Checked recursively:
+/// - `undecoded_ranges` (bytes no decoder placed),
+/// - `Unknown` fields (nothing to re-emit),
+/// - placeholder list elements (wrapper only: their child payload failed to
+///   decode, and re-emitting them would write an empty child),
+/// - non-inline locator children (the encoder re-emits a child only right
+///   after its wrapper; the decoder counts a payload found elsewhere as
+///   decoded, so it never shows up in `undecoded_ranges`).
+///
+/// Every game-written save decodes with none of these (0 of 30 fixture and
+/// live saves), so this only stops a re-encode after format drift.
+fn check_fully_decoded(block: &ObjectBlock) -> Result<(), String> {
+    if let Some((s, e)) = block.undecoded_ranges.first() {
+        let total: usize = block.undecoded_ranges.iter().map(|(s, e)| e - s).sum();
+        return Err(format!("{total} undecoded bytes (first at {s}..{e})"));
+    }
+    for f in &block.fields {
+        if f.kind == FieldKind::Unknown {
+            return Err(format!("field {} ({}) was not decoded", f.field_index, f.name));
+        }
+        match &f.value {
+            FieldValue::Locator { child: Some(c), inline_child, .. } => {
+                if !inline_child {
+                    return Err(format!(
+                        "field {} ({}) has a locator child away from its wrapper",
+                        f.field_index, f.name
+                    ));
+                }
+                check_fully_decoded(c).map_err(|why| format!("{}.{why}", f.name))?;
+            }
+            FieldValue::ObjectList { elements, .. } => {
+                for (j, el) in elements.iter().enumerate() {
+                    if el.mask_bytes.is_empty() && el.fields.is_empty() {
+                        return Err(format!("{}[{j}] is a placeholder (its payload did not decode)", f.name));
+                    }
+                    check_fully_decoded(el).map_err(|why| format!("{}[{j}].{why}", f.name))?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// Encode a single top-level TOC block back to bytes, treating
 /// `block_data_offset` as the absolute body offset where this block
 /// will sit. The encoder uses this to recompute each locator
@@ -163,6 +211,14 @@ pub fn encode_body(
                 body.toc.entries.len(),
             ),
         ));
+    }
+    for (i, block) in blocks.iter().enumerate() {
+        check_fully_decoded(block).map_err(|why| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("block {i} ({}): {why}; refusing to re-encode it", block.class_name),
+            )
+        })?;
     }
 
     // Encode each block first so we know its size. To compute the
