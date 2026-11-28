@@ -25,6 +25,66 @@ landed together. **Reading tip:** grep `^## ` for the index, then read from the 
 
 -----
 
+## 2026-11-28 — Audit P9: code nits (header widths, stringinfo layout, dye FFI hygiene, script lookup)
+
+The ninth batch, on the same branch as the entries below: the nit-level code findings. Status table
+after it: 116 fixed, 22 partly, 7 open (doc and tooling items), 2 not fixing, 2 merged.
+
+- **2.06 headers:**
+  - `static_header::WIDTHS` covers all 15 count/key width pairs (adds `(1,8)`, `(1,12)`, `(4,12)`).
+    Unit tests detect every pair, and refuse gaps, overlaps, short rows, a lying count and a NUL in a
+    name (B-04).
+  - A header name with a NUL is refused: a C caller would read it cut short while `required`
+    reported the full length (B-11).
+  - `dump_gamedata_keys.py` tries the same 15 pairs in the same order and checks row packing (B-07).
+    Its 2.06 snapshot is unchanged.
+- **stringinfo layout (C-11):** a body-only read decided legacy vs 2.06 from the first word alone,
+  so a 2.06 table whose first hash is 0 would swap every hash with its row index. It now takes 2.06
+  as soon as one of the first eight rows has a non-zero first word; a legacy first word is always 0.
+  - The first version of this fix, `5f1366f`, keyed on the row indices counting 0, 1, 2.
+  - A DLC table's row index is not the row's position, so `stringinfo.dlc_01` read as legacy.
+  - The item prefab DLC merge then added 3 items instead of 89. The live merge test caught it before
+    the push, and `370672e` fixed it.
+- **Dye / prefab:**
+  - `.pac` paths match in any case, and a backslash separator becomes `/` (E-06). Coverage stays
+    909 of 917 dyeable items, so neither explains the 8 unresolved ones; the live test prints it.
+  - The item handle keeps the first row for a duplicate key (E-10).
+  - A name-join merge no longer opens the prefab path it ignores (E-11).
+  - The slot marker `0xFF`, the row pad and the palette pad are checked; every 2.06 row still parses
+    (E-13).
+  - FFI hygiene: raw-pointer helpers are `unsafe fn`, out-params are zeroed before a lookup can fail,
+    and the three `write_str_to_buf` copies became one (E-15).
+  - Test shifts are range-checked first (E-16). The key-invariant test reads the 0008 table alone and
+    pins its row count to the header's.
+- **Opaque handles:** the 27 C ABI handles that hold `HashMap` / `Vec` drop `#[repr(C)]`, which had
+  no effect (A-19 / B-11 / E-15). Also gone: a stale `allow(unused_imports)` and the never-built
+  `Compression::Partial` (A-19).
+- **Smaller fixes:**
+  - The name-only macro's byte loader uses `slice_from_raw_or_empty` (B-11).
+  - `live_titles` keeps the first row, as the bridges do (D-10).
+  - The inventory enumerator also accepts a `u32` `_slotNo` (G-14, partly; name matching and the
+    playable-character list are unchanged, and the player-owned filter test passes on the 2.06 save).
+- **Scripts (I-18):** one install lookup in `gamedata_layout.py`. It has `GAME_DIR_CANDIDATES` and
+  `game_dir_candidates()`, which puts `CRIMSON_GAME_ROOT` first, plus `find_game_dir()`.
+  `export_for_ce`, `extract_gamedata_bin`, `dump_gamedata_keys`, `update_ce_table` and
+  `decode_dyeslot_113` use it.
+- **Documented, behaviour kept for ABI stability:**
+  - `quick_slot_index` is always 0 since 2.04, and what `IS_IMPORTANT_ITEM` means (C-16).
+  - The two `lookup_dye_slot_material` functions take `dye_slot_no` as `uint32_t` (slot info) vs
+    `uint8_t` (item) (E-09).
+  - `position_for_rgb` returns the first match (E-12). No 2.06 palette repeats an RGB (measured over
+    all 10), so the answer is unique there.
+- **Measured on this PC:** 436 passed, 48 ignored, with the install and fixtures; the same 436 pass
+  with neither. Strict clippy and all four feature combinations are clean. The wheel was rebuilt, and
+  iteminfo round-trips body and header byte for byte.
+- **CrimsonAtomtic:**
+  - Out-params are now zeroed on errors where they used to keep the caller's value.
+  - A 2.06 table with a NUL in a row name now fails to load.
+  - A slot-info or palette row with a changed constant byte drops out, and the live tests would flag
+    it.
+  - No signature changed. The `dye_slot_no` widths are documented: the item function's parameter
+    must be declared `byte`.
+
 ## 2026-11-28 — Audit P8: save pad, skill caps, PAMT dicts, CI builds, newest save, key snapshots
 
 The eighth batch, on the same branch as the entries below: the remaining low findings. Status table
