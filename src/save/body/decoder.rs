@@ -706,6 +706,44 @@ fn decode_dynamic_array(
     ))
 }
 
+thread_local! {
+    /// Payload offsets of the locator children this thread is decoding,
+    /// outermost first. See [`PayloadGuard`].
+    static PAYLOAD_STACK: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Deepest locator / list nesting the decoder follows. Game saves nest at
+/// most 5 deep (21 fixture and live saves); every level may try two walks, so
+/// the bound also keeps a crafted chain from taking exponential time.
+const MAX_PAYLOAD_NESTING: usize = 16;
+
+/// Marks a locator child payload as being decoded. Refuses (`None`) a payload
+/// that is already being decoded further up (a child whose
+/// `child_payload_offset` points back at an ancestor, which recursed until the
+/// stack overflowed; audit F-03) and nesting past [`MAX_PAYLOAD_NESTING`].
+struct PayloadGuard;
+
+impl PayloadGuard {
+    fn enter(start: usize) -> Option<Self> {
+        PAYLOAD_STACK.with(|s| {
+            let mut s = s.borrow_mut();
+            if s.len() >= MAX_PAYLOAD_NESTING || s.contains(&start) {
+                return None;
+            }
+            s.push(start);
+            Some(PayloadGuard)
+        })
+    }
+}
+
+impl Drop for PayloadGuard {
+    fn drop(&mut self) {
+        PAYLOAD_STACK.with(|s| {
+            s.borrow_mut().pop();
+        });
+    }
+}
+
 fn decode_inline_object_locator(
     raw: &[u8],
     cursor: usize,
@@ -781,6 +819,7 @@ fn decode_inline_object_locator(
             if start + 8 > tail {
                 return None;
             }
+            let _guard = PayloadGuard::enter(start)?;
             decode_inline_object_payload(raw, td, &child_mask_owned, start, tail, by_index)
                 .ok()
                 .map(|(child_end, reserved, _, fields, pad)| {
@@ -1320,5 +1359,26 @@ pub(crate) fn scalar_as_i128(v: &ScalarValue) -> Option<i128> {
         | ScalarValue::F32x4(_)
         | ScalarValue::U32x4(_)
         | ScalarValue::Bytes(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A payload already being decoded, or nesting past the bound, is refused;
+    /// leaving a level pops it again.
+    #[test]
+    fn payload_guard_refuses_cycles_and_deep_nesting() {
+        let a = PayloadGuard::enter(100).unwrap();
+        assert!(PayloadGuard::enter(100).is_none(), "a child pointing back at its ancestor");
+        let mut nested = Vec::new();
+        for i in 1..MAX_PAYLOAD_NESTING {
+            nested.push(PayloadGuard::enter(100 + i).unwrap());
+        }
+        assert!(PayloadGuard::enter(9999).is_none(), "one level past the bound");
+        drop(nested);
+        drop(a);
+        assert!(PayloadGuard::enter(100).is_some(), "the stack unwinds");
     }
 }
