@@ -225,7 +225,12 @@ pub unsafe extern "C" fn crimson_faction_info_get_entry(
     if buf.is_null() && buf_len != 0 {
         return error::NULL_ARG;
     }
-    unsafe { *required = 0 };
+    // Zero `out_key` too, as the macro bridges do: the doc says it is
+    // always written (audit D-09).
+    unsafe {
+        *required = 0;
+        *out_key = 0;
+    }
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &*handle };
         let Some((key, name)) = h.entries.get(idx as usize) else {

@@ -1766,7 +1766,14 @@ fn apply_scalar_mutation_in_blocks(
     if !matches!(field.kind, FieldKind::FixedPrefix | FieldKind::FixedSuffix) {
         return Err(error::NOT_SCALAR);
     }
-    let expected = field.end.saturating_sub(field.start);
+    // A fixed scalar's length is its schema size. `end - start` is stale
+    // (0..0) for a scalar a presence toggle just made present in this
+    // batch, which rejected the right length and let a 0-byte write
+    // through (audit G-08).
+    let expected = match field.meta_size as usize {
+        0 => field.end.saturating_sub(field.start),
+        size => size,
+    };
     if src.len() != expected {
         return Err(error::LENGTH_MISMATCH);
     }
@@ -2839,10 +2846,11 @@ pub unsafe extern "C" fn crimson_save_transplant_list_element(
     }
     catch_unwind(AssertUnwindSafe(|| {
         // One global lock covers both handles — no two-lock ordering /
-        // deadlock concern, and the C# wrapper already rejects target ==
-        // source so the `&mut`/`&` below never alias the same save.
+        // deadlock concern. `source` is only read to clone one element, and
+        // `target` is borrowed mutably only after that clone, so the two
+        // borrows never overlap even when both pointers name the same save
+        // (copying between two lists of one save; audit G-15).
         let _ffi_guard = save_ffi_lock();
-        let target = unsafe { &mut *target_handle };
         let source = unsafe { &*source_handle };
         let t_steps: &[CrimsonPathStep] = if target_path_len == 0 {
             &[]
@@ -2870,6 +2878,7 @@ pub unsafe extern "C" fn crimson_save_transplant_list_element(
             return error::OUT_OF_RANGE;
         };
         let mut transplanted = src_el.clone();
+        let target = unsafe { &mut *target_handle };
 
         // 2) Retarget type-indices to the target schema (owned-key map so
         //    it doesn't borrow `target` across the &mut mutation below).
@@ -4247,12 +4256,34 @@ pub unsafe extern "C" fn crimson_save_write_to_file(
             Ok(b) => b,
             Err(e) => return save_error_code(&e),
         };
-        match std::fs::write(path_str, &bytes) {
+        match write_file_atomically(std::path::Path::new(path_str), &bytes) {
             Ok(()) => error::OK,
             Err(_) => error::WRITE_FAILED,
         }
     }))
     .unwrap_or(error::PANIC)
+}
+
+/// Write `bytes` to a temporary file beside `path`, flush it to disk, then
+/// rename it over `path`. A crash or a full disk mid-write leaves the old
+/// file intact instead of a truncated save (audit G-12); on Windows the
+/// rename replaces an existing file.
+fn write_file_atomically(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut tmp_name = path.file_name().unwrap_or_default().to_os_string();
+    tmp_name.push(".crimson-tmp");
+    let tmp = path.with_file_name(tmp_name);
+    let result = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        drop(f);
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 // ── Deferred-redecode batch ────────────────────────────────────────────────
@@ -4455,6 +4486,44 @@ pub unsafe extern "C" fn crimson_save_is_deferred_redecode_open(
     }))
     .unwrap_or(error::PANIC)
 }
+
+#[cfg(test)]
+mod atomic_write_tests {
+    /// The save is written to a temporary file and renamed over the target:
+    /// the target ends up with the new bytes and no temporary file is left
+    /// (audit G-12).
+    #[test]
+    fn write_file_atomically_replaces_the_target() {
+        let dir = std::env::temp_dir().join(format!("crimson-atomic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("save.save");
+        std::fs::write(&target, b"old").unwrap();
+        super::write_file_atomically(&target, b"new bytes").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"new bytes");
+        assert!(!dir.join("save.save.crimson-tmp").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+// ── Layout guards for the save ABI's repr(C) structs ──────────────────────
+//
+// C# declares these with [StructLayout(LayoutKind.Sequential)]; a field added,
+// removed or retyped here must break the build, not C#'s reads (audit G-13).
+// The batch ops carry pointers, so their sizes are pinned for 64-bit targets.
+const _: () = {
+    use std::mem::{align_of, size_of};
+    assert!(size_of::<CrimsonBlockInfo>() == 20 && align_of::<CrimsonBlockInfo>() == 4);
+    assert!(size_of::<CrimsonPathStep>() == 8 && align_of::<CrimsonPathStep>() == 4);
+    assert!(size_of::<CrimsonInventoryItemRecord>() == 48 && align_of::<CrimsonInventoryItemRecord>() == 8);
+    assert!(size_of::<CrimsonCharacterRefRecord>() == 16 && align_of::<CrimsonCharacterRefRecord>() == 4);
+};
+#[cfg(target_pointer_width = "64")]
+const _: () = {
+    use std::mem::size_of;
+    assert!(size_of::<CrimsonScalarBatchOp>() == 40);
+    assert!(size_of::<CrimsonScalarPresentBatchOp>() == 48);
+    assert!(size_of::<CrimsonListRemoveBatchOp>() == 32);
+};
 
 // ── Internal helpers ───────────────────────────────────────────────────────
 
@@ -6237,6 +6306,28 @@ mod tests {
                 })
             })
         };
+        // G-15: the same pointer as target and source (copy within one save)
+        // is sound now; the element is cloned before the target is borrowed.
+        let len_before = {
+            let FieldValue::ObjectList { elements, .. } =
+                &unsafe { &*a }.blocks[block_idx as usize].fields[field_idx as usize].value
+            else { panic!("source field not a list"); };
+            elements.len()
+        };
+        let rc = unsafe {
+            crimson_save_transplant_list_element(
+                a, block_idx, ptr::null(), 0, field_idx, len_before as u32,
+                a, block_idx, ptr::null(), 0, field_idx, 0,
+            )
+        };
+        assert_eq!(rc, error::OK, "same-handle transplant");
+        {
+            let FieldValue::ObjectList { elements, .. } =
+                &unsafe { &*a }.blocks[block_idx as usize].fields[field_idx as usize].value
+            else { panic!("source field not a list"); };
+            assert_eq!(elements.len(), len_before + 1);
+        }
+
         if let Some((obi, ofi)) = other {
             let body_before = unsafe { (*b).save.body.clone() };
             let rc = unsafe {
