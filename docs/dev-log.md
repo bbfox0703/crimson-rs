@@ -25,6 +25,61 @@ landed together. **Reading tip:** grep `^## ` for the index, then read from the 
 
 -----
 
+## 2026-11-28 — Scalar tags in the block JSON, a missioninfo Python binding, an open PAMT handle
+
+Three requests from CrimsonAtomtic's audit, each replacing a workaround on the C# side.
+
+- **`scalar_tag` (B2-24).** The save editor guessed an absent scalar's type from `type_name`, using
+  an alias table and a "`*Key` of size 4 is u32" rule, and could not edit an unknown typedef.
+  - Every fixed-size scalar field (`meta_kind` 0 / 2, non-zero size) in
+    `crimson_save_get_block_json` now carries `"scalar_tag"`, present or absent. Other fields omit
+    it.
+  - The tag comes from `ScalarValue::tag()`, which is also the `<tag>` after a present value. For an
+    absent field it decodes a zeroed value of the schema type
+    (`save::scalar_tag(type_name, size)`), so the two cannot disagree. Python's
+    `decode_save_body_blocks` adds the same key, and its `value_type` now reads `tag()` too.
+  - Measured on the newest live save:
+    - 970,900 absent scalars tagged.
+    - 188 fields that occur both absent and present report the same tag in both.
+    - In every block the count of tagged absent scalars in the JSON equals the count in the
+      decoded tree.
+    - The Python dicts give the same 970,900, with no untagged scalar and no `value_type` /
+      `scalar_tag` mismatch.
+  - Test: `scalar_tag_tests::live_absent_scalars_carry_the_present_tag`, plus two unit tests.
+- **`parse_missioninfo_from_bytes(body, header, paloc=None, namespace=0x101)` (B6-25).**
+  CrimsonAtomtic's `dump_challenges.py` called the missioninfo C ABI through ctypes with the body
+  only. That returns BODY_PARSE on 2.06 since `check_rows`.
+  - Each row is `{key, name, paloc_key}`. With a PALOC it also carries `display_name`.
+  - A header that is not the 2.06 shape or does not match the body raises `ValueError`, through the
+    new `mission_info::parse_mission_info_pair`, which never falls back to the anchor scan.
+  - `mission_info::paloc_key` now builds the PALOC key for both the C ABI display lookup and Python.
+    `mission_info` compiles under `python` as well as `c_abi`.
+  - On 2.06 the English titles are in `stringtable/binary__/eng/quest.paloc`.
+  - Live 2.06: 6,872 rows, the header's count. `Challenge_SealedArtifact_Living_VII` is key
+    1,000,913, titled "Feast for the Road".
+  - That row is added to both `KNOWN` lists. New tests: `mission_info_pair_live` and
+    `paloc_key_is_hash_high_namespace_low`. The `.pyi` stub and `docs/api.md` describe the binding.
+- **Open PAMT handle (B1-14).** Icon extraction pulls thousands of files from `0012`, and
+  `crimson_paz_extract_file` parsed the manifest twice per file, once for the size and once for the
+  fill.
+  - New: `crimson_paz_open`, `crimson_paz_handle_extract_file`, `crimson_paz_handle_list_dir` and
+    `crimson_paz_close`. They have the same shapes and codes as the free functions, minus `IO`.
+  - A `BUFFER_TOO_SMALL` size query keeps the extracted bytes on the handle, and the fill call for
+    the same file takes them. A different file never receives them; the test interleaves two files.
+  - Live: 48 files spread over all of `0012` (41 of them partial) extract byte-identical through one
+    handle and through the free function. Listings match `crimson_paz_list_dir`, and a missing file
+    or directory is `NOT_FOUND` both ways.
+  - The speed-up was not measured.
+- **Tests:** 448 passed, 48 ignored, with the install and fixtures; the same 448 pass with neither.
+  Strict clippy and all four feature combinations are clean. The wheel was rebuilt and checked live
+  from Python.
+- **CrimsonAtomtic:** to act.
+  - Read `scalar_tag` instead of the alias table.
+  - Switch `dump_challenges.py` to `crimson_rs.parse_missioninfo_from_bytes`.
+  - Move bulk extraction to the PAMT handle.
+  - Nothing existing changed shape: the JSON only gains a key, and the free PAZ functions are as
+    before.
+
 ## 2026-11-28 — Comment rules applied repo-wide; pyo3 0.30 and patched dependencies
 
 After the audit batches, at the maintainer's request: the comment rules of the UE5CEDumper repo,
