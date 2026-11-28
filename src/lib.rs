@@ -532,70 +532,12 @@ mod tests {
     // save is found.
 
     fn try_find_save() -> Option<(std::path::PathBuf, Vec<u8>)> {
-        use std::path::PathBuf;
-        let local = std::env::var_os("LOCALAPPDATA").or_else(|| {
-            eprintln!("skipping save tests: LOCALAPPDATA not set");
-            None
-        })?;
-        let save_root = PathBuf::from(local).join("Pearl Abyss/CD/save");
-        let users = match std::fs::read_dir(&save_root) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!(
-                    "skipping save tests: cannot read {}: {}",
-                    save_root.display(),
-                    e
-                );
-                return None;
-            }
+        let Some(path) = crate::test_fixtures::newest_live_save() else {
+            eprintln!("skipping save tests: no live save under %LOCALAPPDATA%");
+            return None;
         };
-        // Two passes: prefer the canonical slot0/1/2 trio (stable across
-        // sessions and the lowest indices that any user with a save tends
-        // to have populated), then fall back to *any* slotN directory so
-        // a machine that only has post-1.07 slots (slot100+ on the
-        // maintainer's box) still exercises the save tests instead of
-        // silently skipping them.
-        let mut user_dirs: Vec<PathBuf> = users
-            .flatten()
-            .map(|u| u.path())
-            .filter(|p| p.is_dir())
-            .collect();
-        user_dirs.sort();
-        // Prefer slot107, the maintainer's save that tracks the latest patch,
-        // so the save tests validate against the live format.
-        for user_path in &user_dirs {
-            let path = user_path.join("slot107").join("save.save");
-            if let Ok(data) = std::fs::read(&path) {
-                return Some((path, data));
-            }
-        }
-        for user_path in &user_dirs {
-            let Ok(entries) = std::fs::read_dir(user_path) else {
-                continue;
-            };
-            let mut slot_dirs: Vec<PathBuf> = entries
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| {
-                    p.is_dir()
-                        && p.file_name()
-                            .and_then(|n| n.to_str())
-                            .is_some_and(|n| n.starts_with("slot"))
-                })
-                .collect();
-            slot_dirs.sort();
-            for slot_dir in slot_dirs {
-                let path = slot_dir.join("save.save");
-                if let Ok(data) = std::fs::read(&path) {
-                    return Some((path, data));
-                }
-            }
-        }
-        eprintln!(
-            "skipping save tests: no save.save found under {}",
-            save_root.display()
-        );
-        None
+        let data = std::fs::read(&path).ok()?;
+        Some((path, data))
     }
 
     #[test]

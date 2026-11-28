@@ -849,23 +849,13 @@ mod tests {
     fn find_save_path() -> Option<PathBuf> {
         std::env::var_os("CRIMSON_LIVE_SAVE")
             .map(PathBuf::from)
-            .or_else(|| {
-                let appdata = std::env::var_os("LOCALAPPDATA")?;
-                let root = PathBuf::from(appdata)
-                    .join("Pearl Abyss")
-                    .join("CD")
-                    .join("save");
-                std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
-                    let p = entry.path().join("slot107").join("save.save");
-                    p.is_file().then_some(p)
-                })
-            })
+            .or_else(crate::test_fixtures::newest_live_save)
     }
 
     #[test]
-    fn live_slot107_breakdown() {
+    fn live_save_breakdown() {
         let Some(save_path) = find_save_path() else {
-            eprintln!("skipping live_slot107_breakdown: no slot107/save.save");
+            eprintln!("skipping live_save_breakdown: no live save");
             return;
         };
         let path_c = std::ffi::CString::new(save_path.to_str().unwrap()).unwrap();
@@ -881,7 +871,7 @@ mod tests {
             crimson_save_list_all_items(handle, ptr::null_mut(), 0, &mut count, &mut version)
         };
         // Expect a non-trivial save with hundreds of items.
-        assert!(count > 100, "expected >100 records in slot107, got {count}");
+        assert!(count > 100, "expected >100 records in the live save, got {count}");
         if count > 0 {
             assert_eq!(rc, error::BUFFER_TOO_SMALL);
         }
@@ -911,8 +901,7 @@ mod tests {
         assert_eq!(rc, error::OK);
         assert_eq!(count2, count);
 
-        // Histogram by container kind — pin the reference counts from
-        // the slot107 diagnostic probe.
+        // Histogram by container kind.
         let mut by_kind: std::collections::BTreeMap<u32, usize> = Default::default();
         for r in &records {
             *by_kind.entry(r.container_kind).or_insert(0) += 1;
@@ -921,7 +910,7 @@ mod tests {
             // item_key should be non-zero (every ItemSaveData has one).
             assert!(r.item_key != 0, "item_key=0 for container_kind={}", r.container_kind);
         }
-        eprintln!("slot107 breakdown by container_kind:");
+        eprintln!("live save breakdown by container_kind:");
         for (k, n) in &by_kind {
             let name = match *k {
                 container_kind::ACTIVE_EQUIP => "ACTIVE_EQUIP",
@@ -998,10 +987,8 @@ mod tests {
         }
 
         // Dye flag exercises the HAS_DYE_DATA detection path. The
-        // exact count varies per save (slot103 baseline had 5
-        // ItemSaveData hosts with present non-empty _itemDyeDataList;
-        // slot107 has 1). At least one is required to verify the
-        // code path is reachable.
+        // exact count varies per save. At least one is required to verify
+        // the code path is reachable.
         let dyed = records.iter()
             .filter(|r| r.flags & item_record_flags::HAS_DYE_DATA != 0)
             .count();
@@ -1137,7 +1124,7 @@ mod tests {
         }
         assert!(
             by_kind.contains_key(&container_kind::MERCENARY_EQUIP),
-            "slot107 must contain at least one MERCENARY_EQUIP record",
+            "the live save must contain at least one MERCENARY_EQUIP record",
         );
 
         for (kind, r) in &by_kind {
@@ -1290,7 +1277,7 @@ mod tests {
     /// 2. NPC mercenary records (charKey ∉ {1,4,6} AND no
     ///    _ownedCharacterKey) are NOT player-owned.
     #[test]
-    fn live_slot107_player_owned_filter() {
+    fn live_save_player_owned_filter() {
         let Some(save_path) = find_save_path() else {
             eprintln!("skipping: no save");
             return;

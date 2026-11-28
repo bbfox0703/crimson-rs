@@ -69,3 +69,27 @@ pub(crate) fn gamedata(rel: &str) -> Option<Vec<u8>> {
         }
     }
 }
+
+/// The most recently written live save,
+/// `%LOCALAPPDATA%\Pearl Abyss\CD\save\<account>\slot<N>\save.save`, or `None`.
+/// Slot numbers differ per machine, and a fixed slot can hold an old patch's
+/// save, so the newest file stands for the current save format.
+pub(crate) fn newest_live_save() -> Option<PathBuf> {
+    let root = PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Pearl Abyss").join("CD").join("save");
+    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+    for account in std::fs::read_dir(&root).ok()?.flatten() {
+        let Ok(slots) = std::fs::read_dir(account.path()) else {
+            continue;
+        };
+        for slot in slots.flatten() {
+            let p = slot.path().join("save.save");
+            let Ok(modified) = std::fs::metadata(&p).and_then(|m| m.modified()) else {
+                continue;
+            };
+            if newest.as_ref().is_none_or(|(t, _)| modified > *t) {
+                newest = Some((modified, p));
+            }
+        }
+    }
+    newest.map(|(_, p)| p)
+}

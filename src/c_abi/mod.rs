@@ -5173,19 +5173,10 @@ mod tests {
     use std::path::PathBuf;
     use std::ptr;
 
+    /// The newest live save, so the mutation and round-trip suite runs on the
+    /// current save format.
     fn find_save() -> Option<PathBuf> {
-        // The save-test fixture is slot107, the maintainer's save that tracks
-        // the latest patch. Pinning every save test to it keeps the mutation /
-        // round-trip suite validating against the live save format.
-        let local = std::env::var_os("LOCALAPPDATA")?;
-        let root = PathBuf::from(local).join("Pearl Abyss/CD/save");
-        for user in std::fs::read_dir(&root).ok()?.flatten() {
-            let p = user.path().join("slot107").join("save.save");
-            if p.is_file() {
-                return Some(p);
-            }
-        }
-        None
+        crate::test_fixtures::newest_live_save()
     }
 
     #[test]
@@ -7276,7 +7267,7 @@ mod tests {
     /// Fixture history: this socket round-trip was first RE'd against slot104,
     /// which the user populated with 5 North Wind Tridents in a specific
     /// gem-distribution pattern for a known data shape. It now loads the
-    /// current 1.12 save (slot107) via `find_save` and skips cleanly when no
+    /// newest live save via `find_save` and skips cleanly when no
     /// item with an empty opened socket is present.
     ///
     /// Insert a gem into an empty socket slot via
@@ -7302,13 +7293,13 @@ mod tests {
     /// - Remove gem = flip both mask bits via two
     ///   `set_scalar_field_present(make_present=false)` ops.
     ///
-    /// Runs only when slot107 is present on the developer's machine.
+    /// Runs only when a live save is present on the developer's machine.
     #[test]
-    fn c_abi_socket_insert_then_remove_roundtrip_slot107() {
+    fn c_abi_socket_insert_then_remove_roundtrip() {
         let Some(path) = find_save() else {
             eprintln!(
-                "skipping c_abi_socket_insert_then_remove_roundtrip_slot107: \
-                 no slot107/save.save under %LOCALAPPDATA%"
+                "skipping c_abi_socket_insert_then_remove_roundtrip: \
+                 no live save under %LOCALAPPDATA%"
             );
             return;
         };
@@ -7409,7 +7400,7 @@ mod tests {
             socket_elem_idx,
         )) = found else {
             eprintln!(
-                "skipping: no trident (key=310031) with an empty opened socket found in slot107"
+                "skipping: no trident (key=310031) with an empty opened socket found in the live save"
             );
             unsafe { crimson_save_free(handle) };
             return;
@@ -7576,11 +7567,11 @@ mod tests {
     /// 1002285/1002284/1000316 are all full, but they still have
     /// filled slots we can round-trip on).
     #[test]
-    fn c_abi_socket_remove_then_reinsert_roundtrip_equipment_slot107() {
+    fn c_abi_socket_remove_then_reinsert_roundtrip_equipment() {
         let Some(path) = find_save() else {
             eprintln!(
-                "skipping c_abi_socket_remove_then_reinsert_roundtrip_equipment_slot107: \
-                 no slot107/save.save"
+                "skipping c_abi_socket_remove_then_reinsert_roundtrip_equipment: \
+                 no live save"
             );
             return;
         };
@@ -7668,7 +7659,7 @@ mod tests {
         )) = found else {
             eprintln!(
                 "skipping: no EquipmentSaveData slot with a filled socket — \
-                 user has nothing equipped with gems in slot107"
+                 user has nothing equipped with gems in the live save"
             );
             unsafe { crimson_save_free(handle) };
             return;
@@ -7774,13 +7765,13 @@ mod tests {
     ///
     /// Closes the v2 "add dye to undyed item" path for `CrimsonAtomtic`'s
     /// dye editor (see [`docs/dye-editor-scope.md`](../../../docs/dye-editor-scope.md)).
-    /// Skips cleanly when slot107 isn't present.
+    /// Skips cleanly when no live save is present.
     #[test]
-    fn c_abi_object_list_present_roundtrip_dye_data_list_slot107() {
+    fn c_abi_object_list_present_roundtrip_dye_data_list() {
         let Some(path) = find_save() else {
             eprintln!(
-                "skipping c_abi_object_list_present_roundtrip_dye_data_list_slot107: \
-                 no slot107/save.save"
+                "skipping c_abi_object_list_present_roundtrip_dye_data_list: \
+                 no live save"
             );
             return;
         };
@@ -7794,7 +7785,7 @@ mod tests {
 
         // Find the first ItemSaveData under InventorySaveData →
         // _inventorylist[N] → _itemList[M] whose `_itemDyeDataList` is
-        // ABSENT. Most non-dyed items match — the slot107 baseline has
+        // ABSENT. Most non-dyed items match, so any played save has
         // hundreds of candidates.
         type Target = (u32, u32, u32, u32, u32, u32);
         let found: Option<Target> = unsafe {
@@ -7847,7 +7838,7 @@ mod tests {
         let Some((block_idx, inv_field_idx, inv_elem_idx, item_field_idx, item_elem_idx, dye_field_idx)) = found
         else {
             eprintln!(
-                "skipping: no ItemSaveData with absent _itemDyeDataList found in slot107"
+                "skipping: no ItemSaveData with absent _itemDyeDataList found in the live save"
             );
             unsafe { crimson_save_free(handle) };
             return;
@@ -8020,11 +8011,11 @@ mod tests {
     /// the symmetric rejection `set_scalar_field_present` does for
     /// ObjectList fields.
     #[test]
-    fn c_abi_object_list_present_rejects_scalar_field_slot107() {
+    fn c_abi_object_list_present_rejects_scalar_field() {
         let Some(path) = find_save() else {
             eprintln!(
-                "skipping c_abi_object_list_present_rejects_scalar_field_slot107: \
-                 no slot107/save.save"
+                "skipping c_abi_object_list_present_rejects_scalar_field: \
+                 no live save"
             );
             return;
         };
@@ -8050,7 +8041,7 @@ mod tests {
         };
         let Some((block_idx, scalar_field_idx)) = target else {
             unsafe { crimson_save_free(handle) };
-            panic!("no scalar field found in slot107 — unexpected save shape");
+            panic!("no scalar field found in the live save — unexpected save shape");
         };
 
         let rc = unsafe {

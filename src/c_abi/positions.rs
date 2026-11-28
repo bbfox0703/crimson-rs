@@ -685,17 +685,7 @@ mod tests {
     fn find_save_path() -> Option<PathBuf> {
         std::env::var_os("CRIMSON_LIVE_SAVE")
             .map(PathBuf::from)
-            .or_else(|| {
-                let appdata = std::env::var_os("LOCALAPPDATA")?;
-                let root = PathBuf::from(appdata)
-                    .join("Pearl Abyss")
-                    .join("CD")
-                    .join("save");
-                std::fs::read_dir(&root).ok()?.flatten().find_map(|entry| {
-                    let p = entry.path().join("slot107").join("save.save");
-                    p.is_file().then_some(p)
-                })
-            })
+            .or_else(crate::test_fixtures::newest_live_save)
     }
 
     fn empty_rec() -> CrimsonPositionedEntityRecord {
@@ -709,9 +699,9 @@ mod tests {
     }
 
     #[test]
-    fn live_slot107_breakdown() {
+    fn live_save_breakdown() {
         let Some(save_path) = find_save_path() else {
-            eprintln!("skipping live_slot107_breakdown: no slot107/save.save");
+            eprintln!("skipping live_save_breakdown: no live save");
             return;
         };
         let path_c = std::ffi::CString::new(save_path.to_str().unwrap()).unwrap();
@@ -727,7 +717,7 @@ mod tests {
             crimson_save_list_field_positions(handle, ptr::null_mut(), 0, &mut count, &mut version)
         };
         // Expect thousands — the 4260 gimmicks dominate.
-        assert!(count > 1000, "expected >1000 records in slot107, got {count}");
+        assert!(count > 1000, "expected >1000 records in the live save, got {count}");
         if count > 0 {
             assert_eq!(rc, error::BUFFER_TOO_SMALL);
         }
@@ -753,7 +743,7 @@ mod tests {
         for r in &records {
             *by_kind.entry(r.kind).or_insert(0) += 1;
         }
-        eprintln!("slot107 breakdown by position kind:");
+        eprintln!("live save breakdown by position kind:");
         for (k, n) in &by_kind {
             let name = match *k {
                 position_kind::ACTIVE_CHAR => "ACTIVE_CHAR",
