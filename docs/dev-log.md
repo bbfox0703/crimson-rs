@@ -25,6 +25,62 @@ landed together. **Reading tip:** grep `^## ` for the index, then read from the 
 
 -----
 
+## 2026-11-28 — Audit P5: reader bounds, 2.06 header checks, save FFI, Python writers, test data
+
+The fifth batch, on the same branch as the entries below: the medium findings left after P1–P4 and
+the low-severity code bugs. Status table after it: 69 fixed, 16 partly, 61 open (low / nit), 1 not
+fixing, 2 merged.
+
+- **Binary readers:**
+  - Unknown PAMT compression / crypto nibbles are errors instead of reading as "none" (A-05).
+  - The chunk-bounds sum is u64 and `check_remaining` uses `checked_add` (A-08).
+  - A negative PAPGT name-buffer length is rejected (A-09).
+  - `CArray` reserves at most what the remaining bytes can hold (A-11 / C-07).
+  - `from_legacy_layout` checks its widths and finds row ends by binary search, not O(n²) (B-09).
+  - Skill format detection checks ranges before slicing (C-05).
+  - Object-list headers are bounds-checked to their 18 bytes first; the marker variant checked +17
+    and sliced +18 (F-07).
+  - `scalar_from_bytes` keeps a wrong-length slice as raw bytes (F-12).
+- **2.06 header consistency:** iteminfo's header rows must tile the body (C-08; stringinfo already
+  checked every offset), and `to_legacy_layout` refuses a row whose header and body keys disagree
+  (B-06 / C-09; 0 such rows in 2.06).
+- **Save FFI:**
+  - In a deferred batch, a just-toggled scalar is length-checked against its schema size, not a stale
+    0..0 range (G-08).
+  - `crimson_save_write_to_file` writes a temp file, syncs, then renames (G-12).
+  - Transplant clones the source element before borrowing the target, so copying within one save is
+    sound (G-15).
+  - Layout asserts for the remaining save-ABI structs (G-13).
+  - faction `get_entry` zeroes `out_key` (D-09).
+- **Python:**
+  - New `serialize_iteminfo_with_header` writes a 2.06 `(body, header)` pair, so length-changing
+    edits and renames survive (H-02). Unedited, it round-trips both live files byte for byte.
+  - `inspect_legacy_patches` takes the header to match 2.06 row names (H-01).
+  - `serialize_pamt` recomputes the header checksum (H-03).
+  - Fixed-size list writers check lengths (H-10).
+  - `serialize_skillinfo` refuses a dict without `row_indices` (H-19).
+- **Test helpers (I-02):** the 28 per-module `find_table_bytes` copies (every step `.ok()?`) now
+  call `gamedata_layout::extract_bin`, which fails on drift. The header helpers that turned a missing
+  2.06 header into a silent body-only scan fail too. −643 / +126 lines.
+- **Test data off the volatile archives:**
+  - The cross-version skill test reads 2.04, 2.05.01 and 2.06 skill tables from
+    `crimson-rs-private/gamedata/` (`test_fixtures::gamedata`), not from `X:`. 2.04.08 and 2.05 are
+    byte-identical to those, so they are not copied.
+  - The private repo got the six files, a README with their hashes, and binary attributes.
+  - CLAUDE.md now says: `X:` / `G:` are volatile and no test may depend on them; per-version test data
+    goes into the private repo, limited to what the tested pattern needs.
+- **Measured on this PC:** 419 passed, 48 ignored, with the install and fixtures; the same 419 pass
+  with neither. Strict clippy, the bare-default build and the `python`-only build are clean.
+- **Not established / still open:** the 61 open rows (mostly nits) and the 16 partly fixed ones in
+  the status table.
+- **CrimsonAtomtic:**
+  - No signature changed.
+  - The save is now written through a temp file and a rename.
+  - A transplant within one save is now allowed.
+  - Header-inconsistent 2.06 tables now return errors instead of partial data.
+
+-----
+
 ## 2026-11-28 — Audit P4: C ABI symbol index, doc drift, dead code, Python stub; status table
 
 The fourth batch from the audit verification's fix order, on the same branch as the entries below.
