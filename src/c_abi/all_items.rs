@@ -2,19 +2,18 @@
 //!
 //! [`super::crimson_save_list_inventory_items`] only walks
 //! `InventorySaveData._inventoryList[N]._itemList[M]`. That leaves
-//! **two-thirds of the player's gear invisible to a C# editor**: the
-//! active character's 18 equipped slots (`EquipmentSaveData._list`),
+//! **most of the player's gear invisible to a C# editor**: the
+//! active character's equipped slots (`EquipmentSaveData._list`),
 //! every mercenary / mount / inactive-playable's equipment
-//! (`MercenarySaveData._equipItemList` — 245 items in the slot103
-//! reference save) plus their carried items (`_inventoryItemList`),
-//! and the active character's reserve item slots
-//! (`EquipmentSaveData._useItemSaveList`).
+//! (`MercenarySaveData._equipItemList`) plus their carried items
+//! (`_inventoryItemList`), and the active character's reserve item
+//! slots (`EquipmentSaveData._useItemSaveList`).
 //!
 //! See [`docs/dye-editor-scope.md`](../../docs/dye-editor-scope.md)
-//! §"Addendum (2026-05-17)" for the model corrections that drove this
-//! ABI: three playable characters split across two containers, mounts
+//! §"Addendum (2026-05-17)" for the save model this ABI relies on:
+//! three playable characters split across two containers, mounts
 //! stored as `MercenarySaveData` keyed by `_characterKey` (not the
-//! 18-row MercenaryKey table), and active vs inactive being a runtime
+//! MercenaryKey table), and active vs inactive being a runtime
 //! container swap rather than a field on the entity.
 //!
 //! ## What this surface yields
@@ -43,14 +42,12 @@
 //!
 //! ## What this surface does NOT yield (by design)
 //!
-//! - `FieldGimmickSaveData._item<locator>` — world loot / chests
-//!   (4,260 items in slot103). Not player-owned; surface separately
-//!   if a "world-state editor" feature lands.
+//! - `FieldGimmickSaveData._item<locator>` — world loot / chests.
+//!   Not player-owned.
 //! - `FactionNodeElementSaveData._factionOwnedItemList` — faction-side
-//!   item ownership. 1 item in slot103; out of scope for the gear
-//!   editor.
-//! - `StoreDataSaveData._storeSoldItemDataList` — vendor inventory.
-//!   17 items in slot103; out of scope.
+//!   item ownership; out of scope for the gear editor.
+//! - `StoreDataSaveData._storeSoldItemDataList` — vendor inventory;
+//!   out of scope.
 //!
 //! Snapshot semantics match
 //! [`super::crimson_save_list_inventory_items`]: positional fields
@@ -71,7 +68,7 @@ use super::{CrimsonSaveHandle, error, save_ffi_lock};
 /// integer; never reuse a retired one.
 pub mod container_kind {
     /// `EquipmentSaveData._list[N]._item<locator>` — the active
-    /// character's equipped gear (18 slots in 1.07). Currently-active
+    /// character's equipped gear. Currently-active
     /// character is identified by
     /// [`crate::c_abi::all_items::CrimsonItemRecord::owner_character_key`]
     /// pulled from `MercenaryClanSaveData._lastFocusCharacterKey`.
@@ -92,8 +89,7 @@ pub mod container_kind {
     pub const MERCENARY_EQUIP: u32 = 3;
     /// `MercenaryClanSaveData._mercenaryDataList[N]._inventoryItemList[M]`
     /// — items carried by a mercenary / mount. Mostly empty in
-    /// practice; the wagon mount in the reference save is the only
-    /// observed user of this list.
+    /// practice; a wagon mount is the typical user of this list.
     pub const MERCENARY_INVENTORY: u32 = 4;
 }
 
@@ -113,7 +109,7 @@ pub mod item_record_flags {
     pub const HAS_SOCKET_DATA: u32 = 1 << 3;
     /// The enclosing `MercenarySaveData` has `_isMainMercenary = true`.
     /// Identifies the currently-summoned mount / main companion among
-    /// the player's 96 mercenary slots. Always 0 for non-mercenary
+    /// the player's mercenary slots. Always 0 for non-mercenary
     /// container kinds.
     pub const OWNER_IS_MAIN_MERCENARY: u32 = 1 << 4;
     /// Item belongs to one of the three playable characters or to a
@@ -133,14 +129,14 @@ pub mod item_record_flags {
     ///
     /// Clear (0) for items inside NPC mercenary followers — the
     /// editor uses `flags & IS_PLAYER_OWNED != 0` to filter the
-    /// 829-record full list down to the gear actually editable by
+    /// full list down to the gear actually editable by
     /// the player. See [`super::PLAYABLE_CHARACTER_KEYS`] for the
     /// hardcoded set + rationale.
     pub const IS_PLAYER_OWNED: u32 = 1 << 5;
 }
 
 /// `CharacterKey` values (cat-byte already stripped) for the three
-/// playable characters in 1.07:
+/// playable characters:
 ///
 /// | Key | Character | Container when active | Container when inactive |
 /// |---:|---|---|---|
@@ -154,15 +150,15 @@ pub mod item_record_flags {
 /// `_ownedCharacterKey & 0xFFFFFF` is (mounts inherit ownership from
 /// their playable owner).
 ///
-/// ## Known coverage gap (1.07 slot103 baseline)
+/// ## Known coverage gap
 ///
-/// Two of the player-controlled mounts in slot103 have
-/// `_ownedCharacterKey = absent`:
+/// Some player-controlled mounts have `_ownedCharacterKey` absent,
+/// for example:
 /// - `Riding_Horse_Tiuta_Unique_2050_kliff` (charKey=1003120) —
 ///   Kliff's starter Tiuta horse (the `_kliff` template variant).
 /// - `Animal_Stefano_Wild_31364` — a captured wild animal.
 ///
-/// Both ARE the player's mounts in-game but the strict rule treats
+/// They ARE the player's mounts in-game but the strict rule treats
 /// them as unowned. The C# editor has an escape hatch: it can
 /// resolve `owner_character_key` via the existing `characterinfo`
 /// bridge and include any mercenary whose name starts with
@@ -172,8 +168,8 @@ pub mod item_record_flags {
 /// the all-items hot path; client-side widening is the recommended
 /// pattern.
 ///
-/// **Maintenance**: hardcoded for 1.07. If a future patch adds a
-/// playable, extend this slice and bump the `c_abi` version note in
+/// **Maintenance**: hardcoded. A patch that adds a playable needs its
+/// key here and a note in
 /// [`docs/dye-editor-scope.md`](../../docs/dye-editor-scope.md).
 pub const PLAYABLE_CHARACTER_KEYS: &[u32] = &[1, 4, 6];
 
@@ -188,7 +184,7 @@ pub const PLAYABLE_CHARACTER_KEYS: &[u32] = &[1, 4, 6];
 /// |---|---|---|---|
 /// |  0 | `block_idx` | u32 | Top-level TOC block index (use as `block_idx` arg to mutation ABIs) |
 /// |  4 | `container_kind` | u32 | One of [`container_kind`] constants |
-/// |  8 | `path_len` | u32 | Number of valid path steps (currently always 2; future-proofed for ≥ 1) |
+/// |  8 | `path_len` | u32 | Number of valid path steps (2 for every current container kind; callers honour it) |
 /// | 12 | `path_step_0_field` | u32 | First descent step `field_idx` |
 /// | 16 | `path_step_0_element` | u32 | First descent step `element_idx` |
 /// | 20 | `path_step_1_field` | u32 | Second descent step `field_idx` |
@@ -217,10 +213,9 @@ pub const PLAYABLE_CHARACTER_KEYS: &[u32] = &[1, 4, 6];
 /// crimson_save_set_scalar_field_path(handle, rec.block_idx, path, 2, …);
 /// ```
 ///
-/// `path_len` is a future-proofing knob — at v1 it's always 2 because
-/// every supported container has a 2-step descent. A future container
-/// kind with a different depth would set `path_len` to its actual
-/// length and the caller MUST honour it.
+/// `path_len` is 2 because every supported container has a 2-step
+/// descent. The caller MUST still honour it, so a container kind with
+/// a different depth can set its actual length without an ABI change.
 ///
 /// **Validity window**: same as `crimson_save_list_inventory_items`.
 /// Positional fields stay valid only until the next length-changing
@@ -368,9 +363,7 @@ fn build_record(ctx: RecordCtx, item: &ObjectBlock) -> Option<CrimsonItemRecord>
 /// Scan the save handle, return every item record. Iterates blocks
 /// once; per-block field lookups are by name (so a future game patch
 /// reordering fields stays correct). The cost is O(total blocks +
-/// total items) and runs comfortably under 5 ms on the slot103
-/// reference save (96 mercenaries × ~5 items + ~545 inventory + ~18
-/// equipped + ~22 reserve).
+/// total items), a few ms on a played save.
 fn collect_all_items(handle: &CrimsonSaveHandle) -> Vec<CrimsonItemRecord> {
     let mut out: Vec<CrimsonItemRecord> = Vec::new();
 
@@ -586,16 +579,6 @@ fn emit_mercenary_lists(block: &ObjectBlock, block_idx: u32, out: &mut Vec<Crims
             merc.fields.iter().find(|f| f.name == "_equipItemList" && f.present)
             && let FieldValue::ObjectList { elements: items, .. } = &equip_list_field.value
         {
-            // Step 1: into the mercenary's _equipItemList container.
-            // The descent path is technically [(merc_list, merc_idx)
-            // → MercenarySaveData → (_equipItemList, item_idx)], but
-            // path_len=2 doesn't have room for the mercenary hop.
-            // Encode it as a two-step path where step 0 enters the
-            // mercenary list (yielding the MercenarySaveData) and
-            // step 1 enters the equip list of that mercenary — same
-            // shape the existing mutation ABIs accept (each path step
-            // descends one level).
-            //
             // 2-step descent: each step navigates one level relative
             // to the previous (per `navigate_mut_to_parent`'s
             // contract). From MercenaryClanSaveData:
@@ -677,7 +660,7 @@ fn emit_mercenary_lists(block: &ObjectBlock, block_idx: u32, out: &mut Vec<Crims
 /// [`super::crimson_save_list_inventory_items`] — same staleness
 /// contract.
 ///
-/// **Mutation compatibility**: all five container kinds emit
+/// **Mutation compatibility**: every container kind emits
 /// 2-step paths that plug straight into
 /// `crimson_save_set_scalar_field_path` (verified by
 /// `live_path_navigation_reaches_item_save_data_for_every_kind`).
@@ -750,13 +733,11 @@ mod tests {
     //! 1. **Layout / constants** — pure-Rust assertions on the
     //!    `repr(C)` shape, container-kind / flag constants. Run on
     //!    every CI build.
-    //! 2. **Live-install integration** — points at slot103/save.save
-    //!    (or `CRIMSON_LIVE_SAVE` override). Asserts the breakdown
-    //!    matches the diagnostic-probe output documented in
-    //!    `docs/dye-editor-scope.md` §"Addendum (2026-05-17)":
-    //!    18 active equip + 8 active reserve + 545 inventory +
-    //!    245 mercenary equip + 20 mercenary inventory. Skips
-    //!    cleanly when the save isn't present.
+    //! 2. **Live-install integration** — points at the newest live save
+    //!    (or the `CRIMSON_LIVE_SAVE` override). Asserts lower bounds on
+    //!    the per-kind breakdown, the record invariants, the path
+    //!    navigation and the `IS_PLAYER_OWNED` filter. Skips cleanly
+    //!    when no save is present.
 
     use super::*;
     use std::path::PathBuf;
@@ -765,8 +746,8 @@ mod tests {
     #[test]
     fn record_layout_is_stable() {
         // The 64-byte size + 8-byte alignment is part of the ABI;
-        // const-asserted at module level but pinned here too in case
-        // a future struct edit drops the const_assert.
+        // const-asserted at module level and pinned here too, so a
+        // struct edit that drops the const assert still fails.
         assert_eq!(std::mem::size_of::<CrimsonItemRecord>(), 64);
         assert_eq!(std::mem::align_of::<CrimsonItemRecord>(), 8);
 
@@ -906,7 +887,7 @@ mod tests {
         let mut by_kind: std::collections::BTreeMap<u32, usize> = Default::default();
         for r in &records {
             *by_kind.entry(r.container_kind).or_insert(0) += 1;
-            // Every record should have path_len=2 in v1.
+            // Every current container kind has a 2-step path.
             assert_eq!(r.path_len, 2, "expected path_len=2 in v1, got {} (kind={})", r.path_len, r.container_kind);
             // item_key should be non-zero (every ItemSaveData has one).
             assert!(r.item_key != 0, "item_key=0 for container_kind={}", r.container_kind);
@@ -923,22 +904,18 @@ mod tests {
             };
             eprintln!("  {name} ({k}): {n}");
         }
-        // Active equip: 18 slots in 1.07 (per the
-        // _list field count). At least 1 must resolve to an item.
+        // Active equip: at least 1 slot must resolve to an item.
         assert!(
             by_kind.get(&container_kind::ACTIVE_EQUIP).copied().unwrap_or(0) >= 1,
             "expected ≥1 ACTIVE_EQUIP record",
         );
-        // Inventory: 545 items in the probe baseline.
         assert!(
             by_kind.get(&container_kind::INVENTORY).copied().unwrap_or(0) > 100,
             "expected >100 INVENTORY records (baseline ~545)",
         );
-        // Mercenary equip: 245 through 2.03, 51 on 2.04. Re-saving on 2.04 strips
-        // `_equipItemList` from most hired mercenaries (slot0 → slot102: 52 → 14
-        // owners, 252 → 57 items, the same 98 mercenaries and the same schema,
-        // and 191 of the item numbers appear nowhere else in the save). See
-        // `_probe_items_by_container_all_saves`.
+        // Mercenary equip: the bound is low because a save written by 2.04
+        // or later strips `_equipItemList` from most hired mercenaries
+        // (`_probe_items_by_container_all_saves` shows the split per save).
         assert!(
             by_kind.get(&container_kind::MERCENARY_EQUIP).copied().unwrap_or(0) > 20,
             "expected >20 MERCENARY_EQUIP records (baseline ~51 on 2.04)",
@@ -957,15 +934,15 @@ mod tests {
                     );
                 }
                 container_kind::MERCENARY_EQUIP | container_kind::MERCENARY_INVENTORY => {
-                    // Mercenary records SHOULD have non-zero owner_mercenary_no.
-                    // (Allow 0 for the edge case of a malformed save,
-                    // but the slot103 baseline has all positive.)
+                    // Mercenary records SHOULD have non-zero owner_mercenary_no;
+                    // 0 is allowed for the edge case of a malformed save.
                 }
                 _ => panic!("unexpected container_kind {}", r.container_kind),
             }
         }
 
-        // At least one MAIN mercenary record (the balloon in slot103).
+        // Report the MAIN-mercenary records (not asserted: the main
+        // mercenary may carry no items).
         let main_count = records.iter()
             .filter(|r| r.flags & item_record_flags::OWNER_IS_MAIN_MERCENARY != 0)
             .count();
@@ -1080,8 +1057,7 @@ mod tests {
     /// we'd see `NOT_NAVIGABLE` or `OUT_OF_RANGE` instead, which the
     /// assertion catches.
     ///
-    /// Settles the v1-caveat question raised in the previous PR: the
-    /// 2-step path IS sufficient for mercenary mutations.
+    /// The 2-step path is sufficient for mercenary mutations:
     /// `navigate_mut_to_parent` walks each step relative to the
     /// current block, so `[(_mercenaryDataList[N]), (_equipItemList[M])]`
     /// from `MercenaryClanSaveData` lands on `ItemSaveData` correctly
@@ -1145,7 +1121,7 @@ mod tests {
             // bytes/len content is irrelevant — the API short-circuits
             // on NOT_SCALAR before reading any byte. The
             // `slice_from_raw_or_empty` helper handles null+0 cleanly
-            // now (see `live_null_bytes_with_zero_len_is_safe`).
+            // (see `live_null_bytes_with_zero_len_is_safe`).
             const ITEM_DYE_DATA_LIST_FIELD_IDX: u32 = 14;
             let rc = unsafe {
                 super::super::crimson_save_set_scalar_field_path(
@@ -1168,18 +1144,16 @@ mod tests {
         unsafe { super::super::crimson_save_free(handle) };
     }
 
-    /// Regression: passing `(bytes = null, bytes_len = 0)` to
+    /// Passing `(bytes = null, bytes_len = 0)` to
     /// `crimson_save_set_scalar_field_path` must NOT trip Rust 2024's
-    /// `slice::from_raw_parts` UB check. The fix is the
-    /// `slice_from_raw_or_empty` helper in `c_abi/mod.rs`; this test
-    /// pins the contract by calling the API with exactly that
-    /// pointer shape and asserting we get an error code (LENGTH_MISMATCH
-    /// or NOT_SCALAR) rather than a panic / process abort.
-    ///
-    /// The contract says null+0 represents an empty buffer, so the
-    /// helper returns `&[]` regardless of the pointer value. Earlier
-    /// versions hit `unsafe precondition violated: from_raw_parts
-    /// requires non-null pointer` on every call with that shape.
+    /// `slice::from_raw_parts` UB check (`unsafe precondition violated:
+    /// from_raw_parts requires non-null pointer`). The contract says
+    /// null+0 represents an empty buffer, so the
+    /// `slice_from_raw_or_empty` helper in `c_abi/mod.rs` returns `&[]`
+    /// regardless of the pointer value. This test pins the contract by
+    /// calling the API with exactly that pointer shape and asserting
+    /// we get an error code (LENGTH_MISMATCH or NOT_SCALAR) rather than
+    /// a panic / process abort.
     #[test]
     fn live_null_bytes_with_zero_len_is_safe() {
         let Some(save_path) = find_save_path() else {
@@ -1225,9 +1199,9 @@ mod tests {
                 element_idx: rec.path_step_1_element,
             },
         ];
-        // The "null bytes, zero length" path that previously aborted
-        // the process with the unsafe-precondition violation. Now it
-        // should reach LENGTH_MISMATCH (field 2 _itemKey is u32 = 4
+        // The "null bytes, zero length" shape must not hit the
+        // unsafe-precondition check; it should reach
+        // LENGTH_MISMATCH (field 2 _itemKey is u32 = 4
         // bytes; bytes_len = 0 doesn't match) or NOT_SCALAR if the
         // field isn't fixed-size.
         const ANY_LEAF_FIELD: u32 = 2; // _itemKey on ItemSaveData
@@ -1243,8 +1217,8 @@ mod tests {
             )
         };
         // Either error is fine — the point is that we got an error
-        // code back instead of a process abort. The UB regression
-        // would manifest as the test process exiting with STATUS_STACK_BUFFER_OVERRUN
+        // code back instead of a process abort. A tripped UB check
+        // shows as the test process exiting with STATUS_STACK_BUFFER_OVERRUN
         // (0xc0000409) before this assert runs.
         assert!(
             rc == error::LENGTH_MISMATCH || rc == error::NOT_SCALAR,
@@ -1256,19 +1230,17 @@ mod tests {
 
     /// Live-install asserter for the `IS_PLAYER_OWNED` filter.
     ///
-    /// In slot103, the playable-owned subset must be:
-    /// - **All** ACTIVE_EQUIP (18) + ACTIVE_USE_RESERVE (1) +
-    ///   INVENTORY (545) records — the active character is always
-    ///   one of the three playables.
+    /// The playable-owned subset must be:
+    /// - **All** ACTIVE_EQUIP + ACTIVE_USE_RESERVE + INVENTORY
+    ///   records — the active character is always one of the three
+    ///   playables.
     /// - The MERCENARY_EQUIP / MERCENARY_INVENTORY records whose
     ///   enclosing mercenary's `_characterKey ∈ {1, 4, 6}` (the
-    ///   inactive Damine + Oongka playables — slots 0 and 1 in
-    ///   `_mercenaryDataList`).
+    ///   inactive playables).
     /// - The MERCENARY_EQUIP / MERCENARY_INVENTORY records whose
     ///   mercenary has `_ownedCharacterKey ∈ {1, 4, 6}` (mounts of
-    ///   the three playables — the Tiuta horses + the dyed black
-    ///   wild horse + the balloon + the wagon).
-    /// - NPC mercenaries (the 50+ `NHM_Unique_*` / `NDM_Unique_*`
+    ///   the three playables).
+    /// - NPC mercenaries (the `NHM_Unique_*` / `NDM_Unique_*`
     ///   followers) must be EXCLUDED — those have `_characterKey`
     ///   outside the playable set and `_ownedCharacterKey` absent.
     ///

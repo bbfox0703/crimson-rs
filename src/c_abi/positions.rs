@@ -7,13 +7,13 @@
 //! pinned in [`docs/worldmap-plotting.md`](../../docs/worldmap-plotting.md)
 //! to map `(pos_x, pos_z)` to basemap pixel coordinates.
 //!
-//! ## Container coverage (1.07 slot103 baseline)
+//! ## Container coverage
 //!
-//! | Kind | Container | Position source | Count |
-//! |---|---|---:|---:|
-//! | `ACTIVE_CHAR` | `TransformSaveData._fieldSaveDataList[0]` → `TransformFieldSaveData._position` | F32x3 direct | 1 |
-//! | `MERCENARY` | `MercenaryClanSaveData._mercenaryDataList[N]._spawnPosition` | F32x3 direct | 76 (of 96) |
-//! | `GIMMICK` | `FieldSaveData._fieldGimmickSaveDataList[N]._transform` OR `_originSpawnTransform` | 40-byte `Transform` scalar — scale[3] + quat[4] + pos[3], decoded from [`ScalarValue::Bytes`] | 3,240 (of 4,260) |
+//! | Kind | Container | Position source |
+//! |---|---|---:|
+//! | `ACTIVE_CHAR` | `TransformSaveData._fieldSaveDataList[0]` → `TransformFieldSaveData._position` | F32x3 direct |
+//! | `MERCENARY` | `MercenaryClanSaveData._mercenaryDataList[N]._spawnPosition` | F32x3 direct |
+//! | `GIMMICK` | `FieldSaveData._fieldGimmickSaveDataList[N]._transform` OR `_originSpawnTransform` | 40-byte `Transform` scalar — scale[3] + quat[4] + pos[3], decoded from [`ScalarValue::Bytes`] |
 //!
 //! `FieldGimmickSaveData` blocks are direct children of
 //! `FieldSaveData._fieldGimmickSaveDataList` (the second
@@ -23,26 +23,22 @@
 //! gimmick record so the editor can filter by region without a
 //! second lookup.
 //!
-//! Roughly 24% of `FieldGimmickSaveData` blocks have **both**
-//! `_transform` and `_originSpawnTransform` absent — these are
-//! state-only gimmicks (counters, triggers, abstract scripted state)
-//! with no world position. The walker skips them. Of the
-//! position-bearing remainder, ~6% have moved from spawn (`_transform`
-//! present); the other ~94% are at their spawn position
+//! A `FieldGimmickSaveData` block with **both** `_transform` and
+//! `_originSpawnTransform` absent is a state-only gimmick (counter,
+//! trigger, abstract scripted state) with no world position; the
+//! walker skips it. A gimmick that has moved from spawn carries
+//! `_transform`; most sit at their spawn position
 //! (`_originSpawnTransform` only) and get [`position_flags::FROM_ORIGIN_TRANSFORM`].
 //!
 //! Nested gimmicks — children of other `FieldGimmickSaveData` blocks
 //! via the various `_fieldGimmickSaveData_*ChildList` sublists — are
 //! NOT enumerated. Their world positions co-locate with their parent
 //! container, so the map-marker plotting use case loses nothing by
-//! dropping them. If a future use case needs them (e.g. drilling
-//! into a multi-slot chest), a recursive walker variant can be added
-//! without changing the existing ABI surface.
+//! dropping them.
 //!
 //! ## Why not `FieldNPCSaveData`?
 //!
-//! Empirically verified: `FieldNPCSaveData` has 12 fields and **none
-//! of them is a position field**. NPCs are positioned by gamedata
+//! `FieldNPCSaveData` has **no position field**. NPCs are positioned by gamedata
 //! (level data + spawn tables), not by the save. The save only
 //! records `_spawnFieldInfoKey` + `_characterKey` + `_friendly` state.
 //! Plotting NPC markers requires loading the corresponding level
@@ -50,11 +46,8 @@
 //!
 //! ## Why not `GameData_GimmickPointData`?
 //!
-//! In slot103 every observed instance has `_transform = absent`. The
-//! 857-figure cited in the planning doc was an unverified estimate
-//! pulled from the schema dump count, not the present-data count.
-//! Drop from scope; revisit if a future probe finds present
-//! transforms.
+//! Its `_transform` is absent in the saves examined, so it carries no
+//! position to plot.
 //!
 //! ## Coordinate frame
 //!
@@ -105,15 +98,14 @@ pub mod position_kind {
     /// `MercenaryClanSaveData._mercenaryDataList[N]`. Position comes
     /// from `_spawnPosition` (F32x3); `_spawnYaw` populates `yaw`;
     /// `_spawnFieldInfoKey` populates `field_info_key`. Only emitted
-    /// when `_spawnPosition` is present (76 of 96 mercenaries in
-    /// the slot103 baseline carry a present position).
+    /// when `_spawnPosition` is present.
     pub const MERCENARY: u32 = 1;
     /// A field gimmick — an element of
     /// `FieldSaveData._fieldGimmickSaveDataList`: `block_idx` is the
     /// enclosing `FieldSaveData` block and `element_index` the list index.
     /// Position decoded from the 40-byte `Transform` scalar (held as
-    /// `ScalarValue::Bytes`) at field 11 (`_transform`) if present, else field 12
-    /// (`_originSpawnTransform`). Bytes [28..40] of the transform
+    /// `ScalarValue::Bytes`) in `_transform` if present, else in
+    /// `_originSpawnTransform`. Bytes [28..40] of the transform
     /// are the position float3; bytes [12..28] are the rotation
     /// quaternion. `gimmick_info_key` carries `_gimmickInfoKey`
     /// (resolvable through the `gimmickinfo` C ABI bridge);
@@ -139,13 +131,12 @@ pub mod position_flags {
     /// playable); always clear for `GIMMICK` (gimmicks have no
     /// ownership).
     pub const IS_PLAYER_OWNED: u32 = 1 << 1;
-    /// Gimmick used `_originSpawnTransform` (field 12) instead of
-    /// `_transform` (field 11) for position. `_transform` is the
-    /// "current" transform once a gimmick has moved or been
-    /// interacted with; `_originSpawnTransform` is the spawn-time
-    /// transform. In slot103 ~94% of position-bearing gimmicks
-    /// have this flag set (`_transform` absent); the other ~6% have
-    /// `_transform` present (gimmick has moved from spawn).
+    /// Gimmick used `_originSpawnTransform` instead of `_transform`
+    /// for position. `_transform` is the "current" transform once a
+    /// gimmick has moved or been interacted with;
+    /// `_originSpawnTransform` is the spawn-time transform. Most
+    /// position-bearing gimmicks have this flag set (`_transform`
+    /// absent).
     pub const FROM_ORIGIN_TRANSFORM: u32 = 1 << 2;
 }
 
@@ -241,9 +232,8 @@ fn pull_bool_true(b: &ObjectBlock, name: &str) -> bool {
 
 /// Decode the 40-byte `Transform` payload (a `ScalarValue::Bytes` scalar). Returns
 /// `(position, quaternion)`. The layout is
-/// `scale(3) + quaternion(4) + position(3)` — 10 f32s, verified
-/// against the slot103 active character (cross-checked against the
-/// in-game teleport-marker reading).
+/// `scale(3) + quaternion(4) + position(3)` — 10 f32s; the position
+/// matches the in-game teleport-marker reading.
 fn decode_transform_bytes(bytes: &[u8]) -> Option<([f32; 3], [f32; 4])> {
     if bytes.len() < 40 {
         return None;
@@ -306,8 +296,8 @@ fn collect_positions(handle: &CrimsonSaveHandle) -> Vec<CrimsonPositionedEntityR
         .unwrap_or(0);
 
     // Pass B: walk every TOC block and emit records per kind.
-    // Both `FieldSaveData` blocks (one per loaded region) get walked
-    // — the second only has `_globalGameEventDataList` populated, so
+    // Every `FieldSaveData` block gets walked; one that carries only
+    // `_globalGameEventDataList` has no gimmick list, so
     // `emit_field_gimmicks` returns early on it.
     for (block_idx, block) in handle.blocks.iter().enumerate() {
         match block.class_name.as_str() {
@@ -561,11 +551,11 @@ mod tests {
     //! 1. **Layout / constants** — pure-Rust assertions on the
     //!    `repr(C)` shape, kind / flag constants, transform decoder.
     //!    Run on every CI build.
-    //! 2. **Live-install integration** — points at slot103/save.save
-    //!    (or `CRIMSON_LIVE_SAVE` override). Asserts the per-kind
-    //!    counts match the diagnostic-probe baseline:
-    //!    1 ACTIVE_CHAR + 76 MERCENARY + 4,260 GIMMICK = 4,337 records.
-    //!    Skips cleanly when the save isn't present.
+    //! 2. **Live-install integration** — points at the newest live save
+    //!    (or the `CRIMSON_LIVE_SAVE` override). Asserts exactly one
+    //!    ACTIVE_CHAR, lower bounds on the MERCENARY and GIMMICK counts,
+    //!    and the per-kind record invariants. Skips cleanly when no save
+    //!    is present.
 
     use super::*;
     use std::path::PathBuf;
@@ -632,9 +622,8 @@ mod tests {
 
     #[test]
     fn decode_transform_known_sample() {
-        // The slot103 sample gimmick transform from
-        // _probe_positioned_entity_hosts — scale=1,1,1, qx=0, qy=-0.186,
-        // qz=0, qw=0.982, pos ≈ (-10086.566, 517.808, -4386.557).
+        // A gimmick transform taken from a live save — scale=1,1,1, qx=0,
+        // qy=-0.186, qz=0, qw=0.982, pos ≈ (-10086.566, 517.808, -4386.806).
         let bytes: &[u8] = &[
             0, 0, 128, 63,   // scale.x = 1.0
             0, 0, 128, 63,   // scale.y = 1.0
@@ -719,7 +708,7 @@ mod tests {
         let rc = unsafe {
             crimson_save_list_field_positions(handle, ptr::null_mut(), 0, &mut count, &mut version)
         };
-        // Expect thousands — the 4260 gimmicks dominate.
+        // Expect thousands — gimmicks dominate.
         assert!(count > 1000, "expected >1000 records in the live save, got {count}");
         if count > 0 {
             assert_eq!(rc, error::BUFFER_TOO_SMALL);
@@ -757,19 +746,18 @@ mod tests {
             eprintln!("  {name} ({k}): {n}");
         }
 
-        // Pinned baseline counts from _probe_positioned_entity_hosts.
+        // Lower bounds sit well under a played save's counts.
         let active = by_kind.get(&position_kind::ACTIVE_CHAR).copied().unwrap_or(0);
         let merc = by_kind.get(&position_kind::MERCENARY).copied().unwrap_or(0);
         let gimmick = by_kind.get(&position_kind::GIMMICK).copied().unwrap_or(0);
         assert_eq!(active, 1, "expected exactly 1 ACTIVE_CHAR record");
-        // Mercenary: 76 in slot103 baseline (only mercs with present _spawnPosition).
+        // Only mercenaries with a present _spawnPosition count.
         assert!(merc >= 60, "expected ≥60 MERCENARY records (baseline ~76), got {merc}");
-        // Gimmick: 3240 position-bearing in slot103 baseline (of
-        // 4260 total — ~24% are state-only, no transform).
+        // Only position-bearing gimmicks count; state-only ones have no
+        // transform.
         assert!(gimmick > 1000, "expected >1000 GIMMICK records (baseline ~3240), got {gimmick}");
 
-        // The active character's position must match the slot103
-        // probe value: (-10502.729, 610.6218, -4373.9663).
+        // The active character's position must be finite.
         let active_rec = records.iter()
             .find(|r| r.kind == position_kind::ACTIVE_CHAR)
             .expect("active char record");
@@ -812,9 +800,9 @@ mod tests {
             }
         }
 
-        // ~94% of slot103 gimmicks use FROM_ORIGIN_TRANSFORM; the
-        // other ~6% have moved (have `_transform` present). Both
-        // surfaces should be exercised — assert neither extreme.
+        // Most gimmicks sit at spawn (FROM_ORIGIN_TRANSFORM); a moved
+        // one carries `_transform`. A FROM_ORIGIN_TRANSFORM rate at or
+        // under 80% points at schema drift.
         let gimmick_origin = records.iter()
             .filter(|r| r.kind == position_kind::GIMMICK
                 && r.flags & position_flags::FROM_ORIGIN_TRANSFORM != 0)
