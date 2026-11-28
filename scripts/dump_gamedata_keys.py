@@ -115,10 +115,17 @@ def find_game_dir(explicit: str | None) -> str:
     sys.exit("Game install not found. Pass --game-dir.")
 
 
+# Count / key width pairs of a 2.06 header, as `WIDTHS` in
+# src/binary/static_header.rs lists them.
+NAMED_WIDTHS = [
+    (2, 4), (2, 2), (4, 4), (2, 1), (4, 8), (2, 12), (1, 1), (4, 2),
+    (1, 2), (1, 4), (4, 1), (2, 8), (1, 8), (1, 12), (4, 12),
+]
+
+
 def parse_pabgh_keys(pabgh: bytes) -> list[int] | None:
     """Auto-detect PABGH shape and return keys in appearance order
-    (= in-game iteration order). Two count widths and three key widths
-    are supported:
+    (= in-game iteration order). Pre-2.06 shapes:
 
       - u16 count + (u32 key, u32 offset)*   — most niche tables
       - u16 count + (u16 key, u32 offset)*   — storeinfo, regioninfo, …
@@ -126,26 +133,35 @@ def parse_pabgh_keys(pabgh: bytes) -> list[int] | None:
       - u32 count + (u32 key, u32 offset)*   — questinfo, stageinfo
 
     2.06 moved every row name into the header, which now holds
-    ``count + (key, u32 name len, name, u32 offset, u32 size)*`` with the same
-    count and key widths; that shape is tried first.
+    ``count + (key, u32 name len, name, u32 offset, u32 size)*`` with count
+    width 1, 2 or 4 and key width 1, 2, 4, 8 or 12 (``NAMED_WIDTHS``, the
+    same pairs and order as the Rust reader); that shape is tried first.
 
     Returns None if no shape fits exactly. Empty tables (count = 0) are
     fine: the function returns an empty list."""
     if len(pabgh) < 2:
         return None
-    for cw in (2, 4):
-        for kw in (4, 2, 1):
-            n = int.from_bytes(pabgh[:cw], "little")
-            at, keys = cw, []
-            try:
-                for _ in range(n):
-                    keys.append(int.from_bytes(pabgh[at:at + kw], "little"))
-                    name_len = struct.unpack_from("<I", pabgh, at + kw)[0]
-                    at += kw + 4 + name_len + 8
-            except struct.error:
-                continue
-            if at == len(pabgh) and len(pabgh) > cw + 8 * n:
-                return keys
+    # The width pairs `src/binary/static_header.rs` tries, in its order: the
+    # first that consumes the header exactly with rows tiling the body in
+    # order (each offset where the previous row ended) wins.
+    for cw, kw in NAMED_WIDTHS:
+        if len(pabgh) < cw:
+            continue
+        n = int.from_bytes(pabgh[:cw], "little")
+        at, keys, next_off = cw, [], 0
+        try:
+            for _ in range(n):
+                keys.append(int.from_bytes(pabgh[at:at + kw], "little"))
+                name_len = struct.unpack_from("<I", pabgh, at + kw)[0]
+                off, size = struct.unpack_from("<II", pabgh, at + kw + 4 + name_len)
+                if off != next_off:
+                    raise struct.error("rows not packed")
+                next_off = off + size
+                at += kw + 4 + name_len + 8
+        except struct.error:
+            continue
+        if at == len(pabgh) and len(pabgh) > cw + 8 * n:
+            return keys
     # u32-count variant — only the questinfo / stageinfo shape so far.
     if len(pabgh) >= 4:
         count32 = struct.unpack_from("<I", pabgh, 0)[0]
