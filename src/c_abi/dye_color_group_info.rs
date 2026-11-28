@@ -852,11 +852,15 @@ mod tests {
                 rc => Err(rc),
             }
         };
-        if knowledge(HER, 0) == Err(error::UNSUPPORTED_VERSION) {
-            eprintln!("skipping: pre-2.06 palette (ConditionInfoKey records)");
-            unsafe { crimson_dye_color_group_info_free(h) };
-            return;
-        }
+        // The parsers read the latest patch only, so UNSUPPORTED_VERSION here is
+        // drift (condition bytecode the reader does not know), not an old
+        // install. It used to skip, on exactly the drift this test exists to
+        // catch (audit E-03).
+        assert_ne!(
+            knowledge(HER, 0),
+            Err(error::UNSUPPORTED_VERSION),
+            "palette conditions no longer read as CheckKnowledge: drift"
+        );
         for pos in 0..9 {
             assert_eq!(knowledge(HER, pos), Ok(1_001_287), "Her position {pos}");
         }
