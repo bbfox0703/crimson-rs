@@ -124,28 +124,24 @@ pub enum RowLayout {
 impl RowLayout {
     /// A body's layout, from its leading rows. Both layouts have the same
     /// row lengths; a legacy row opens `[u32 0][u32 hash]`, a 2.06 row
-    /// `[u32 hash][u32 row index]`. The body is 2.06 when the second words of
-    /// up to the first four rows count 0, 1, 2, ... and the first words are
-    /// not all zero. Looking at the first word alone read a 2.06 table whose
-    /// first hash is 0 as legacy, swapping every hash with its row index.
+    /// `[u32 hash][u32 row index]`. A legacy first word is always 0, so the
+    /// body is 2.06 as soon as one of the first eight rows has a non-zero
+    /// first word. The row index cannot decide it: in a DLC table it is not
+    /// the row's position. Looking at the first row alone read a 2.06 table
+    /// whose first hash is 0 as legacy, swapping every hash with its index.
     pub fn detect(pabgb: &[u8]) -> Self {
         let word = |at: usize| pabgb.get(at..at + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
-        let (mut at, mut rows, mut any_hash) = (0usize, 0u32, false);
-        while rows < 4 && at < pabgb.len() {
-            let (Some(first), Some(second)) = (word(at), word(at + 4)) else {
+        let mut at = 0usize;
+        for _ in 0..8 {
+            let (Some(first), Some(slen)) = (word(at), word(at + 9)) else {
                 break;
             };
-            if second != rows {
-                return RowLayout::Legacy;
+            if first != 0 {
+                return RowLayout::V206;
             }
-            any_hash |= first != 0;
-            let Some(slen) = word(at + 9) else {
-                break;
-            };
             at += 13 + slen as usize;
-            rows += 1;
         }
-        if rows > 0 && any_hash { RowLayout::V206 } else { RowLayout::Legacy }
+        RowLayout::Legacy
     }
 }
 
@@ -418,8 +414,8 @@ fn entry_size(entry: &StringInfoEntry) -> io::Result<u32> {
 mod tests {
     use super::*;
 
-    /// A 2.06 body whose first hash is 0 still reads as 2.06; a legacy body
-    /// reads as legacy.
+    /// A 2.06 body whose first hash is 0 still reads as 2.06, DLC row indices
+    /// included; a legacy body reads as legacy.
     #[test]
     fn detect_uses_the_row_indices() {
         fn row(first: u32, second: u32, s: &str) -> Vec<u8> {
@@ -432,6 +428,9 @@ mod tests {
         }
         let v206 = [row(0, 0, "a"), row(0x1234, 1, "bc"), row(0x99, 2, "")].concat();
         assert_eq!(RowLayout::detect(&v206), RowLayout::V206);
+        // A DLC table's row index is not the row's position.
+        let dlc = [row(0, 167, "a"), row(0x1234, 170, "bc")].concat();
+        assert_eq!(RowLayout::detect(&dlc), RowLayout::V206);
         let legacy = [row(0, 0x1234, "a"), row(0, 0x5678, "bc")].concat();
         assert_eq!(RowLayout::detect(&legacy), RowLayout::Legacy);
         let legacy_zero_first = [row(0, 0, "a"), row(0, 0x5678, "bc")].concat();
