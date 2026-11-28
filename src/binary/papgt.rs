@@ -174,6 +174,17 @@ impl PackGroupTreeMeta {
         offset += 4;
         check_remaining(data, offset, buf_len)?;
         let group_names_buffer = data[offset..offset + buf_len].to_vec();
+        // The name buffer ends the checksummed layout. Bytes after it would
+        // pass the checksum but be dropped by `to_bytes`, so they are an
+        // error rather than lost on write-back. (The signed layout's length
+        // is checked by `is_signed_layout`.)
+        let end = offset + buf_len;
+        if trailer.is_none() && end != data.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{} bytes after the PAPGT name buffer", data.len() - end),
+            ));
+        }
 
         // Resolve group names
         let mut entries = Vec::with_capacity(raw_entries.len());
@@ -344,6 +355,20 @@ mod tests {
         assert_eq!(reparsed.entries.len(), 3);
         assert_eq!(reparsed.entries[0].group_name, "0036");
         assert_eq!(reparsed.entries[2].group_name, "0001");
+    }
+
+    /// Extra bytes after the name buffer pass the checksum but would be
+    /// dropped on write-back, so they are refused.
+    #[test]
+    fn checksummed_layout_refuses_trailing_bytes() {
+        let mut papgt = PackGroupTreeMeta::new();
+        papgt.add_entry("0000", 0x11, 0, LanguageType::ALL).unwrap();
+        let mut data = papgt.to_bytes().unwrap();
+        data.push(0x7A);
+        let sum = checksum::calculate_checksum(&data[12..]);
+        data[4..8].copy_from_slice(&sum.to_le_bytes());
+        let err = PackGroupTreeMeta::parse(&data).unwrap_err();
+        assert!(err.to_string().contains("after the PAPGT name buffer"), "{err}");
     }
 
     #[test]
