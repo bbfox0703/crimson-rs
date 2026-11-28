@@ -7,7 +7,7 @@
 //! shape every other bridge uses and so the editor doesn't have to
 //! special-case this table.
 //!
-//! **PALOC chain**: none — the exhaustive probe found only
+//! **PALOC chain**: none — the exhaustive probe finds only
 //! coincidental collisions with UI-tooltip sentinel strings at
 //! `lo32 = 0x80`. The bridge mirrors [`super::sub_level_info`] /
 //! [`super::quest_gauge_info`] in shape — no `lookup_display_name`.
@@ -174,8 +174,7 @@ pub unsafe extern "C" fn crimson_factionrelationgroup_free(
 
 // ── Scalar getters ─────────────────────────────────────────────────────────
 
-/// Total number of `factionrelationgroup` rows in the loaded table
-/// (5 on 2.06).
+/// Total number of `factionrelationgroup` rows in the loaded table.
 ///
 /// # Safety
 /// `handle` must be live; `out_count` must be non-null.

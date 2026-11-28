@@ -19,8 +19,8 @@
 //! parse once, retains only the pair, and drops the rest. Same trade as
 //! [`super::iteminfo`].
 //!
-//! Memory cost: about 2,160 skills on 2.06 × ~20 bytes per name, some
-//! 45 KB plus HashMap overhead.
+//! Memory cost: a few thousand skills × ~20 bytes per name, tens of KB
+//! plus HashMap overhead.
 
 use std::collections::HashMap;
 use std::io;
@@ -49,10 +49,9 @@ impl CrimsonSkillInfoHandle {
         for entry in &data.entries {
             // `name_bytes` is the entry name (`u32 len + bytes`). Internal
             // names are ASCII by convention (`"PowerStrike"`, etc.);
-            // `from_utf8_lossy` is defensive — a non-UTF-8 byte in a
-            // future format wouldn't crash the bridge, it would just
-            // surface as `U+FFFD` in the returned string. The caller
-            // would notice and we'd revisit.
+            // `from_utf8_lossy` is defensive — a non-UTF-8 byte does not
+            // fail the load, it surfaces as `U+FFFD` in the returned
+            // string.
             let name = String::from_utf8_lossy(&entry.name_bytes).into_owned();
             entries.push((entry.key, name));
         }
@@ -307,7 +306,7 @@ mod tests {
     //! Synthesizing skill bytes from scratch is impractical (the buff
     //! tail-size probe needs realistic type_id values across the full
     //! 0..=119 range) so we rely on round-tripping the real bytes through
-    //! PAZ extraction + the new C ABI.
+    //! PAZ extraction + the C ABI.
     //!
     //! Coverage for the C ABI's error paths (NULL_ARG, BODY_PARSE on
     //! garbage, OUT_OF_RANGE, NOT_FOUND) uses synthetic inputs that
@@ -394,8 +393,7 @@ mod tests {
             unsafe { crimson_skillinfo_entry_count(handle, &mut count) },
             error::OK
         );
-        // 1.05 / 1.06 land somewhere around 250–300 skills. Just assert
-        // plausibly populated; pinning a specific count would break on
+        // Just assert plausibly populated; pinning a specific count would break on
         // every patch.
         assert!(count > 100, "expected >100 skills, got {count}");
 

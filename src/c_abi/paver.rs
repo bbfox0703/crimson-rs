@@ -151,9 +151,9 @@ pub unsafe extern "C" fn crimson_paver_read_from_bytes(
 
 /// The Crimson Desert gamedata `major` version this build's parsers target.
 ///
-/// Companion to [`crimson_parser_target_gamedata_minor`]: since Crimson Desert
-/// 2.00 the `minor` resets on a major bump (1.18 → 2.00 is `18` → `0`), so a
-/// minor-only check can no longer identify a schema on its own. A consumer that
+/// Companion to [`crimson_parser_target_gamedata_minor`]: the
+/// `minor` resets on a major bump (1.18 → 2.00 is `18` → `0`), so a
+/// minor-only check cannot identify a schema on its own. A consumer that
 /// wants a sound gate compares the install's `meta/0.paver` `(major, minor)`
 /// against this and the minor bridge.
 ///
@@ -184,9 +184,9 @@ pub extern "C" fn crimson_parser_target_gamedata_minor() -> u16 {
 /// The lowest gamedata `patch` this build's parsers read on the target
 /// `(major, minor)`.
 ///
-/// 2.04.08 changed the iteminfo layout without moving the minor, so a gate on
-/// `(major, minor)` alone accepts a 2.04.03 install that no longer parses. When
-/// the install's minor equals [`crimson_parser_target_gamedata_minor`], also
+/// A patch-level update can change a layout without moving the minor (2.04.08
+/// did), so a gate on `(major, minor)` alone can accept an install that does
+/// not parse. When the install's minor equals [`crimson_parser_target_gamedata_minor`], also
 /// require its `patch` (from [`crimson_paver_read_from_file`]) to be at least
 /// this. `0` means any patch of the target minor.
 ///
@@ -200,7 +200,7 @@ pub extern "C" fn crimson_parser_min_gamedata_patch() -> u16 {
 /// `1` when this build's parsers read gamedata `major.minor.patch` (from
 /// [`crimson_paver_read_from_file`]), else `0`: the full gate (target major,
 /// a compatible minor, and the patch floor on the target minor) in one call,
-/// so a consumer does not re-implement it from the constants (audit A-13).
+/// so a consumer does not re-implement it from the constants.
 #[unsafe(no_mangle)]
 pub extern "C" fn crimson_parser_supports(major: u16, minor: u16, patch: u16) -> u8 {
     u8::from(crate::binary::paver::parser_supports(major, minor, patch))
@@ -370,10 +370,9 @@ mod tests {
         };
         assert_eq!(rc, error::OK);
         // Assert the live install's (major, minor) matches the parser's
-        // target — i.e. the dev box is on the patch this build supports. The
-        // major used to be pinned to the literal 1; 2.00 made it a real
-        // component, so both halves now drive off the constants and the single
-        // Rust bump keeps this test honest (no separate edit).
+        // target — i.e. the dev box is on the patch this build supports. Both
+        // halves drive off the constants, so the single Rust bump keeps this
+        // test honest (no separate edit).
         assert_eq!(
             major, PARSER_TARGET_GAMEDATA_MAJOR,
             "live game install major should match PARSER_TARGET_GAMEDATA_MAJOR in this test environment",
@@ -382,9 +381,9 @@ mod tests {
             minor, PARSER_TARGET_GAMEDATA_MINOR,
             "live game install minor should match PARSER_TARGET_GAMEDATA_MINOR in this test environment",
         );
-        // A patch-level layout move (2.04.08, 2.05.01) raises the floor, and
+        // A patch-level layout move raises the floor, and
         // an install below it fails here. The floor is 0 right after a minor
-        // bump (2.06), which makes this check trivially true until it moves.
+        // bump, which makes this check trivially true until it moves.
         #[allow(clippy::absurd_extreme_comparisons)]
         let at_or_above_floor = patch >= PARSER_MIN_GAMEDATA_PATCH;
         assert!(

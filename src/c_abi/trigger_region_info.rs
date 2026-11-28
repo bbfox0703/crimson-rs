@@ -1,8 +1,7 @@
 //! `triggerregioninfo.pabgb` bridge — C ABI surface.
 //!
 //! Resolves save-side `TriggerRegionKey (u32)` to the row's template
-//! name (`"Swamp"`, `"IceTerrain"`, `"WaterPoison"`, …). Name-only,
-//! 14 rows in 2.06.
+//! name (`"Swamp"`, `"IceTerrain"`, `"WaterPoison"`, …). Name-only.
 
 crate::impl_name_only_bridge! {
     handle = CrimsonTriggerRegionInfoHandle,
@@ -107,7 +106,7 @@ mod tests {
             unsafe { crimson_trigger_region_info_entry_count(sh, &mut count) },
             error::OK
         );
-        assert_eq!(count, 14); // 2.04 (13 in 1.18-2.03, 12 in 1.07-1.17)
+        assert_eq!(count, 14);
         for &(key, expected) in KNOWN {
             let mut req: usize = 0;
             assert_eq!(

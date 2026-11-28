@@ -70,11 +70,10 @@ impl CrimsonStageInfoHandle {
 
 /// Parse `stageinfo.pabgb` from disk via the anchor-scan path.
 ///
-/// Under-counts by ~1,400 rows in 1.08 (legitimate `LevelSequencerSpawn_UUID_…,…`
+/// Without a sibling `.staticinfoheader` it under-counts (legitimate `LevelSequencerSpawn_UUID_…,…`
 /// names contain commas, which the anchor-scan body validation rejects).
 /// **Prefer [`crimson_stageinfo_load_from_file_with_pabgh`]** when both
-/// files are available — it returns the in-game-authoritative key set
-/// (51,037 on 1.08 vs 49,634 from this path).
+/// files are available — it returns the in-game-authoritative key set.
 ///
 /// # Safety
 /// `path` must be a NUL-terminated UTF-8 string. `out_handle` must be
@@ -114,7 +113,7 @@ pub unsafe extern "C" fn crimson_stageinfo_load_from_file(
 
 /// Parse stageinfo bytes already in memory via the anchor-scan path.
 ///
-/// Under-counts by ~1,400 rows in 1.08 (see
+/// Under-counts rows whose names contain commas (see
 /// [`crimson_stageinfo_load_from_file`] for details). **Prefer
 /// [`crimson_stageinfo_load_from_bytes_with_pabgh`]** for the
 /// authoritative key set.
@@ -156,7 +155,7 @@ pub unsafe extern "C" fn crimson_stageinfo_load_from_bytes(
 /// body into the header: `crimson_stageinfo_load_from_bytes` on a 2.06 body finds
 /// no rows, and returns `BODY_PARSE` for it. A header that is not the 2.06 shape
 /// or does not match the body is `BODY_PARSE` too (the parsers read the latest
-/// patch only; audit B-02).
+/// patch only).
 ///
 /// # Safety
 /// `data` / `header` must point to `data_len` / `header_len` readable bytes
@@ -201,7 +200,7 @@ pub unsafe extern "C" fn crimson_stageinfo_load_from_bytes_with_header(
 /// **recommended** path.
 ///
 /// Uses the PABGH `[u32 count][(u32 key, u32 offset)*]` index for the
-/// in-game-authoritative key list (51,037 on 1.08), then reads the
+/// in-game-authoritative key list, then reads the
 /// `[u32 slen][slen bytes][u32 key_repeat]` row head at each offset
 /// from PABGB. Returns the same entries the in-game iterator does —
 /// no body-byte validation rejecting legitimate rows.
@@ -579,7 +578,7 @@ mod tests {
             unsafe { crimson_stageinfo_entry_count(sh, &mut count) },
             error::OK
         );
-        // ~57k on 1.06; pin to >10k for plausibility across patches.
+        // The table holds tens of thousands of rows; pin to >10k for plausibility across patches.
         assert!(count > 10_000, "expected >10k stages, got {count}");
 
         // PALOC bootstrap.
@@ -666,9 +665,9 @@ mod tests {
     }
 
     /// PABGH-driven loader: returns the in-game-authoritative key set,
-    /// which on 1.08 is 51,037 — strictly more than the anchor-scan path
-    /// (49,634 on 1.08, missing the `LevelSequencerSpawn_UUID_…,…` rows
-    /// whose names contain commas).
+    /// at least as large as the anchor-scan path's, which misses the
+    /// `LevelSequencerSpawn_UUID_…,…` rows
+    /// whose names contain commas.
     #[test]
     fn c_abi_stageinfo_with_pabgh_count_matches_pabgh_authoritative() {
         let Some(pamt_path) = find_pamt() else {
@@ -726,7 +725,7 @@ mod tests {
 
         // Spot-check a row with a comma-bearing name that anchor-scan drops.
         // `LevelSequencerSpawn_UUID_2910822923,1591218726,1006787795,0` is the
-        // first such row in 1.08 (key=1047476).
+        // such a row (key=1047476).
         let key = 1_047_476u32;
         let mut req: usize = 0;
         let rc_anchor = unsafe {

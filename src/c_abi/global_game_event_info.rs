@@ -7,8 +7,8 @@
 //! - `crimson_global_game_event_info_lookup_string_key` — internal
 //!   template name (e.g. `"Drought_Varnian"`). Universal coverage.
 //! - `crimson_global_game_event_info_lookup_group_key` — the
-//!   `GlobalGameEventGroupKey` cross-reference (one of the 12
-//!   `globalgameeventgroup` rows on 2.06: `WeatherEventGroup`,
+//!   `GlobalGameEventGroupKey` cross-reference (a
+//!   `globalgameeventgroup` row: `WeatherEventGroup`,
 //!   `FactionBlockEventGroup`, …).
 //!   Universal coverage.
 //! - `crimson_global_game_event_info_lookup_paloc_key` — the 64-bit
@@ -18,7 +18,7 @@
 //!   embedded `PalocStringRef` (the `RoyalSupply` + `FactionBlockEvent_*`
 //!   groups).
 //!
-//! 191 rows in 2.06. **NOT** macro-generated (unlike most niche
+//! **NOT** macro-generated (unlike most niche
 //! bridges) because the additional `group_key` + `paloc_key` lookups
 //! need per-entry data beyond the `(key, name)` pair the macro
 //! supports.
@@ -213,7 +213,7 @@ pub unsafe extern "C" fn crimson_global_game_event_info_lookup_string_key(
 }
 
 /// Look up the `GlobalGameEventGroupKey` for a given event key.
-/// Every row carries one; on 2.06 it is one of the 12 group keys, which
+/// Every row carries one: a `globalgameeventgroup` key, which
 /// the editor can resolve through the existing
 /// `crimson_global_game_event_group_info_*` bridge.
 ///
@@ -341,7 +341,7 @@ mod tests {
         (0x4258, 0x4240, 72_945_724_555_969),
         (0x426b, 0x4240, 73_027_328_934_593),
         (0x426c, 0x4240, 73_031_623_901_889),
-        // 2.00 split RoyalSupply (0x424a) into four per-faction rows.
+        // RoyalSupply has one row per faction.
         (0x4308, 0x4241, 0), // RoyalSupply_Her — paloc absent
         (0x4309, 0x4241, 0), // RoyalSupply_Dem — paloc absent
         (0x430a, 0x4241, 0), // RoyalSupply_Del — paloc absent
@@ -427,7 +427,7 @@ mod tests {
             unsafe { crimson_global_game_event_info_entry_count(sh, &mut count) },
             error::OK,
         );
-        assert_eq!(count, 191); // 2.00 (was 188 in 1.08-1.18)
+        assert_eq!(count, 191);
         for &(key, expected) in KNOWN {
             let mut req: usize = 0;
             assert_eq!(
@@ -458,7 +458,7 @@ mod tests {
         unsafe { crimson_global_game_event_info_free(sh) };
     }
 
-    /// Pin the new `group_key` + `paloc_key` lookups against the
+    /// Pin the `group_key` + `paloc_key` lookups against the
     /// live install. Skips when the game install isn't present.
     #[test]
     fn c_abi_global_game_event_info_body_fields_live() {
@@ -490,8 +490,8 @@ mod tests {
         unsafe { crimson_global_game_event_info_free(sh) };
     }
 
-    /// Lookups must return NOT_FOUND for an unknown key without
-    /// touching the out-parameters' previous values.
+    /// Lookups return NOT_FOUND for an unknown key and zero the
+    /// out-parameter first.
     #[test]
     fn c_abi_global_game_event_info_not_found() {
         let Some(sh) = load_handle() else {
@@ -520,8 +520,8 @@ mod tests {
 
     #[test]
     fn c_abi_global_game_event_info_null_args() {
-        // Every required pointer null → NULL_ARG. Sample the new
-        // lookups.
+        // Every required pointer null → NULL_ARG. Sample the group /
+        // PALOC-key lookups.
         let mut out_u32: u32 = 0;
         let rc = unsafe {
             crimson_global_game_event_info_lookup_group_key(

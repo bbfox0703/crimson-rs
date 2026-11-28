@@ -85,8 +85,7 @@ mod tests {
     /// ("Verified hash transform"). The hashes here are the `hi32`
     /// values from that table.
     const KNOWN: &[(&[u8], u32)] = &[
-        // Mission_Intro_Tutorial_I -> "Unfamiliar Lands" (read "Unfamiliar
-        // Land" in 2.01–2.02 only)
+        // Mission_Intro_Tutorial_I -> "Unfamiliar Lands"
         (b"Mission_Intro_Tutorial_I", 1_891_183_967),
         // Mission_IronStronghold_Block_ReturnToSister -> "Where the Wind Guides You"
         (b"Mission_IronStronghold_Block_ReturnToSister", 3_594_586_120),
@@ -139,10 +138,9 @@ mod tests {
     #[test]
     fn c_abi_checksum_null_args() {
         let mut out: u32 = 999;
-        // null data with non-zero len → NULL_ARG, out_checksum untouched
-        // by the early return (but the function does write 0 before the
-        // catch_unwind body; that's deliberate so the caller sees a
-        // sentinel even on error). Check NULL_ARG return is enough.
+        // null data with non-zero len → NULL_ARG. The early return leaves
+        // out_checksum untouched: the 0 sentinel is written only once the
+        // arguments pass, so checking the return code is enough.
         let rc = unsafe { crimson_calculate_checksum(ptr::null(), 16, &mut out) };
         assert_eq!(rc, error::NULL_ARG);
 

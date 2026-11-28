@@ -3,13 +3,13 @@
 //! Resolves save-side `StoreKey (u16-widened-u32)` to the row's
 //! template internal name (e.g. `"Store_Her_General"`,
 //! `"Store_BlackMarket"`). Mirrors [`super::faction_relation_group_info`]
-//! in shape — name-only, **no `lookup_display_name` function**. The
-//! exhaustive PALOC probe pattern that produced the QuestGauge / SubLevel
-//! / Faction bridges hasn't been re-run for storeinfo yet; the
+//! in shape — name-only, **no `lookup_display_name` function**. No
+//! exhaustive PALOC probe covers storeinfo (as one does the QuestGauge /
+//! SubLevel / Faction tables); the
 //! save-layer's stable identifier is the internal template name, which
 //! is what the Save Editor surfaces in its store browser.
 //!
-//! 441 rows in 2.06. The pre-2.06 PABGH layout is the same custom 6-byte
+//! The pre-2.06 PABGH layout is the same custom 6-byte
 //! `(u16 key, u32 offset)*` shape used by `factionrelationgroup`. See
 //! `src/store_info/mod.rs` for byte-level schema notes.
 

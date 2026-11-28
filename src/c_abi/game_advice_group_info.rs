@@ -1,7 +1,7 @@
 //! `gameadvicegroupinfo.pabgb` bridge — C ABI surface.
 //!
 //! Resolves save-side `GameAdviceGroupKey (u32)` to template names
-//! (`"GameAdviceGroup_ControlBasics"`, …). Name-only, 8 rows in 1.07.
+//! (`"GameAdviceGroup_ControlBasics"`, …). Name-only.
 
 crate::impl_name_only_bridge! {
     handle = CrimsonGameAdviceGroupInfoHandle,

@@ -13,7 +13,7 @@
 //! agrees can do so via the Rust API ([`super::super::string_info::
 //! StringInfoData::parse_pair`]).
 //!
-//! Memory cost: 33,855 entries on 2.06 × ~30 bytes per string, about
+//! Memory cost: tens of thousands of entries × ~30 bytes per string, about
 //! 1 MB plus HashMap overhead. The reserved-zero + reserved-
 //! flag bytes are dropped — only `(hash, value)` is retained.
 
@@ -341,7 +341,7 @@ mod tests {
             unsafe { crimson_string_info_entry_count(handle, &mut count) },
             error::OK
         );
-        // 1.06 has 30,206 entries; just assert plausibly populated.
+        // The table holds tens of thousands of entries; just assert plausibly populated.
         assert!(count > 20_000, "expected >20k entries, got {count}");
 
         // ── Round-trip: pick entry 0, then look up its value by the u32

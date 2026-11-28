@@ -73,11 +73,11 @@ impl CrimsonQuestInfoHandle {
 
 /// Parse `questinfo.pabgb` from disk via the anchor-scan path.
 ///
-/// Under-counts by 1 row in 1.08 (the anchor-scan's `_`-in-name
-/// validation drops `LevelSequencerSpawn` / `StartGame`, which have no
-/// underscore). **Prefer [`crimson_questinfo_load_from_file_with_pabgh`]**
+/// Without a sibling `.staticinfoheader`, the anchor scan's `_`-in-name
+/// validation drops rows whose name has no underscore (`StartGame`).
+/// **Prefer [`crimson_questinfo_load_from_file_with_pabgh`]**
 /// when both files are available — it returns the in-game-authoritative
-/// 1,019 entries instead of the anchor-scan's 1,018.
+/// key set.
 ///
 /// See [`super::mission_info`] for the full resolution-chain contract.
 ///
@@ -119,7 +119,7 @@ pub unsafe extern "C" fn crimson_questinfo_load_from_file(
 
 /// Parse questinfo bytes already in memory via the anchor-scan path.
 ///
-/// Under-counts by 1 row in 1.08 (see
+/// The anchor scan drops rows whose name has no underscore (see
 /// [`crimson_questinfo_load_from_file`] for details). **Prefer
 /// [`crimson_questinfo_load_from_bytes_with_pabgh`]** for the
 /// authoritative key set.
@@ -161,7 +161,7 @@ pub unsafe extern "C" fn crimson_questinfo_load_from_bytes(
 /// body into the header: `crimson_questinfo_load_from_bytes` on a 2.06 body finds
 /// no rows, and returns `BODY_PARSE` for it. A header that is not the 2.06 shape
 /// or does not match the body is `BODY_PARSE` too (the parsers read the latest
-/// patch only; audit B-02).
+/// patch only).
 ///
 /// # Safety
 /// `data` / `header` must point to `data_len` / `header_len` readable bytes
@@ -206,7 +206,7 @@ pub unsafe extern "C" fn crimson_questinfo_load_from_bytes_with_header(
 /// **recommended** path.
 ///
 /// Uses the PABGH `[u32 count][(u32 key, u32 offset)*]` index for the
-/// in-game-authoritative key list (1,019 on 1.08), then reads the
+/// in-game-authoritative key list, then reads the
 /// `[u32 slen][slen bytes][u32 key_repeat]` row head at each offset
 /// from PABGB. Returns the same entries the in-game iterator does —
 /// no `_`-in-name validation rejecting legitimate rows.
@@ -670,8 +670,7 @@ mod tests {
     }
 
     /// PABGH-driven loader: confirms the anchor-scan path drops the
-    /// no-underscore entry (`StartGame`) that PABGH loads. 2.04 removed the
-    /// other one this used to pin, `LevelSequencerSpawn` (key 1000414).
+    /// no-underscore entry (`StartGame`) that PABGH loads.
     #[test]
     fn c_abi_questinfo_with_pabgh_recovers_no_underscore_rows() {
         let Some(pamt_path) = find_pamt() else {

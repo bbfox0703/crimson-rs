@@ -1,8 +1,7 @@
 //! `regioninfo.pabgb` bridge — C ABI surface.
 //!
 //! Resolves save-side `RegionKey (u16-widened-u32)` to template names
-//! (`"Region_Pywel"`, `"Region_Kweiden"`, …). Name-only, 1,004 rows
-//! in 1.07.
+//! (`"Region_Pywel"`, `"Region_Kweiden"`, …). Name-only.
 
 crate::impl_name_only_bridge! {
     handle = CrimsonRegionInfoHandle,
@@ -107,7 +106,7 @@ mod tests {
             unsafe { crimson_region_info_entry_count(sh, &mut count) },
             error::OK
         );
-        assert_eq!(count, 1014); // 2.06 (1013 in 2.05, 1012 in 2.04, 1007 in 1.10-2.03, 1006 in 1.08/1.09)
+        assert_eq!(count, 1014);
         for &(key, expected) in KNOWN {
             let mut req: usize = 0;
             assert_eq!(

@@ -6,7 +6,7 @@
 //! `lookup_display_name` function is exposed** because SubLevel rows
 //! don't have PALOC entries at any namespace.
 //!
-//! The probe pass that confirmed zero PALOC chain went through:
+//! What the PALOC probe sees:
 //!
 //! - Pattern A (raw key) hits at `lo32 ∈ {0x402f1, 0x802f1, 0xc02f1}`
 //!   return generic UI tooltip strings ("Unavailable during combat.",
@@ -22,7 +22,7 @@
 //! directly in its resolved-name column, same pattern as QuestGauge.
 //!
 //! See `docs/save-editor-keys-plan.md` §8 for the rationale and the
-//! probe that confirmed no PALOC chain.
+//! probe behind it.
 
 use std::collections::HashMap;
 use std::os::raw::c_char;
@@ -139,7 +139,7 @@ pub unsafe extern "C" fn crimson_sublevelinfo_load_from_bytes(
 /// body into the header: `crimson_sublevelinfo_load_from_bytes` on a 2.06 body finds
 /// no rows, and returns `BODY_PARSE` for it. A header that is not the 2.06 shape
 /// or does not match the body is `BODY_PARSE` too (the parsers read the latest
-/// patch only; audit B-02).
+/// patch only).
 ///
 /// # Safety
 /// `data` / `header` must point to `data_len` / `header_len` readable bytes
@@ -225,8 +225,8 @@ pub unsafe extern "C" fn crimson_sublevelinfo_entry_count(
 /// Returns `NOT_FOUND` when `sub_level_key` isn't in the table.
 ///
 /// **No `lookup_display_name` analogue exists for this bridge** —
-/// SubLevel rows have no PALOC entries (confirmed by exhaustive
-/// scan, see `docs/save-editor-keys-plan.md` §8). The internal name
+/// SubLevel rows have no PALOC entries (an exhaustive scan finds
+/// none, see `docs/save-editor-keys-plan.md` §8). The internal name
 /// is the only resolution surface.
 ///
 /// # Safety

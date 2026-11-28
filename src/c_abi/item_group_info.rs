@@ -2,7 +2,7 @@
 //!
 //! Resolves save-side `ItemGroupKey (u16-widened-u32)` to template
 //! names (`"ItemGroup_Category_Equipment"`, `"ItemGroup_Category_Food"`,
-//! `"ItemGroup_Category_Material"`, …). Name-only, 1,682 rows in 2.06.
+//! `"ItemGroup_Category_Material"`, …). Name-only.
 
 crate::impl_name_only_bridge! {
     handle = CrimsonItemGroupInfoHandle,
@@ -107,7 +107,7 @@ mod tests {
             unsafe { crimson_item_group_info_entry_count(sh, &mut count) },
             error::OK
         );
-        assert_eq!(count, 1682); // 2.06 (1680 in 2.04-2.05.01, 1602 in 2.03, 1600 in 2.01-2.02, 1597 in 1.18-2.00, 1596 in 1.17, 1597 in 1.16, 1550 in 1.13-1.15, 1541 in 1.12, 1521 in 1.10/1.11)
+        assert_eq!(count, 1682);
         for &(key, expected) in KNOWN {
             let mut req: usize = 0;
             assert_eq!(

@@ -1,12 +1,12 @@
 //! `factionnode.pabgb` bridge — C ABI surface.
 //!
 //! Resolves save-side `FactionNodeKey (u32)` to the row's internal
-//! name (e.g. `"Node_Her_Temporary_Camp"`) and, since 2026-11-27, to the
+//! name (e.g. `"Node_Her_Temporary_Camp"`) and to the
 //! place name the game shows. That name is not keyed by the node (the
-//! exhaustive PALOC probe `_probe_faction_paloc_chains` found nothing at any
+//! exhaustive PALOC probe `_probe_faction_paloc_chains` finds nothing at any
 //! namespace): every row names a `knowledgeinfo` row, and that knowledge's
 //! title is the place name ("Hernand Castle", "Howling Hill"). See
-//! `src/faction_node_info/mod.rs`; no owning-faction or region field was found.
+//! `src/faction_node_info/mod.rs`; the row has no known owning-faction or region field.
 //!
 //! Standard `[u32 name_len][name][u32 key][body]` row layout indexed by
 //! a `u16 count + (u32 key, u32 offset)*` PABGH — re-uses
@@ -195,12 +195,12 @@ pub unsafe extern "C" fn crimson_factionnode_entry_count(
 ///
 /// Returns `NOT_FOUND` when `faction_node_key` isn't in the table.
 ///
-/// **No `lookup_display_name` analogue exists for this bridge** —
-/// the exhaustive PALOC probe surfaced only coincidental collisions
+/// The node key itself has no PALOC entry: the exhaustive PALOC probe
+/// surfaces only coincidental collisions
 /// (every "hit" pointed at iteminfo / character / skill strings that
-/// happened to share the same small u32 hi32). Caller should display
-/// the internal name directly, same pattern as the QuestGauge /
-/// SubLevel bridges.
+/// happened to share the same small u32 hi32). The place name comes
+/// through the node's knowledge row instead, via
+/// [`crimson_factionnode_lookup_display_name`].
 ///
 /// # Safety
 /// `handle` and `required` must be non-null; `buf` may be null iff
@@ -740,7 +740,7 @@ mod dlc_tests {
             assert_eq!(crimson_factionnode_merge_dlc_from_bytes(sh, dnb.as_ptr(), dnb.len(), dnh.as_ptr(), dnh.len(), &mut added_nodes), error::OK);
             assert_eq!(crimson_knowledgeinfo_merge_dlc_from_bytes(kh, dkb.as_ptr(), dkb.len(), dkh.as_ptr(), dkh.len(), &mut added_knowledge), error::OK);
         }
-        // 2.06: 142 nodes and 795 knowledge rows exist only in dlc_01.
+        // Floors well under dlc_01's DLC-only rows (142 nodes, 795 knowledge rows).
         eprintln!("dlc_01 merge: +{added_nodes} nodes, +{added_knowledge} knowledge rows");
         assert!(added_nodes >= 100, "added {added_nodes} DLC nodes");
         assert!(added_knowledge >= 500, "added {added_knowledge} DLC knowledge rows");
@@ -789,7 +789,7 @@ mod dlc_tests {
         unsafe {
             assert_eq!(crimson_factionnode_merge_dlc_from_bytes(ptr::null_mut(), ptr::null(), 0, ptr::null(), 0, &mut added), error::NULL_ARG);
             assert_eq!(crimson_factionnode_merge_dlc_from_bytes(sh, ptr::null(), 4, ptr::null(), 0, &mut added), error::NULL_ARG);
-            // No header: refused, nothing added (audit D-05).
+            // No header: refused, nothing added.
             assert_eq!(crimson_factionnode_merge_dlc_from_bytes(sh, ptr::null(), 0, ptr::null(), 0, &mut added), error::BODY_PARSE);
             assert_eq!(added, 0);
             let mut src = 0u32;

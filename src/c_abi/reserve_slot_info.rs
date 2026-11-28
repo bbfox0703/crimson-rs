@@ -1,8 +1,7 @@
 //! `reserveslot.pabgb` bridge — C ABI surface.
 //!
 //! Resolves save-side `ReserveSlotKey (u32)` to template names
-//! (`"ArrowItem"`, `"BulletItem"`, `"BombItem"`, …). Name-only,
-//! 28 rows in 2.06.
+//! (`"ArrowItem"`, `"BulletItem"`, `"BombItem"`, …). Name-only.
 
 crate::impl_name_only_bridge! {
     handle = CrimsonReserveSlotInfoHandle,
@@ -107,7 +106,7 @@ mod tests {
             unsafe { crimson_reserve_slot_info_entry_count(sh, &mut count) },
             error::OK
         );
-        assert_eq!(count, 28); // 1.16 (was 30 in 1.13-1.15, 31 in 1.12, 27 through 1.11)
+        assert_eq!(count, 28);
         for &(key, expected) in KNOWN {
             let mut req: usize = 0;
             assert_eq!(

@@ -11,13 +11,13 @@
 //!
 //! The internal name is still useful in the Save Editor's resolved-
 //! name column: `"QuestGauge_WindCliffFort"` is enough context for
-//! a modder to know what they're looking at. Future enhancement
-//! could parse the row body to extract referenced StageKey / mission
-//! keys and chain into the stage / mission bridges, but the bridge
-//! itself stays single-purpose.
+//! a modder to know what they're looking at. The bridge does not
+//! parse the row body for the referenced StageKey / mission keys
+//! to chain into the stage / mission bridges; it stays
+//! single-purpose.
 //!
 //! See `docs/save-editor-keys-plan.md` §4 for the rationale and the
-//! probe that confirmed zero PALOC hits across every namespace.
+//! probe that finds no PALOC hits at any namespace.
 
 use std::collections::HashMap;
 use std::os::raw::c_char;
@@ -134,7 +134,7 @@ pub unsafe extern "C" fn crimson_questgaugeinfo_load_from_bytes(
 /// body into the header: `crimson_questgaugeinfo_load_from_bytes` on a 2.06 body finds
 /// no rows, and returns `BODY_PARSE` for it. A header that is not the 2.06 shape
 /// or does not match the body is `BODY_PARSE` too (the parsers read the latest
-/// patch only; audit B-02).
+/// patch only).
 ///
 /// # Safety
 /// `data` / `header` must point to `data_len` / `header_len` readable bytes
@@ -222,8 +222,8 @@ pub unsafe extern "C" fn crimson_questgaugeinfo_entry_count(
 /// Returns `NOT_FOUND` when `gauge_key` isn't in the table.
 ///
 /// **No `lookup_display_name` analogue exists for this bridge** —
-/// QuestGauge rows have no PALOC entries (confirmed by exhaustive
-/// scan, see `docs/save-editor-keys-plan.md` §4). The internal name
+/// QuestGauge rows have no PALOC entries (an exhaustive scan finds
+/// none, see `docs/save-editor-keys-plan.md` §4). The internal name
 /// is the only resolution surface; the editor surfaces it directly.
 ///
 /// # Safety

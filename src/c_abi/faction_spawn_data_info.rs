@@ -3,9 +3,9 @@
 //! Resolves save-side `FactionSpawnDataKey (u32)` to the row's
 //! internal name (e.g.
 //! `"FactionSpawn_GlenbrightManor_Grace_ReedDevil"`). Mirrors
-//! [`super::sub_level_info`] / [`super::quest_gauge_info`] / sibling
-//! [`super::faction_node_info`] in shape — **no `lookup_display_name`
-//! surface**, the PALOC probe surfaced only coincidental collisions.
+//! [`super::sub_level_info`] / [`super::quest_gauge_info`]
+//! in shape — **no `lookup_display_name`
+//! surface**, the PALOC probe surfaces only coincidental collisions.
 //! See `src/faction_spawn_data_info/mod.rs` for schema notes.
 
 use std::collections::HashMap;

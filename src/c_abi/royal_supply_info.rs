@@ -1,8 +1,7 @@
 //! `royalsupply.pabgb` bridge — C ABI surface.
 //!
 //! Resolves save-side `RoyalSupplyKey (u16-widened-u32)` to the row's
-//! template internal name (`"RoyalSupply_Hernand"` etc.). Name-only,
-//! 4 rows in 2.06.
+//! template internal name (`"RoyalSupply_Hernand"` etc.). Name-only.
 
 use std::collections::HashMap;
 use std::ffi::CStr;
