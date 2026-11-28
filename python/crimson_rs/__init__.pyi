@@ -724,6 +724,10 @@ def parse_iteminfo_tracked(data: bytes) -> TrackedItemInfo:
     Returns:
         Dict with "items" (list of ItemInfo) and "spans" (list of per-item
         byte ranges for every field).
+
+    Body only: on 2.06+ the row names live in the ``.staticinfoheader``, so
+    every ``string_key`` comes back ``""``. Use
+    :func:`parse_iteminfo_from_bytes` with the header for names.
     """
     ...
 
@@ -1462,7 +1466,13 @@ class LossyItemInfo(TypedDict):
 
 def parse_iteminfo_lossy(data: bytes) -> LossyItemInfo:
     """Like :func:`parse_iteminfo_tracked`, but on an error scans forward to
-    the next plausible item start and continues."""
+    the next plausible item start and continues.
+
+    Body only, so ``string_key`` is ``""`` on 2.06+. The 2.06 row start it
+    scans for (a small key, a row index below 100,000, then a zero byte) is a
+    much weaker anchor than the pre-2.06 name, so ``recovered_at`` can land
+    inside a row; treat a recovery as a hint for where to look, not a row
+    boundary."""
     ...
 
 
