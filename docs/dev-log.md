@@ -25,6 +25,65 @@ landed together. **Reading tip:** grep `^## ` for the index, then read from the 
 
 -----
 
+## 2026-11-28 — Audit P8: save pad, skill caps, PAMT dicts, CI builds, newest save, key snapshots
+
+The eighth batch, on the same branch as the entries below: the remaining low findings. Status table
+after it: 100 fixed, 21 partly, 24 open (mostly nits and doc items), 2 not fixing, 2 merged.
+
+- **Save pad (F-08):** `encode_body` refuses a block whose length changed while it carries pad bytes.
+  Pad bytes are trailing pad, or a wrapper prefix other than one `0x01`. Pad is written back verbatim
+  and relocated only by the block's own shift, so an offset inside it goes stale once bytes move
+  inside the block. Blocks that only move still relocate, and the 1.10 fixture's relocation test
+  still passes.
+  - **Measured:** every live and fixture save has 0 trailing-pad bytes, and every wrapper prefix is
+    the single byte `01` (3,387 to 3,921 per save). The absence-marker test now pins the prefix too.
+  - Rejecting every block with a non-empty prefix, as first considered, would have blocked all edits.
+- **Skill validator caps (C-04):** the caps stay; real data past one would fail the whole table.
+  - They are now named constants (lists 50, `dev_*` strings 2,000 B).
+  - A live test fails once the largest value passes half a cap. 2.06 has list 13 and text 349 B.
+- **PAMT dicts (H-04):** `serialize_pamt` raises `ValueError` when a directory's
+  `file_start_index` / `file_count` do not match the files laid out in directory order. Those
+  mismatches used to point directories at each other's files. The stub marks the decoded fields as
+  read-only (`path`, `name`, `compression`, `crypto`, `is_partial`). All 74 live PAMTs (base and
+  `dlc_01`) round-trip byte for byte.
+- **CI (I-09, H-18, I-11):**
+  - The lint job checks `--features c_abi` alone and `--features python` alone, and installs
+    Python 3.12.
+  - A new `windows native dll` job builds the shipped MSVC release dll and lib. It fails if the dll
+    imports anything beyond system DLLs (`dumpbin /dependents`); locally that is
+    `bcryptprimitives`, `KERNEL32`, `ntdll` and `api-ms-win-core-synch`.
+  - `permissions: contents: read`.
+  - The Rust toolchain stays on floating stable on purpose.
+  - Not a required check; it has not run on GitHub yet.
+- **CLAUDE.md correction:** the Windows abi3 `.pyd` does import `python3.dll` (`dumpbin` on the
+  maturin build). The old line said it never does.
+- **Live save tests (I-06):**
+  - `test_fixtures::newest_live_save` picks the save with the latest mtime. The format and mutation
+    tests use it instead of a pinned `slot107`, which can hold an old patch's save; the running tests
+    lost their `slot107` names.
+  - On this PC the newest is `slot1`, and 18 save tests pass on it.
+  - The `#[ignore]` probes keep their slots.
+- **Key snapshots (I-15):** `dump_gamedata_keys.py` adds `faction` and `stringinfo`. It also dumps
+  every installed DLC's copy of each table, plus `iteminfo`, as `<table>.<dlc>.txt`. The 2.06 re-run
+  left the 30 existing files unchanged and added 35 (65 files, 237,011 keys).
+- **Faction (D-06, partly):** a row too short for its group keys now empties the table, so the loader
+  returns `BODY_PARSE`. It used to report group 0, which reads as "no group".
+  - The module doc said the three bytes before the keys are zero on every row. On 2.06, 5 of 135 rows
+    hold 1..3 in bytes 1-2 (`Faction_Graymane` among them), so the zero check the audit suggested
+    would have flagged the live table as drift.
+  - The other fixed-offset reads are unchanged: factionnode, character, global game event, relation
+    group.
+- **Stub (H-16, partly):** `parse_iteminfo_tracked` / `_lossy` document that `string_key` is empty
+  on 2.06 and that the lossy scan's 2.06 anchor is weak. They still take no header.
+- **Measured on this PC:** 433 passed, 48 ignored, with the install and fixtures; the same 433 pass
+  with neither. Strict clippy is clean, and so are all four feature combinations (none, `c_abi`,
+  `python`, both). The wheel was rebuilt.
+- **CrimsonAtomtic:**
+  - A length-changing edit on a block carrying pad now fails with `MUTATION_INVALID`; no
+    game-written save has such a block.
+  - The faction loader returns `BODY_PARSE` on a drifted table.
+  - No signature changed.
+
 ## 2026-11-28 — Audit P7: loaders report tables they cannot read, unverified saves, no leaked strings
 
 The seventh batch, on the same branch as the entries below. Theme: a C ABI call that could not do its

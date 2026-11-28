@@ -77,7 +77,7 @@ PARTLY 多半是計數、行號、來源或後果的細節修正，缺陷本身�
 | C-01 | `TailSizeCache` 多 GB 配置：根因已在 `a9d7012` 修正，但文件仍把它當成現存問題，而且「HashMap 順序… | low | ✅ 已修 | 文件更新 `7426d4b` |
 | C-02 | ItemInfo 沒有任何讀 live install 的位元組 roundtrip 測試，DLC 表連一次寫回都沒有測 | medium | ✅ 已修 | `02395c6` |
 | C-03 | Skill 的 raw fallback 是靜默降級，測試只印出 fallback 數量、不檢查 | medium | ✅ 已修 | `475b3fa`（NEW-1 一起修，live 測試釘 20% 上限） |
-| C-04 | Skill post-buff 驗證器的硬上限（list ≤ 50、字串 ≤ 2000、必須是 UTF-8）一旦被真實資料超過，整張表就… | low | ⬜ 未修 |  |
+| C-04 | Skill post-buff 驗證器的硬上限（list ≤ 50、字串 ≤ 2000、必須是 UTF-8）一旦被真實資料超過，整張表就… | low | ✅ 已修 | `59adc42`（上限保留為常數，live 測試在最大值超過一半時 fail；2.06：list 13／50、字串 349／2000） |
 | C-05 | `detect_format` 在範圍檢查之前切片，舊版 header 的 offset 超過 body 時會 panic | nit | ✅ 已修 | `1c7023e` |
 | C-06 | `crimson_iteminfo_load_from_bytes` 在 2.06 上回傳 `OK` 但名稱全空，`lookup_str… | low | ✅ 已修 | `b89496a` |
 | C-07 | 只有 body-only 的 iteminfo 路徑會吃到 A-11 的配置放大（有 header 的路徑以列長為上限） | low | ✅ 已修 | `1c7023e`（隨 A-11） |
@@ -98,7 +98,7 @@ PARTLY 多半是計數、行號、來源或後果的細節修正，缺陷本身�
 | D-03 | CI 用 default features 跑 `cargo test --lib`，D 區塊全部模組都在 `c_abi` 之後，離線單… | medium | ✅ 已修 | `45daf6f` |
 | D-04 | gimmick、character 的 `lookup_display_name` 不檢查 key 是否在表內，任何 u32 都直接組… | low | ➖ 不修 | PALOC 依 key 查名稱也涵蓋只在 DLC 的列，限制在表內會漏掉它們 |
 | D-05 | knowledge／characterinfo 的 DLC merge 收到空 header 時，會用 body-only 掃描讀 2.… | low | ✅ 已修 | `b89496a`（空 header 回 `BODY_PARSE`） |
-| D-06 | 固定偏移量的欄位抽取（faction group、factionnode knowledge、character faction、glo… | low | ⬜ 未修 |  |
+| D-06 | 固定偏移量的欄位抽取（faction group、factionnode knowledge、character faction、glo… | low | 🟡 部分 | faction 列太短改為整表失敗 `950aca9`（`[u8; 3]` 並非全為 0，零值檢查不可行）；factionnode／character／global game event／relation group 未改 |
 | D-07 | live 測試的列數 pin 太寬（store `>=250` 但實際 441、mission `>1000` 但實際 6,872 列）… | low | 🟡 部分 | 七張表改比對 header 列數 `a6857ac`；其他表的寬鬆 pin 未改 |
 | D-08 | `globalgameevent` 的 `paloc_key` 只接受剛好 14 位數；註解說「event_key < 0x4300」，… | nit | ✅ 已修 | `7426d4b` |
 | D-09 | `faction_info` 手寫版和巨集版的小差異：`get_entry` 沒先清 `*out_key`；safe fn `slice… | nit | ✅ 已修 | `9e73dd9` |
@@ -127,7 +127,7 @@ PARTLY 多半是計數、行號、來源或後果的細節修正，缺陷本身�
 | F-05 | `uncomp_size` 未驗證就交給 `lz4_flex`，safe-decode 會先 `vec![0; uncomp_size]… | low | ✅ 已修 | `0cdfd25` |
 | F-06 | ChaCha20 用 nonce 前 4 位元組當 32 位元計數器，計數器跨過 2³² 時 `apply_keystream` pan… | low | ✅ 已修 | `0d0b576`（隨 A-06；遊戲端進位語意仍未知，溢位時報錯） |
 | F-07 | 構造輸入可觸發的 panic：marker 走訪呼叫 `try_decode_object_list_at` 前沒檢查 18 位元組；`… | low | ✅ 已修 | `1c7023e` |
-| F-08 | `trailing_pad` 內的 stale offset 只在「整個 block 搬家、內部不變長」時才會被 relocate；同一… | low | ⬜ 未修 |  |
+| F-08 | `trailing_pad` 內的 stale offset 只在「整個 block 搬家、內部不變長」時才會被 relocate；同一… | low | ✅ 已修 | `202c8ec`（長度改變又帶 pad 的 block 拒絕重新編碼；wrapper prefix 在所有存檔都是單一 `01`） |
 | F-09 | 版本漂移不會明確失敗：未知 `meta_kind`、mask byte count 超界、未知 class、TOC 截短、list 部分… | low | 🟡 部分 | TOC 截短改報錯 `5da56e3`；其餘「猜了繼續讀」未改 |
 | F-10 | HMAC 驗證失敗仍可載入，寫回時一律重算 HMAC 而不看 `hmac_ok`：損壞或被竄改的存檔會被重新封成「有效」 | low | ✅ 已修 | `b14b6b4`（寫回回 `HMAC_UNVERIFIED` −28，`crimson_save_set_allow_hmac_rewrap` 可明確放行） |
 | F-11 | Header / TOC 的 offset 與 size 只做到「不越界」，沒驗證順序、重疊、間隙、`stream_size`；enco… | low | 🟡 部分 | encoder 先檢查 block 連續 `1a41191`；reader 仍只檢查不越界 |
@@ -153,7 +153,7 @@ PARTLY 多半是計數、行號、來源或後果的細節修正，缺陷本身�
 | H-01 | `inspect_legacy_patches` 在 2.06 表上對每個 patch 都回 `None`：不收 header，`str… | medium | ✅ 已修 | `1900073` |
 | H-02 | `serialize_iteminfo` / `write_iteminfo_to_file` 只輸出 body，沒有任何 Python… | medium | ✅ 已修 | `1900073`（新增 `serialize_iteminfo_with_header`） |
 | H-03 | `serialize_pamt` / `write_pamt_file` 沿用 dict 裡的舊 header checksum：編輯後… | low | ✅ 已修 | `1900073` |
-| H-04 | PAMT dict 往返以「目錄清單 × 各自檔案」攤平重建 `raw_files`，不保留原順序與孤兒檔；`path` / `name… | low | ⬜ 未修 |  |
+| H-04 | PAMT dict 往返以「目錄清單 × 各自檔案」攤平重建 `raw_files`，不保留原順序與孤兒檔；`path` / `name… | low | ✅ 已修 | `7fce1cb` |
 | H-05 | PAPGT dict 往返從 entries 重建名稱緩衝區：offset 重疊時名稱互相覆寫、未引用的位元組消失、超大 offset… | low | ✅ 已修 | `1a41191` |
 | H-06 | `pack_mod` / `create_pack_group*` 不拒絕已在 PAPGT 裡的 `group_name`：upsert… | medium | ✅ 已修 | `11fc8bd` |
 | H-07 | `create_pack_group*` 與 `validate_game_dir` 就地改寫 live `meta/0.papgt`：… | medium | ✅ 已修 | `11fc8bd` |
@@ -165,25 +165,25 @@ PARTLY 多半是計數、行號、來源或後果的細節修正，缺陷本身�
 | H-13 | `.pyi` 與實際 `#[pyfunction]` 脫節：缺 6 個函式、`ItemInfo` TypedDict 有 7 個已不存在… | low | ✅ 已修 | `8111abb` |
 | H-14 | `docs/api.md` 等文件與程式脫節：`Language` 表全錯、`Crypto.ICE/AES` 宣稱可用但會被拒、「105… | low | ✅ 已修 | `8111abb` |
 | H-15 | 沒有任何版本自檢：沒有 `__version__` 或 build stamp（版本永遠 `0.1.0`），Python 沒有 pave… | low | ✅ 已修 | `8111abb` |
-| H-16 | 2.06 的 lossy 掃描錨點變弱且不收 header；`parse_iteminfo_tracked` / `_lossy` 在… | low | ⬜ 未修 |  |
+| H-16 | 2.06 的 lossy 掃描錨點變弱且不收 header；`parse_iteminfo_tracked` / `_lossy` 在… | low | 🟡 部分 | `.pyi` 註明 2.06 名稱為空、錨點較弱 `3f1a124`；lossy／tracked 仍不收 header |
 | H-17 | Python 可達的 abort／`PanicException` 面：`decompress_data` 的 `uncompresse… | low | ✅ 已修 | `0cdfd25` |
-| H-18 | Feature gate 與死碼：只開 `python` 的組合 CI 從不編譯；Python 綁定沒有任何測試目標；`[u8; 22]… | nit | 🟡 部分 | 只開 `python` 實測可編譯；死碼 `PrefabData` 等已刪 `423d0a1`；CI 仍不建這個組合 |
+| H-18 | Feature gate 與死碼：只開 `python` 的組合 CI 從不編譯；Python 綁定沒有任何測試目標；`[u8; 22]… | nit | 🟡 部分 | 死碼 `PrefabData` 等已刪 `423d0a1`；CI 建只開 `python` 的組合 `eacff68`；`[u8; 22]`／`[u8; 9]` 與 Python 測試目標未處理 |
 | H-19 | `serialize_skillinfo` 缺 `row_indices` key 時靜默寫出 pre-2.06 佈局；`index_o… | nit | ✅ 已修 | `1900073` |
 | I-01 | CI 的 `cargo test --lib` 不帶 `c_abi`：約 397 個可執行測試中有約 286 個（所有 `src/c_a… | medium | ✅ 已修 | `45daf6f` |
 | I-02 | live 測試把「install 在、但讀不出來」當成「沒有 install」：`gamedata_layout::extract_bi… | medium | ✅ 已修 | 共用 helper `d541ce2`、各模組 28 個 helper `cc45659` |
 | I-03 | `src/lib.rs` 的測試混用寫死的 `GAME_DIR` 與 `CRIMSON_GAME_ROOT`：設了覆寫時，skill 檔… | low | ✅ 已修 | `b2a22f0` |
 | I-04 | `test_skill_roundtrip_cross_version` 要嘛永遠 skip，要嘛在 `expect("dir not… | low | ✅ 已修 | `02395c6`；資料改放 private repo `5ad3a14` |
 | I-05 | 存檔 encoder 的兩個 roundtrip 測試只讀 `%LOCALAPPDATA%` 的 live 存檔，不讀 `crimson… | low | ✅ 已修 | `d541ce2` |
-| I-06 | live 存檔測試釘死 `slot107`（20+ 處複製貼上），驗的是那個 slot 碰巧是哪一版，不一定是最新版 | low | ⬜ 未修 |  |
+| I-06 | live 存檔測試釘死 `slot107`（20+ 處複製貼上），驗的是那個 slot 碰巧是哪一版，不一定是最新版 | low | ✅ 已修 | `014a6c5`（改用 mtime 最新的存檔；`#[ignore]` probe 不動） |
 | I-07 | 過時的版本註解與標籤：`lib.rs:117`「parser targets 1.05」、`:151`「1.04 baseline」、`… | nit | ✅ 已修 | `b2a22f0`、`7426d4b`、`423d0a1` |
 | I-08 | `test_full_roundtrip` 讀 `out\iteminfo.pabgb`：內容是最後一次 `export_for_ce.… | low | ✅ 已修 | `374b8f5` |
-| I-09 | CI 從不建置真正出貨的產物：只跑 Ubuntu，不建 `--features c_abi` 單獨組合、不建 Windows MSVC、… | low | ⬜ 未修 |  |
+| I-09 | CI 從不建置真正出貨的產物：只跑 Ubuntu，不建 `--features c_abi` 單獨組合、不建 Windows MSVC、… | low | ✅ 已修 | `eacff68`（Windows MSVC release dll job，`dumpbin` 檢查只依賴系統 DLL；`c_abi`、`python` 各自單獨建置） |
 | I-10 | `.cargo/config.toml` 的註解過時：引用已刪除的 `build.yml` 與 windows-gnu wheel；現在… | low | ✅ 已修 | `7426d4b` |
-| I-11 | CI 環境沒有釘選：CLAUDE.md 說「CI pins 3.12」但 workflow 沒有 setup-python；Rust t… | nit | 🟡 部分 | CLAUDE.md 說法修正 `7426d4b`；CI 仍未釘 toolchain／Python，dev→main 仍跑兩次 |
+| I-11 | CI 環境沒有釘選：CLAUDE.md 說「CI pins 3.12」但 workflow 沒有 setup-python；Rust t… | nit | 🟡 部分 | CLAUDE.md 說法修正 `7426d4b`；CI 釘 Python 3.12、`permissions: contents: read` `eacff68`；toolchain 刻意跟 stable、actions 未釘 SHA、dev→main 仍跑兩次 |
 | I-12 | 模組層級的 `allow(dead_code)` 讓「全 feature 嚴格 clippy 抓得到真正的死碼」（`lib.rs:1-1… | low | ✅ 已修 | `423d0a1` |
 | I-13 | `claude_md_files_stay_under_40_kb` 量的是工作樹位元組：Windows（CRLF）與 CI（LF）的上… | nit | ✅ 已修 | `186c7cc` |
 | I-14 | `dump_gamedata_keys.py`：`--version` 預設 `1.08`，照 runbook 不帶參數跑會覆寫已提交的… | low | ✅ 已修 | `186c7cc` |
-| I-15 | key snapshot 不涵蓋 bridge 實際讀的 `faction`、`stringinfo`，也不涵蓋任何 `*.dlc_01… | low | ⬜ 未修 |  |
+| I-15 | key snapshot 不涵蓋 bridge 實際讀的 `faction`、`stringinfo`，也不涵蓋任何 `*.dlc_01… | low | ✅ 已修 | `631f693`（加 `faction`、`stringinfo` 與每張 DLC 表，65 檔） |
 | I-16 | `extract_gamedata_bin.py` 沒有覆寫保護：版本封存是不可重建的 ground truth，但 `--versio… | medium | ✅ 已修 | `186c7cc` |
 | I-17 | `update_ce_table.py` 的 `props_from_bin` 少了空 `inventory_info_list` 的防… | low | ✅ 已修 | 空清單防護 `374b8f5`、docstring 範例與 `read_paver` 讀 `CRIMSON_GAME_ROOT` `a0a20ed` |
 | I-18 | 腳本各自維護 install 候選清單、不讀 `CRIMSON_GAME_ROOT`；多個腳本寫死個人路徑；`scripts/READM… | nit | ⬜ 未修 |  |
@@ -199,7 +199,7 @@ PARTLY 多半是計數、行號、來源或後果的細節修正，缺陷本身�
 | D 新發現 | `mission_info` 模組文件把漏掉的列說成只有 `Challenge_*` | nit | ✅ 已修 | `a6857ac` |
 | I 新發現 | `find_characterinfo_header`／`find_questinfo_header` 用 `unwrap_or_default()` | low | ✅ 已修 | `cc45659` |
 
-149 條 finding：↪ 併入 2、✅ 已修 94、➖ 不修 2、⬜ 未修 32、🟡 部分 19。另有上表最後 6 列的新發現。
+149 條 finding：↪ 併入 2、✅ 已修 100、➖ 不修 2、⬜ 未修 24、🟡 部分 21。另有上表最後 6 列的新發現。
 
 <!-- status-table:end -->
 
@@ -508,7 +508,7 @@ PARTLY 多半是計數、行號、來源或後果的細節修正，缺陷本身�
 | P3 | 測試與基礎設施：live iteminfo byte roundtrip 測試（base + `dlc_01`）、`CRIMSON_GAME_ROOT` 一致採用、`G:` 死測試、`repo_doc_budget` 改量 git 位元組、腳本覆寫保護 | C-02、C-18／I-04、I-02、I-03、I-05、I-13、I-14、I-16 | |
 | P4 | 文件與註解脫節（一次處理）：`c-abi-surface.md` 補符號、過時列數與版本註解、`allow(dead_code)` 清理 | A-18、B-12、C-13～C-17、D-08～D-11、E-14～E-16、G-13、G-16、H-13～H-15、I-07、I-10～I-12 等 nit | |
 
-**進度（2026-11-28）：** P0 與四項 P1 已在 `dev` 完成：CI 改跑 `--features c_abi`（404 個測試）；skill 2.06 inline condition（raw fallback 1,683 → 308）；D 區塊七個 `_with_header` 改讀 header 列與 characterinfo 先比對完整 key；存檔 FFI 的 G-01／G-03／G-04／G-06。細節見 [`dev-log.md`](dev-log.md)。P2 也已完成：E-01（`resolve_dye_slot_count` 改回傳真正的 dye slot 數）、F-01（encoder 拒絕未解完的 block）、G-02（每次 commit 驗證重新 decode 的結果）、G-11（新錯誤碼 −27）、G-10 的 placeholder 部分、H-06～H-09（`pack_mod` 系列）。G-10 的 scalar type name 比對需要改 CRET 格式，尚未處理。P3 也已完成：A-01（trie 迴圈與深度上限）、A-02／A-03／F-05／H-17（配置與解壓縮大小上限）、A-12（DDS 表頭上限）、F-02／F-03（TOC count 與 locator 巢狀上限）、C-02（live iteminfo base + `dlc_01` 寫回測試）、C-18／I-04（跨版本 skill 測試改讀版本封存）、I-02（漂移時測試失敗而非 skip，只改了共用 helper）、I-03、I-05、I-13、I-14、I-16。P4 也已完成：C ABI 符號目錄補齊並加測試（A-18／C-14／D-11／E-14／G-16 的符號部分）、過時的 CI／TailSizeCache／版本註解（C-01、I-07、I-10、I-11）、`CrimsonItemInfoSummary` offset 釘住（C-13）、paloc key 長度（D-08）、stale `allow(dead_code)` 與其遮住的死碼（C-17、F-14、I-12）、Python stub／版本自檢／api.md（H-13～H-15）。P5（排程表外的 medium 與 low 程式缺陷）也已完成：A-05／A-08／A-09／A-11、B-05／B-06／B-09、C-05／C-07／C-08／C-09、D-09、F-07／F-12、G-08／G-12／G-13／G-15、H-01／H-02／H-03／H-10／H-19，以及 I-02 剩下的 28 個模組 helper；跨版本 skill 測試的資料改放 `crimson-rs-private/gamedata/`。P6（剩下的 low／nit 程式缺陷）也已完成：A-04／A-06／F-06／A-13／A-14／A-15／A-17、A-10 的 flag 與 paver 部分、B-08／B-10、C-06／C-10／C-12、D-05、E-02、E-05 的錯誤回報、F-11 的 encoder 檢查、G-05、H-05／H-12、I-08／I-17、I-19 的原生指令部分；B-03 早在 `d541ce2` 已修，D-04 決定不修（PALOC 依 key 查名稱也涵蓋只在 DLC 的列）。P7（FFI 回報失敗）也已完成：B-02（每個表 loader 讀不到表時回 `BODY_PARSE`、`sibling_header` 不分大小寫並回報 I/O 錯誤、DLC merge 檢查 header）、E-04 的整表部分、F-10（HMAC 未通過的存檔預設不寫回）、A-16／C-19（`CString` 不再 `Box::leak`）、E-03。各條目前狀態以上方「修正狀態總表」為準。
+**進度（2026-11-28）：** P0 與四項 P1 已在 `dev` 完成：CI 改跑 `--features c_abi`（404 個測試）；skill 2.06 inline condition（raw fallback 1,683 → 308）；D 區塊七個 `_with_header` 改讀 header 列與 characterinfo 先比對完整 key；存檔 FFI 的 G-01／G-03／G-04／G-06。細節見 [`dev-log.md`](dev-log.md)。P2 也已完成：E-01（`resolve_dye_slot_count` 改回傳真正的 dye slot 數）、F-01（encoder 拒絕未解完的 block）、G-02（每次 commit 驗證重新 decode 的結果）、G-11（新錯誤碼 −27）、G-10 的 placeholder 部分、H-06～H-09（`pack_mod` 系列）。G-10 的 scalar type name 比對需要改 CRET 格式，尚未處理。P3 也已完成：A-01（trie 迴圈與深度上限）、A-02／A-03／F-05／H-17（配置與解壓縮大小上限）、A-12（DDS 表頭上限）、F-02／F-03（TOC count 與 locator 巢狀上限）、C-02（live iteminfo base + `dlc_01` 寫回測試）、C-18／I-04（跨版本 skill 測試改讀版本封存）、I-02（漂移時測試失敗而非 skip，只改了共用 helper）、I-03、I-05、I-13、I-14、I-16。P4 也已完成：C ABI 符號目錄補齊並加測試（A-18／C-14／D-11／E-14／G-16 的符號部分）、過時的 CI／TailSizeCache／版本註解（C-01、I-07、I-10、I-11）、`CrimsonItemInfoSummary` offset 釘住（C-13）、paloc key 長度（D-08）、stale `allow(dead_code)` 與其遮住的死碼（C-17、F-14、I-12）、Python stub／版本自檢／api.md（H-13～H-15）。P5（排程表外的 medium 與 low 程式缺陷）也已完成：A-05／A-08／A-09／A-11、B-05／B-06／B-09、C-05／C-07／C-08／C-09、D-09、F-07／F-12、G-08／G-12／G-13／G-15、H-01／H-02／H-03／H-10／H-19，以及 I-02 剩下的 28 個模組 helper；跨版本 skill 測試的資料改放 `crimson-rs-private/gamedata/`。P6（剩下的 low／nit 程式缺陷）也已完成：A-04／A-06／F-06／A-13／A-14／A-15／A-17、A-10 的 flag 與 paver 部分、B-08／B-10、C-06／C-10／C-12、D-05、E-02、E-05 的錯誤回報、F-11 的 encoder 檢查、G-05、H-05／H-12、I-08／I-17、I-19 的原生指令部分；B-03 早在 `d541ce2` 已修，D-04 決定不修（PALOC 依 key 查名稱也涵蓋只在 DLC 的列）。P7（FFI 回報失敗）也已完成：B-02（每個表 loader 讀不到表時回 `BODY_PARSE`、`sibling_header` 不分大小寫並回報 I/O 錯誤、DLC merge 檢查 header）、E-04 的整表部分、F-10（HMAC 未通過的存檔預設不寫回）、A-16／C-19（`CString` 不再 `Box::leak`）、E-03。P8（其餘 low）也已完成：F-08、C-04、H-04、I-06、I-09、I-15，以及 D-06（faction）、H-16（文件）、H-18／I-11（CI）的部分。各條目前狀態以上方「修正狀態總表」為準。
 
 **不修：** A-07（REFUTED）。**併入他項：** E-07 → A-01／A-02；B-01 → B-02。
 
