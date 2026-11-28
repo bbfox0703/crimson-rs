@@ -721,6 +721,19 @@ pub fn wr_pamt_from_dict(d: &Bound<'_, PyDict>) -> PyResult<Vec<u8>> {
         let name_offset: i32 = get(dd, "name_offset")?;
         let file_start_index: u32 = get(dd, "file_start_index")?;
         let file_count: u32 = get(dd, "file_count")?;
+        let files_list = get_obj(dd, "files")?.cast::<PyList>()?.clone();
+        // The file table is rebuilt by concatenating each directory's
+        // `files` in directory order, so each range has to start where the
+        // previous one ended and hold exactly its files. Anything else would
+        // point a directory at another directory's files.
+        if file_start_index as usize != raw_files.len() || file_count as usize != files_list.len() {
+            return Err(PyValueError::new_err(format!(
+                "directory {}: file_start_index {file_start_index} / file_count {file_count} do not match its {} files placed at index {} (ranges must follow directory order with no gaps; update both after adding or removing a file)",
+                raw_directories.len(),
+                files_list.len(),
+                raw_files.len()
+            )));
+        }
 
         raw_directories.push(PackMetaDirectory {
             name_checksum,
@@ -729,7 +742,6 @@ pub fn wr_pamt_from_dict(d: &Bound<'_, PyDict>) -> PyResult<Vec<u8>> {
             file_count,
         });
 
-        let files_list = get_obj(dd, "files")?.cast::<PyList>()?.clone();
         for f_item in files_list.iter() {
             let fd = f_item.cast::<PyDict>()?;
             raw_files.push(PackMetaFileRaw {

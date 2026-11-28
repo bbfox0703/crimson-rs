@@ -964,7 +964,8 @@ class PamtChunk(TypedDict):
 
 class PamtFile(TypedDict):
     name: str
-    """Resolved file name."""
+    """Resolved file name. Read-only: ``serialize_pamt`` takes names from
+    ``_file_names_buffer``."""
     name_offset: int
     """u32 — offset in file names trie buffer."""
     chunk_offset: int
@@ -981,24 +982,30 @@ class PamtFile(TypedDict):
     """u8 — index into the 2.04+ extension table; ``name`` already includes the
     extension. Always 0 on a <= 2.03 file."""
     compression: int
-    """u8 — decoded compression type (0=None, 2=LZ4, 3=Zlib, 4=QuickLZ)."""
+    """u8 — decoded compression type (0=None, 2=LZ4, 3=Zlib, 4=QuickLZ).
+    Read-only: ``serialize_pamt`` writes ``flags``."""
     crypto: int
-    """u8 — decoded crypto type (0=None, 1=ICE, 2=AES, 3=ChaCha20)."""
+    """u8 — decoded crypto type (0=None, 1=ICE, 2=AES, 3=ChaCha20).
+    Read-only: ``serialize_pamt`` writes ``flags``."""
     is_partial: bool
-    """Whether this is a partial-compression entry."""
+    """Whether this is a partial-compression entry. Read-only: ``serialize_pamt``
+    writes ``flags``."""
 
 
 class PamtDirectory(TypedDict):
     path: str
-    """Resolved directory path."""
+    """Resolved directory path. Read-only: ``serialize_pamt`` takes paths from
+    ``_dir_names_buffer``."""
     name_checksum: int
     """u32"""
     name_offset: int
     """i32 — offset in dir names trie buffer (-1 for root)."""
     file_start_index: int
-    """u32"""
+    """u32 — must equal the number of files in the directories before this
+    one: ``serialize_pamt`` rebuilds the file table from ``files`` in directory
+    order and raises ``ValueError`` otherwise."""
     file_count: int
-    """u32"""
+    """u32 — must equal ``len(files)``."""
     files: list[PamtFile]
 
 
