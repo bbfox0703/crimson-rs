@@ -4,17 +4,16 @@
 //! by save-side fields that carry a "faction spawn" reference (a
 //! per-location spawn manifest naming an NPC, a guard kit, or a
 //! mercenary mix). Rows are named after the spawn theme + location,
-//! e.g. `FactionSpawn_GlenbrightManor_Grace_ReedDevil`. 131 rows in
-//! 2.06.
+//! e.g. `FactionSpawn_GlenbrightManor_Grace_ReedDevil`.
 //!
-//! Schema (verified against the live 1.07 install via the
-//! `_probe_faction_pabgh_shapes` ignored probe):
+//! Schema (pre-2.06 body layout; the `_probe_faction_pabgh_shapes`
+//! ignored probe dumps it):
 //!
 //! ```text
 //! Row {
 //!     u32 name_len,
 //!     u8 name[name_len], // ASCII identifier
-//!     u32 key,           // matches PABGH key (2.04 moved it after the name)
+//!     u32 key,           // matches PABGH key
 //!     [...variable body — spawn manifest the bridge does not consume]
 //! }
 //! ```
@@ -22,7 +21,7 @@
 //! PABGH layout matches the standard `u16 count + (u32 key, u32 offset)*`.
 //!
 //! **PALOC chain**: none — same situation as [`crate::faction_node_info`].
-//! The exhaustive probe at `_probe_faction_paloc_chains` surfaced only
+//! The `_probe_faction_paloc_chains` probe finds only
 //! coincidental collisions with iteminfo / character / skill keys
 //! sharing the small u32 hi32 space. The bridge mirrors
 //! [`crate::sub_level_info`] / [`crate::quest_gauge_info`] in shape:
@@ -84,7 +83,7 @@ mod tests {
 
     fn find_table_bytes() -> Option<(Vec<u8>, Vec<u8>)> {
         // None only when the install (or the table) is absent; an install
-        // that is there but unreadable fails the test (audit I-02).
+        // that is there but unreadable fails the test.
         Some((
             gamedata_layout::extract_bin(&gamedata_layout::body("factionspawndatainfo"))?,
             gamedata_layout::extract_bin(&gamedata_layout::header("factionspawndatainfo"))?,

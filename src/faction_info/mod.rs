@@ -5,17 +5,17 @@
 //! `FactionRelationElementSaveData._targetFactionKey` and every other
 //! field the save schema types `FactionKey`. Rows are named after the
 //! faction, `Faction_Graymane` (1000000, the player's Greymanes),
-//! `Faction_ThiefDusksong`, `Faction_GoblinSandfang`, ... 135 rows in
-//! 2.06, plus a `faction.dlc_01` copy in the DLC tree.
+//! `Faction_ThiefDusksong`, `Faction_GoblinSandfang`, ... A
+//! `faction.dlc_01` copy sits in the DLC tree.
 //!
-//! Schema (2.06 live install):
+//! Schema (pre-2.06 body layout):
 //!
 //! ```text
 //! Row {
 //!     u32 name_len,
 //!     u8 name[name_len], // ASCII identifier, e.g. "Faction_Graymane"
-//!     u32 key,           // matches PABGH key (2.04 moved it after the name)
-//!     [u8; 3]  (zero on 130 of 135 rows; bytes 1-2 hold 1..3 on five, e.g. Faction_Graymane),
+//!     u32 key,           // matches PABGH key
+//!     [u8; 3]  (mostly zero; bytes 1-2 hold 1..3 on a few rows, e.g. Faction_Graymane),
 //!     u16 faction_group_key,          // factiongroup, e.g. 16965 FactionGroup_Graymane
 //!     u16 faction_relation_group_key, // factionrelationgroup, e.g. 16963 Graymane
 //!     u32 (1 on most rows),
@@ -38,22 +38,21 @@
 //! zeros here. The `faction.paloc` namespace holds factiongroup names
 //! (`hi` = factiongroup key, `lo` = 0x214: 16965 → "Greymanes") and
 //! faction-operation strings, nothing keyed by `FactionKey`. Looking a
-//! `FactionKey` up at PALOC type byte `0x30` (what the editor used to do)
-//! lands in `character.paloc` — `CharacterKey 1000000` is
+//! `FactionKey` up at PALOC type byte `0x30` lands in
+//! `character.paloc` — `CharacterKey 1000000` is
 //! "Hernandian Guard", `CharacterKey 1000035` is "Dusksong" — because
 //! factions and characters share the 1,000,000+ key range. The internal
 //! name is the only faction-keyed name the game ships.
 //!
-//! **Group names (2026-11-27).** What the game does show is the faction
-//! *group*: every row's `faction_group_key` names a `factiongroup` row, and
-//! its display name is PALOC `(faction_group_key << 32) | 0x214`
-//! ([`FACTION_GROUP_PALOC_LO`]) in `faction.paloc`. On 2.06, 128 of the 135
-//! rows have a group (the other 7 read 0: `Faction_Empty_*`,
-//! `Faction_BountyHunter`, `Faction_CrowBrothers`, `Faction_Ancient_People`,
-//! `Faction_Golems`, `Faction_Hexe_Sanctuary`) and all 7 `factiongroup` rows
-//! have an English name: 16965 "Greymanes", 16960 "Hernand", 16966 "Abyss", ….
-//! `faction_relation_group_key` is a `factionrelationgroup` key on all 135
-//! rows (16963 `Graymane`, 16964 `FriendlyCombat`, 16966 `NPC_Common`, …).
+//! **Group names.** What the game does show is the faction *group*: a
+//! row's non-zero `faction_group_key` names a `factiongroup` row, and its
+//! display name is PALOC `(faction_group_key << 32) | 0x214`
+//! ([`FACTION_GROUP_PALOC_LO`]) in `faction.paloc`. Most rows have a group;
+//! the rest read 0 (`Faction_Empty_*`, `Faction_BountyHunter`, …). The
+//! `factiongroup` rows have English names: 16965 "Greymanes", 16960
+//! "Hernand", 16966 "Abyss", …. `faction_relation_group_key` is a
+//! `factionrelationgroup` key (16963 `Graymane`, 16964 `FriendlyCombat`,
+//! 16966 `NPC_Common`, …).
 
 use crate::binary::row_head::read_row_head;
 
@@ -121,7 +120,7 @@ mod tests {
     use super::*;
     use crate::binary::gamedata_layout;
 
-    /// (FactionKey, expected internal_name), read from the 2.06 header.
+    /// (FactionKey, expected internal_name).
     /// 1000000 is the player's faction (leader CharacterKey 1, Kliff).
     const KNOWN: &[(u32, &str)] = &[
         (1000000, "Faction_Graymane"),
@@ -133,7 +132,7 @@ mod tests {
 
     fn find_table_bytes(stem: &str) -> Option<(Vec<u8>, Vec<u8>)> {
         // None only when the install (or the table) is absent; an install
-        // that is there but unreadable fails the test (audit I-02).
+        // that is there but unreadable fails the test.
         Some((
             gamedata_layout::extract_bin(&gamedata_layout::body(stem))?,
             gamedata_layout::extract_bin(&gamedata_layout::header(stem))?,
@@ -160,7 +159,7 @@ mod tests {
                 "FactionKey {key} mismatch",
             );
         }
-        // (FactionKey, faction_group_key, faction_relation_group_key) on 2.06.
+        // (FactionKey, faction_group_key, faction_relation_group_key).
         for &(key, group, relation) in &[
             (1_000_000u32, 16_965u16, 16_963u16), // Faction_Graymane: FactionGroup_Graymane, Graymane
             (1_000_131, 16_960, 16_964),          // Faction_Celeste_Hernand: FactionGroup_Akapen, FriendlyCombat

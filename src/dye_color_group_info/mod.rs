@@ -2,15 +2,11 @@
 //!
 //! Resolves `DyeColorGroupInfoKey (u32)` — the gamedata key stored as
 //! `ItemDyeSaveData._dyeColorGroupInfoKey` in the save's
-//! `_itemDyeDataList`. The 10 rows in 2.06 are the **themed color
+//! `_itemDyeDataList`. The rows are the **themed color
 //! palettes** the in-game NPC dye menu offers (e.g.
 //! `Her_Color_Group_I` = 埃爾南德, `Por_Color_Group_I` = 波羅琳).
 //!
-//! ## Schema (verified against the live 2.04 install, every row, byte-perfect)
-//!
-//! 2.04 moved `key` after the name and the 4-byte `icon_key` (formerly the
-//! row's last 4 bytes) up in front of `color_count`. Against 2.03, all 10
-//! rows carry the same flag, icon key, palette and trailer.
+//! ## Schema
 //!
 //! ```text
 //! Row {
@@ -30,29 +26,25 @@
 //! }
 //! ```
 //!
-//! ## 2.06: 22-byte color records
+//! ## 22-byte color records (2.06)
 //!
-//! The 4-byte tail of a color record is the condition that unlocks the
-//! color. Through 2.05.01 it was a `ConditionInfoKey`, e.g. 1008623 =
-//! `CheckKnowledge(Knowledge_Grey_DyeColor_1)`; each row uses six (the
-//! `Grey_DyeColor_<n>` one plus five of its own). 2.06 inlined every such
+//! The tail of a color record is the condition that unlocks the color. In
+//! the pre-2.06 layout it is a 4-byte `ConditionInfoKey` (e.g. 1008623 =
+//! `CheckKnowledge(Knowledge_Grey_DyeColor_1)`). 2.06 inlined every such
 //! anonymous condition (see "Inlined conditions (2.06)" in `scripts/CLAUDE.md`):
-//! the tail is now `01` + the condition's compiled bytecode,
+//! the tail is `01` + the condition's compiled bytecode,
 //! `01 03 24 00 <u32 KnowledgeKey> 01 00 00 00 00 00 00 00 01` (18 bytes,
-//! records 8 → 22), and the condition rows left `conditioninfo`. All 1,090
-//! records (10 rows × 109) equal `01` + the 2.05.01 condition's bytecode, and the
-//! key reads `Knowledge_Grey_DyeColor_1` (1001287) etc. So a color is unlocked
-//! by a knowledge entry. Head and trailer are unchanged, and on all 10 rows the
-//! trailer marker sits right after `color_count` 22-byte records, which is how
-//! [`parse_row_after_key`] finds the records' extent. A different
-//! condition would compile to a different length, so the parser does not
-//! assume one size: it locates the trailer (marker + the row key), walks the
-//! records between one by one, reading each condition as `00` (none) or `01` +
-//! a `CheckKnowledge` bytecode, and only when that fails splits them into the
-//! 8-byte records of 2.05.01 and earlier. A row that fits neither gets an
-//! empty palette rather than a misread one.
+//! records 8 → 22). So a color is unlocked by a knowledge entry. Head and
+//! trailer are the same in both layouts, and the trailer marker sits right
+//! after the last record, which is how [`parse_row_after_key`] finds the
+//! records' extent. A different condition would compile to a different
+//! length, so the parser does not assume one size: it locates the trailer
+//! (marker + the row key), walks the records between one by one, reading each
+//! condition as `00` (none) or `01` + a `CheckKnowledge` bytecode, and only
+//! when that fails splits them into pre-2.06 8-byte records. A row that fits
+//! neither gets an empty palette rather than a misread one.
 //!
-//! ## Byte order — **BGRA, not RGBA** (verified 2026-05-17)
+//! ## Byte order — **BGRA, not RGBA**
 //!
 //! Each color record opens with `[B, G, R, A]`, followed by its unlock
 //! condition (4 bytes through 2.05.01, 18 from 2.06).
@@ -61,12 +53,10 @@
 //! (`gradient_record[0]` = B, `[1]` = G, `[2]` = R, `[3]` = A).
 //!
 //! The parser stores positions in **logical RGBA order** (post-swap)
-//! to match the save side. Cross-checking the
-//! [slot103 probe](../c_abi/character_info.rs) (11 observed RGBs from
-//! the user's applied dyes — 6 Hernand reds + 5 Pororin olives)
-//! found every observed RGB hits an exact gradient position after
-//! the swap, e.g. `#f22121` = position 17 in `Her_Color_Group_I`
-//! (stored as `21 21 f2 ff`).
+//! to match the save side. Applied dye RGBs read from a save (the
+//! [slot103 probe](../c_abi/character_info.rs)) hit exact gradient
+//! positions after the swap, e.g. `#f22121` = position 17 in
+//! `Her_Color_Group_I` (stored as `21 21 f2 ff`).
 //!
 //! ## Palette layout
 //!
@@ -88,31 +78,28 @@
 //! User picks a cell; editor writes the cell's R/G/B back into the
 //! save's `_dyeColorR/G/B` u8 scalars. The reverse lookup
 //! ([`palette_position_for_rgb`]) lets the editor highlight which
-//! cell a currently-applied dye came from. The freeform RGB sliders
-//! in the PyQt5 reference editor were misleading — the in-game UI
-//! is a discrete picker, not a continuous one. Off-grid RGB values
-//! aren't reachable through normal gameplay.
+//! cell a currently-applied dye came from. The in-game UI is a
+//! discrete picker, not a continuous one: off-grid RGB values aren't
+//! reachable through normal gameplay.
 //!
 //! The bytes after `BGRA` in each record are the color's unlock condition
-//! (see "2.06: 22-byte color records" above), parsed into
+//! (see "22-byte color records (2.06)" above), parsed into
 //! [`DyeColorGroupInfoEntry::conditions`].
 //!
 //! The file ships with a matching `dyecolorgroupinfo.pabgh` so the
-//! row offsets are explicit — we don't need anchor-scanning here. The
+//! row offsets are explicit — no anchor-scanning here. The
 //! parser uses `skill_info::parse_pabgh` since the layout is identical
 //! (`u16 count + (u32 key, u32 offset)*`).
 
 //! ## Which knowledge unlocks each color, and the theme's name (2.06)
 //!
 //! Each 2.06 color record's condition is `CheckKnowledge(<KnowledgeKey>)`
-//! ([`PaletteCondition::Knowledge`]). On all 10 rows the layout is the same:
-//! positions 0–8 (the gray ramp) need the row's own `Knowledge_Grey_DyeColor_<n>`
-//! (Her 1, Dem I 2, Dem II 3, Dem III 4, Kwe 5, Del 6, Cal 7, Por 8, Tom 9,
-//! Bar 10), and positions 9–108 come in five blocks of 20, each needing
+//! ([`PaletteCondition::Knowledge`]). Every row follows one layout:
+//! positions 0–8 (the gray ramp) need the row's own `Knowledge_Grey_DyeColor_<n>`,
+//! and positions 9–108 come in five blocks of 20, each needing
 //! `Knowledge_<Theme>_DyeColor_<1..5>` (`Dem` rows add the `_I` / `_II` /
-//! `_III` group). So the 1,090 records name 60 knowledge rows in all: the 50
-//! theme colors and the 10 grays. No `Knowledge_Collection_Prop_Dyewater_*`
-//! row is referenced.
+//! `_III` group). No `Knowledge_Collection_Prop_Dyewater_*` row is referenced
+//! (the per-row mapping is in `docs/dye-editor-scope.md`).
 //!
 //! The row head after the key is `u8 0` and a `StringInfoKey` of the theme's
 //! map icon (`cd_icon_map_quest_sub_icon_01`; the three Dem rows share one),
@@ -151,11 +138,10 @@ pub struct DyeColorGroupInfoEntry {
     /// `DyeColorGroupInfoKey` as stored in `ItemDyeSaveData._dyeColorGroupInfoKey`.
     pub key: u32,
     /// ASCII internal name (e.g. `"Her_Color_Group_I"`,
-    /// `"Dem_Color_Group_III"`). The dye UI shows a localized version
-    /// of this — extending PALOC lookup is a v2 task; for v1 the C#
-    /// editor can render the raw internal name.
+    /// `"Dem_Color_Group_III"`). The dye UI shows a localized name
+    /// instead, found through [`Self::display_name_paloc_key`].
     pub name: String,
-    /// Logical-RGBA palette (109 records per row on 2.06). Stored as
+    /// Logical-RGBA palette (109 records per row). Stored as
     /// `(R, G, B, A)` post-swap from the on-disk BGRA byte order, so
     /// each entry can be compared directly against the save's u8
     /// `_dyeColorR/G/B/A` scalars. See module docs for the layout
@@ -165,7 +151,7 @@ pub struct DyeColorGroupInfoEntry {
     /// The unlock condition of each palette position, parallel to `palette`.
     pub conditions: Vec<PaletteCondition>,
     /// The PALOC key (decimal) of the theme's display name, from the row's
-    /// trailer: `(key << 32) | 0x231` on every 2.06 row.
+    /// trailer: `(key << 32) | 0x231`.
     pub display_name_paloc_key: Option<String>,
 }
 
@@ -202,7 +188,6 @@ pub fn parse_dye_color_group_info_lossy(
             continue;
         }
 
-        // Parse the 109-record palette body.
         // Layout after the key: `u8 flag + u32 icon_key + u32 color_count +
         // color_count records`.
         // Each record is [B, G, R, A] + its unlock condition; the palette
@@ -334,11 +319,11 @@ const TRAILER_MARKER: [u8; 5] = [0x23, 0x31, 0x02, 0x00, 0x00];
 
 /// The start of each of the `count` color records in `body[from..to]`: a
 /// record-by-record walk over `BGRA` + an inline condition (2.06) first, then
-/// the 8-byte records (`BGRA` + `u32` ConditionInfoKey) through 2.05.01.
-/// `None` when neither fits. Equal sizes other than 8 used to be accepted
-/// too, which read colors from the wrong offsets when records of mixed length
-/// happened to divide the span evenly (audit E-02). The flag says whether the
-/// walk (inline conditions) placed them.
+/// the pre-2.06 8-byte records (`BGRA` + `u32` ConditionInfoKey). `None` when
+/// neither fits. The fallback accepts 8-byte records alone: an even split at
+/// another size would read colors from the wrong offsets whenever records of
+/// mixed length happen to divide the span. The flag says whether the walk
+/// (inline conditions) placed them.
 fn record_starts(body: &[u8], from: usize, to: usize, count: usize) -> Option<(Vec<usize>, bool)> {
     let span = to.checked_sub(from)?;
     if count == 0 {
@@ -360,8 +345,8 @@ fn record_starts(body: &[u8], from: usize, to: usize, count: usize) -> Option<(V
 
 /// Length of a 2.06 inline condition at the start of `b`: `00` (none) or `01`
 /// followed by the 17-byte `CheckKnowledge` bytecode
-/// `01 03 24 00 <u32 KnowledgeKey> 01 00 00 00 00 00 00 00 01`, the only form
-/// the dye table uses. Other bytecode is not decoded (`None`).
+/// `01 03 24 00 <u32 KnowledgeKey> 01 00 00 00 00 00 00 00 01`, the form the
+/// dye table uses. Other bytecode is not decoded (`None`).
 fn inline_condition_len(b: &[u8]) -> Option<usize> {
     const TAIL: [u8; 9] = [1, 0, 0, 0, 0, 0, 0, 0, 1];
     match b.first()? {
@@ -451,15 +436,13 @@ mod record_tests {
 #[cfg(test)]
 mod tests {
     //! Live-install integration test against the real
-    //! `dyecolorgroupinfo.pabgb` + `.pabgh`. Pins the 10 row keys
-    //! verified during the 2026-05-16 RE pass so a future patch
-    //! changing the row layout is caught immediately. Skips cleanly
-    //! when the game install isn't present.
+    //! `dyecolorgroupinfo.pabgb` + `.pabgh`. Pins the row keys so a
+    //! patch changing the row layout is caught. Skips cleanly when the
+    //! game install isn't present.
 
     use super::*;
 
-    /// (key, expected internal name) — all 10 rows from the live 1.07
-    /// install. Index order matches the on-disk PABGH order.
+    /// (key, expected internal name), in on-disk PABGH order.
     const KNOWN: &[(u32, &str)] = &[
         (0xc88211f5, "Her_Color_Group_I"),
         (0xdc274476, "Dem_Color_Group_I"),
@@ -477,13 +460,13 @@ mod tests {
         super::extract_pair_for_tests()
     }
 
-    /// Dye consumable → applied RGBA investigation, phase 1.
+    /// Dye consumable → applied RGBA probe.
     ///
-    /// Hypothesis: the 109-position gradient stored on each
+    /// Checks that the 109-position gradient stored on each
     /// `Color_Group` row is exactly the set of selectable colors the
-    /// in-game NPC dye menu offers under that theme. If true, the
-    /// observed slot103 RGBs (the user's applied dyes) must hit
-    /// *exact* positions inside the gradient — no interpolation.
+    /// in-game NPC dye menu offers under that theme: the observed
+    /// slot103 RGBs (applied dyes) must hit *exact* positions inside
+    /// the gradient — no interpolation.
     ///
     /// This probe extracts the raw color_data bytes for
     /// `Her_Color_Group_I` + `Por_Color_Group_I`, walks the 109
@@ -640,8 +623,8 @@ mod tests {
             entries.len(),
             pabgb.len()
         );
-        // 1.07 has exactly 10 rows. Pin >= 5 as a loose floor so a
-        // patch adding new color groups doesn't false-fail.
+        // A loose floor, so a patch adding color groups doesn't
+        // false-fail.
         assert!(
             entries.len() >= 5,
             "expected >=5 dyecolorgroupinfo entries, got {}",

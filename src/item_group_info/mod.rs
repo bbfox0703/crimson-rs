@@ -3,12 +3,12 @@
 //! Resolves `ItemGroupKey (u16-widened-u32)` — item group / category
 //! templates (`ItemGroup_Category_Equipment`,
 //! `ItemGroup_Category_Food`, `ItemGroup_Category_Material`, …).
-//! 1,682 rows in 2.06. The save layer references these as inventory-
+//! The save layer references these as inventory-
 //! filter / drop-table identifiers; ItemInfo also exposes them via
 //! `item_group_info_list`.
 //!
 //! `u16 count + (u16 key, u32 offset)*` PABGH. Body: `[u32 name_len]
-//! [name][u16 key]` (2.04 swapped key and name); rest carries the inline member-itemkey list
+//! [name][u16 key]`; rest carries the inline member-itemkey list
 //! which this bridge does not surface.
 
 use crate::binary::row_head::read_row_head;
@@ -69,7 +69,7 @@ mod tests {
 
     fn find_table_bytes() -> Option<(Vec<u8>, Vec<u8>)> {
         // None only when the install (or the table) is absent; an install
-        // that is there but unreadable fails the test (audit I-02).
+        // that is there but unreadable fails the test.
         Some((
             gamedata_layout::extract_bin(&gamedata_layout::body("itemgroupinfo"))?,
             gamedata_layout::extract_bin(&gamedata_layout::header("itemgroupinfo"))?,

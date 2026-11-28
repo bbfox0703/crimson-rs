@@ -32,6 +32,8 @@ Active reference:
 - [`scripts/CLAUDE.md`](../scripts/CLAUDE.md) — Next-session engineering notes: the "On a new game patch" runbook, machine notes, layout invariants, don'ts.
 
 Archived / historical (`docs/archive/`):
+- [`docs/archive/iteminfo-layout-history.md`](archive/iteminfo-layout-history.md) — Per-patch ItemInfo row layout history (1.05 → 2.06), how each drift was found and pinned; moved out of `src/item_info/item.rs` on 2026-11-28.
+- [`docs/archive/comment-pass-2026-11-28-notes.md`](archive/comment-pass-2026-11-28-notes.md) — Measurements and RE findings removed from source comments on 2026-11-28 that no other document recorded.
 - [`docs/archive/1.05-parser-history.md`](archive/1.05-parser-history.md) — Long-form RE history of the 1.05 ItemInfo parser (read first when picking up parser-RE work).
 - [`docs/archive/globalgameevent-body-re.md`](archive/globalgameevent-body-re.md) — RE of the globalgameevent per-row body (group_key + paloc_key).
 - [`docs/archive/mercenaryinfo-body-re.md`](archive/mercenaryinfo-body-re.md) — RE of the mercenaryinfo `(u8,u32)` PABGH variant.

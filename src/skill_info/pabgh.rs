@@ -1,8 +1,6 @@
 //! `skill.pabgh` index parser.
 //!
-//! Layout: `u16 count + count × (u32 key, u32 offset)`. Returned sorted by
-//! offset (matches the GameMods Python parser's contract — the 1.05 dump
-//! had 1963 entries, 0008 directory).
+//! Layout: `u16 count + count × (u32 key, u32 offset)`.
 //!
 //! Roundtrip note: the file order is by-offset on disk, but the on-disk
 //! key order is *not* sorted. We preserve the on-disk order by reading

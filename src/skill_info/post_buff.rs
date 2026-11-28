@@ -1,11 +1,10 @@
-//! Post-buff skill fields. ~25 named fields that followed the buff-level
-//! matrix through 2.03, ending with `_videoPath: u32`. Field names mirror the
-//! IDA-decomp / Python parser names.
+//! Skill fields outside the buff-level matrix (~25 named fields). Field names
+//! mirror the IDA-decomp / Python parser names.
 //!
-//! 2.04 kept the struct and reordered it around the matrix: the u8 flags and
-//! several u32s and lists moved ahead of it (see [`read_entry_head`]), the rest
-//! stayed behind it in a new order (see [`read_post_buff_tail`]). The name still
-//! says "post-buff", which is now only half true.
+//! The struct is split around the matrix: the u8 flags and several u32s sit
+//! ahead of it (see [`read_entry_head`]), the rest behind it, ending with
+//! `_videoPath: u32` (see [`read_post_buff_tail`]). The "post-buff" name comes
+//! from older layouts, where all of them followed the matrix.
 //!
 //! This module also exposes a *try-parse* validator
 //! (`try_parse_post_buff_end`) used by the BuffData subclass-tail probe:
@@ -64,16 +63,9 @@ pub struct PostBuff {
     pub is_learn_use_artifact: u8,
     pub allow_skill_with_low_resource: u8,
     pub is_use_child_pattern_description_buff_data: u8,
-    /// Added in Crimson Desert 1.16: a new `u8` between
-    /// `is_use_child_pattern_description_buff_data` and `damage_type`.
-    ///
-    /// Every entry gains exactly one byte (per-entry delta +1 on 1,977 of the
-    /// 1,997 keys common to 1.15 and 1.16), and a tandem byte-walk against the
-    /// 1.15 `skill.pabgb` puts the insert on the `damage_type` boundary in
-    /// 796 of 800 sampled entries. Reads 0x00 on every sampled entry, so the
-    /// semantic role is unknown — named for its position, matching the
-    /// iteminfo `unk_pre_*` convention. Before this field was added, 589 of
-    /// the 2,013 1.16 entries failed to parse.
+    /// A `u8` of unknown role that reads 0x00 on every sampled entry. Named
+    /// for its place ahead of `damage_type` in the layout it was found in,
+    /// matching the iteminfo `unk_pre_*` convention.
     pub unk_pre_damage_type: u8,
     pub damage_type: u8,
     pub ui_type: u8,
@@ -130,7 +122,7 @@ fn write_graph<W: io::Write>(w: &mut W, g: &Graph) -> io::Result<()> {
 ///
 /// The subclass-tail probe reads at candidate offsets that are mostly wrong, so
 /// a count can be any u32. Handed to `Vec::with_capacity` unchecked, one such
-/// count (0xEB000000 × 4 B) once asked for 15.7 GB and aborted the process.
+/// count (0xEB000000 × 4 B) would ask for 15.7 GB and abort the process.
 pub(super) fn read_count(data: &[u8], offset: &mut usize, elem_size: usize) -> io::Result<usize> {
     let cnt = u32::read_from(data, offset)? as usize;
     let remaining = data.len().saturating_sub(*offset);
@@ -187,12 +179,11 @@ fn write_var_bytes<W: io::Write>(w: &mut W, bytes: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-/// The part of an entry ahead of the buff matrix: the fields below that 2.04
-/// moved there, plus the three bytes [`PostBuff`] does not hold.
+/// The part of an entry ahead of the buff matrix that [`PostBuff`] does not
+/// hold; [`read_entry_head`] reads it with the `PostBuff` fields stored there.
 #[derive(Debug, Clone, Default)]
 pub struct EntryHead {
-    /// Sat right after the name through 2.03, where it was taken for a NUL
-    /// terminator; reads 0 on every entry.
+    /// Reads 0 on every entry.
     pub unk_post_key: u8,
     pub is_blocked: u8,
     pub pad_01: [u8; 3],
@@ -215,12 +206,12 @@ fn write_resource_stats<W: io::Write>(w: &mut W, list: &[ResourceStat]) -> io::R
     Ok(())
 }
 
-/// Read what 2.04 stores ahead of the buff matrix: everything between the key
+/// Read what is stored ahead of the buff matrix: everything between the key
 /// and `level_count`. The rest of `PostBuff` is [`read_post_buff_tail`].
 ///
 /// `learn_level`, `faction_info` and `need_upgrade_item_info` read 0 on (nearly)
 /// every entry, and three all-zero u32 slots here hold them, so which is which
-/// keeps the order they had rather than anything the data says.
+/// follows their order in the older layout rather than anything the data says.
 pub fn read_entry_head(data: &[u8], offset: &mut usize) -> io::Result<(EntryHead, PostBuff)> {
     let mut p = PostBuff::default();
     let mut head = EntryHead {
@@ -244,8 +235,8 @@ pub fn read_entry_head(data: &[u8], offset: &mut usize) -> io::Result<(EntryHead
     p.max_level = u32::read_from(data, offset)?;
     p.skill_group_key = u32::read_from(data, offset)?;
     p.need_upgrade_item_info = u32::read_from(data, offset)?;
-    // Small non-zero values (3, 5, 10) on a few entries, so the name was always
-    // a guess and "pad" is really the high bytes of one u32.
+    // Small non-zero values (3, 5, 10) on a few entries, so the name is a guess
+    // and "pad" is really the high bytes of one u32.
     head.is_blocked = u8::read_from(data, offset)?;
     for b in &mut head.pad_01 {
         *b = u8::read_from(data, offset)?;

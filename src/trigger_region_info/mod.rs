@@ -1,13 +1,13 @@
 //! `triggerregioninfo.pabgb` parser — standard PABGH (u32-key).
 //!
 //! Resolves `TriggerRegionKey (u32)` — terrain-effect zone templates
-//! (`Swamp`, `IceTerrain`, `WaterPoison`, …). 14 rows in 2.06. The
+//! (`Swamp`, `IceTerrain`, `WaterPoison`, …). The
 //! save layer references these from `FieldGimmickSaveData` blocks that
 //! tag a tile-region with one of the engine's hazard / terrain modes.
 //!
 //! Standard `u16 count + (u32 key, u32 offset)*` PABGH — re-uses
 //! `skill_info::parse_pabgh`. Row body starts with `[u32 name_len]
-//! [name][u32 key]` (2.04 swapped key and name).
+//! [name][u32 key]`.
 
 use crate::binary::row_head::read_row_head;
 
@@ -57,7 +57,7 @@ mod tests {
 
     fn find_table_bytes() -> Option<(Vec<u8>, Vec<u8>)> {
         // None only when the install (or the table) is absent; an install
-        // that is there but unreadable fails the test (audit I-02).
+        // that is there but unreadable fails the test.
         Some((
             gamedata_layout::extract_bin(&gamedata_layout::body("triggerregioninfo"))?,
             gamedata_layout::extract_bin(&gamedata_layout::header("triggerregioninfo"))?,

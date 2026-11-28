@@ -20,34 +20,29 @@
 //! [`RowLayout`] records which of the two a table uses; `reserved_zero` holds
 //! the row index on a 2.06 table.
 //!
-//! `reserved_zero` is the row's empty name: 2.04 moved the key after the
-//! name in every static-info table, which on a nameless row puts the zero
-//! length first (it swapped with `hash`, nothing else moved). `reserved_zero`
-//! and `reserved_flag` are 0 on all 33,888 rows of 2.04; carried for
-//! byte-identical round-trip in case a future patch promotes either to
-//! a real field. Walking the file front to back consumes every byte —
-//! no padding between entries.
+//! In the legacy layout `reserved_zero` is the row's empty name: every
+//! static-info table stores `[name][key]`, which on a nameless row puts the
+//! zero length ahead of the hash. `reserved_zero` (legacy) and
+//! `reserved_flag` read 0; they are carried so a non-zero value still
+//! round-trips byte for byte. Walking the file front to back consumes every
+//! byte — no padding between entries.
 //!
 //! Layout (`stringinfo.pabgh`)
 //! --------------------------
 //!
 //! Flat index, parsed by [`pabgh`]. See its module docs.
 //!
-//! Cross-version stability
-//! -----------------------
+//! Schema drift
+//! ------------
 //!
-//! Both halves are pure data tables. Apart from 2.04's swap above, fields
-//! and byte layout are unchanged since 1.05: of the 30,313 hashes in both
-//! 2.03 and 2.04, every row is byte-identical after undoing the swap. A
-//! schema drift in a future patch will
-//! surface as either a size mismatch in `pabgh` (header count vs file
-//! size) or a non-zero `reserved_zero` / `reserved_flag` in `pabgb`;
-//! the latter currently parses (we keep the bytes) but the round-trip
-//! test below will start exercising the non-zero path.
-// The writers and the full-table readers are round-trip support: the c_abi
-// bridge uses only the lookup path, and the tests below exercise the rest.
-// Outside tests they are dead, so only there is dead code allowed; the test
-// build lints the module in full.
+//! Both halves are pure data tables. A schema drift surfaces either as a
+//! size mismatch in `pabgh` (header count vs file size) or as a non-zero
+//! `reserved_flag` (or legacy `reserved_zero`) in `pabgb`; the latter
+//! parses (the bytes are kept) and round-trips.
+// The writers and the full-table readers are round-trip support that the
+// tests exercise; the c_abi bridge uses the lookup path. Outside tests they
+// are dead, so dead code is allowed there; the test build lints the module
+// in full.
 #![cfg_attr(not(test), allow(dead_code))]
 
 pub mod pabgh;
@@ -60,8 +55,8 @@ pub use pabgh::{CountWidth, StringIndexEntry, StringInfoIndex, parse_pabgh, writ
 
 /// One entry from `stringinfo.pabgb`. Keeps both the decoded UTF-8
 /// string and the original raw bytes so round-trip is byte-identical
-/// even for entries that ship invalid UTF-8 (none observed in 1.06 but
-/// the contract should match `CString` in `binary::types`).
+/// even for entries that ship invalid UTF-8 (the same contract as
+/// `CString` in `binary::types`).
 #[derive(Debug, Clone)]
 pub struct StringInfoEntry {
     pub hash: u32,
@@ -127,8 +122,9 @@ impl RowLayout {
     /// `[u32 hash][u32 row index]`. A legacy first word is always 0, so the
     /// body is 2.06 as soon as one of the first eight rows has a non-zero
     /// first word. The row index cannot decide it: in a DLC table it is not
-    /// the row's position. Looking at the first row alone read a 2.06 table
-    /// whose first hash is 0 as legacy, swapping every hash with its index.
+    /// the row's position. Looking at the first row alone would read a 2.06
+    /// table whose first hash is 0 as legacy, swapping every hash with its
+    /// index.
     pub fn detect(pabgb: &[u8]) -> Self {
         let word = |at: usize| pabgb.get(at..at + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
         let mut at = 0usize;
@@ -559,7 +555,7 @@ mod tests {
     // Skips when the game isn't present.
     fn find_table_bytes() -> Option<(Vec<u8>, Vec<u8>)> {
         // None only when the install (or the table) is absent; an install
-        // that is there but unreadable fails the test (audit I-02).
+        // that is there but unreadable fails the test.
         Some((
             crate::binary::gamedata_layout::extract_bin(&crate::binary::gamedata_layout::body("stringinfo"))?,
             crate::binary::gamedata_layout::extract_bin(&crate::binary::gamedata_layout::header("stringinfo"))?,
@@ -588,8 +584,8 @@ mod tests {
         assert_eq!(pabgb_out, pabgb, "pabgb round-trip differs");
         assert_eq!(pabgh_out, pabgh, "pabgh round-trip differs");
 
-        // First entry's hash + value on 2.04, read from the bytes during
-        // the 2.04 pass. Pinned so future schema drift fails loudly.
+        // The first row's hash and value, pinned so a schema drift fails
+        // loudly.
         assert_eq!(parsed.entries[0].hash, 0x04f6d06d);
         assert_eq!(parsed.entries[0].value, "rootlevel");
     }

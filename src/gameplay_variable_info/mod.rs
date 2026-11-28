@@ -2,12 +2,11 @@
 //!
 //! Resolves `GamePlayVariableKey (u32)` — engine-level gameplay
 //! switches and progression flags (`CD_Live`, `BaseCamp_Ranch_Lv1`,
-//! `BaseCamp_Farm_Lv1`, …). 68 rows in 2.06. The save layer
+//! `BaseCamp_Farm_Lv1`, …). The save layer
 //! references these as toggle / progression keys.
 //!
 //! Standard `u16 count + (u32 key, u32 offset)*` PABGH. Row body
-//! starts with `[u32 name_len][name][u32 key]` (2.04 swapped key and
-//! name); the trailing body
+//! starts with `[u32 name_len][name][u32 key]`; the trailing body
 //! carries the per-row UTF-8 display string and is not consumed here.
 
 use crate::binary::row_head::read_row_head;
@@ -58,7 +57,7 @@ mod tests {
 
     fn find_table_bytes() -> Option<(Vec<u8>, Vec<u8>)> {
         // None only when the install (or the table) is absent; an install
-        // that is there but unreadable fails the test (audit I-02).
+        // that is there but unreadable fails the test.
         Some((
             gamedata_layout::extract_bin(&gamedata_layout::body("gameplayvariableinfo"))?,
             gamedata_layout::extract_bin(&gamedata_layout::header("gameplayvariableinfo"))?,

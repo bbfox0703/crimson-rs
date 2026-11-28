@@ -5,15 +5,14 @@
 //! base (~40 fields), then a *variable-length* subclass tail keyed off
 //! `type_id` (the first byte of the common base).
 //!
-//! The tail size is not deterministically known. The Python parser
+//! The tail size is not deterministically known. The loader
 //! brute-forces sizes 0..500 for each unseen `type_id`, looking for a
 //! size where the *remainder* of the entry (other buffs + post-buff
 //! fields) parses cleanly. The discovered size is cached and reused for
 //! later occurrences.
 //!
-//! Cross-version probe (May 2026, 1.03 / 1.04 / 1.05) showed 11 type_id
-//! sizes drift between versions, so the cache is built per parse, not
-//! frozen at compile time.
+//! Tail sizes for the same `type_id` differ between game versions, so the
+//! cache is built per parse, not frozen at compile time.
 
 use std::collections::HashMap;
 use std::io;
@@ -327,7 +326,7 @@ mod tests {
     }
 
     /// The probe reads at mostly-wrong offsets, so a count can be any u32.
-    /// 0xEB000000 is the one that once asked for 15.7 GB and aborted.
+    /// 0xEB000000 would ask for 15.7 GB.
     #[test]
     fn huge_list_count_is_an_error_not_an_allocation() {
         let mut b = base_until_cnt96();

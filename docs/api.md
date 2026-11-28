@@ -640,7 +640,7 @@ Each item is a dict with 124 fields on 2.06 (the `ItemInfo` TypedDict in `__init
 
 ### 2.04 schema delta
 
-2.04 keeps almost every value and rearranges all of them: the row opens with `string_key` then `key`, a fixed 157-byte block of flags and keys comes next, and empty lists and absent structs shrink to one byte. The field-by-field record is the "ItemInfo (2.04)" header in `src/item_info/item.rs`. What changes for a caller of this API:
+2.04 keeps almost every value and rearranges all of them: the row opens with `string_key` then `key`, a fixed 157-byte block of flags and keys comes next, and empty lists and absent structs shrink to one byte. The field-by-field record is the "ItemInfo (2.04)" section in [`archive/iteminfo-layout-history.md`](archive/iteminfo-layout-history.md). What changes for a caller of this API:
 
 - **Gone**: `quick_slot_index`, `consumable_type_list`, `is_important_item` (see `item_importance_kind`), `unk_pre_pattern_key`, `unk_pre_pattern_flag`, `unk_pre_respawn_flag`, `unk_post_respawn_data_list`, `unk_pre_max_endurance` (see `is_packed_in_vehicle`), and the top-level `unk_pre_respawn_data_list` (now inside `unk_pre_respawn_block`).
 - **Can now be `None`**: `drop_default_data`, `sharpness_data`, `inspect_action`. Check before indexing.

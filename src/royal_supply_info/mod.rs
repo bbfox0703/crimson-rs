@@ -2,10 +2,9 @@
 //!
 //! Resolves `RoyalSupplyKey (u16-widened-u32)` — the per-region royal
 //! supply / faction-tribute template (`RoyalSupply_Hernand`,
-//! `RoyalSupply_Demeniss`, `RoyalSupply_Varnia`, + 1 variant).
-//! 4 rows in 1.07. PABGH layout: `u16 count + (u16 key, u32 offset)*`.
-//! Body starts with `[u32 name_len][name][u16 key]` (2.04 swapped key
-//! and name); remaining
+//! `RoyalSupply_Demeniss`, `RoyalSupply_Varnia`, …).
+//! PABGH layout: `u16 count + (u16 key, u32 offset)*`.
+//! Body starts with `[u32 name_len][name][u16 key]`; remaining
 //! ~1.6 KB / row carries the supply-item list which this bridge does
 //! not consume.
 
@@ -69,7 +68,7 @@ mod tests {
 
     fn find_table_bytes() -> Option<(Vec<u8>, Vec<u8>)> {
         // None only when the install (or the table) is absent; an install
-        // that is there but unreadable fails the test (audit I-02).
+        // that is there but unreadable fails the test.
         Some((
             gamedata_layout::extract_bin(&gamedata_layout::body("royalsupply"))?,
             gamedata_layout::extract_bin(&gamedata_layout::header("royalsupply"))?,

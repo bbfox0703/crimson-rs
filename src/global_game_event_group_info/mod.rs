@@ -2,11 +2,11 @@
 //!
 //! Resolves `GlobalGameEventGroupKey (u16-widened-u32)` — the parent
 //! group template (`WeatherEventGroup`, `RoyalSupplyEventGroup`,
-//! `FactionBlockEventGroup_Her`, …). 12 rows in 2.06. Each group
-//! references the `globalgameevent` rows that belong to it.
+//! `FactionBlockEventGroup_Her`, …). Each group references the
+//! `globalgameevent` rows that belong to it.
 //!
 //! `u16 count + (u16 key, u32 offset)*` PABGH. Body: `[u32 name_len]
-//! [name][u16 key]` (2.04 swapped key and name).
+//! [name][u16 key]`.
 
 use crate::binary::row_head::read_row_head;
 
@@ -66,7 +66,7 @@ mod tests {
 
     fn find_table_bytes() -> Option<(Vec<u8>, Vec<u8>)> {
         // None only when the install (or the table) is absent; an install
-        // that is there but unreadable fails the test (audit I-02).
+        // that is there but unreadable fails the test.
         Some((
             gamedata_layout::extract_bin(&gamedata_layout::body("globalgameeventgroup"))?,
             gamedata_layout::extract_bin(&gamedata_layout::header("globalgameeventgroup"))?,

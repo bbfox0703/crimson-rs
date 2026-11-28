@@ -7,19 +7,18 @@
 //! lineage of each instance (e.g. "this rename targets a Vehicle_Horse
 //! template").
 //!
-//! 2.06 ships **21 rows** — `Mercenary_Main` (player avatar template)
-//! plus mount / vehicle variants (`Vehicle_Horse`, `Vehicle_Dragon`,
+//! Rows are `Mercenary_Main` (player avatar template) plus mount /
+//! vehicle variants (`Vehicle_Horse`, `Vehicle_Dragon`,
 //! `Vehicle_WarMachine`, `Vehicle_WarMachine_Raptor`, …).
 //!
 //! **PABGH layout** (pre-2.06; a 2.06 header is rebuilt into it in
 //! memory by `static_header::legacy_pair`) — custom 5-byte entries
-//! (`u16 count + (u8 key, u32 offset)*`). New variant for this codebase;
-//! other shapes are `(u16, u32)` (factionrelationgroup, storeinfo,
-//! partprefabdyetexturepalleteinfo) and `(u32, u32)` (skill, dye color
-//! group, etc.). `count` entries × 5 + 2 header bytes.
+//! (`u16 count + (u8 key, u32 offset)*`), unlike the `(u16, u32)` and
+//! `(u32, u32)` entries of most tables. `count` entries × 5 + 2 header
+//! bytes.
 //!
 //! **PABGB row layout** — bridge consumes the leading
-//! `(u32 name_len, name, u8 key)` triple (2.04 swapped key and name). The
+//! `(u32 name_len, name, u8 key)` triple. The
 //! rest of each row
 //! (~58 bytes of template body — version tag, sentinel bytes, anchor
 //! marker, then a hash trailer) is left untouched.
@@ -36,8 +35,8 @@
 //!
 //! `CString`-shape name (no trailing NUL), matching `iteminfo.pabgb`.
 //!
-//! **PALOC chain**: not probed. As with the other internal-name-only
-//! tables (FactionNode, SubLevel, QuestGauge) the localized name a
+//! **PALOC chain**: not followed. As with the other internal-name-only
+//! tables, the localized name a
 //! player sees is resolved through a separate gamedata path; the
 //! template internal name is the save-layer identifier and is what
 //! this bridge surfaces.
@@ -124,19 +123,19 @@ mod tests {
 
     fn find_table_bytes() -> Option<(Vec<u8>, Vec<u8>)> {
         // None only when the install (or the table) is absent; an install
-        // that is there but unreadable fails the test (audit I-02).
+        // that is there but unreadable fails the test.
         Some((
             gamedata_layout::extract_bin(&gamedata_layout::body("mercenaryinfo"))?,
             gamedata_layout::extract_bin(&gamedata_layout::header("mercenaryinfo"))?,
         ))
     }
 
-    /// Body-dump probe — reads every 1.07 mercenaryinfo row and prints
+    /// Body-dump probe — reads every mercenaryinfo row and prints
     /// the full body (everything after `(u32 name_len, name, u8 key)`)
-    /// as hex + repr + interpretation hints. Used to RE the per-row
-    /// body schema (price / cooldown / faction / requirements).
+    /// as hex + repr + interpretation hints, for reverse-engineering the
+    /// per-row body schema (price / cooldown / faction / requirements).
     ///
-    /// 18 rows × ~58 bytes/row should be small enough to identify
+    /// A few dozen rows of ~58 bytes each are small enough to identify
     /// field boundaries by eye. Comparison vs in-game UI values
     /// (recruitment cost, summon cooldown, required level) settles
     /// type guesses.
@@ -236,7 +235,7 @@ mod tests {
             );
         }
         // Sanity: every name is non-empty ASCII alphanumeric +
-        // underscore (template-name shape). 1.07 includes both the
+        // underscore (template-name shape). The table holds the
         // suffixed `Vehicle_Horse` family and the bare-template rows
         // `Vehicle`, `Wagon`, `Mercenary`, ... so no shared prefix check.
         for e in &entries {

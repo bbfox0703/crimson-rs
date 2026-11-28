@@ -2,17 +2,15 @@
 //!
 //! Resolves `HouseKey (u16-widened-u32)` — the template ID of the
 //! player-housing tiers (`DefaultHouse_Lv1`, `DefaultHouse_Lv2`,
-//! `DefaultHouse_Lv3`, plus one variant) referenced by save-side
+//! `DefaultHouse_Lv3`, …) referenced by save-side
 //! housing blocks.
 //!
-//! 4 rows in 1.07. PABGH layout is the same custom 6-byte
-//! `(u16 key, u32 offset)*` shape used by `factionrelationgroup`,
-//! `storeinfo`, and `partprefabdyetexturepalleteinfo`.
+//! PABGH layout is the custom 6-byte `(u16 key, u32 offset)*` shape.
 //!
 //! Row body — bridge consumes the leading `(u32 name_len, name, u16 key)`
-//! triple (2.04 swapped key and name). The rest of each row (~140 B of asset references — a
-//! decimal-ASCII ID and `KliffHouse_Hernand_…` model name) is not yet
-//! surfaced; can be added later if the editor expands beyond name.
+//! triple. The rest of each row (~140 B of asset references — a
+//! decimal-ASCII ID and `KliffHouse_Hernand_…` model name) is not
+//! surfaced.
 
 use crate::binary::row_head::read_row_head;
 
@@ -73,7 +71,7 @@ mod tests {
 
     fn find_table_bytes() -> Option<(Vec<u8>, Vec<u8>)> {
         // None only when the install (or the table) is absent; an install
-        // that is there but unreadable fails the test (audit I-02).
+        // that is there but unreadable fails the test.
         Some((
             gamedata_layout::extract_bin(&gamedata_layout::body("houseinfo"))?,
             gamedata_layout::extract_bin(&gamedata_layout::header("houseinfo"))?,

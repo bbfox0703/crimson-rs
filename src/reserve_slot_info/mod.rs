@@ -1,14 +1,13 @@
 //! `reserveslot.pabgb` parser — standard PABGH (u32-key).
 //!
 //! Resolves `ReserveSlotKey (u32)` — equip-reserve / hot-slot template
-//! IDs (`ArrowItem`, `BulletItem`, `BombItem`, …). 28 rows in 2.06.
+//! IDs (`ArrowItem`, `BulletItem`, `BombItem`, …).
 //! Save references these from the hot-slot UI's reserve-slot
 //! assignments. Each row body also carries an inline Korean (Hangul)
-//! display string, which a PALOC chain could surface in a follow-on
-//! session.
+//! display string, which this parser does not read.
 //!
 //! Standard `u16 count + (u32 key, u32 offset)*` PABGH. Body:
-//! `[u32 name_len][name][u32 key]` (2.04 swapped key and name).
+//! `[u32 name_len][name][u32 key]`.
 
 use crate::binary::row_head::read_row_head;
 
@@ -58,7 +57,7 @@ mod tests {
 
     fn find_table_bytes() -> Option<(Vec<u8>, Vec<u8>)> {
         // None only when the install (or the table) is absent; an install
-        // that is there but unreadable fails the test (audit I-02).
+        // that is there but unreadable fails the test.
         Some((
             gamedata_layout::extract_bin(&gamedata_layout::body("reserveslot"))?,
             gamedata_layout::extract_bin(&gamedata_layout::header("reserveslot"))?,

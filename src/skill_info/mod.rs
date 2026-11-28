@@ -1,10 +1,7 @@
 //! `skill.pabgb` + `skill.pabgh` parser for Crimson Desert.
 //!
-//! Field layout reverse-engineered from IDA decompilation of
-//! `SkillInfo::readEntryFields` (`sub_1410F8680`) and the `BuffData`
-//! factory (`sub_1419D8660`); ground-truth ported from the GameMods
-//! `skillinfo_parser.py` (35 KB pure Python, validated 100% roundtrip
-//! across game versions 1.03 / 1.04 / 1.05).
+//! Field layout follows the game's `SkillInfo::readEntryFields` and the
+//! `BuffData` factory, as ported from the GameMods `skillinfo_parser.py`.
 //!
 //! Scope notes
 //! -----------
@@ -14,21 +11,21 @@
 //!   brute-forces sizes 0..500 and caches per-type_id; entries whose
 //!   subclass cannot be resolved fall back to a raw blob path that
 //!   preserves bytes for roundtrip but loses semantic structure.
-//! - Format flag `field_58` is present in 1.04+ format and absent in
-//!   1.03. We auto-detect by probing the first non-null buff entry.
-//! - 2.04 lays an entry out `[len][name][key][head][buff matrix][tail]`, where
+//! - Format flag `field_58` is absent in the oldest format
+//!   ([`SkillFormat::NoField58`]). We auto-detect by probing the first
+//!   non-null buff entry.
+//! - An entry is laid out `[len][name][key][head][buff matrix][tail]`, where
 //!   head and tail are the post-buff fields split around the matrix (see
-//!   `post_buff`). Nothing inside `BuffData` moved: 1,976 of the 2,068 entries
-//!   carried over from 2.03 keep their exact length.
+//!   `post_buff`).
 //! - 2.06 inlined conditions: `BuffData.field_60`, a `u32 ConditionInfoKey`
-//!   through 2.05.01, is now `00` (none) or `01` + bytecode
+//!   in the older formats, is `00` (none) or `01` + bytecode
 //!   ([`SkillFormat::InlineCondition`]). The bytecode's length depends on each
 //!   function's argument layout, which is not decoded, so the loader probes
 //!   for it the same way it probes tail sizes: a length counts only if the
 //!   rest of the entry then parses to its end.
-//! - Cross-version probe (May 2026) showed 11 type_id sizes drift
-//!   between 1.03 / 1.04 / 1.05, so the brute-force probe must stay —
-//!   hard-coding sizes would silently break older or future versions.
+//! - Tail sizes for the same `type_id` differ between game versions, so the
+//!   brute-force probe stays: hard-coded sizes would silently break other
+//!   versions.
 
 mod buff_data;
 mod pabgh;
@@ -645,7 +642,7 @@ fn detect_format(
 ) -> io::Result<SkillFormat> {
     for &candidate in &[SkillFormat::WithField58, SkillFormat::NoField58] {
         for ((start, end), _idx) in ranges.iter().zip(index.iter()) {
-            // A header offset past the body used to panic here (audit C-05).
+            // A header offset past the body skips the entry.
             let Some(entry) = pabgb.get(*start..*end) else { continue };
             let Some(body) = entry_body(entry) else { continue };
             let mut head_end = 0;

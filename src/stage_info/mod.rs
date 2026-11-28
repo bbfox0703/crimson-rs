@@ -3,22 +3,20 @@
 //! Sibling of [`crate::mission_info`] and [`crate::quest_info`]. Same
 //! architecture and same row header shape.
 //!
-//! This is by far the largest gamedata table — **26 MB**, ~57k row
-//! anchors on 1.06, and the screenshot save's `_stageStateData` had
-//! 46,541 instances. The Save Editor's resolved-name column lights up
-//! for tens of thousands of rows when this bridge is loaded.
+//! This is by far the largest gamedata table (tens of MB, tens of
+//! thousands of rows), and a save's `_stageStateData` holds tens of
+//! thousands of instances.
 //!
 //! Stage internal names are **region-themed**, not `Stage_*`-prefixed
 //! (e.g. `Intro_Tutorial_Miseenscene_00`, `DelesyiaCastle_Herbert_BlueStone`,
-//! `Hernand_Normal_Start_Child6`). The anchor scanner's only assumption
-//! is the `[u32 name_len][identifier-byte name][u32 key][u8 0x00]` head
-//! shape (2.04 moved the key after the name), which holds across the
-//! whole family.
+//! `Hernand_Normal_Start_Child6`). The anchor scanner assumes the legacy
+//! `[u32 name_len][identifier-byte name][u32 key][u8 0x00]` head shape,
+//! which holds across the whole family.
 //!
 //! Stage rows resolve to PALOC at two common namespaces:
-//! - `lo32 = 0x101` (257) — the stage title (6,492 matches observed)
+//! - `lo32 = 0x101` (257) — the stage title
 //! - `lo32 = 0x102` (258) — the stage / shop description; longer text
-//!   describing the row (404 matches observed)
+//!   describing the row
 
 use crate::binary::row_head::{is_row_name_byte, read_row_head};
 
@@ -36,14 +34,13 @@ pub struct StageInfoEntry {
 /// PABGH-driven parse of `stageinfo` — the authoritative path.
 ///
 /// `pabgh` carries the in-game iteration order as a 4-byte count header
-/// followed by `(u32 key, u32 offset)` rows (the u32-count variant —
-/// stageinfo and questinfo are the two tables on this shape). For each
+/// followed by `(u32 key, u32 offset)` rows (the u32-count variant,
+/// shared with questinfo). For each
 /// pair we jump into `pabgb` at the offset and read the standard
 /// `[u32 slen][slen bytes][u32 key_repeat]` row head. This bypasses
 /// the anchor-scan's body-byte validation, so legitimate rows with
-/// punctuation in their names (e.g. `LevelSequencerSpawn_UUID_2910822923,…`,
-/// 1,403 of which are present in 1.08's stageinfo) are no longer
-/// silently dropped — the bridge returns the same key set the in-game
+/// punctuation in their names (e.g. `LevelSequencerSpawn_UUID_2910822923,…`)
+/// are kept — the bridge returns the same key set the in-game
 /// `[u32 count][...]` index does.
 ///
 /// Returns an empty vector if `pabgh` doesn't match the expected shape
@@ -91,8 +88,8 @@ pub fn parse_stage_info_via_pabgh(pabgh: &[u8], pabgb: &[u8]) -> Vec<StageInfoEn
 
 /// 2.06+: row names live in the `.staticinfoheader`, which lists every row,
 /// so with a 2.06 header the rows come from it, in header order (the anchor
-/// scan used to drop rows its key and name rules did not expect). A pre-2.06
-/// pair, or a header that is not the 2.06 shape, scans `data` as before.
+/// scan drops rows its key and name rules do not expect). A pre-2.06
+/// pair, or a header that is not the 2.06 shape, falls back to scanning `data`.
 pub fn parse_stage_info_lossy_with_header(data: &[u8], header: &[u8]) -> Vec<StageInfoEntry> {
     match crate::binary::static_header::header_row_names(data, header) {
         Some(rows) => rows.into_iter().map(|(key, name)| StageInfoEntry { key, name }).collect(),
@@ -102,18 +99,17 @@ pub fn parse_stage_info_lossy_with_header(data: &[u8], header: &[u8]) -> Vec<Sta
 
 /// Lossy anchor-scan parse of an in-memory `stageinfo.pabgb` blob.
 ///
-/// Kept for callers that can't supply the `.pabgh` index (e.g. a saved
+/// For callers that can't supply the `.pabgh` index (e.g. a saved
 /// extract of just the `.pabgb`). The anchor-scan's body-byte
 /// validation rejects rows whose names contain punctuation outside the
-/// `[A-Za-z0-9_ ]+ U+0080..` set, so for the 1.08 install this
-/// path returns **49,634** entries instead of the in-game-authoritative
-/// **51,037** the `.pabgh` lists — under-counts by 1,403 due to
-/// `LevelSequencerSpawn_UUID_<uid>,<uid>,…`-style names. Prefer
+/// `[A-Za-z0-9_ ]+ U+0080..` set, so this path under-counts against the
+/// `.pabgh`: it drops `LevelSequencerSpawn_UUID_<uid>,<uid>,…`-style
+/// names, and its key rule drops keys of 2^31 and up. Prefer
 /// [`parse_stage_info_via_pabgh`] when both files are available.
 ///
-/// See [`crate::mission_info::parse_mission_info_lossy`] for the
-/// validation rules — identical here. The scanner runs over the full
-/// 26 MB file in milliseconds; the bottleneck on load is the
+/// See [`crate::mission_info::parse_mission_info_lossy`] for the name
+/// rules; the key rule here is `(key >> 24) < 0x80`. The scanner runs
+/// over the full file in milliseconds; the bottleneck on load is the
 /// HashMap build, not the scan.
 pub fn parse_stage_info_lossy(data: &[u8]) -> Vec<StageInfoEntry> {
     let mut entries = Vec::new();
@@ -135,7 +131,7 @@ fn scan_next_anchor(data: &[u8], from: usize) -> Option<usize> {
     let mut o = from;
     while o + 12 < n {
         let slen = u32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]) as usize;
-        // Length, name, key, then the 0x00 that opens every 2.04 row body —
+        // Length, name, key, then the 0x00 that opens every legacy-layout row body —
         // the byte that rejects most body strings followed by a small number.
         if (2..=128).contains(&slen) && o + 9 + slen <= n && data[o + 8 + slen] == 0 {
             let bytes = &data[o + 4..o + 4 + slen];
@@ -147,14 +143,12 @@ fn scan_next_anchor(data: &[u8], from: usize) -> Option<usize> {
             ]);
             // Stage rows use category-prefixed keys: hi-byte 0x00 for
             // mainline stages, 0x05 for `HerStore_*` (Hernandian stores),
-            // 0x41 for `Shop_*` (city shops), and a handful of others
-            // observed in the 1.06 install. Cap at < 0x80 — covers every
-            // real category seen, excludes the body-byte noise that
-            // tends to start with high-bit bytes (e.g. checksum tails),
-            // and naturally excludes the i32-negative-encoded save
-            // sentinels (`0xFFFF*`) the editor's issue #2 pattern 2
-            // flagged as save-internal. Verified against the editor's
-            // CrimsonAtomtic issue #2 dump for `StageKey 1100170020`
+            // 0x41 for `Shop_*` (city shops), and a handful of others.
+            // Cap at < 0x80 — covers those categories, excludes the
+            // body-byte noise that tends to start with high-bit bytes
+            // (e.g. checksum tails), and excludes the i32-negative-encoded
+            // save-internal sentinels (`0xFFFF*`). Examples:
+            // `StageKey 1100170020`
             // (0x41934324 → "Shop_Hernand_General"), `1100170040`
             // (0x41934338 → "Shop_Hernand_Pub"), and `98200060`
             // (0x05DA69FC → "HerStore_Grocery").
@@ -181,18 +175,16 @@ mod tests {
     use crate::binary::gamedata_layout;
     use super::*;
 
-    /// (StageKey, expected internal_name) — five rows verified against
-    /// the editor's keycases handoff and `docs/save-editor-keys-plan.md`.
-    /// Includes `1004305` from the editor's UI screenshot.
+    /// (StageKey, expected internal_name), from
+    /// `docs/save-editor-keys-plan.md` and the editor's key cases, one
+    /// group per key hi-byte category the scanner accepts.
     const KNOWN: &[(u32, &str)] = &[
-        // hi-byte = 0x00 — mainline stages (well-covered by the
-        // original scanner constraint).
+        // hi-byte = 0x00 — mainline stages.
         (1_004_305, "Intro_Tutorial_Miseenscene_00"),
         (1_000_001, "DelesyiaCastle_Herbert_BlueStone"),
         (1_000_002, "Varnia_UrdavahResearch_RedStone"),
         (1_001_566, "AnvilHill_Block_Patrol_I"),
         (1_012_833, "Shop_Demeniss_Faction_Elemore_Grocery"),
-        // Regression for CrimsonAtomtic editor issue #2 pattern 1.
         // hi-byte = 0x05 — `HerStore_*` (Hernandian stores).
         (98_200_060, "HerStore_Grocery"),
         // hi-byte = 0x41 — `Shop_*` (city shops).
@@ -204,8 +196,8 @@ mod tests {
         gamedata_layout::extract_bin(&gamedata_layout::body("stageinfo"))
     }
 
-    /// 2.06+: the row names live here. Empty when absent (an older install
-    /// needs none, and `parse_stage_info_lossy_with_header` then scans the body alone).
+    /// The 2.06 `.staticinfoheader` beside the body (it holds the row
+    /// names); panics when the install has the body but not the header.
     fn find_stageinfo_header() -> Vec<u8> {
         gamedata_layout::extract_bin(&gamedata_layout::header("stageinfo")).expect("the 2.06 header next to the table body (install present but header missing: drift?)")
     }

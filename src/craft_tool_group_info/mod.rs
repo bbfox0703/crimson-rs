@@ -2,11 +2,11 @@
 //!
 //! Resolves `CraftToolGroupKey (u16-widened-u32)` — the parent group
 //! template for crafting tools (`CraftTool_Equip_Enchant`,
-//! `CraftTool_Kukupot`, `CraftTool_Cook`, …). 12 rows in 2.06. Each
+//! `CraftTool_Kukupot`, `CraftTool_Cook`, …). Each
 //! group references the `crafttoolinfo` rows that belong to it.
 //!
 //! `u16 count + (u16 key, u32 offset)*` PABGH. Body starts with
-//! `[u32 name_len][name][u16 key]` (2.04 swapped key and name); bridge does not expose the member
+//! `[u32 name_len][name][u16 key]`; bridge does not expose the member
 //! list (the inline u16 children-keys at the row's tail).
 
 use crate::binary::row_head::read_row_head;
@@ -67,7 +67,7 @@ mod tests {
 
     fn find_table_bytes() -> Option<(Vec<u8>, Vec<u8>)> {
         // None only when the install (or the table) is absent; an install
-        // that is there but unreadable fails the test (audit I-02).
+        // that is there but unreadable fails the test.
         Some((
             gamedata_layout::extract_bin(&gamedata_layout::body("crafttoolgroupinfo"))?,
             gamedata_layout::extract_bin(&gamedata_layout::header("crafttoolgroupinfo"))?,

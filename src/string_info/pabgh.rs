@@ -2,26 +2,22 @@
 //!
 //! Layout: `count + count × (u32 hash, u32 offset_into_pabgb)`.
 //!
-//! The `count` prefix is `u16` in observed game builds (Crimson Desert
-//! 1.06 has 30,206 entries — fits in u16) but the GameMods Python loader
-//! auto-detects a `u32` fallback by checking whether `2 + count * 8`
+//! The `count` prefix is `u16` in observed game builds, but the GameMods
+//! Python loader auto-detects a `u32` fallback by checking whether `2 + count * 8`
 //! equals the file size. We mirror that: parse as `u16` first, fall back
 //! to `u32` on size mismatch. `write_pabgh` emits whichever width round-
 //! trips the original file (recorded on the [`StringInfoIndex`] returned
 //! by `parse_pabgh`).
 //!
-//! Pairs with [`super::pabgb`]: each entry's `offset` is a byte offset
-//! into the matching `stringinfo.pabgb`, where the record at that offset
-//! carries the same `hash` u32 (after the 4-byte zero since 2.04).
-// The writers and the full-table readers are round-trip support: the c_abi
-// bridge uses only the lookup path, and the tests below exercise the rest.
-// Outside tests they are dead, so only there is dead code allowed; the test
-// build lints the module in full.
+//! Pairs with [`super::StringInfoData`]: each entry's `offset` is a byte
+//! offset into the matching `stringinfo.pabgb`, where the record at that
+//! offset carries the same `hash` u32 (after the 4-byte zero in the legacy
+//! layout, first in the 2.06 layout).
+// The writers and the full-table readers are round-trip support that the
+// tests exercise; the c_abi bridge reads no pabgh, since every pabgb entry is
+// self-describing. Outside tests they are dead, so dead code is allowed
+// there; the test build lints the module in full.
 #![cfg_attr(not(test), allow(dead_code))]
-
-// Index helpers are exercised by `string_info::tests::live_pair_roundtrip`
-// and the synthetic pair test; the `c_abi` bridge intentionally ignores
-// the pabgh side (every pabgb entry is self-describing).
 
 use std::io;
 

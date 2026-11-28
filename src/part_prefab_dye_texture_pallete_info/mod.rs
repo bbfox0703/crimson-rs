@@ -2,7 +2,7 @@
 //!
 //! Resolves `PartPrefabDyeTexturePalleteKey (u16)` — the gamedata key
 //! stored as `ItemDyeSaveData._texturePalleteKey` in the save's
-//! `_itemDyeDataList`. There are 11 rows in 2.06 (`key ∈ 0..=10`);
+//! `_itemDyeDataList`. Keys are small consecutive integers from 0;
 //! each row defines a "palette" — a set of 3 materials (cloth /
 //! leather / metal) with paired icon + texture DDS paths.
 //!
@@ -21,24 +21,22 @@
 //! u16 count, then count × { u16 key, u32 offset }
 //! ```
 //!
-//! For 11 entries: 2 + 11 × 6 = 68 bytes (matches the live file's
-//! 68-byte `.pabgh`). The u16 key matches the save's `_texturePalleteKey`
-//! u16 type 1:1.
+//! The index is `2 + count × 6` bytes. The u16 key matches the
+//! save's `_texturePalleteKey` u16 type 1:1.
 //!
-//! **PABGB row layout** (verified byte-exact on all 11 rows in 2.05). 2.04's
-//! key/name swap put the row's name ahead of the u16 key; the name was empty
-//! until 2.05 filled it in (`PartPrefabDyeTexturePallete_DyeingEditorTest`
-//! and the like). Everything from `key_copy` on matches 2.03 byte for byte on
-//! all 11 rows.
+//! **PABGB row layout** (pre-2.06 body; 2.06 rows are rebuilt into it by
+//! `static_header::legacy_pair`). The row's name sits ahead of the u16 key
+//! and may be empty (`PartPrefabDyeTexturePallete_DyeingEditorTest` and the
+//! like when set).
 //!
 //! ```text
 //! Row {
-//!     CString row_name,        // empty through 2.04.08
+//!     CString row_name,        // may be empty (it was through 2.04.08)
 //!     u16 key,                 // matches PABGH key
 //!     u8 pad,                  // = 00
 //!     u32 key_copy,            // = key
-//!     u32 sub_count,           // 3 on every row (key=0's subs all use the
-//!                              //   white default dye texture)
+//!     u32 sub_count,           // 3 (key=0's subs all use the white
+//!                              //   default dye texture)
 //!     Sub sub[sub_count],
 //! }
 //! Sub {
@@ -162,7 +160,7 @@ fn read_cstring(data: &[u8], cursor: &mut usize) -> Option<String> {
 }
 
 /// Parse one palette row's body. Returns `None` if the body deviates
-/// from the verified schema (e.g. truncated CString, wrong header
+/// from the schema (e.g. truncated CString, wrong header
 /// shape, sub_count overflow).
 fn parse_row(body: &[u8], expected_key: u32) -> Option<PartPrefabDyeTexturePalleteEntry> {
     let head = read_row_head(body, 2)?;
@@ -208,9 +206,9 @@ fn parse_row(body: &[u8], expected_key: u32) -> Option<PartPrefabDyeTexturePalle
             variant_value,
         });
     }
-    // Spec says cursor should == body.len() now. Trailing bytes would
-    // signal schema drift — return None so callers see "row missing"
-    // rather than silently-truncated data.
+    // The subs fill the body exactly. Trailing bytes signal schema
+    // drift — return None so callers see "row missing" rather than
+    // silently-truncated data.
     if cursor != body.len() {
         return None;
     }
@@ -220,7 +218,7 @@ fn parse_row(body: &[u8], expected_key: u32) -> Option<PartPrefabDyeTexturePalle
 
 /// Parse `partprefabdyetexturepalleteinfo.pabgb` using its `.pabgh`
 /// index. Returns entries in PABGH on-disk order. Rows that fail to
-/// parse against the verified schema are silently dropped (the bridge
+/// parse against the schema are silently dropped (the bridge
 /// surfaces them as `NOT_FOUND` on lookup).
 pub fn parse_part_prefab_dye_texture_pallete_info_lossy(
     pabgb: &[u8],
@@ -248,7 +246,7 @@ pub fn parse_part_prefab_dye_texture_pallete_info_lossy(
 #[cfg(test)]
 mod tests {
     //! Live-install integration test. Pins enough invariants to catch
-    //! schema drift in future patches: every key 0..=10 must parse;
+    //! schema drift: every key 0..=10 must parse;
     //! every key has 3 subs (`key=0`'s use the white default texture); the materials
     //! in `key=1` are `cloth/leather/metal` in that order; the variant
     //! `"wool"` on `key=1` cloth sub has a positive variant_value.
@@ -338,8 +336,8 @@ mod tests {
             entries.len(),
             pabgb.len()
         );
-        // 1.07 has exactly 11 rows; pin >=11 since the schema is so
-        // narrow we expect any patch to keep all of them.
+        // The keys are a dense 0..=10 enum that a patch is not expected
+        // to shrink.
         assert_eq!(
             entries.len(),
             11,
@@ -356,11 +354,9 @@ mod tests {
             );
         }
 
-        // 1.13: key=0 is no longer the 2-sub "no UI icon" fallback — it now
-        // carries the same cloth/leather/metal triple as keys 1..=10, each sub
-        // pointing at the white default dye texture
-        // (`cd_texturelayer_dyetexture_white.dds`). Through 1.12 it had 2 subs
-        // whose sub[0] icon_path fell back to its texture_path.
+        // key=0 carries the same cloth/leather/metal triple as keys 1..=10,
+        // each sub pointing at the white default dye texture
+        // (`cd_texturelayer_dyetexture_white.dds`).
         assert_eq!(entries[0].subs.len(), 3, "key=0 should have 3 subs (1.13; was 2 ≤1.12)");
         let mats0: Vec<&str> = entries[0].subs.iter().map(|s| s.material_name.as_str()).collect();
         assert_eq!(mats0, ["cloth", "leather", "metal"], "key=0 materials (1.13)");

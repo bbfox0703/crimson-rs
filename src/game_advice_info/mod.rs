@@ -2,18 +2,17 @@
 //!
 //! Resolves `GameAdviceInfoKey (u32)` — gameplay-tip / hint
 //! templates surfaced by the in-game advice system (`Advice_Control_Move`,
-//! `Advice_Control_Battle`, …). 482 rows in 2.06. Each row carries a
+//! `Advice_Control_Battle`, …). Each row carries a
 //! pair of 20-byte ASCII PALOC numeric keys that resolve to the
 //! localized tip body / title via `localizationstring_eng.paloc`, in
 //! the same hash-hop pattern used by mission / quest / stage / knowledge.
 //!
-//! This bridge ships **name-only** for now — the PALOC chain probe is
-//! deferred to a follow-on session. The internal name
-//! (`Advice_Control_Move` etc.) is the save-layer's stable identifier
-//! and is what most consumers need today.
+//! This bridge is **name-only**: it does not follow the PALOC chain.
+//! The internal name (`Advice_Control_Move` etc.) is the save-layer's
+//! stable identifier.
 //!
 //! Standard `u16 count + (u32 key, u32 offset)*` PABGH. Row body starts
-//! with `[u32 name_len][name][u32 key]` (2.04 swapped key and name).
+//! with `[u32 name_len][name][u32 key]`.
 
 use crate::binary::row_head::read_row_head;
 
@@ -63,7 +62,7 @@ mod tests {
 
     fn find_table_bytes() -> Option<(Vec<u8>, Vec<u8>)> {
         // None only when the install (or the table) is absent; an install
-        // that is there but unreadable fails the test (audit I-02).
+        // that is there but unreadable fails the test.
         Some((
             gamedata_layout::extract_bin(&gamedata_layout::body("gameadviceinfo"))?,
             gamedata_layout::extract_bin(&gamedata_layout::header("gameadviceinfo"))?,

@@ -2,34 +2,33 @@
 //!
 //! Resolves `GlobalGameEventInfoKey (u16-widened-u32)` — server-side
 //! global event templates (`Drought_Varnian`, `Flood_Demenissian`,
-//! `Typhoon_Delesyian`, …). 191 rows in 2.06. The save layer
-//! references these as active-event identifiers.
+//! `Typhoon_Delesyian`, …). The save layer references these as
+//! active-event identifiers.
 //!
 //! `u16 count + (u16 key, u32 offset)*` PABGH. Body: `[u32 name_len]
 //! [name][u16 key]` followed by per-event payload (timing, action list,
 //! cross-references). See [`docs/archive/globalgameevent-body-re.md`](../../docs/archive/globalgameevent-body-re.md)
 //! for the full body-schema analysis, written against the pre-2.04 layout.
 //!
-//! ## 2.04 layout change
+//! ## Payload layout
 //!
-//! Besides swapping key and name, 2.04 inserted 13 zero bytes right after
-//! `group_key` on every row (each of the 191 rows is exactly that insertion
-//! away from its 2.03 payload), which moves the `PalocStringRef` from
-//! `payload[0x12..]` to `payload[0x1F..]`. `group_key` itself stayed put.
+//! `group_key` sits at `payload[1..3]` and is followed by 13 zero bytes, so
+//! the `PalocStringRef` starts at `payload[0x1F..]` (the archived body-RE
+//! doc, written against the pre-2.04 layout, has it at `0x12`).
 //!
-//! ## Bridge surface (v1)
+//! ## Bridge surface
 //!
-//! - `key + name` — universal, 100% coverage (was the v0 surface).
+//! - `key + name` — universal, 100% coverage.
 //! - `group_key` (u32, widened from u16) — universal, 100% coverage.
-//!   Cross-references the 12-row `globalgameeventgroup` table (e.g.
+//!   Cross-references the `globalgameeventgroup` table (e.g.
 //!   `WeatherEventGroup`, `FactionBlockEventGroup`).
 //! - `paloc_key` (u64, parsed from a 14-char ASCII decimal string
 //!   embedded in the body) — present on most rows but absent on the
 //!   `RoyalSupply` + `FactionBlockEvent_*` groups. Returned as 0 when
 //!   absent.
 //!
-//! Per-group action lists and per-row payload schemas are NOT exposed
-//! yet — see the docs above for what's been mapped vs deferred.
+//! Per-group action lists and per-row payload schemas are not exposed;
+//! the body-RE doc above records what is mapped.
 
 use crate::binary::row_head::read_row_head;
 
@@ -79,7 +78,7 @@ pub fn parse_global_game_event_info_lossy(
             continue;
         }
         // Per-row payload (everything after the key) — used to extract
-        // group_key + paloc_key; see the module docs for the 2.04 layout.
+        // group_key + paloc_key; see the module docs for the layout.
         let payload = &body[head.body_at..];
         let group_key = extract_group_key(payload).unwrap_or(0);
         let paloc_key = extract_paloc_key(payload).unwrap_or(0);
@@ -93,9 +92,9 @@ pub fn parse_global_game_event_info_lossy(
     out
 }
 
-/// Pull `group_key` from `payload[1..3]` (u16 LE → u32). Returns `None`
-/// when the payload is too short. Present on every row; on 2.06 the
-/// 191 rows use the 12 keys of `globalgameeventgroup.pabgb`.
+/// Pull `group_key` from `payload[1..3]` (u16 LE → u32), a key of
+/// `globalgameeventgroup.pabgb`. Returns `None` when the payload is too
+/// short.
 fn extract_group_key(payload: &[u8]) -> Option<u32> {
     if payload.len() < 3 {
         return None;
@@ -125,10 +124,10 @@ const PALOC_STRING_REF_TAG_OFFSET: usize = 0x1F;
 const PALOC_STRING_REF_LEN_OFFSET: usize = 0x28;
 const PALOC_STRING_REF_NAME_OFFSET: usize = 0x2C;
 /// The numeric PALOC key, `(hi32 = event_key) << 32 | lo32 = namespace`,
-/// rendered in decimal. Every key on 1.08 to 2.06 is 14 digits (event keys
-/// up to 0x430B), but that is a property of the data, not the format: a key
-/// outside 0x0919..=0x5AF3 renders as 13 or 15 digits, so the length field
-/// is trusted up to the 20 digits a u64 can take (audit D-08).
+/// rendered in decimal. Every key in the data is 14 digits, but that is a
+/// property of the data, not the format: a key outside 0x0919..=0x5AF3
+/// renders as 13 or 15 digits, so the length field is trusted up to the 20
+/// digits a u64 can take.
 const PALOC_NUMERIC_MAX_LEN: usize = 20;
 fn extract_paloc_key(payload: &[u8]) -> Option<u64> {
     if payload.len() < PALOC_STRING_REF_NAME_OFFSET {
@@ -170,18 +169,13 @@ mod tests {
         (0x426c, "Typhoon_Delesyian"),
     ];
 
-    /// Pinned (key, group_key, paloc_key) for 1.07. The group_key
+    /// Pinned (key, group_key, paloc_key). The group_key
     /// matches a `globalgameeventgroup` row; the paloc_key resolves
     /// the localized display name via the PALOC table.
     ///
     /// The `RoyalSupply_*` (group 0x4241) + `FactionBlockEvent_*`
     /// (group 0x4244) rows have `paloc_key = 0` because their body
     /// shape lacks the embedded PalocStringRef.
-    ///
-    /// 2.00 split the single `RoyalSupply` row (0x424a) into four
-    /// per-faction rows (0x4308–0x430b), which is the whole of that
-    /// patch's 188 → 191 delta (−1 +4). All four keep group 0x4241 and
-    /// the absent paloc, so they replace 0x424a here one-for-four.
     const KNOWN_BODY: &[(u32, u32, u64)] = &[
         // (key,    group_key, paloc_key)
         (0x4258, 0x4240, 72_945_724_555_969),  // Drought_Varnian
@@ -195,18 +189,15 @@ mod tests {
 
     fn find_table_bytes() -> Option<(Vec<u8>, Vec<u8>)> {
         // None only when the install (or the table) is absent; an install
-        // that is there but unreadable fails the test (audit I-02).
+        // that is there but unreadable fails the test.
         Some((
             gamedata_layout::extract_bin(&gamedata_layout::body("globalgameevent"))?,
             gamedata_layout::extract_bin(&gamedata_layout::header("globalgameevent"))?,
         ))
     }
 
-    /// Body-dump probe — reads all 103 globalgameevent rows, prints
-    /// each body's bytes + numeric-field probes. Body content is
-    /// near-uniform per probe data (row sizes 164/166/170 bytes —
-    /// small variance suggests fixed-length core + a variable-length
-    /// trailing field like an ASCII number string).
+    /// Body-dump probe — reads every globalgameevent row and prints each
+    /// body's bytes, a body-size histogram and per-offset u32 statistics.
     #[test]
     #[ignore = "investigation only — dump globalgameevent bodies for body-schema RE"]
     fn _probe_global_game_event_body_dump() {
@@ -325,7 +316,7 @@ mod tests {
         }
     }
 
-    /// Live test pinning the new body fields (`group_key`, `paloc_key`).
+    /// Live test pinning the body fields (`group_key`, `paloc_key`).
     /// Skips when the game install isn't present.
     #[test]
     fn global_game_event_info_body_fields_live() {
@@ -350,10 +341,9 @@ mod tests {
             );
         }
 
-        // Every row's group_key must be in the 12 known
-        // GlobalGameEventGroupKey range — pinned in 1.08 (7 in 1.07; 1.08
-        // added 0x424a–0x424e, corresponding to the new `FactionBlockEvent_*`
-        // groups Pearl Abyss added for per-node faction blocking).
+        // Every row's group_key must be one of the known
+        // GlobalGameEventGroupKeys (0x424a–0x424e are the
+        // `FactionBlockEvent_*` groups for per-node faction blocking).
         let known_groups: std::collections::HashSet<u32> = [
             0x4240, 0x4241, 0x4244, 0x4246, 0x4247, 0x4248, 0x4249,
             0x424a, 0x424b, 0x424c, 0x424d, 0x424e,
@@ -368,9 +358,7 @@ mod tests {
 
         // PalocStringRef coverage: most rows have a non-zero
         // paloc_key. Per the body-RE doc the absent set is the
-        // RoyalSupply + FactionBlockEvent_* (23) groups — 24/103 missing
-        // when RoyalSupply was one row, 27 missing since 2.00 split it
-        // into four. ~76% should have a paloc_key.
+        // RoyalSupply + FactionBlockEvent_* groups.
         let with_paloc = entries.iter().filter(|e| e.paloc_key != 0).count();
         eprintln!("paloc_key coverage: {}/{}", with_paloc, entries.len());
         assert!(
@@ -432,9 +420,9 @@ mod tests {
     #[test]
     fn extract_paloc_key_rejects_wrong_length() {
         // The length field is trusted for 1..=20 digits: 14 is what the data
-        // uses today, but an event key outside 0x0919..=0x5AF3 renders as 13
-        // or 15 digits (audit D-08). Zero, 21, non-digits or a length running
-        // past the payload → None.
+        // uses, but an event key outside 0x0919..=0x5AF3 renders as 13 or 15
+        // digits. Zero, 21, non-digits or a length running past the payload
+        // → None.
         let with = |len: u32, name: &[u8]| {
             let mut payload = vec![0u8; PALOC_STRING_REF_TAG_OFFSET];
             payload.extend_from_slice(&PALOC_STRING_REF_TAG.to_le_bytes());

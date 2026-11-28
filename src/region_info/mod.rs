@@ -2,11 +2,11 @@
 //!
 //! Resolves `RegionKey (u16-widened-u32)` — the named map regions
 //! (`Region_Pywel`, `Region_Kweiden`, `Region_Pailunese_Territory`,
-//! …). 1,014 rows in 2.06. The save layer references these as
+//! …). The save layer references these as
 //! discovery / map-state keys.
 //!
 //! `u16 count + (u16 key, u32 offset)*` PABGH. Body: `[u32 name_len]
-//! [name][u16 key]` (2.04 swapped key and name); rest carries region geometry / sub-region tree.
+//! [name][u16 key]`; rest carries region geometry / sub-region tree.
 
 use crate::binary::row_head::read_row_head;
 
@@ -66,7 +66,7 @@ mod tests {
 
     fn find_table_bytes() -> Option<(Vec<u8>, Vec<u8>)> {
         // None only when the install (or the table) is absent; an install
-        // that is there but unreadable fails the test (audit I-02).
+        // that is there but unreadable fails the test.
         Some((
             gamedata_layout::extract_bin(&gamedata_layout::body("regioninfo"))?,
             gamedata_layout::extract_bin(&gamedata_layout::header("regioninfo"))?,

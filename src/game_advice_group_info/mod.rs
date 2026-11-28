@@ -2,11 +2,10 @@
 //!
 //! Resolves `GameAdviceGroupKey (u32)` — the parent grouping template
 //! (`GameAdviceGroup_ControlBasics`, `GameAdviceGroup_Interaction`,
-//! `GameAdviceGroup_AdventureBasics`, …). 8 rows in 1.07. Pairs with
-//! `gameadviceinfo` to break the 482 tips into UI categories.
+//! `GameAdviceGroup_AdventureBasics`, …). Pairs with
+//! `gameadviceinfo` to break the tips into UI categories.
 //!
-//! Row body starts with `[u32 name_len][name][u32 key]` (2.04 swapped key
-//! and name).
+//! Row body starts with `[u32 name_len][name][u32 key]`.
 
 use crate::binary::row_head::read_row_head;
 
@@ -56,7 +55,7 @@ mod tests {
 
     fn find_table_bytes() -> Option<(Vec<u8>, Vec<u8>)> {
         // None only when the install (or the table) is absent; an install
-        // that is there but unreadable fails the test (audit I-02).
+        // that is there but unreadable fails the test.
         Some((
             gamedata_layout::extract_bin(&gamedata_layout::body("gameadvicegroupinfo"))?,
             gamedata_layout::extract_bin(&gamedata_layout::header("gameadvicegroupinfo"))?,

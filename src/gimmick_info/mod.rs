@@ -7,26 +7,24 @@
 //! one with a gamedata entry.
 //!
 //! Schema-wise this is the same `[u32 name_len][name][u32 key][...body]`
-//! row head as mission/quest/stage/iteminfo (2.04 moved the key after the
-//! name), but with two complications the simpler parsers don't have:
+//! row head as the other named tables, but with two complications the
+//! simpler parsers don't have:
 //!
 //! 1. **Cat-byte in the row key.** Gimmick row keys span multiple
 //!    hi-bytes: `0x00`, `0x01`, `0x07`, `0x08`, `0x09` (region or
 //!    gimmick-category marker baked into the key). The
 //!    `(key >> 24) == 0` constraint other parsers rely on would
-//!    miss those — about 12% of real rows. The scanner here uses
-//!    `(key >> 24) < 0x10` as a looser cap (covers everything
-//!    observed in 1.06 with headroom).
+//!    miss those — a sizeable share of real rows. The scanner here uses
+//!    `(key >> 24) < 0x10` as a looser cap (covers every observed
+//!    cat-byte with headroom).
 //!
 //! 2. **Body-byte noise.** Gimmick rows have bodies dense with
-//!    embedded `[len][name][u32]` elements, far more of which fit the
-//!    2.04 head than fit the old one — 22,484 anchors on 2.04 under the
-//!    key and name rules alone, against 14,070 real rows, and two of them
-//!    took a real row's key (`InspectSocket_0` + the key of the gimmick it
-//!    sockets) ahead of that row. What settles it: every one of the 14,210
-//!    indexed rows continues `[u8 0x00][u32 len]["/object/..."]`, and none
-//!    of the noise does, so the scanner requires that. It keeps the earlier
-//!    checks: `(key & 0xFFFFFF) != 0` (no real row has a zero lo24) and
+//!    embedded `[len][name][u32]` elements, many of which pass the key and
+//!    name rules alone, and some carry a real row's key (`InspectSocket_0` +
+//!    the key of the gimmick it sockets) ahead of that row. What settles it:
+//!    every indexed row continues `[u8 0x00][u32 len]["/object/..."]`, and
+//!    none of the noise does, so the scanner requires that. It also checks
+//!    `(key & 0xFFFFFF) != 0` (no real row has a zero lo24) and
 //!    `(key >> 24) < 0x10` (the noise's hi-byte exceeds the observed
 //!    cat-byte range).
 //!
@@ -35,9 +33,6 @@
 //! `lookup_display_name` chain into PALOC at the caller's lo32
 //! (default `0x200` for the gimmick display label, `0x19202` for
 //! description).
-//!
-//! Coverage on the live 1.06 install: 527/530 (99.4%) of the editor's
-//! sample save `_gimmickInfoKey` values resolve through this parser.
 
 use crate::binary::row_head::{is_row_name_byte, read_row_head};
 
@@ -55,8 +50,8 @@ pub struct GimmickInfoEntry {
 
 /// 2.06+: row names live in the `.staticinfoheader`, which lists every row,
 /// so with a 2.06 header the rows come from it, in header order (the anchor
-/// scan used to drop rows its key and name rules did not expect). A pre-2.06
-/// pair, or a header that is not the 2.06 shape, scans `data` as before.
+/// scan drops rows its key and name rules do not expect). A pre-2.06 pair,
+/// or a header that is not the 2.06 shape, scans `data`.
 pub fn parse_gimmick_info_lossy_with_header(data: &[u8], header: &[u8]) -> Vec<GimmickInfoEntry> {
     match crate::binary::static_header::header_row_names(data, header) {
         Some(rows) => rows.into_iter().map(|(key, name)| GimmickInfoEntry { key, name }).collect(),
@@ -109,8 +104,9 @@ fn scan_next_anchor(data: &[u8], from: usize) -> Option<usize> {
     let mut o = from;
     while o + 12 < n {
         let slen = u32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]) as usize;
-        // Length, name, key, then the 0x00 that opens every 2.04 row body —
-        // the byte that rejects most body strings followed by a small number.
+        // Length, name, key, then the 0x00 that opens every row body in the
+        // pre-2.06 layout — the byte that rejects most body strings followed
+        // by a small number.
         if (2..=128).contains(&slen) && o + 9 + slen <= n && data[o + 8 + slen] == 0 {
             let bytes = &data[o + 4..o + 4 + slen];
             let key = u32::from_le_bytes([
@@ -148,8 +144,8 @@ mod tests {
     use crate::binary::gamedata_layout;
     use super::*;
 
-    /// (GimmickInfoKey, expected internal_name) — verified via the
-    /// 2026-05-14 probe pass against the handoff bundle. The cat-byte
+    /// (GimmickInfoKey, expected internal_name), drawn from the Save Editor
+    /// handoff bundle. The cat-byte
     /// 0x09 sample exercises the loose hi-byte rule (would be missed
     /// by an `(key >> 24) == 0` constraint).
     const KNOWN: &[(u32, &str)] = &[
@@ -191,16 +187,15 @@ mod tests {
         };
         let header = find_gimmickinfo_header();
         let entries = parse_gimmick_info_lossy_with_header(&data, &header);
-        // A 2.06 header lists every row (140 the scanner rules drop on 2.06),
-        // so the name and key rules below only hold for the anchor scan.
+        // A 2.06 header lists every row, including rows the scanner rules
+        // drop, so the name and key rules below hold for the anchor scan alone.
         let scanned = crate::binary::static_header::header_row_names(&data, &header).is_none();
         println!(
             "parsed {} gimmickinfo entries from {} bytes",
             entries.len(),
             data.len()
         );
-        // 1.06 has ~10k+ real gimmick rows after the strict scanner.
-        // Pin to >2000 for plausibility.
+        // A plausibility floor well under the real row count.
         assert!(
             entries.len() > 2_000,
             "expected >2000 gimmick entries, got {}",

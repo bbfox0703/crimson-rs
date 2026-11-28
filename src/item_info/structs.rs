@@ -25,12 +25,11 @@ py_binary_struct! {
 py_binary_struct! {
     pub struct ItemIconData {
         pub icon_path: StringInfoKey,
-        // Added in Crimson Desert 1.05: a second StringInfoKey paired with
-        // icon_path (often holds the same texture hash as map_icon_path).
+        // A second StringInfoKey paired with icon_path (often the same
+        // texture hash as map_icon_path).
         pub icon_path_alt: StringInfoKey,
         pub check_exist_sealed_data: u8,
         pub gimmick_state_list: CArray<u32>,
-        // Added in Crimson Desert 1.05: trailing flag byte.
         pub unk_flag: u8,
     }
 }
@@ -107,37 +106,33 @@ py_binary_struct! {
         pub enchant_stat_data: EnchantStatData,
         pub buy_price_list: CArray<ItemPriceInfo>,
         pub equip_buffs: CArray<EquipmentBuff>,
-        // 2.04: a trailing u32 on every element, on top of the 1.12
-        // inter-element separator below. See "ItemInfo (2.04)" in `item.rs`.
+        // A trailing u32 on every element, separate from the inter-element
+        // separator `EnchantDataList` carries.
         pub unk_post_equip_buffs: u32,
     }
 }
 
-// ── EnchantDataList (1.12 inter-element separator) ──────────────────────────
+// ── EnchantDataList (inter-element separator) ───────────────────────────────
 //
-// Crimson Desert 1.12 inserts a `u32` (always 0) **between** consecutive
-// `EnchantData` elements — N elements carry N-1 separators (element [0] has
-// no leading separator; the last element has no trailing one). Verified by a
-// per-boundary byte-walk vs the 1.11 binary: e.g. key=1000019's 6 enchant rows
-// show the +4 only at the [1]…[5] boundaries (offsets 417/495/573/651/729),
-// never before [0] (339). This is NOT a per-element field (that would be N, and
-// would collide with the separate item-level `unk_pre_gimmick_visual` +4 that
-// equipment/gem items also carry just past the list). Semantic role unknown —
-// likely a per-pair delimiter Pearl Abyss added to the enchant table.
+// A `u32` (always 0) sits **between** consecutive `EnchantData` elements: N
+// elements carry N-1 separators, none before element [0] and none after the
+// last. It is not a per-element field (that would be N, and would collide
+// with the item-level `unk_pre_gimmick_visual` that equipment and gem items
+// carry just past the list). Semantic role unknown.
 //
 // Serialized to Python as a plain list of EnchantData dicts (the all-zero
-// separators are reconstructed on write), so the items.jsonl shape is
-// unchanged. The Rust round-trip stores the separators verbatim for byte
+// separators are reconstructed on write), so the items.jsonl shape carries no
+// separators. The Rust round-trip stores the separators verbatim for byte
 // fidelity.
 //
-// 2.04 opens the list with a presence byte that reads 1 even when the count is
-// 0 — the one flagged list that does not collapse to `0x00` when empty.
+// The list opens with a presence byte that reads 1 even when the count is 0,
+// unlike the other flagged lists, which collapse to `0x00` when empty.
 #[derive(Debug)]
 pub struct EnchantDataList {
     pub flag: u8,
     pub items: Vec<EnchantData>,
-    /// `items.len().saturating_sub(1)` separators, in element order. Always
-    /// zero on every 1.12 item observed; kept for exact byte round-trip.
+    /// `items.len().saturating_sub(1)` separators, in element order. Zero in
+    /// the game data; kept for exact byte round-trip.
     pub separators: Vec<u32>,
 }
 
@@ -188,7 +183,7 @@ impl BinaryWrite for EnchantDataList {
         for (i, item) in self.items.iter().enumerate() {
             if i > 0 {
                 // Reuse the stored separator when present; default to 0 (the
-                // only value ever observed) when the list came from Python.
+                // game data's value) when the list came from Python.
                 let sep = self.separators.get(i - 1).copied().unwrap_or(0);
                 sep.write_to(w)?;
             }
@@ -297,7 +292,7 @@ impl WritePyValue for EnchantDataList {
         w.extend_from_slice(&(n as u32).to_le_bytes());
         for (i, item) in list.iter().enumerate() {
             if i > 0 {
-                // All observed separators are 0; reconstruct them on write.
+                // Separators are 0 in the game data; reconstruct them on write.
                 w.extend_from_slice(&0u32.to_le_bytes());
             }
             EnchantData::write_from_py(w, &item)?;
@@ -328,9 +323,8 @@ py_binary_struct! {
         pub right_page_texture_path: CString<'a>,
         pub left_page_related_knowledge_info: KnowledgeKey,
         pub right_page_related_knowledge_info: KnowledgeKey,
-        // New in 2.05.01, a trailing u8 on every element: 0, except 2 on the 40
-        // pages of the DLC's `Hidden_Ocean_TreasureMap_*` items. Named for its
-        // position.
+        // 0, except 2 on the pages of the DLC's `Hidden_Ocean_TreasureMap_*`
+        // items. Named for its position.
         pub unk_post_right_page_related_knowledge_info: u8,
     }
 }
@@ -357,7 +351,7 @@ py_binary_struct! {
         pub refer_to_left_page_inspect_data: u8,
         pub inspect_effect_info_key: EffectKey,
         pub inspect_complete_effect_info_key: EffectKey,
-        // 2.04: two trailing f32s on every element, 0.1 and 1.048 on nearly all.
+        // Two trailing f32s, 0.1 and 1.048 on nearly every element.
         pub unk_post_inspect_effect_a: f32,
         pub unk_post_inspect_effect_b: f32,
     }
@@ -392,12 +386,8 @@ py_binary_struct! {
         pub ui_component: CString<'a>,
         pub minimum: u32,
         pub icon_path: StringInfoKey,
-        // 1.10 added a new u32 here. For Money_Copper's two
-        // MoneyUnitEntries the value is `0xc52007c6` (decimal 3,306,518,982);
-        // its in-game name is unknown — likely another StringInfoKey-shaped
-        // hash. Confirmed by hand-decoding Money_Copper bytes (both entries
-        // gained +4 B at the same UnitData-relative position, net item delta
-        // +4 = -4 from money_icon_path removal + 2 × +4 from this field).
+        // Game name unknown; likely a StringInfoKey-shaped hash (both of
+        // Money_Copper's entries read `0xc52007c6`).
         pub unk_post_icon_path: u32,
         pub item_name: LocalizableString<'a>,
         pub item_desc: LocalizableString<'a>,
@@ -419,40 +409,28 @@ py_binary_struct! {
 }
 
 py_binary_struct! {
-    /// 1.13: unified prefab + gimmick-visual element. In 1.13 the separate
-    /// `prefab_data_list` and `gimmick_visual_prefab_data_list` (both of which
-    /// sat in the item middle in 1.05–1.12) were **merged into one list**
-    /// relocated to the item END (after `repair_data_list`). The merged element
-    /// interleaves the fields of both source structs: a `scale` (default
-    /// `(1,1,1)` for prefab-origin rows), the prefab/animation name lists, the
-    /// equip-slot + tribe-gender lists, and a 3-byte flag tail (`is_craft`
-    /// (prefab) / `use_gimmick` (gimmick) / a new byte; values seen in 0..=3).
-    /// Verified byte-perfect on all 6,508 1.13 items. See the "ItemInfo (1.13)"
-    /// header in `item.rs`.
-    ///
-    /// 1.18 inserted `unk_pre_is_craft_material` before the flag tail — the
-    /// sole iteminfo layout change of that patch. See the "ItemInfo (1.18)"
-    /// header in `item.rs`.
+    /// One element of the item's prefab + gimmick-visual list, which sits at
+    /// the item end (after `repair_data_list`). It carries the fields of both a
+    /// prefab and a gimmick-visual entry: a `scale` (`(1,1,1)` for prefab
+    /// entries), the prefab/animation name lists, the equip-slot +
+    /// tribe-gender lists, `unk_pre_is_craft_material`, and a 3-byte flag tail
+    /// (values 0..=3).
     pub struct MergedPrefabVisualData {
         pub scale: [f32; 3],
         pub prefab_names: CArray<StringInfoKey>,
         pub animation_path_list: CArray<StringInfoKey>,
         pub equip_slot_list: CArray<u16>,
         pub tribe_gender_list: CArray<StringInfoKey>,
-        // 1.18: new u32 between `tribe_gender_list` and the flag tail. Reads
-        // the constant `0xeac5e173` on all 12,274 elements of all 6,573 items
-        // in 1.18 and on all 12,550 elements of all 6,810 items in 2.00
-        // (zero exceptions in either) — the same "empty string" Jenkins
-        // sentinel that used to sit in the `money_icon_path` field removed in
-        // 1.10, so this is very likely a string/prefab name hash that ships
-        // unset. Typed as a bare u32 rather than StringInfoKey until a
-        // populated value shows up to confirm the referent.
+        // Reads `0xeac5e173`, the Jenkins hash of the empty string, so it is
+        // very likely a string/prefab name hash that ships unset. Typed as a
+        // bare u32 rather than StringInfoKey until a populated value confirms
+        // the referent.
         pub unk_pre_is_craft_material: u32,
-        // 3-byte flag tail. Provisional names: 1.12's PrefabData ended with
-        // `is_craft_material` and GimmickVisualPrefabData with
-        // `use_gimmick_prefab`; the merged element carries both plus a new byte
-        // (values 0..=3). Exact mapping pending RE — kept as three u8s so the
-        // round-trip stays byte-exact regardless.
+        // 3-byte flag tail. Provisional names: a prefab entry ends with
+        // `is_craft_material` and a gimmick-visual entry with
+        // `use_gimmick_prefab`; the element carries both plus a third byte.
+        // Which byte is which is not established; three u8s round-trip
+        // byte-exact either way.
         pub is_craft_material: u8,
         pub use_gimmick_prefab: u8,
         pub unk_post_flag: u8,
@@ -481,55 +459,39 @@ py_binary_struct! {
         pub detected_by_npc: u8,
         pub is_bag_docking: u8,
         pub enable_collision: u8,
-        // 2.04: four new bytes ahead of the one `disable_collision...` byte
-        // that reads non-zero. All zero, so where exactly in this run they sit
-        // cannot be told from the data; read as one u32.
+        // Four zero bytes ahead of the `disable_collision...` byte. Where
+        // exactly in this all-zero run they sit cannot be told from the data;
+        // read as one u32.
         pub unk_pre_disable_collision: u32,
         pub disable_collision_with_other_gimmick: u8,
         pub docking_slot_key: CString<'a>,
         pub inherit_summoner: u8,
         pub summon_tag_name_hash: [u32; 4],
-        // 2.04: a closing u32 (always 0) + u8 (always 1) on all 392 carried-over
-        // elements. Through 2.03 that u32 did exist, unmodelled: the parser read
-        // it as `default_sub_item` type 0, with the real tag 18 as its top byte.
+        // A closing u32 (0) + u8 (1). Leaving the u32 out reads it as the
+        // item's `default_sub_item` with type 0.
         pub unk_post_summon_tag_a: u32,
         pub unk_post_summon_tag_b: u8,
-        // Crimson Desert 1.08 added a trailing `unk_post_summon_tag: u8` here;
-        // **1.16 removed it again**. It read 0x00 on every item that ever
-        // carried it, matching the reserved-placeholder reading in the 1.08
-        // note — the slot was retired rather than ever populated.
-        //
-        // The removal is invisible on items with `docking_child_data.tag = 0`
-        // (the struct isn't read at all), so it presents as a *conditional*
-        // 1-byte drift: in 1.16 exactly the 391 items with
-        // `docking_child_data.__tag__ != 0` lose a byte and every other item
-        // is unaffected. That discriminator partitions the 6,581-item table
-        // perfectly (fp=0, fn=0), which is what pinned the field. See the
-        // "ItemInfo (1.16)" header in `item.rs`.
     }
 }
 
 py_binary_struct! {
-    /// Element of the 1.16 `unk_pre_respawn_data_list` (28 B).
+    /// Element of `UnkPreRespawnBlock::unk_pre_respawn_data_list` (28 B).
     ///
-    /// New in Crimson Desert 1.16, in the block inserted immediately before
-    /// `respawn_time_seconds`. Only 14 of the 6,581 items carry a non-empty
-    /// list — housing/prop gimmick items (`Item_cabinet_02_index01`,
-    /// `Collection_Prop_Plate_0003`, …) and large food items (`Rice_XLarge`,
-    /// `Sinseollo_XLarge`, `Braised_Fish_Large`, …), with one or two elements.
+    /// The items that carry one are housing/prop gimmick items
+    /// (`Item_cabinet_02_index01`, `Collection_Prop_Plate_0003`, …) and large
+    /// food items (`Rice_XLarge`, `Sinseollo_XLarge`, `Braised_Fish_Large`, …),
+    /// with one or two elements.
     ///
-    /// Across the 23 elements in the table: `unk_a` is only ever 11, 12 or 13;
-    /// `unk_b == unk_c` on 23/23 and `unk_d == unk_c + 1` on 23/23, which reads
-    /// like a `(kind, min, cur, max)` tuple. Sample rows: `(13, 50, 50, 51)`
-    /// (`Item_gimmick_alchemy_globe_0002`), `(11, 8, 8, 9)` + `(12, 12, 12, 13)`
-    /// (`Rice_XLarge`), `(11, 279, 279, 280)` + `(12, 465, 465, 466)`
-    /// (`Meat_Fish_Vegetable_Egg_XLarge`).
+    /// `unk_a` reads 11, 12 or 13; `unk_b == unk_c` and `unk_d == unk_c + 1`,
+    /// which reads like a `(kind, min, cur, max)` tuple. Sample rows:
+    /// `(13, 50, 50, 51)` (`Item_gimmick_alchemy_globe_0002`), `(11, 8, 8, 9)` +
+    /// `(12, 12, 12, 13)` (`Rice_XLarge`), `(11, 279, 279, 280)` +
+    /// `(12, 465, 465, 466)` (`Meat_Fish_Vegetable_Egg_XLarge`).
     ///
-    /// The three 8-byte fields could equally be six u32s — the high half of
-    /// each reads 0 on all 23 elements — but u64 matches the `count_mb` /
-    /// `max_stack_count` precedent elsewhere in this format. Either split is
-    /// byte-identical, so the round-trip does not disambiguate them. Semantic
-    /// role unknown.
+    /// The three 8-byte fields could equally be six u32s (the high half of
+    /// each reads 0), but u64 matches the `count_mb` / `max_stack_count`
+    /// precedent elsewhere in this format. Either split is byte-identical, so
+    /// the round-trip does not disambiguate them. Semantic role unknown.
     pub struct UnkPreRespawnData {
         pub unk_a: u32,
         pub unk_b: u64,
@@ -539,10 +501,10 @@ py_binary_struct! {
 }
 
 py_binary_struct! {
-    /// The block `unk_pre_respawn_data_list` lives in since 2.04. Present on 197
-    /// of the 1,552 `iteminfo.dlc_01` rows and on no base-table row. All 197
-    /// have `unk_a` 1 and `unk_flag` 0; `unk_b` reads 1..=4. `item_group_list`
-    /// holds the same `0x4xxx` keys `item_group_info_list` does.
+    /// The optional block that holds `unk_pre_respawn_data_list`. Absent on
+    /// base-table rows; present on some `iteminfo.dlc_01` rows, with `unk_a` 1,
+    /// `unk_flag` 0 and `unk_b` in 1..=4. `item_group_list` holds the same
+    /// `0x4xxx` keys `item_group_info_list` does.
     pub struct UnkPreRespawnBlock {
         pub unk_a: u32,
         pub unk_flag: u8,
@@ -600,15 +562,8 @@ impl<'a> BinaryRead<'a> for SubItem {
             0 => SubItemValue::Item(ItemKey::read_from(data, offset)?),
             3 => SubItemValue::Character(CharacterKey::read_from(data, offset)?),
             9 => SubItemValue::Gimmick(GimmickInfoKey::read_from(data, offset)?),
-            // Crimson Desert 1.05: tag 15 is a new "None"-style variant
-            // (no payload), seen alongside the existing tag 14.
-            // 1.12: tag 16 — items that read tag 15 (None) in 1.11 now read
-            // tag 16; still payload-free (verified byte-aligned vs 1.11), so
-            // it joins the None arm. Affects both SubItem sites.
-            // 1.13: tag 17, same renumbering. 2.00: tag 18, likewise — every
-            // site that read 17 in 1.18 reads 18 in 2.00 and the bytes stay
-            // aligned (flipping just those tag bytes in a 1.18 item reproduces
-            // the 2.00 item byte-for-byte), so tag 18 is payload-free too.
+            // Payload-free tags. The game renumbers its "none" tag on some
+            // patches (current data uses 18); the arm keeps the earlier numbers.
             14..=18 => SubItemValue::None,
             _ => {
                 return Err(io::Error::new(
