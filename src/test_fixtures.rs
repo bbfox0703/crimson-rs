@@ -44,3 +44,28 @@ pub(crate) fn save(rel: &str) -> Option<Vec<u8>> {
         }
     }
 }
+
+/// The game-data fixtures folder, `<private repo>/gamedata`: decrypted
+/// static-info tables of older versions (see its README), so a test does not
+/// depend on a local version archive. It sits next to `saves/`, so
+/// `CRIMSON_FIXTURES_DIR` moves both.
+pub(crate) fn gamedata_dir() -> PathBuf {
+    let saves = saves_dir();
+    saves.parent().map(|p| p.join("gamedata")).unwrap_or_else(|| saves.join("..").join("gamedata"))
+}
+
+/// The bytes of game-data fixture `rel` (e.g. `"2.04/skill.staticinfobody"`),
+/// or `None` with a note on stderr when it is not there.
+pub(crate) fn gamedata(rel: &str) -> Option<Vec<u8>> {
+    let p = gamedata_dir().join(rel);
+    match std::fs::read(&p) {
+        Ok(data) => Some(data),
+        Err(_) => {
+            eprintln!(
+                "skipping fixture {}: not found (clone crimson-rs-private next to this repo, or set CRIMSON_FIXTURES_DIR)",
+                p.display()
+            );
+            None
+        }
+    }
+}

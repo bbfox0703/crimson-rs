@@ -381,25 +381,19 @@ mod tests {
         }
     }
 
-    /// Skill round-trip on every version the version archive keeps in the
-    /// 2.04+ entry layout the parser reads (2.04 through 2.06). Reads the loose
-    /// `skill.staticinfo{body,header}` from `CRIMSON_GAMEDATA_BIN` (default
-    /// `X:\Crimson Desert\gamedata-bin`, the runbook's archive) and skips the
-    /// versions or the archive it does not find. It used to point at a `G:`
-    /// folder of old installs that no longer exists, and would have panicked on
-    /// one (it looked up the 2.01+ bin directory in a 1.0x PAMT; audit C-18).
+    /// Skill round-trip on the versions in the parser's 2.04+ entry layout,
+    /// from the game-data fixtures in `crimson-rs-private` (`gamedata/<ver>/`,
+    /// see `test_fixtures::gamedata_dir`): 2.04 (= 2.04.08), 2.05.01 (= 2.05)
+    /// and 2.06. Skips a version whose fixture is missing. It used to read a
+    /// local version archive on `X:`, and before that a `G:` folder of old
+    /// installs that no longer exists (audit C-18).
     #[test]
     fn test_skill_roundtrip_cross_version() {
-        let root = std::env::var_os("CRIMSON_GAMEDATA_BIN")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| std::path::PathBuf::from(r"X:\Crimson Desert\gamedata-bin"));
-        for version in ["2.04", "2.04.08", "2.05", "2.05.01", "2.06"] {
-            let dir = root.join(version);
-            let (Ok(pabgh), Ok(pabgb)) = (
-                std::fs::read(dir.join("skill.staticinfoheader")),
-                std::fs::read(dir.join("skill.staticinfobody")),
+        for version in ["2.04", "2.05.01", "2.06"] {
+            let (Some(pabgh), Some(pabgb)) = (
+                crate::test_fixtures::gamedata(&format!("{version}/skill.staticinfoheader")),
+                crate::test_fixtures::gamedata(&format!("{version}/skill.staticinfobody")),
             ) else {
-                eprintln!("skipping skill {version}: not in {}", root.display());
                 continue;
             };
             let (fallback, total) = run_skill_roundtrip(version, &pabgh, &pabgb);
