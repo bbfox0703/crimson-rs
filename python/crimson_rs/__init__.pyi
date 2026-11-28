@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 __version__: str
 """The crate version (``Cargo.toml``)."""
@@ -1421,6 +1421,43 @@ def serialize_skillinfo(data: SkillData) -> tuple[bytes, bytes]:
     ...
 
 
+class MissionInfoRow(TypedDict):
+    key: int
+    """MissionKey (u32), the key save blocks store."""
+    name: str
+    """Internal name, e.g. ``"Mission_Intro_Tutorial_I"`` or ``"Challenge_*"``."""
+    paloc_key: int
+    """u64 PALOC key of the row's text: ``hashlittle(name) << 32 | namespace``."""
+    display_name: NotRequired[str | None]
+    """The PALOC string at ``paloc_key``; present only when ``paloc`` was
+    passed, ``None`` when that PALOC has no such key."""
+
+
+def parse_missioninfo_from_bytes(
+    body: bytes,
+    header: bytes,
+    paloc: bytes | None = None,
+    namespace: int = 0x101,
+) -> list[MissionInfoRow]:
+    """Every row of a 2.06 missioninfo body + header pair, in header order.
+
+    Args:
+        body: ``missioninfo.staticinfobody`` bytes, as ``extract_file``
+            returns them.
+        header: ``missioninfo.staticinfoheader`` bytes, the header that
+            lists the rows.
+        paloc: Optional ``localizationstring_*.paloc`` bytes (the 2.03+
+            container or a bare entry list). Adds ``display_name`` to each row.
+        namespace: Low word of ``paloc_key``. ``0x101`` is the mission title;
+            ``0x100`` a region heading, ``0x102`` a description.
+
+    Raises:
+        ValueError: The header is not the 2.06 shape or does not match the
+            body, or ``paloc`` does not parse.
+    """
+    ...
+
+
 def extract_file_from_paz(paz_path: str, vfs_path: str) -> bytes:
     """Extract a single file by pointing at any ``.paz`` in the group directory.
 
@@ -1500,5 +1537,7 @@ def parse_save_body_from_bytes(body: bytes) -> dict[str, Any]:
 
 def decode_save_body_blocks(body: bytes) -> dict[str, Any]:
     """Decode every TOC entry of a save body into nested block dicts (fields
-    with ``kind``, ``start``, ``end`` and kind-specific values)."""
+    with ``kind``, ``start``, ``end`` and kind-specific values). A fixed-size
+    scalar field carries ``scalar_tag`` (``u32``, ``f32x3``, ``bytes``, ...,
+    the same tags as ``value_type``) whether or not it is present."""
     ...

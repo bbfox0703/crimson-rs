@@ -1581,7 +1581,9 @@ pub unsafe extern "C" fn crimson_save_get_block_class_name(
 ///   "fields": [
 ///     { "field_index", "name", "type_name",
 ///       "meta_kind", "meta_size", "meta_aux",
-///       "present", "kind", "value", "start", "end", "note",
+///       "present", "kind",
+///       "scalar_tag",  // fixed-size scalars only, present or absent; else omitted
+///       "value", "start", "end", "note",
 ///       "child",       // inline locator child: a nested block object, else null
 ///       "elements" }   // object_list elements: nested block objects, else null
 ///   ],
@@ -1591,8 +1593,14 @@ pub unsafe extern "C" fn crimson_save_get_block_class_name(
 ///
 /// Nested block objects have this same shape. `value` is a
 /// pre-formatted human string mirroring
-/// `tools/inspect/inspect_save_section.py --pretty`: `"(absent)"` for an
-/// absent field, `"<unknown>"` for one the decoder could not read. The
+/// `tools/inspect/inspect_save_section.py --pretty`: `"123 <u32>"` for a
+/// present scalar, `"(absent)"` for an absent field, `"<unknown>"` for one
+/// the decoder could not read. `scalar_tag` is the schema's scalar type
+/// (`bool`, `u8`..`u64`, `i8`..`i64`, `f32`, `f64`, `f32x3`, `f32x4`,
+/// `u32x4`, or `bytes` for a size no primitive fits), the same tag a present
+/// value carries, on every field with `meta_kind` 0 or 2 and a non-zero
+/// size. That lets an editor type an absent scalar without parsing
+/// `type_name`. The
 /// JSON carries no raw `bytes` / `count` keys; read raw contents through
 /// the typed getters (`crimson_save_dynamic_array_get_u32_elements`,
 /// `crimson_save_get_inline_bytes_field`).
@@ -4911,6 +4919,12 @@ fn write_field_json(s: &mut String, f: &DecodedField) {
     write_json_string(s, f.kind.as_str());
     s.push(',');
 
+    // The schema's scalar type, present or absent, so an editor can offer
+    // an absent scalar for editing without guessing its type from the name.
+    if let Some(tag) = f.scalar_tag() {
+        write!(s, "\"scalar_tag\":\"{tag}\",").unwrap();
+    }
+
     s.push_str("\"value\":");
     let formatted = format_field_value(f);
     write_json_string(s, &formatted);
@@ -5091,35 +5105,27 @@ fn format_dynamic_array(
 }
 
 fn format_scalar(v: &ScalarValue) -> (String, &'static str) {
-    match v {
-        ScalarValue::Bool(b) => ((*b != 0).to_string(), "bool"),
-        ScalarValue::U8(n)   => (n.to_string(), "u8"),
-        ScalarValue::U16(n)  => (n.to_string(), "u16"),
-        ScalarValue::U32(n)  => (n.to_string(), "u32"),
-        ScalarValue::U64(n)  => (n.to_string(), "u64"),
-        ScalarValue::I8(n)   => (n.to_string(), "i8"),
-        ScalarValue::I16(n)  => (n.to_string(), "i16"),
-        ScalarValue::I32(n)  => (n.to_string(), "i32"),
-        ScalarValue::I64(n)  => (n.to_string(), "i64"),
-        ScalarValue::F32(n)  => (format!("{n}"), "f32"),
-        ScalarValue::F64(n)  => (format!("{n}"), "f64"),
-        ScalarValue::F32x3(xs) => (
-            format!("[{}, {}, {}]", xs[0], xs[1], xs[2]),
-            "f32x3",
+    let val = match v {
+        ScalarValue::Bool(b) => (*b != 0).to_string(),
+        ScalarValue::U8(n) => n.to_string(),
+        ScalarValue::U16(n) => n.to_string(),
+        ScalarValue::U32(n) => n.to_string(),
+        ScalarValue::U64(n) => n.to_string(),
+        ScalarValue::I8(n) => n.to_string(),
+        ScalarValue::I16(n) => n.to_string(),
+        ScalarValue::I32(n) => n.to_string(),
+        ScalarValue::I64(n) => n.to_string(),
+        ScalarValue::F32(n) => format!("{n}"),
+        ScalarValue::F64(n) => format!("{n}"),
+        ScalarValue::F32x3(xs) => format!("[{}, {}, {}]", xs[0], xs[1], xs[2]),
+        ScalarValue::F32x4(xs) => format!("[{}, {}, {}, {}]", xs[0], xs[1], xs[2], xs[3]),
+        ScalarValue::U32x4(xs) => format!(
+            "[0x{:08x}, 0x{:08x}, 0x{:08x}, 0x{:08x}]",
+            xs[0], xs[1], xs[2], xs[3]
         ),
-        ScalarValue::F32x4(xs) => (
-            format!("[{}, {}, {}, {}]", xs[0], xs[1], xs[2], xs[3]),
-            "f32x4",
-        ),
-        ScalarValue::U32x4(xs) => (
-            format!(
-                "[0x{:08x}, 0x{:08x}, 0x{:08x}, 0x{:08x}]",
-                xs[0], xs[1], xs[2], xs[3]
-            ),
-            "u32x4",
-        ),
-        ScalarValue::Bytes(b) => (format!("{} bytes", b.len()), "bytes"),
-    }
+        ScalarValue::Bytes(b) => format!("{} bytes", b.len()),
+    };
+    (val, v.tag())
 }
 
 fn write_json_string(out: &mut String, s: &str) {
@@ -5214,6 +5220,150 @@ mod format_dynamic_array_tests {
         let bytes = [1u8, 2, 3]; // 3 bytes claimed as 1 u32
         let s = format_dynamic_array(1, &bytes, "marker_prefix", 4);
         assert!(s.starts_with("<1 items, 3 bytes, marker_prefix, hex="), "got {s:?}");
+    }
+}
+
+#[cfg(test)]
+mod scalar_tag_tests {
+    //! `scalar_tag` in the block JSON: the schema's scalar type on every
+    //! fixed-size scalar field, present or absent, from the same mapping as
+    //! the `<tag>` after a present value.
+
+    use super::*;
+    use crate::save::{scalar_from_bytes, scalar_tag};
+    use std::collections::HashMap;
+    use std::ffi::CString;
+    use std::ptr;
+
+    #[test]
+    fn tag_follows_the_decode() {
+        for (ty, size, tag) in [
+            ("bool", 1, "bool"),
+            ("uint8", 1, "u8"),
+            ("uint16", 2, "u16"),
+            ("ItemKey", 4, "u32"),
+            ("uint64", 8, "u64"),
+            ("int8", 1, "i8"),
+            ("int32", 4, "i32"),
+            ("int64", 8, "i64"),
+            ("float", 4, "f32"),
+            ("double_float", 8, "f64"),
+            ("float3", 12, "f32x3"),
+            ("quaternion", 16, "f32x4"),
+            ("uint4", 16, "u32x4"),
+            ("Transform", 40, "bytes"),
+        ] {
+            assert_eq!(scalar_tag(ty, size), tag, "{ty} / {size}");
+            let ones = vec![0xffu8; size];
+            assert_eq!(scalar_from_bytes(&ones, ty, size).tag(), tag, "{ty} / {size}");
+        }
+    }
+
+    #[test]
+    fn non_scalar_fields_carry_no_tag() {
+        let field = |meta_kind: u16, meta_size: u16| DecodedField {
+            field_index: 0,
+            name: "_f".into(),
+            type_name: "uint32".into(),
+            meta_kind,
+            meta_size,
+            meta_aux: 0,
+            present: false,
+            absent_marker: false,
+            kind: FieldKind::Absent,
+            value: FieldValue::None,
+            start: 0,
+            end: 0,
+            note: String::new(),
+        };
+        assert_eq!(field(0, 4).scalar_tag(), Some("u32"));
+        assert_eq!(field(2, 4).scalar_tag(), Some("u32"));
+        assert_eq!(field(0, 0).scalar_tag(), None);
+        for kind in [1, 3, 4, 6, 7] {
+            assert_eq!(field(kind, 4).scalar_tag(), None, "meta_kind {kind}");
+        }
+    }
+
+    /// Every scalar field of every block in a tree: (class, field, present, tag).
+    fn walk<'a>(b: &'a ObjectBlock, out: &mut Vec<(&'a str, &'a str, bool, Option<&'static str>)>) {
+        for f in &b.fields {
+            if matches!(f.meta_kind, 0 | 2) && f.meta_size > 0 {
+                out.push((&b.class_name, &f.name, f.present, f.scalar_tag()));
+            }
+            match &f.value {
+                FieldValue::Locator { child: Some(c), .. } => walk(c, out),
+                FieldValue::ObjectList { elements, .. } => {
+                    for el in elements {
+                        walk(el, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// On the newest live save: every absent scalar has a tag, a field absent
+    /// in one element and present in another has one tag in both, and the
+    /// block JSON writes `scalar_tag` on every absent scalar.
+    #[test]
+    fn live_absent_scalars_carry_the_present_tag() {
+        let Some(path) = crate::test_fixtures::newest_live_save() else {
+            eprintln!("skipping live_absent_scalars_carry_the_present_tag: no live save");
+            return;
+        };
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let mut handle: *mut CrimsonSaveHandle = ptr::null_mut();
+        assert_eq!(unsafe { crimson_save_load_from_file(c_path.as_ptr(), &mut handle) }, error::OK);
+        let h = unsafe { &*handle };
+
+        let mut tags: HashMap<(&str, &str), [Option<&'static str>; 2]> = HashMap::new();
+        let mut absent_total = 0usize;
+        let mut json_misses = Vec::new();
+        for (idx, b) in h.blocks.iter().enumerate() {
+            let mut rows = Vec::new();
+            walk(b, &mut rows);
+            let mut absent_here = 0usize;
+            for (class, name, present, tag) in rows {
+                let tag = tag.unwrap_or_else(|| panic!("{class}.{name} has no scalar tag"));
+                if !present {
+                    absent_here += 1;
+                }
+                let slot = &mut tags.entry((class, name)).or_default()[usize::from(present)];
+                match slot {
+                    Some(seen) => assert_eq!(*seen, tag, "{class}.{name}: two tags with present={present}"),
+                    None => *slot = Some(tag),
+                }
+            }
+            absent_total += absent_here;
+
+            let mut needed = 0usize;
+            unsafe { crimson_save_get_block_json(handle, idx as u32, ptr::null_mut(), 0, &mut needed) };
+            let mut buf = vec![0u8; needed];
+            let rc = unsafe {
+                crimson_save_get_block_json(handle, idx as u32, buf.as_mut_ptr(), buf.len(), ptr::null_mut())
+            };
+            assert_eq!(rc, error::OK);
+            let json = std::str::from_utf8(&buf[..needed - 1]).unwrap();
+            let in_json = json.matches("\"present\":false,\"kind\":\"absent\",\"scalar_tag\":\"").count();
+            if in_json != absent_here {
+                json_misses.push((idx, absent_here, in_json));
+            }
+        }
+        assert!(json_misses.is_empty(), "block JSON absent-scalar tag counts differ: {json_misses:?}");
+        assert!(absent_total > 0, "the save holds no absent scalar");
+
+        let mut both = 0usize;
+        for ((class, name), [absent, present]) in &tags {
+            if let (Some(a), Some(p)) = (absent, present) {
+                assert_eq!(a, p, "{class}.{name}: absent tag {a}, present tag {p}");
+                both += 1;
+            }
+        }
+        assert!(both > 0, "no scalar field is absent in one block and present in another");
+        println!(
+            "{absent_total} absent scalars tagged; {both} fields seen both absent and present, all with one tag"
+        );
+        unsafe { crimson_save_free(handle) };
     }
 }
 

@@ -326,6 +326,29 @@ assert new_pabgb == pabgb
 
 ---
 
+### `parse_missioninfo_from_bytes(body: bytes, header: bytes, paloc: bytes | None = None, namespace: int = 0x101) -> list[dict]`
+
+Every row of a 2.06 missioninfo pair (`missioninfo.staticinfobody` + `missioninfo.staticinfoheader`), in header order. Each row is `{"key", "name", "paloc_key"}`:
+- `key` is the MissionKey that save blocks store.
+- `name` is the internal `Mission_*` / `Challenge_*` name.
+- `paloc_key` is `hashlittle(name) << 32 | namespace`, the same chain `crimson_missioninfo_lookup_display_name` follows.
+
+With `paloc` (one `localizationstring` file, wrapped or bare), each row also gets `display_name`: the string at `paloc_key`, or `None`. On 2.01+ the English titles sit in `gamedata/stringtable/binary__/eng/quest.paloc`.
+
+```python
+lay = "gamedata/binarystaticinfo__/bin"
+body = crimson_rs.extract_file(game_dir, "0008", lay, "missioninfo.staticinfobody")
+header = crimson_rs.extract_file(game_dir, "0008", lay, "missioninfo.staticinfoheader")
+quest = crimson_rs.extract_file(game_dir, "0020", "gamedata/stringtable/binary__/eng", "quest.paloc")
+rows = crimson_rs.parse_missioninfo_from_bytes(body, header, paloc=quest)
+# {'key': 1000913, 'name': 'Challenge_SealedArtifact_Living_VII',
+#  'paloc_key': 11704603591833551105, 'display_name': 'Feast for the Road'}
+```
+
+**Raises:** `ValueError` when the header is not the 2.06 shape or does not list the body's rows (the pairs the C ABI loaders refuse with `BODY_PARSE`), or when `paloc` does not parse.
+
+---
+
 ### `inspect_legacy_patches(vanilla_bytes: bytes, patches: list[dict]) -> list[dict | None]`
 
 Resolve JSON v2 byte patches to field-path attributions on a vanilla `iteminfo.pabgb`. Parses the bytes once with byte-level tracking, then for each input patch finds the field whose `[start, end)` covers `entry.start + rel_offset`. Useful for translating legacy byte-patch mods to a semantic / field-keyed format without having to apply the patch first and reparse.

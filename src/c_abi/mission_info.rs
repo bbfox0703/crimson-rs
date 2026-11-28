@@ -39,7 +39,6 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use super::error;
 use super::paloc::CrimsonPalocHandle;
-use crate::crypto::checksum::calculate_checksum;
 use crate::mission_info::parse_mission_info_lossy;
 
 /// Opaque handle exposing `(MissionKey, internal_name)` lookups against
@@ -347,8 +346,7 @@ pub unsafe extern "C" fn crimson_missioninfo_lookup_display_name(
         };
 
         // Step 2: hashlittle(name) → u64 PALOC key
-        let hi32 = calculate_checksum(name.as_bytes()) as u64;
-        let u64_key = (hi32 << 32) | u64::from(lo32_namespace);
+        let u64_key = crate::mission_info::paloc_key(name, lo32_namespace);
 
         // Step 3: PALOC keys are stored as decimal strings.
         //
@@ -475,6 +473,7 @@ mod tests {
             "Mission_IronStronghold_Block_ReturnToSister",
             "Where the Wind Guides You",
         ),
+        (1_000_913, "Challenge_SealedArtifact_Living_VII", "Feast for the Road"),
     ];
 
     fn find_pamt() -> Option<PathBuf> {

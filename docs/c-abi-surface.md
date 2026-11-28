@@ -414,6 +414,20 @@ int32_t crimson_factionnode_entry_source(const CrimsonFactionNodeInfoHandle *han
   turn a damaged or tampered save the game rejects into one it accepts, even
   with no edit. `crimson_save_set_allow_hmac_rewrap(h, 1)` (new) opts in for a
   deliberate repair. Every real save verifies, so a normal edit is unaffected.
+- **Scalar type tags in the block JSON (2026-11-28, CrimsonAtomtic B2-24)** —
+  every fixed-size scalar field (`meta_kind` 0 / 2, non-zero size) in
+  `crimson_save_get_block_json` now carries `"scalar_tag"` (`u32`, `f32x3`,
+  `bytes`, …), present or absent. It is the same tag as the `<u32>` after a
+  present value. Other fields leave the key out. `decode_save_body_blocks` in
+  Python adds the same key. An editor can now type an absent scalar without an
+  alias table over `type_name`.
+- **Open PAMT handle (2026-11-28, CrimsonAtomtic B1-14)** — `crimson_paz_open`
+  parses a group's `0.pamt` once. `crimson_paz_handle_extract_file` and
+  `crimson_paz_handle_list_dir` then work from it with the free functions'
+  shapes and codes, and `crimson_paz_close` releases it. A size query keeps
+  the extracted bytes, so the fill call copies them instead of decompressing
+  again. The free functions are unchanged and still parse the PAMT per call.
+  For bulk work such as the icons in `0012`, use the handle.
 
 **Absence markers.** The engine writes one `0x01` byte for every *absent*
 dynamic array (`meta_kind` 3) and object list (6 / 7), and nothing for other
@@ -671,7 +685,7 @@ consumes it.
 
 <!-- symbol-index:start -->
 
-Every exported `crimson_*` function, 369 in all, grouped by source file, with the first line
+Every exported `crimson_*` function, 373 in all, grouped by source file, with the first line
 of its rustdoc. `repo_doc_budget::c_abi_surface_lists_every_symbol` fails when a symbol is
 missing from this file, so add a line here (or a mention above) with any new export.
 
@@ -1051,6 +1065,10 @@ missing from this file, so add a line here (or a mention above) with any new exp
 - `crimson_paz_extract_file` — Extract a single file from a Crimson Desert pack group.
 - `crimson_paz_list_npc_portraits` — List every NPC portrait DDS file in a PAZ group's PAMT.
 - `crimson_paz_list_dir` — List every file in a single PAMT directory, with the metadata a caller needs to drive [`crimson_paz_extract_file`] (filename) and pre-size…
+- `crimson_paz_open` — Open a pack group's `0.pamt` (same path rules as [`crimson_paz_extract_file`]) and parse it once.
+- `crimson_paz_close` — Release a handle from [`crimson_paz_open`].
+- `crimson_paz_handle_extract_file` — Extract one file through an open handle: [`crimson_paz_extract_file`] without reading or parsing the PAMT again.
+- `crimson_paz_handle_list_dir` — List one directory through an open handle: [`crimson_paz_list_dir`] without reading or parsing the PAMT again.
 
 **`src/c_abi/positions.rs`**
 
