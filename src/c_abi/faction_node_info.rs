@@ -99,6 +99,9 @@ pub unsafe extern "C" fn crimson_factionnode_load_from_file(
             Err(_) => return error::IO,
         };
         let handle = CrimsonFactionNodeInfoHandle::from_bytes(&pabgb, &pabgh);
+        if let Err(code) = crate::c_abi::check_rows(&pabgb, Some(&pabgh[..]), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -138,6 +141,9 @@ pub unsafe extern "C" fn crimson_factionnode_load_from_bytes(
         };
         let handle =
             CrimsonFactionNodeInfoHandle::from_bytes(pabgb_slice, pabgh_slice);
+        if let Err(code) = crate::c_abi::check_rows(pabgb_slice, Some(pabgh_slice), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))

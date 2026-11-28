@@ -559,7 +559,10 @@ pub unsafe extern "C" fn crimson_iteminfo_load_from_file(
             Err(_) => return error::IO,
         };
         // 2.06+: item names live in the `.staticinfoheader` next to the body.
-        let header = super::sibling_header(path_str);
+        let header = match super::sibling_header(path_str) {
+            Ok(h) => h,
+            Err(_) => return error::IO,
+        };
         let handle = match CrimsonItemInfoHandle::from_parts(&bytes, header.as_deref()) {
             Ok(h) => h,
             Err(_) => return error::BODY_PARSE,

@@ -112,8 +112,14 @@ pub unsafe extern "C" fn crimson_knowledgeinfo_load_from_file(
             Err(_) => return error::IO,
         };
         // 2.06+: row names live in the `.staticinfoheader` next to the body.
-        let header = super::sibling_header(path_str);
+        let header = match super::sibling_header(path_str) {
+            Ok(h) => h,
+            Err(_) => return error::IO,
+        };
         let handle = CrimsonKnowledgeInfoHandle::from_bytes(&bytes, header.as_deref());
+        if let Err(code) = crate::c_abi::check_rows(&bytes, header.as_deref(), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -145,6 +151,9 @@ pub unsafe extern "C" fn crimson_knowledgeinfo_load_from_bytes(
             unsafe { std::slice::from_raw_parts(data, data_len) }
         };
         let handle = CrimsonKnowledgeInfoHandle::from_bytes(slice, None);
+        if let Err(code) = crate::c_abi::check_rows(slice, None, handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))
@@ -154,7 +163,9 @@ pub unsafe extern "C" fn crimson_knowledgeinfo_load_from_bytes(
 /// Parse in-memory `knowledgeinfo` bytes together with the table's
 /// `.staticinfoheader`. Required from 2.06, where row names moved out of the
 /// body into the header: `crimson_knowledgeinfo_load_from_bytes` on a 2.06 body finds
-/// no rows. On an older install the header is not needed and is ignored.
+/// no rows, and returns `BODY_PARSE` for it. A header that is not the 2.06 shape
+/// or does not match the body is `BODY_PARSE` too (the parsers read the latest
+/// patch only; audit B-02).
 ///
 /// # Safety
 /// `data` / `header` must point to `data_len` / `header_len` readable bytes
@@ -186,6 +197,9 @@ pub unsafe extern "C" fn crimson_knowledgeinfo_load_from_bytes_with_header(
             unsafe { std::slice::from_raw_parts(header, header_len) }
         };
         let handle = CrimsonKnowledgeInfoHandle::from_bytes(slice, Some(header));
+        if let Err(code) = crate::c_abi::check_rows(slice, Some(header), handle.entries.len()) {
+            return code;
+        }
         unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
         error::OK
     }))

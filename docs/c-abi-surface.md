@@ -54,7 +54,7 @@ int32_t crimson_<table>_load_from_bytes_with_header(
   `crimson_stageinfo_`, `crimson_gimmickinfo_`, `crimson_questinfo_`,
   `crimson_questgaugeinfo_`, `crimson_sublevelinfo_load_from_bytes_with_header`
   — **required from 2.06**: the old body-only `*_load_from_bytes` finds no rows
-  on a 2.06 body. On an older install the header is not needed and is ignored.
+  on a 2.06 body and returns `BODY_PARSE`.
   With a 2.06 header every one of these returns exactly the rows the header
   lists (since 2026-11-28; before that seven of them anchor-scanned the rebuilt
   body and dropped rows: mission 2,444, stage 3,198, gimmick 140, quest 1).
@@ -64,7 +64,17 @@ int32_t crimson_<table>_load_from_bytes_with_header(
   so load those with `crimson_iteminfo_load_from_bytes`.
 - The `*_load_from_file(path)` loaders of all nine read the sibling header
   automatically if it is present (`x.staticinfobody` → `x.staticinfoheader`,
-  `x.pabgb` → `x.pabgh`; `sibling_header` in `src/c_abi/mod.rs`).
+  `x.pabgb` → `x.pabgh`, extension case ignored; `sibling_header` in
+  `src/c_abi/mod.rs`). A header that exists but cannot be read returns `IO`.
+- **Every table loader refuses a table it cannot read** (since 2026-11-28, audit
+  B-02 / E-04; `check_rows` in `src/c_abi/mod.rs`). A non-empty header that is
+  not a 2.06 header matching the body, a header that lists rows none of which
+  read, and a non-empty body read without a header that gives no row all return
+  `BODY_PARSE` with no handle. They used to return `OK` with 0 rows (or, for a
+  body without its header, noise rows). The DLC merges check the same way:
+  a DLC header that does not match its body is `BODY_PARSE`, not `OK` with
+  `added == 0`. Single rows dropped inside a readable table are not reported;
+  the live tests pin those counts.
 - Bridges that already took the body and the header (`pabgb`, `pabgh`) — the
   name-only catalog bridges, the faction / dye / store / mercenary /
   global-game-event bridges, and the stageinfo / questinfo
@@ -330,6 +340,13 @@ int32_t crimson_factionnode_entry_source(const CrimsonFactionNodeInfoHandle *han
   list: 0 of 213,171 lists in 21 saves). Exporting a placeholder element as a
   template returns `BODY_PARSE`. Still open: the template compares a scalar's
   kind and size but not its type name, which the CRET v1 format does not record.
+- **Unverified saves are not re-sealed (2026-11-28, audit F-10)** —
+  `crimson_save_write_to_file` returns the new `HMAC_UNVERIFIED` (−28) and
+  writes nothing when the save's HMAC did not verify on load
+  (`crimson_save_get_hmac_ok` = 0). Writing computes a fresh HMAC, so it used to
+  turn a damaged or tampered save the game rejects into one it accepts, even
+  with no edit. `crimson_save_set_allow_hmac_rewrap(h, 1)` (new) opts in for a
+  deliberate repair. Every real save verifies, so a normal edit is unaffected.
 
 **Absence markers.** The engine writes one `0x01` byte for every *absent*
 dynamic array (`meta_kind` 3) and object list (6 / 7), and nothing for other
@@ -583,7 +600,7 @@ consumes it.
 
 <!-- symbol-index:start -->
 
-Every exported `crimson_*` function, 374 in all, grouped by source file, with the first line
+Every exported `crimson_*` function, 375 in all, grouped by source file, with the first line
 of its rustdoc. `repo_doc_budget::c_abi_surface_lists_every_symbol` fails when a symbol is
 missing from this file, so add a line here (or a mention above) with any new export.
 
@@ -793,7 +810,7 @@ missing from this file, so add a line here (or a mention above) with any new exp
 **`src/c_abi/iteminfo.rs`**
 
 - `crimson_iteminfo_load_from_file` — Parse an `iteminfo.pabgb` blob from disk.
-- `crimson_iteminfo_load_from_bytes` — Parse iteminfo bytes already in memory (preferred — the editor pulls them through PAZ extraction first).
+- `crimson_iteminfo_load_from_bytes` — Parse iteminfo bytes already in memory.
 - `crimson_iteminfo_load_from_bytes_with_header` — Parse in-memory iteminfo bytes together with the table's `.staticinfoheader`.
 - `crimson_iteminfo_free` — Free a handle returned by either loader.
 - `crimson_iteminfo_entry_count` — Total number of items in the loaded `iteminfo.pabgb`.
@@ -868,6 +885,7 @@ missing from this file, so add a line here (or a mention above) with any new exp
 - `crimson_save_get_flags` — Scalar getter on the save handle (header field).
 - `crimson_save_get_block_count` — Scalar getter on the save handle (header field).
 - `crimson_save_get_hmac_ok` — HMAC verification result.
+- `crimson_save_set_allow_hmac_rewrap` — Allow (`allow != 0`) or refuse (`0`, the default) writing this save when its HMAC did not verify on load.
 - `crimson_save_get_block_info` — Fill `out` with the summary of the block at TOC `index`.
 - `crimson_save_get_block_class_name` — Write the class name of the block at TOC `index` into `buf` as a NUL-terminated UTF-8 string.
 - `crimson_save_get_block_json` — Serialize the full per-field decode of the block at TOC `index` as a JSON document.

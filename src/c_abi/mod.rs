@@ -79,15 +79,51 @@ pub mod trigger_region_info;
 /// 2.06 moved every static-info row's name out of the `.staticinfobody` into
 /// the `.staticinfoheader`, so the body-only bridges' file loaders read it from
 /// next to the body. The header file next to a body file (`x.staticinfobody` → `x.staticinfoheader`,
-/// `x.pabgb` → `x.pabgh`), read if present.
-pub(crate) fn sibling_header(body_path: &str) -> Option<Vec<u8>> {
+/// `x.pabgb` → `x.pabgh`, extension case ignored): `Ok(None)` when there is
+/// none, `Err` when it exists but cannot be read. It used to match the
+/// extension case-sensitively and swallow every read error, so a
+/// `X.STATICINFOBODY` path or a sharing violation loaded as "OK, 0 rows"
+/// (audit B-02).
+pub(crate) fn sibling_header(body_path: &str) -> std::io::Result<Option<Vec<u8>>> {
     let p = std::path::Path::new(body_path);
-    let ext = match p.extension()?.to_str()? {
+    let Some(ext) = p.extension().and_then(|e| e.to_str()) else {
+        return Ok(None);
+    };
+    let ext = match ext.to_ascii_lowercase().as_str() {
         "staticinfobody" => "staticinfoheader",
         "pabgb" => "pabgh",
-        _ => return None,
+        _ => return Ok(None),
     };
-    std::fs::read(p.with_extension(ext)).ok()
+    match std::fs::read(p.with_extension(ext)) {
+        Ok(b) => Ok(Some(b)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// The check every table loader runs before handing out a handle, so a table
+/// it could not read is an error rather than `OK` with nothing in it (audit
+/// B-02 / E-04):
+///
+/// - A non-empty `header` must be a 2.06 header that matches `body`
+///   ([`detect_named_pair`](crate::binary::static_header::detect_named_pair));
+///   anything else used to fall back to a body scan and return 0 rows, or
+///   noise rows. The parsers target the latest patch only.
+/// - Rows it lists, or a non-empty body read without a header, must give at
+///   least one row.
+///
+/// Rows dropped one at a time inside an otherwise readable table are not
+/// caught here; the live tests pin those counts.
+pub(crate) fn check_rows(body: &[u8], header: Option<&[u8]>, rows: usize) -> Result<(), i32> {
+    match header.filter(|h| !h.is_empty()) {
+        Some(h) => match crate::binary::static_header::detect_named_pair(h, body) {
+            None => Err(error::BODY_PARSE),
+            Some((_, _, listed)) if rows == 0 && !listed.is_empty() => Err(error::BODY_PARSE),
+            Some(_) => Ok(()),
+        },
+        None if rows == 0 && !body.is_empty() => Err(error::BODY_PARSE),
+        None => Ok(()),
+    }
 }
 
 /// Stable error codes returned by every fallible C entry point.
@@ -185,6 +221,12 @@ pub mod error {
     /// different class into a list whose existing elements share one class.
     /// The save is untouched.
     pub const ELEMENT_CLASS_MISMATCH: i32 = -27;
+    /// `crimson_save_write_to_file` on a save whose HMAC did not verify when
+    /// it was loaded. Writing re-seals the body with a fresh HMAC, which would
+    /// turn a damaged or tampered save the game rejects into one it accepts.
+    /// Call `crimson_save_set_allow_hmac_rewrap(h, 1)` first to do it anyway
+    /// (a repair, say). Nothing is written.
+    pub const HMAC_UNVERIFIED: i32 = -28;
     pub const PANIC: i32 = -99;
 }
 
@@ -328,6 +370,12 @@ pub(crate) unsafe fn merge_dlc_ffi<H>(
         let h = unsafe { &mut *handle };
         let body = unsafe { slice_from_raw_or_empty(body, body_len) };
         let header = unsafe { slice_from_raw_or_empty(header, header_len) };
+        // A header that does not match the body used to merge nothing and
+        // return OK with `added == 0`, which reads as "the DLC adds no keys"
+        // (audit B-02).
+        if crate::binary::static_header::detect_named_pair(header, body).is_none() {
+            return error::BODY_PARSE;
+        }
         let added = merge(h, body, header);
         unsafe { *out_added = added };
         error::OK
@@ -459,6 +507,9 @@ macro_rules! impl_name_only_bridge {
                     Err(_) => return $crate::c_abi::error::IO,
                 };
                 let handle = $Handle::from_bytes(&pabgb, &pabgh);
+                if let Err(code) = $crate::c_abi::check_rows(&pabgb, Some(&pabgh[..]), handle.entries.len()) {
+                    return code;
+                }
                 unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
                 $crate::c_abi::error::OK
             }))
@@ -497,6 +548,9 @@ macro_rules! impl_name_only_bridge {
                     unsafe { std::slice::from_raw_parts(pabgh, pabgh_len) }
                 };
                 let handle = $Handle::from_bytes(pabgb_slice, pabgh_slice);
+                if let Err(code) = $crate::c_abi::check_rows(pabgb_slice, Some(pabgh_slice), handle.entries.len()) {
+                    return code;
+                }
                 unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
                 $crate::c_abi::error::OK
             }))
@@ -634,6 +688,9 @@ pub struct CrimsonSaveHandle {
     /// and `blocks` is the in-progress in-memory tree — they're
     /// intentionally inconsistent until `end_*` re-emits.
     deferred_state: Option<DeferredState>,
+    /// Set by [`crimson_save_set_allow_hmac_rewrap`]: write this save even
+    /// though its HMAC did not verify on load (audit F-10).
+    allow_hmac_rewrap: bool,
 }
 
 /// Per-batch rollback snapshot for the deferred-redecode mode.
@@ -873,6 +930,7 @@ pub unsafe extern "C" fn crimson_save_load_from_file(
             blocks,
             mutation_version: 0,
             deferred_state: None,
+            allow_hmac_rewrap: false,
         });
         unsafe {
             *out_handle = Box::into_raw(boxed);
@@ -1418,6 +1476,26 @@ pub unsafe extern "C" fn crimson_save_get_hmac_ok(
         }
         error::OK
     })
+}
+
+/// Allow (`allow != 0`) or refuse (`0`, the default) writing this save when
+/// its HMAC did not verify on load. `crimson_save_write_to_file` returns
+/// `HMAC_UNVERIFIED` for such a save unless this was set, because writing
+/// re-seals the body with a fresh HMAC (audit F-10).
+///
+/// # Safety
+/// `handle` must be a live handle returned by `crimson_save_load_from_file`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_save_set_allow_hmac_rewrap(handle: *mut CrimsonSaveHandle, allow: u8) -> i32 {
+    if handle.is_null() {
+        return error::NULL_ARG;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let _ffi_guard = save_ffi_lock();
+        unsafe { (*handle).allow_hmac_rewrap = allow != 0 };
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
 }
 
 // ── Block info ─────────────────────────────────────────────────────────────
@@ -4256,6 +4334,11 @@ pub unsafe extern "C" fn crimson_save_write_to_file(
             // to end or abort the batch first.
             return error::BATCH_IN_PROGRESS;
         }
+        // Re-sealing a save whose HMAC failed on load would make a damaged or
+        // tampered file valid again (audit F-10).
+        if !h.save.hmac_ok && !h.allow_hmac_rewrap {
+            return error::HMAC_UNVERIFIED;
+        }
         let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
             Ok(s) => s,
             Err(_) => return error::INVALID_PATH,
@@ -4494,6 +4577,98 @@ pub unsafe extern "C" fn crimson_save_is_deferred_redecode_open(
         error::OK
     }))
     .unwrap_or(error::PANIC)
+}
+
+#[cfg(test)]
+mod load_check_tests {
+    use super::{check_rows, error, sibling_header};
+
+    /// A one-row 2.06 pair: header `[u16 count][u32 key][u32 len][name][u32 off][u32 size]`,
+    /// body `[u32 key][u32 row index]`.
+    fn pair() -> (Vec<u8>, Vec<u8>) {
+        let body = [7u32.to_le_bytes(), 0u32.to_le_bytes()].concat();
+        let mut hdr = 1u16.to_le_bytes().to_vec();
+        hdr.extend_from_slice(&7u32.to_le_bytes());
+        hdr.extend_from_slice(&1u32.to_le_bytes());
+        hdr.push(b'a');
+        hdr.extend_from_slice(&0u32.to_le_bytes());
+        hdr.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        (body, hdr)
+    }
+
+    #[test]
+    fn check_rows_accepts_a_matching_pair() {
+        let (body, hdr) = pair();
+        assert_eq!(check_rows(&body, Some(&hdr), 1), Ok(()));
+        assert_eq!(check_rows(&[], None, 0), Ok(()), "an empty table is not an error");
+    }
+
+    /// Each of these used to load as `OK` with 0 rows (audit B-02).
+    #[test]
+    fn check_rows_refuses_what_it_cannot_read() {
+        let (body, hdr) = pair();
+        assert_eq!(check_rows(&body, Some(&hdr[..hdr.len() - 1]), 0), Err(error::BODY_PARSE), "truncated header");
+        let mut wrong_key = hdr.clone();
+        wrong_key[2] = 8;
+        assert_eq!(check_rows(&body, Some(&wrong_key), 0), Err(error::BODY_PARSE), "header key not in the body");
+        assert_eq!(check_rows(&body, Some(&hdr), 0), Err(error::BODY_PARSE), "rows listed, none read");
+        assert_eq!(check_rows(&body, None, 0), Err(error::BODY_PARSE), "body without a header, nothing read");
+        assert_eq!(check_rows(&body, Some(&[]), 0), Err(error::BODY_PARSE), "an empty header is no header");
+    }
+
+    #[test]
+    fn sibling_header_ignores_case_and_reports_missing_as_none() {
+        let dir = std::env::temp_dir().join(format!("crimson-sibling-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let body = dir.join("T.STATICINFOBODY");
+        std::fs::write(&body, b"b").unwrap();
+        assert_eq!(sibling_header(body.to_str().unwrap()).unwrap(), None, "no header next to it");
+        std::fs::write(dir.join("T.staticinfoheader"), b"h").unwrap();
+        assert_eq!(sibling_header(body.to_str().unwrap()).unwrap().as_deref(), Some(&b"h"[..]));
+        assert_eq!(sibling_header(dir.join("T.txt").to_str().unwrap()).unwrap(), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod hmac_rewrap_tests {
+    use super::*;
+    use std::ffi::CString;
+
+    /// A save whose HMAC failed on load is not written unless the caller
+    /// opts in; with the opt-in it is, and the copy verifies (audit F-10).
+    #[test]
+    fn unverified_save_needs_the_opt_in() {
+        let rel = "1.10/save.save";
+        if crate::test_fixtures::save(rel).is_none() {
+            return;
+        }
+        let src = crate::test_fixtures::saves_dir().join(rel);
+        let c = CString::new(src.to_str().unwrap()).unwrap();
+        let mut h: *mut CrimsonSaveHandle = std::ptr::null_mut();
+        assert_eq!(unsafe { crimson_save_load_from_file(c.as_ptr(), &mut h) }, error::OK);
+        unsafe { (*h).save.hmac_ok = false };
+
+        let dir = std::env::temp_dir().join(format!("crimson-hmac-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("save.save");
+        let out_c = CString::new(out.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { crimson_save_write_to_file(h, out_c.as_ptr()) }, error::HMAC_UNVERIFIED);
+        assert!(!out.exists(), "nothing is written");
+
+        assert_eq!(unsafe { crimson_save_set_allow_hmac_rewrap(h, 1) }, error::OK);
+        assert_eq!(unsafe { crimson_save_write_to_file(h, out_c.as_ptr()) }, error::OK);
+        let mut back: *mut CrimsonSaveHandle = std::ptr::null_mut();
+        assert_eq!(unsafe { crimson_save_load_from_file(out_c.as_ptr(), &mut back) }, error::OK);
+        let mut ok = 0;
+        assert_eq!(unsafe { crimson_save_get_hmac_ok(back, &mut ok) }, error::OK);
+        assert_eq!(ok, 1);
+        unsafe {
+            crimson_save_free(back);
+            crimson_save_free(h);
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
 
 #[cfg(test)]
