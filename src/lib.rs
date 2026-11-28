@@ -55,7 +55,7 @@ mod item_info;
 mod knowledge_info;
 #[cfg(feature = "c_abi")]
 mod mercenary_info;
-#[cfg(feature = "c_abi")]
+#[cfg(any(feature = "c_abi", feature = "python"))]
 mod mission_info;
 #[cfg(feature = "c_abi")]
 mod part_prefab_dye_slot_info;

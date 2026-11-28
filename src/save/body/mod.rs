@@ -32,7 +32,7 @@ use std::io;
 pub use encoder::{encode_body, encode_top_level_block};
 pub use object::{
     DecodedField, FieldKind, FieldValue, ObjectBlock, ObjectLocatorWrapper, ScalarValue,
-    scalar_from_bytes,
+    scalar_from_bytes, scalar_tag,
 };
 #[cfg(feature = "c_abi")]
 pub(crate) use decoder::decode_one_list_element_bytes;

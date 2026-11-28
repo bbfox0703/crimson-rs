@@ -48,7 +48,7 @@ mod io;
 #[allow(unused_imports)]
 pub use body::{
     Body, DecodedField, FieldKind, FieldValue, ObjectBlock, ObjectLocatorWrapper, ScalarValue,
-    encode_body, encode_top_level_block, scalar_from_bytes,
+    encode_body, encode_top_level_block, scalar_from_bytes, scalar_tag,
 };
 // The c_abi length-changing edit path validates caller-supplied template
 // bytes by decoding them with this helper; the re-export is c_abi-gated so

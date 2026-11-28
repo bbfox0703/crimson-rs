@@ -2,8 +2,8 @@
 //!
 //! Wraps [`crate::binary::paz::extract_file`] so native callers can
 //! pull a single file out of a Crimson Desert PAZ archive group
-//! without going through Python. One-shot, stateless: each call
-//! parses the PAMT, locates the requested file by directory + name,
+//! without going through Python. [`crimson_paz_extract_file`] is
+//! one-shot: it parses the PAMT, locates the requested file by directory + name,
 //! decrypts (ChaCha20 when applicable), decompresses (LZ4 / zlib /
 //! none), and writes the bytes back through the standard two-call
 //! "query size, then fill buffer" pattern.
@@ -19,19 +19,24 @@
 //! decoder still cannot read surfaces as `BODY_PARSE`, the same code as any
 //! other extraction failure.
 //!
-//! Not exposed here:
-//! - Full PAMT enumeration across every directory in one call.
-//!   [`crimson_paz_list_dir`] covers per-directory listing — chain it
-//!   with the directory-name list a caller already has for a full walk.
-//! - Batch extraction (each call re-parses the PAMT).
+//! The free functions parse the PAMT on every call. For many files from
+//! one group, [`crimson_paz_open`] parses it once and
+//! [`crimson_paz_handle_extract_file`] / [`crimson_paz_handle_list_dir`]
+//! work from the handle.
+//!
+//! Not exposed here: full PAMT enumeration across every directory in one
+//! call. [`crimson_paz_list_dir`] covers per-directory listing — chain it
+//! with the directory-name list a caller already has for a full walk.
 
+use std::collections::HashMap;
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use super::error;
-use crate::binary::pamt::PackMeta;
+use crate::binary::pamt::{PackMeta, ResolvedDirectory};
 use crate::binary::paz;
 
 /// NPC-portrait filename prefixes (lowercase ASCII), matched
@@ -436,10 +441,9 @@ fn fill_name_buf(buf: &mut [u8; 256], name: &str) -> bool {
 /// - Allocate `*out_count_entries` records, call again. Returns `OK`
 ///   on success.
 ///
-/// **Note**: each call re-parses the PAMT (no caching). For a large
-/// PAMT like 0012's that's a few ms; cheap but not free. Callers walking
-/// many directories from the same PAMT may want to add their own
-/// outer cache.
+/// **Note**: each call re-parses the PAMT. Callers walking many
+/// directories of one group use [`crimson_paz_handle_list_dir`] on a
+/// [`crimson_paz_open`] handle instead.
 ///
 /// Return codes:
 /// - `OK` — list written. `*out_count_entries` is populated.
@@ -493,31 +497,244 @@ pub unsafe extern "C" fn crimson_paz_list_dir(
         let Some(dir) = pamt.directories.iter().find(|d| d.path == dir_str) else {
             return error::NOT_FOUND;
         };
+        unsafe { write_dir_entries(dir, out_entries, capacity_entries, out_count_entries) }
+    }))
+    .unwrap_or(error::PANIC)
+}
 
-        unsafe { *out_count_entries = dir.files.len() };
+/// Write `dir`'s files into the caller's record array (the
+/// [`crimson_paz_list_dir`] contract): the count always, the records when
+/// they fit.
+///
+/// # Safety
+/// `out_count_entries` must be writable; `out_entries` must be writable
+/// for `capacity_entries` records, or null with `capacity_entries == 0`.
+unsafe fn write_dir_entries(
+    dir: &ResolvedDirectory,
+    out_entries: *mut CrimsonPazFileEntry,
+    capacity_entries: usize,
+    out_count_entries: *mut usize,
+) -> i32 {
+    unsafe { *out_count_entries = dir.files.len() };
+    if dir.files.is_empty() {
+        return error::OK;
+    }
+    if capacity_entries < dir.files.len() {
+        return error::BUFFER_TOO_SMALL;
+    }
+    for (idx, f) in dir.files.iter().enumerate() {
+        let mut name = [0u8; 256];
+        let truncated = fill_name_buf(&mut name, &f.name);
+        let entry = CrimsonPazFileEntry {
+            name,
+            compressed_size: f.file.compressed_size,
+            uncompressed_size: f.file.uncompressed_size,
+            is_partial: u32::from(f.file.is_partial),
+            name_truncated: u32::from(truncated),
+        };
+        unsafe { out_entries.add(idx).write(entry) };
+    }
+    error::OK
+}
 
-        if dir.files.is_empty() {
-            return error::OK;
+// ── Open PAMT handle ───────────────────────────────────────────────────────
+
+/// A pack group's `0.pamt`, parsed once, for many extractions and listings.
+///
+/// The free functions above read and parse the PAMT on every call; a caller
+/// pulling thousands of files from one group (the icons in `0012`) opens a
+/// handle instead. The handle also keeps the file its last size query
+/// extracted, so the two-call pattern decompresses each file once.
+pub struct CrimsonPazHandle {
+    group_dir: PathBuf,
+    pamt: PackMeta,
+    /// Directory path → index into `pamt.directories`; the first directory
+    /// with a path wins, as in [`crimson_paz_extract_file`].
+    dirs: HashMap<String, usize>,
+    /// `(directory index, file index, bytes)` of the last extraction that
+    /// did not fit the caller's buffer, taken by the call that fills it.
+    pending: Mutex<Option<(usize, usize, Vec<u8>)>>,
+}
+
+impl CrimsonPazHandle {
+    /// `(directory index, file index)` of a file, first match in each.
+    fn locate(&self, dir: &str, name: &str) -> Option<(usize, usize)> {
+        let &d = self.dirs.get(dir)?;
+        let f = self.pamt.directories[d].files.iter().position(|f| f.name == name)?;
+        Some((d, f))
+    }
+}
+
+/// Open a pack group's `0.pamt` (same path rules as
+/// [`crimson_paz_extract_file`]) and parse it once.
+///
+/// On `OK`, `*out_handle` owns the parsed manifest; extract with
+/// [`crimson_paz_handle_extract_file`], list with
+/// [`crimson_paz_handle_list_dir`], release with [`crimson_paz_close`].
+/// The `.paz` chunks are opened per extraction, so the handle holds no file
+/// open. Returns `IO` when the PAMT cannot be read, `BODY_PARSE` when it
+/// does not parse, `INVALID_PATH` on bad UTF-8 or a path with no parent.
+///
+/// # Safety
+/// `pamt_path` must be NUL-terminated UTF-8; `out_handle` must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_paz_open(
+    pamt_path: *const c_char,
+    out_handle: *mut *mut CrimsonPazHandle,
+) -> i32 {
+    if pamt_path.is_null() || out_handle.is_null() {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_handle = std::ptr::null_mut() };
+    catch_unwind(AssertUnwindSafe(|| {
+        let Ok(pamt_str) = unsafe { CStr::from_ptr(pamt_path) }.to_str() else {
+            return error::INVALID_PATH;
+        };
+        let Some(group_dir) = Path::new(pamt_str).parent().map(Path::to_path_buf) else {
+            return error::INVALID_PATH;
+        };
+        let Ok(pamt_bytes) = std::fs::read(pamt_str) else {
+            return error::IO;
+        };
+        let Ok(pamt) = PackMeta::parse(&pamt_bytes, None) else {
+            return error::BODY_PARSE;
+        };
+        let mut dirs = HashMap::with_capacity(pamt.directories.len());
+        for (i, d) in pamt.directories.iter().enumerate() {
+            dirs.entry(d.path.clone()).or_insert(i);
         }
-        if capacity_entries < dir.files.len() {
+        let handle = CrimsonPazHandle { group_dir, pamt, dirs, pending: Mutex::new(None) };
+        unsafe { *out_handle = Box::into_raw(Box::new(handle)) };
+        error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// Release a handle from [`crimson_paz_open`]. Null is a no-op.
+///
+/// # Safety
+/// `handle` must be null or a live handle from [`crimson_paz_open`], not
+/// used again after this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_paz_close(handle: *mut CrimsonPazHandle) {
+    if !handle.is_null() {
+        drop(unsafe { Box::from_raw(handle) });
+    }
+}
+
+/// Extract one file through an open handle: [`crimson_paz_extract_file`]
+/// without reading or parsing the PAMT again.
+///
+/// Same two-call shape and return codes as [`crimson_paz_extract_file`]
+/// (`NOT_FOUND` for a directory or file the manifest lacks, `BODY_PARSE`
+/// when the bytes cannot be extracted), minus `IO`. A size query that
+/// returns `BUFFER_TOO_SMALL` keeps the extracted bytes on the handle, and
+/// the next call for the same file copies them instead of decompressing
+/// again. Calls from several threads are safe; each holds the handle's lock
+/// only to take or leave those bytes.
+///
+/// # Safety
+/// `handle` must be live. `directory` and `file_name` must be
+/// NUL-terminated UTF-8; `out_required` must be writable; `out_buf` may be
+/// null iff `out_buf_len == 0`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_paz_handle_extract_file(
+    handle: *const CrimsonPazHandle,
+    directory: *const c_char,
+    file_name: *const c_char,
+    out_buf: *mut u8,
+    out_buf_len: usize,
+    out_required: *mut usize,
+) -> i32 {
+    if handle.is_null() || directory.is_null() || file_name.is_null() || out_required.is_null() {
+        return error::NULL_ARG;
+    }
+    if out_buf.is_null() && out_buf_len != 0 {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_required = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let (Ok(dir_str), Ok(name_str)) = (
+            unsafe { CStr::from_ptr(directory) }.to_str(),
+            unsafe { CStr::from_ptr(file_name) }.to_str(),
+        ) else {
+            return error::INVALID_PATH;
+        };
+        let Some((d, f)) = h.locate(dir_str, name_str) else {
+            return error::NOT_FOUND;
+        };
+        let pending = {
+            let mut slot = h.pending.lock().unwrap_or_else(|e| e.into_inner());
+            match slot.take() {
+                Some((pd, pf, bytes)) if (pd, pf) == (d, f) => Some(bytes),
+                other => {
+                    *slot = other;
+                    None
+                }
+            }
+        };
+        let bytes = match pending {
+            Some(b) => b,
+            None => {
+                let dir = &h.pamt.directories[d];
+                match paz::extract_file(
+                    &h.group_dir,
+                    &dir.files[f],
+                    &dir.path,
+                    &h.pamt.header.encrypt_info.encrypt_info,
+                ) {
+                    Ok(b) => b,
+                    Err(_) => return error::BODY_PARSE,
+                }
+            }
+        };
+        let needed = bytes.len();
+        unsafe { *out_required = needed };
+        if out_buf_len < needed {
+            *h.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some((d, f, bytes));
             return error::BUFFER_TOO_SMALL;
         }
-
-        // Fill the caller's array. SAFETY: we just checked that
-        // `out_entries` is non-null and `capacity_entries >= len`.
-        for (idx, f) in dir.files.iter().enumerate() {
-            let mut name = [0u8; 256];
-            let truncated = fill_name_buf(&mut name, &f.name);
-            let entry = CrimsonPazFileEntry {
-                name,
-                compressed_size: f.file.compressed_size,
-                uncompressed_size: f.file.uncompressed_size,
-                is_partial: u32::from(f.file.is_partial),
-                name_truncated: u32::from(truncated),
-            };
-            unsafe { out_entries.add(idx).write(entry) };
-        }
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_buf, needed) };
         error::OK
+    }))
+    .unwrap_or(error::PANIC)
+}
+
+/// List one directory through an open handle: [`crimson_paz_list_dir`]
+/// without reading or parsing the PAMT again. Same record layout, two-call
+/// shape and return codes, minus `IO`.
+///
+/// # Safety
+/// `handle` must be live; `directory` must be NUL-terminated UTF-8;
+/// `out_count_entries` must be writable; `out_entries` may be null iff
+/// `capacity_entries == 0`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn crimson_paz_handle_list_dir(
+    handle: *const CrimsonPazHandle,
+    directory: *const c_char,
+    out_entries: *mut CrimsonPazFileEntry,
+    capacity_entries: usize,
+    out_count_entries: *mut usize,
+) -> i32 {
+    if handle.is_null() || directory.is_null() || out_count_entries.is_null() {
+        return error::NULL_ARG;
+    }
+    if out_entries.is_null() && capacity_entries != 0 {
+        return error::NULL_ARG;
+    }
+    unsafe { *out_count_entries = 0 };
+    catch_unwind(AssertUnwindSafe(|| {
+        let h = unsafe { &*handle };
+        let Ok(dir_str) = unsafe { CStr::from_ptr(directory) }.to_str() else {
+            return error::INVALID_PATH;
+        };
+        let Some(&d) = h.dirs.get(dir_str) else {
+            return error::NOT_FOUND;
+        };
+        unsafe {
+            write_dir_entries(&h.pamt.directories[d], out_entries, capacity_entries, out_count_entries)
+        }
     }))
     .unwrap_or(error::PANIC)
 }
@@ -1350,5 +1567,154 @@ mod tests {
             )
         };
         assert_eq!(rc, error::NULL_ARG);
+    }
+
+    fn icon_pamt() -> Option<PathBuf> {
+        let game_root = std::env::var_os("CRIMSON_GAME_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"D:\SteamLibrary\steamapps\common\Crimson Desert"));
+        let p = game_root.join("0012").join("0.pamt");
+        p.is_file().then_some(p)
+    }
+
+    /// Two-call extraction through a handle.
+    fn extract_via_handle(h: *const CrimsonPazHandle, dir: &CStr, name: &CStr) -> Result<Vec<u8>, i32> {
+        let mut needed = 0usize;
+        let rc = unsafe {
+            crimson_paz_handle_extract_file(h, dir.as_ptr(), name.as_ptr(), ptr::null_mut(), 0, &mut needed)
+        };
+        if rc != error::BUFFER_TOO_SMALL {
+            return Err(rc);
+        }
+        let mut buf = vec![0u8; needed];
+        let rc = unsafe {
+            crimson_paz_handle_extract_file(h, dir.as_ptr(), name.as_ptr(), buf.as_mut_ptr(), buf.len(), &mut needed)
+        };
+        if rc != error::OK {
+            return Err(rc);
+        }
+        buf.truncate(needed);
+        Ok(buf)
+    }
+
+    /// On the icon group: files spread over every directory extract through
+    /// one handle byte-identical to `crimson_paz_extract_file`, listings match
+    /// `crimson_paz_list_dir`, and a missing file or directory is `NOT_FOUND`.
+    #[test]
+    fn c_abi_paz_handle_matches_one_shot_calls() {
+        let Some(pamt_path) = icon_pamt() else {
+            eprintln!("skipping c_abi_paz_handle_matches_one_shot_calls: no 0012/0.pamt");
+            return;
+        };
+        let pamt_c = CString::new(pamt_path.to_str().unwrap()).unwrap();
+        let mut h: *mut CrimsonPazHandle = ptr::null_mut();
+        assert_eq!(unsafe { crimson_paz_open(pamt_c.as_ptr(), &mut h) }, error::OK);
+        let handle = unsafe { &*h };
+
+        // Up to 48 files under 1 MiB, spread over the whole manifest.
+        let all: Vec<(&str, &str)> = handle
+            .pamt
+            .directories
+            .iter()
+            .flat_map(|d| d.files.iter().map(move |f| (d, f)))
+            .filter(|(_, f)| f.file.uncompressed_size < 1 << 20)
+            .map(|(d, f)| (d.path.as_str(), f.name.as_str()))
+            .collect();
+        assert!(all.len() > 1000, "0012 lists {} small files", all.len());
+        let step = all.len() / 48;
+        let picked: Vec<(&str, &str)> = all.iter().step_by(step).take(48).copied().collect();
+        let mut partial = 0;
+        for &(dir, name) in &picked {
+            let (dir_c, name_c) = (CString::new(dir).unwrap(), CString::new(name).unwrap());
+            let one_shot = extract_via_abi(&pamt_c, &dir_c, &name_c)
+                .unwrap_or_else(|rc| panic!("{dir}/{name}: one-shot rc={rc}"));
+            let through = extract_via_handle(h, &dir_c, &name_c)
+                .unwrap_or_else(|rc| panic!("{dir}/{name}: handle rc={rc}"));
+            assert!(one_shot == through, "{dir}/{name}: handle bytes differ");
+            let (d, f) = handle.locate(dir, name).unwrap();
+            partial += usize::from(handle.pamt.directories[d].files[f].file.is_partial);
+        }
+        println!("{} files byte-identical through one handle ({partial} partial)", picked.len());
+
+        // A size query for one file, then a fill for another: the kept bytes
+        // belong to the first and must not be handed to the second.
+        let (a_dir, a_name) = picked[0];
+        let (b_dir, b_name) = picked[1];
+        let (a_dir_c, a_name_c) = (CString::new(a_dir).unwrap(), CString::new(a_name).unwrap());
+        let (b_dir_c, b_name_c) = (CString::new(b_dir).unwrap(), CString::new(b_name).unwrap());
+        let mut need_a = 0usize;
+        assert_eq!(
+            unsafe { crimson_paz_handle_extract_file(h, a_dir_c.as_ptr(), a_name_c.as_ptr(), ptr::null_mut(), 0, &mut need_a) },
+            error::BUFFER_TOO_SMALL
+        );
+        let b = extract_via_handle(h, &b_dir_c, &b_name_c).unwrap();
+        assert!(b == extract_via_abi(&pamt_c, &b_dir_c, &b_name_c).unwrap(), "interleaved fill");
+        let a = extract_via_handle(h, &a_dir_c, &a_name_c).unwrap();
+        assert_eq!(a.len(), need_a);
+
+        // Listings.
+        for dir in [picked[0].0, picked[picked.len() - 1].0] {
+            let dir_c = CString::new(dir).unwrap();
+            let list = |handle_api: bool| {
+                let mut n = 0usize;
+                let call = |out: *mut CrimsonPazFileEntry, cap: usize, n: &mut usize| unsafe {
+                    if handle_api {
+                        crimson_paz_handle_list_dir(h, dir_c.as_ptr(), out, cap, n)
+                    } else {
+                        crimson_paz_list_dir(pamt_c.as_ptr(), dir_c.as_ptr(), out, cap, n)
+                    }
+                };
+                assert_eq!(call(ptr::null_mut(), 0, &mut n), error::BUFFER_TOO_SMALL);
+                let mut v = vec![
+                    CrimsonPazFileEntry { name: [0; 256], compressed_size: 0, uncompressed_size: 0, is_partial: 0, name_truncated: 0 };
+                    n
+                ];
+                assert_eq!(call(v.as_mut_ptr(), v.len(), &mut n), error::OK);
+                v.iter()
+                    .map(|e| (e.name, e.compressed_size, e.uncompressed_size, e.is_partial, e.name_truncated))
+                    .collect::<Vec<_>>()
+            };
+            assert!(list(true) == list(false), "{dir}: listings differ");
+        }
+
+        let missing = CString::new("definitely_missing.dds").unwrap();
+        let dir_c = CString::new(picked[0].0).unwrap();
+        let no_dir = CString::new("no/such/directory").unwrap();
+        let mut needed = 7usize;
+        for (d, f) in [(&dir_c, &missing), (&no_dir, &missing)] {
+            let rc = unsafe { crimson_paz_handle_extract_file(h, d.as_ptr(), f.as_ptr(), ptr::null_mut(), 0, &mut needed) };
+            assert_eq!(rc, error::NOT_FOUND);
+            assert_eq!(needed, 0);
+            assert_eq!(extract_via_abi(&pamt_c, d, f), Err(error::NOT_FOUND));
+        }
+        let mut n = 0usize;
+        assert_eq!(
+            unsafe { crimson_paz_handle_list_dir(h, no_dir.as_ptr(), ptr::null_mut(), 0, &mut n) },
+            error::NOT_FOUND
+        );
+        unsafe { crimson_paz_close(h) };
+    }
+
+    #[test]
+    fn c_abi_paz_handle_open_errors_and_null_args() {
+        let mut h: *mut CrimsonPazHandle = ptr::null_mut();
+        let bad = CString::new(r"Z:\definitely\missing\0.pamt").unwrap();
+        assert_eq!(unsafe { crimson_paz_open(bad.as_ptr(), &mut h) }, error::IO);
+        assert!(h.is_null());
+        assert_eq!(unsafe { crimson_paz_open(ptr::null(), &mut h) }, error::NULL_ARG);
+        assert_eq!(unsafe { crimson_paz_open(bad.as_ptr(), ptr::null_mut()) }, error::NULL_ARG);
+
+        let x = CString::new("x").unwrap();
+        let mut needed = 0usize;
+        let mut n = 0usize;
+        assert_eq!(
+            unsafe { crimson_paz_handle_extract_file(ptr::null(), x.as_ptr(), x.as_ptr(), ptr::null_mut(), 0, &mut needed) },
+            error::NULL_ARG
+        );
+        assert_eq!(
+            unsafe { crimson_paz_handle_list_dir(ptr::null(), x.as_ptr(), ptr::null_mut(), 0, &mut n) },
+            error::NULL_ARG
+        );
+        unsafe { crimson_paz_close(ptr::null_mut()) };
     }
 }

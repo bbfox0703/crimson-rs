@@ -255,8 +255,10 @@ the host running the test, otherwise the test skips cleanly.
 
 The two-call sizing-then-fill shape matches every other listing ABI
 in this crate. NOT yet exposed (defer to a future PR if needed):
-DDS decode (`crimson_dds_decode_to_rgba`), top-level directory
-enumeration across an entire PAMT, or batch extraction.
+DDS decode (`crimson_dds_decode_to_rgba`) or top-level directory
+enumeration across an entire PAMT. For many tiles from one group,
+`crimson_paz_open` parses the PAMT once and
+`crimson_paz_handle_extract_file` / `crimson_paz_handle_list_dir` reuse it.
 
 ### Secondary / nice-to-have (not blocking the editor)
 

@@ -35,15 +35,33 @@ pub struct MissionInfoEntry {
     pub name: String,
 }
 
+/// PALOC namespace of a mission's own title, the low word of
+/// [`paloc_key`]. Other namespaces hold region headings and descriptions
+/// (see `crimson_missioninfo_lookup_display_name`).
+pub const TITLE_NAMESPACE: u32 = 0x101;
+
+/// PALOC key of a row's localized text: `hashlittle(name) << 32 | namespace`.
+/// PALOC files key their strings by this number written in decimal.
+pub fn paloc_key(name: &str, namespace: u32) -> u64 {
+    (u64::from(crate::crypto::checksum::calculate_checksum(name.as_bytes())) << 32)
+        | u64::from(namespace)
+}
+
+/// Every row of a 2.06 body + `.staticinfoheader` pair, in header order, or
+/// `None` when the header is not the 2.06 shape or does not match the body.
+/// Unlike [`parse_mission_info_lossy_with_header`] it never falls back to the
+/// anchor scan, so a caller can tell a mismatched pair from a table.
+pub fn parse_mission_info_pair(data: &[u8], header: &[u8]) -> Option<Vec<MissionInfoEntry>> {
+    let rows = crate::binary::static_header::header_row_names(data, header)?;
+    Some(rows.into_iter().map(|(key, name)| MissionInfoEntry { key, name }).collect())
+}
+
 /// 2.06+: row names live in the `.staticinfoheader`, which lists every row,
 /// so with a 2.06 header the rows come from it, in header order (the anchor
 /// scan drops rows its key and name rules do not expect). A pre-2.06
 /// pair, or a header that is not the 2.06 shape, falls back to scanning `data`.
 pub fn parse_mission_info_lossy_with_header(data: &[u8], header: &[u8]) -> Vec<MissionInfoEntry> {
-    match crate::binary::static_header::header_row_names(data, header) {
-        Some(rows) => rows.into_iter().map(|(key, name)| MissionInfoEntry { key, name }).collect(),
-        None => parse_mission_info_lossy(data),
-    }
+    parse_mission_info_pair(data, header).unwrap_or_else(|| parse_mission_info_lossy(data))
 }
 
 /// Lossy anchor-scan parse of an in-memory `missioninfo.pabgb` blob.
@@ -133,8 +151,8 @@ mod tests {
     //! valid file from scratch is impractical (4000+ rows with variable
     //! body sizes), so the only meaningful test is against real bytes.
     //!
-    //! Asserts the seven mappings from
-    //! `docs/save-editor-keys-plan.md` ("Verified hash transform").
+    //! Asserts the mappings from `docs/save-editor-keys-plan.md`
+    //! ("Verified hash transform") and a Sealed Abyss challenge row.
     //! These map save-side MissionKey values to internal names, each
     //! traced to a PALOC display title. If any one regresses, the
     //! bridge's resolution chain breaks for that quest.
@@ -151,6 +169,7 @@ mod tests {
         (1_000_052, "Mission_MeetAlustain_Alustain_Strength"),
         (1_000_053, "Mission_MeetAlustain_Alustain_Wisdom"),
         (1_000_083, "Mission_IronStronghold_Block_ReturnToSister"),
+        (1_000_913, "Challenge_SealedArtifact_Living_VII"),
     ];
 
     fn find_missioninfo_bytes() -> Option<Vec<u8>> {
@@ -236,5 +255,40 @@ mod tests {
         // dedup in `CrimsonMissionInfoHandle::from_bytes` collapses
         // these. The invariant the bridge tests assert is that
         // `get_entry` never surfaces a duplicate key.
+    }
+
+    /// A Sealed Abyss challenge row, by the internal name the challenge
+    /// editors filter on.
+    const SEALED_ABYSS_CHALLENGE: (u32, &str) = (1_000_913, "Challenge_SealedArtifact_Living_VII");
+
+    /// `parse_mission_info_pair`, which the Python binding reads: one row per
+    /// header row, a known challenge row, and a pair the header does not
+    /// describe is refused instead of scanned.
+    #[test]
+    fn mission_info_pair_live() {
+        let Some(data) = find_missioninfo_bytes() else {
+            eprintln!("skipping mission_info_pair_live: no game install");
+            return;
+        };
+        let header = find_missioninfo_header();
+        let rows = parse_mission_info_pair(&data, &header).expect("2.06 pair");
+        let listed = crate::binary::static_header::detect_named_pair(&header, &data).expect("2.06 header").2.len();
+        assert_eq!(rows.len(), listed, "rows vs rows the header lists");
+
+        let (key, name) = SEALED_ABYSS_CHALLENGE;
+        let found: Vec<u32> = rows.iter().filter(|r| r.name == name).map(|r| r.key).collect();
+        println!("{name}: keys {found:?}");
+        assert_eq!(found, [key], "{name}");
+        let by_key = rows.iter().find(|r| r.key == key).map(|r| r.name.as_str());
+        assert_eq!(by_key, Some(name));
+
+        assert!(parse_mission_info_pair(&data, &[]).is_none(), "empty header");
+        assert!(parse_mission_info_pair(&data[..data.len() - 1], &header).is_none(), "short body");
+    }
+
+    #[test]
+    fn paloc_key_is_hash_high_namespace_low() {
+        // `Mission_Intro_Tutorial_I` -> "Unfamiliar Lands" in the English PALOC.
+        assert_eq!(paloc_key("Mission_Intro_Tutorial_I", TITLE_NAMESPACE), 8_122_573_288_984_543_489);
     }
 }

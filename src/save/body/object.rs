@@ -53,6 +53,38 @@ pub enum ScalarValue {
     Bytes(Vec<u8>),
 }
 
+impl ScalarValue {
+    /// Short type tag: `bool`, `u8`..`u64`, `i8`..`i64`, `f32`, `f64`,
+    /// `f32x3`, `f32x4`, `u32x4` or `bytes`. The block JSON prints it after a
+    /// present value (`"123 <u32>"`) and as a field's `scalar_tag`.
+    pub fn tag(&self) -> &'static str {
+        match self {
+            ScalarValue::Bool(_) => "bool",
+            ScalarValue::U8(_) => "u8",
+            ScalarValue::U16(_) => "u16",
+            ScalarValue::U32(_) => "u32",
+            ScalarValue::U64(_) => "u64",
+            ScalarValue::I8(_) => "i8",
+            ScalarValue::I16(_) => "i16",
+            ScalarValue::I32(_) => "i32",
+            ScalarValue::I64(_) => "i64",
+            ScalarValue::F32(_) => "f32",
+            ScalarValue::F64(_) => "f64",
+            ScalarValue::F32x3(_) => "f32x3",
+            ScalarValue::F32x4(_) => "f32x4",
+            ScalarValue::U32x4(_) => "u32x4",
+            ScalarValue::Bytes(_) => "bytes",
+        }
+    }
+}
+
+/// The tag [`scalar_from_bytes`] gives a value of this schema type and size.
+/// Derived from the decode itself, so a present value's tag and an absent
+/// field's tag cannot disagree.
+pub fn scalar_tag(type_name: &str, size: usize) -> &'static str {
+    scalar_from_bytes(&vec![0u8; size], type_name, size).tag()
+}
+
 /// What kind of decode produced this field's `value`.
 ///
 /// The names line up with the Python parser's `decode_kind` strings so
@@ -202,6 +234,22 @@ pub struct DecodedField {
     /// Free-form note from the decoder (matches Python's `note` field).
     /// Empty when not relevant.
     pub note: String,
+}
+
+impl DecodedField {
+    /// The schema's scalar tag (see [`ScalarValue::tag`]) when the field is a
+    /// fixed-size scalar (`meta_kind` 0 or 2 with a non-zero size, the shape
+    /// the decoder reads as `fixed_prefix` / `fixed_suffix`), present or not.
+    /// `None` for arrays, lists, locators and inline bytes.
+    pub fn scalar_tag(&self) -> Option<&'static str> {
+        if !matches!(self.meta_kind, 0 | 2) || self.meta_size == 0 {
+            return None;
+        }
+        if let FieldValue::Scalar(v) = &self.value {
+            return Some(v.tag());
+        }
+        Some(scalar_tag(&self.type_name, self.meta_size as usize))
+    }
 }
 
 /// Whether an absent field of this `meta_kind` is written as a one-byte

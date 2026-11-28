@@ -1581,6 +1581,61 @@ pub fn parse_skillinfo_from_bytes(
     Ok(result.into_any().unbind())
 }
 
+/// Every row of a 2.06 missioninfo body + header pair
+/// (`missioninfo.staticinfobody` / `.staticinfoheader`), in header order, as
+/// dicts with `key` (the save's MissionKey), `name` (the
+/// internal `Mission_*` / `Challenge_*` name) and `paloc_key` (the u64 PALOC
+/// key of the row's text in `namespace`, `0x101` = the mission title). With
+/// `paloc` (a `localizationstring_*.paloc`, wrapped or bare) each row also
+/// carries `display_name`: the string at `paloc_key`, or `None`.
+///
+/// Raises `ValueError` when the header is not the 2.06 shape or does not
+/// list the body's rows, the same pairs the C ABI loaders refuse.
+#[pyfunction]
+#[pyo3(signature = (body, header, paloc=None, namespace=crate::mission_info::TITLE_NAMESPACE))]
+pub fn parse_missioninfo_from_bytes(
+    py: Python<'_>,
+    body: &[u8],
+    header: &[u8],
+    paloc: Option<&[u8]>,
+    namespace: u32,
+) -> PyResult<Py<PyAny>> {
+    let rows = crate::mission_info::parse_mission_info_pair(body, header).ok_or_else(|| {
+        PyValueError::new_err("missioninfo header is not the 2.06 shape or does not match the body")
+    })?;
+    let paloc_body = paloc
+        .map(crate::binary::paloc::unwrap_container)
+        .transpose()
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let paloc_file = paloc_body
+        .as_deref()
+        .map(crate::binary::paloc::LocalizationFile::parse)
+        .transpose()
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    // First entry wins for a repeated key, as in the C ABI PALOC handle.
+    let titles: Option<std::collections::HashMap<&str, &str>> = paloc_file.as_ref().map(|f| {
+        let mut m = std::collections::HashMap::with_capacity(f.entries.len());
+        for e in &f.entries {
+            m.entry(e.string_key.as_str()).or_insert(e.string_value.as_str());
+        }
+        m
+    });
+
+    let out = PyList::empty(py);
+    for row in &rows {
+        let d = PyDict::new(py);
+        let key = crate::mission_info::paloc_key(&row.name, namespace);
+        d.set_item("key", row.key)?;
+        d.set_item("name", &row.name)?;
+        d.set_item("paloc_key", key)?;
+        if let Some(t) = &titles {
+            d.set_item("display_name", t.get(key.to_string().as_str()).copied())?;
+        }
+        out.append(d)?;
+    }
+    Ok(out.into_any().unbind())
+}
+
 /// Serialise a parsed dict back to `(pabgh_bytes, pabgb_bytes)`. Pass the
 /// dict returned by `parse_skillinfo_from_bytes` (optionally with edits)
 /// — the on-disk PABGH order is taken from `index_order`.
@@ -1832,6 +1887,9 @@ fn field_to_py<'py>(py: Python<'py>, field: &crate::save::DecodedField) -> PyRes
     d.set_item("present", field.present)?;
     d.set_item("absent_marker", field.absent_marker)?;
     d.set_item("kind", field.kind.as_str())?;
+    if let Some(tag) = field.scalar_tag() {
+        d.set_item("scalar_tag", tag)?;
+    }
     d.set_item("start", field.start)?;
     d.set_item("end", field.end)?;
     if !field.note.is_empty() {
@@ -1850,41 +1908,29 @@ fn fill_field_value<'py>(
     match value {
         FieldValue::None => Ok(()),
         FieldValue::Scalar(s) => {
-            let (val_obj, val_type): (Py<PyAny>, &'static str) = match s {
-                ScalarValue::Bool(b) => (
-                    // Expose truthiness as a Python bool (the raw byte 0x01/0xff
-                    // is an encoder round-trip detail). `bool::into_pyobject`
-                    // returns a `Borrowed` (PyBool is a singleton); take
-                    // ownership before chaining `into_any`.
-                    (*b != 0).into_pyobject(py)?.to_owned().into_any().unbind(),
-                    "bool",
-                ),
-                ScalarValue::U8(x) => (x.into_pyobject(py)?.into_any().unbind(), "u8"),
-                ScalarValue::U16(x) => (x.into_pyobject(py)?.into_any().unbind(), "u16"),
-                ScalarValue::U32(x) => (x.into_pyobject(py)?.into_any().unbind(), "u32"),
-                ScalarValue::U64(x) => (x.into_pyobject(py)?.into_any().unbind(), "u64"),
-                ScalarValue::I8(x) => (x.into_pyobject(py)?.into_any().unbind(), "i8"),
-                ScalarValue::I16(x) => (x.into_pyobject(py)?.into_any().unbind(), "i16"),
-                ScalarValue::I32(x) => (x.into_pyobject(py)?.into_any().unbind(), "i32"),
-                ScalarValue::I64(x) => (x.into_pyobject(py)?.into_any().unbind(), "i64"),
-                ScalarValue::F32(x) => (x.into_pyobject(py)?.into_any().unbind(), "f32"),
-                ScalarValue::F64(x) => (x.into_pyobject(py)?.into_any().unbind(), "f64"),
-                ScalarValue::F32x3(xs) => (
-                    pyo3::types::PyList::new(py, xs)?.into_any().unbind(),
-                    "f32x3",
-                ),
-                ScalarValue::F32x4(xs) => (
-                    pyo3::types::PyList::new(py, xs)?.into_any().unbind(),
-                    "f32x4",
-                ),
-                ScalarValue::U32x4(xs) => (
-                    pyo3::types::PyList::new(py, xs)?.into_any().unbind(),
-                    "u32x4",
-                ),
-                ScalarValue::Bytes(b) => (PyBytes::new(py, b).into_any().unbind(), "bytes"),
+            let val_obj: Py<PyAny> = match s {
+                // Expose truthiness as a Python bool (the raw byte 0x01/0xff
+                // is an encoder round-trip detail). `bool::into_pyobject`
+                // returns a `Borrowed` (PyBool is a singleton); take
+                // ownership before chaining `into_any`.
+                ScalarValue::Bool(b) => (*b != 0).into_pyobject(py)?.to_owned().into_any().unbind(),
+                ScalarValue::U8(x) => x.into_pyobject(py)?.into_any().unbind(),
+                ScalarValue::U16(x) => x.into_pyobject(py)?.into_any().unbind(),
+                ScalarValue::U32(x) => x.into_pyobject(py)?.into_any().unbind(),
+                ScalarValue::U64(x) => x.into_pyobject(py)?.into_any().unbind(),
+                ScalarValue::I8(x) => x.into_pyobject(py)?.into_any().unbind(),
+                ScalarValue::I16(x) => x.into_pyobject(py)?.into_any().unbind(),
+                ScalarValue::I32(x) => x.into_pyobject(py)?.into_any().unbind(),
+                ScalarValue::I64(x) => x.into_pyobject(py)?.into_any().unbind(),
+                ScalarValue::F32(x) => x.into_pyobject(py)?.into_any().unbind(),
+                ScalarValue::F64(x) => x.into_pyobject(py)?.into_any().unbind(),
+                ScalarValue::F32x3(xs) => pyo3::types::PyList::new(py, xs)?.into_any().unbind(),
+                ScalarValue::F32x4(xs) => pyo3::types::PyList::new(py, xs)?.into_any().unbind(),
+                ScalarValue::U32x4(xs) => pyo3::types::PyList::new(py, xs)?.into_any().unbind(),
+                ScalarValue::Bytes(b) => PyBytes::new(py, b).into_any().unbind(),
             };
             d.set_item("value", val_obj)?;
-            d.set_item("value_type", val_type)?;
+            d.set_item("value_type", s.tag())?;
             Ok(())
         }
         FieldValue::InlineBytes { count, bytes } => {
@@ -2047,6 +2093,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(extract_file_from_paz, m)?)?;
     m.add_function(wrap_pyfunction!(parse_skillinfo_from_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(serialize_skillinfo, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_missioninfo_from_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(parse_paloc_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(serialize_paloc, m)?)?;
     m.add_function(wrap_pyfunction!(unwrap_paloc_bytes, m)?)?;
