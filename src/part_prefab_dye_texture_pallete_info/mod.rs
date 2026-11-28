@@ -171,7 +171,10 @@ fn parse_row(body: &[u8], expected_key: u32) -> Option<PartPrefabDyeTexturePalle
     if head.key != expected_key {
         return None;
     }
-    // One padding zero after the key — we don't enforce, just skip.
+    // One padding zero after the key.
+    if body.get(head.body_at) != Some(&0) {
+        return None;
+    }
     let fixed = body.get(head.body_at + 1..head.body_at + 9)?;
     let key_copy = u32::from_le_bytes([fixed[0], fixed[1], fixed[2], fixed[3]]);
     if key_copy != head.key {

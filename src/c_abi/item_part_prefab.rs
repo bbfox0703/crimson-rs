@@ -121,7 +121,8 @@ pub(crate) fn part_prefab_key_for_pac(pac_path: &str) -> u32 {
 /// The `.pac` paths a character `.prefab` references, in file order. The
 /// prefab is a reflection-serialized scene; every string in it is
 /// `[u32 len][len bytes]`, and the mesh references are the ones ending in
-/// `.pac`.
+/// `.pac` (any case). A `\` separator is turned into `/`, the form the row
+/// key's checksum is taken over.
 pub(crate) fn prefab_pac_paths(prefab: &[u8]) -> Vec<String> {
     let mut out = Vec::new();
     let mut i = 0;
@@ -129,10 +130,10 @@ pub(crate) fn prefab_pac_paths(prefab: &[u8]) -> Vec<String> {
         let len = u32::from_le_bytes(len_bytes.try_into().unwrap()) as usize;
         if (5..=1024).contains(&len)
             && let Some(s) = prefab.get(i + 4..i + 4 + len)
-            && s.ends_with(b".pac")
+            && s[len - 4..].eq_ignore_ascii_case(b".pac")
             && s.iter().all(u8::is_ascii_graphic)
         {
-            out.push(String::from_utf8_lossy(s).into_owned());
+            out.push(String::from_utf8_lossy(s).replace('\\', "/"));
             i += 4 + len;
         } else {
             i += 1;
@@ -335,8 +336,13 @@ impl CrimsonItemPartPrefabHandle {
     ) -> io::Result<Self> {
         let mut strings: HashMap<u32, String> = HashMap::new();
         add_strings(&mut strings, stringinfo_pabgb)?;
-        let rows: HashMap<u32, PartPrefabDyeSlotInfoEntry> =
-            rows.into_iter().map(|e| (e.key, e)).collect();
+        // First row wins for a duplicate key, as in the slot-info handle, so
+        // the two answer from the same row.
+        let mut by_key: HashMap<u32, PartPrefabDyeSlotInfoEntry> = HashMap::with_capacity(rows.len());
+        for e in rows {
+            by_key.entry(e.key).or_insert(e);
+        }
+        let rows = by_key;
         let mut failure = None;
         let items = join_items(iteminfo_pabgb, &strings, |name| resolver.keys(name, &rows, &mut failure))?;
         if let Some(e) = failure {
@@ -601,7 +607,10 @@ pub unsafe extern "C" fn crimson_item_part_prefab_load_from_bytes(
 
 /// Open the character PAMT for the prefab loaders. `NOT_FOUND` when it
 /// lists no `.prefab` file (the caller passed another group).
-fn open_prefab_archive(prefab_pamt_path: *const c_char) -> Result<PrefabArchive, i32> {
+///
+/// # Safety
+/// `prefab_pamt_path` must be a NUL-terminated string.
+unsafe fn open_prefab_archive(prefab_pamt_path: *const c_char) -> Result<PrefabArchive, i32> {
     let s = unsafe { CStr::from_ptr(prefab_pamt_path) }
         .to_str()
         .map_err(|_| error::INVALID_PATH)?;
@@ -664,7 +673,7 @@ pub unsafe extern "C" fn crimson_item_part_prefab_load_from_bytes_with_prefab_pa
                 unsafe { std::slice::from_raw_parts(p, n) }
             }
         };
-        let archive = match open_prefab_archive(prefab_pamt_path) {
+        let archive = match unsafe { open_prefab_archive(prefab_pamt_path) } {
             Ok(a) => a,
             Err(rc) => return rc,
         };
@@ -721,7 +730,7 @@ pub unsafe extern "C" fn crimson_item_part_prefab_load_from_file_with_prefab_pam
                 Err(_) => return error::IO,
             };
         }
-        let archive = match open_prefab_archive(prefab_pamt_path) {
+        let archive = match unsafe { open_prefab_archive(prefab_pamt_path) } {
             Ok(a) => a,
             Err(rc) => return rc,
         };
@@ -789,10 +798,12 @@ pub unsafe extern "C" fn crimson_item_part_prefab_merge_dlc_from_bytes(
         let h = unsafe { &mut *handle };
         let it = unsafe { super::slice_from_raw_or_empty(iteminfo_pabgb, iteminfo_pabgb_len) };
         let si = unsafe { super::slice_from_raw_or_empty(stringinfo_pabgb, stringinfo_pabgb_len) };
-        let archive = if dlc_prefab_pamt_path.is_null() {
+        // A name-join handle has no prefab archive to extend, so its path is
+        // not even opened.
+        let archive = if dlc_prefab_pamt_path.is_null() || matches!(h.resolver, Resolver::Names(_)) {
             None
         } else {
-            match open_prefab_archive(dlc_prefab_pamt_path) {
+            match unsafe { open_prefab_archive(dlc_prefab_pamt_path) } {
                 Ok(a) => Some(a),
                 Err(rc) => return rc,
             }
@@ -868,6 +879,7 @@ pub unsafe extern "C" fn crimson_item_part_prefab_resolved_item_count(
     if handle.is_null() || out_count.is_null() {
         return error::NULL_ARG;
     }
+    unsafe { *out_count = 0 };
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &*handle };
         unsafe { *out_count = h.part_prefab_keys_by_item.len() as u32 };
@@ -890,6 +902,7 @@ pub unsafe extern "C" fn crimson_item_part_prefab_lookup_count(
     if handle.is_null() || out_count.is_null() {
         return error::NULL_ARG;
     }
+    unsafe { *out_count = 0 };
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &*handle };
         match h.part_prefab_keys_by_item.get(&item_key) {
@@ -988,7 +1001,10 @@ pub unsafe extern "C" fn crimson_item_part_prefab_lookup_prefab_name_at(
 
 /// The optional tribe / gender filter of the item-level dye lookups.
 /// `Ok(None)` for a null pointer.
-fn tribe_gender_arg<'a>(tribe_gender: *const c_char) -> Result<Option<&'a str>, i32> {
+///
+/// # Safety
+/// `tribe_gender` must be null or a NUL-terminated string that outlives `'a`.
+unsafe fn tribe_gender_arg<'a>(tribe_gender: *const c_char) -> Result<Option<&'a str>, i32> {
     if tribe_gender.is_null() {
         return Ok(None);
     }
@@ -1027,7 +1043,7 @@ pub unsafe extern "C" fn crimson_item_part_prefab_lookup_dye_slot_bits(
     unsafe { *out_bits = 0 };
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &*handle };
-        let tg = match tribe_gender_arg(tribe_gender) {
+        let tg = match unsafe { tribe_gender_arg(tribe_gender) } {
             Ok(t) => t,
             Err(rc) => return rc,
         };
@@ -1063,7 +1079,7 @@ pub unsafe extern "C" fn crimson_item_part_prefab_lookup_channel_dye_slot_bits(
     unsafe { *out_bits = 0 };
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &*handle };
-        let tg = match tribe_gender_arg(tribe_gender) {
+        let tg = match unsafe { tribe_gender_arg(tribe_gender) } {
             Ok(t) => t,
             Err(rc) => return rc,
         };
@@ -1107,7 +1123,7 @@ pub unsafe extern "C" fn crimson_item_part_prefab_lookup_dye_slot_material(
     unsafe { *required = 0 };
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &*handle };
-        let tg = match tribe_gender_arg(tribe_gender) {
+        let tg = match unsafe { tribe_gender_arg(tribe_gender) } {
             Ok(t) => t,
             Err(rc) => return rc,
         };
@@ -1856,7 +1872,10 @@ mod tests {
             let used = elements
                 .iter()
                 .map(|e| save_scalar(e, "_dyeSlotNo").unwrap_or(0))
-                .fold(0u32, |a, n| a | (1 << n));
+                .fold(0u32, |a, n| {
+                    let bit = u32::try_from(n).ok().and_then(|n| 1u32.checked_shl(n));
+                    a | bit.unwrap_or_else(|| panic!("_dyeSlotNo {n} out of range"))
+                });
             let offered = keys.iter().filter_map(|k| rows.get(k)).fold(0, |a, r| a | r.dye_slot_bits());
             assert_eq!(used & !offered, 0, "item {item}: _dyeSlotNo outside the prefab's dye slots");
             resolved.insert(item, (keys.clone(), used));
@@ -1972,9 +1991,16 @@ mod tests {
         blob.push(b'y');
         blob.extend(s("character/model/a/b_ub.pac_xml"));
         blob.extend(s("character/model/a/b_lb.pac"));
+        blob.extend(s("character/model/a/B_HD.PAC"));
+        blob.extend(s("character\\model\\a\\b_ft.pac"));
         assert_eq!(
             prefab_pac_paths(&blob),
-            ["character/model/a/b_ub.pac", "character/model/a/b_lb.pac"]
+            [
+                "character/model/a/b_ub.pac",
+                "character/model/a/b_lb.pac",
+                "character/model/a/B_HD.PAC",
+                "character/model/a/b_ft.pac",
+            ]
         );
         assert!(prefab_pac_paths(&[]).is_empty());
         assert!(prefab_pac_paths(&[5, 0, 0]).is_empty());
@@ -2077,12 +2103,18 @@ mod tests {
     /// checksum of its path (the last slot's `tail_name`).
     #[test]
     fn part_prefab_key_is_the_pac_path_checksum_live() {
-        let Some(j) = live_prefab_join() else {
+        // Only the 0008 table is needed, not the 0009 prefabs or the join.
+        let (Some(pp_b), Some(pp_h)) = (
+            gamedata_layout::extract_bin(&gamedata_layout::body("partprefabdyeslotinfo")),
+            gamedata_layout::extract_bin(&gamedata_layout::header("partprefabdyeslotinfo")),
+        ) else {
             eprintln!("skipping: no game install");
             return;
         };
-        assert!(j.rows.len() > 1000);
-        for r in &j.rows {
+        let rows = crate::part_prefab_dye_slot_info::parse_part_prefab_dye_slot_info_lossy(&pp_b, &pp_h);
+        let listed = crate::binary::static_header::detect_named_pair(&pp_h, &pp_b).expect("2.06 header").2.len();
+        assert_eq!(rows.len(), listed, "every row the header lists parses");
+        for r in &rows {
             let pac = &r.slots.last().expect("row has slots").tail_name;
             assert!(pac.ends_with(".pac"), "{:08x}: last tail {pac:?}", r.key);
             assert_eq!(part_prefab_key_for_pac(pac), r.key, "{pac}");
@@ -2144,6 +2176,7 @@ mod tests {
                 resolved += u32::from(bits_of(h, it.key.0, None).0 == error::OK);
             }
         }
+        println!("prefab coverage: {resolved} of {dyeable} dyeable items resolve");
         assert!(dyeable >= 900, "dyeable {dyeable}");
         assert!(resolved * 100 >= dyeable * 98, "resolved {resolved} / {dyeable}");
     }
@@ -2232,7 +2265,10 @@ mod tests {
             let used = elements
                 .iter()
                 .map(|e| save_scalar(e, "_dyeSlotNo").unwrap_or(0))
-                .fold(0u32, |a, n| a | (1 << n));
+                .fold(0u32, |a, n| {
+                    let bit = u32::try_from(n).ok().and_then(|n| 1u32.checked_shl(n));
+                    a | bit.unwrap_or_else(|| panic!("_dyeSlotNo {n} out of range"))
+                });
             let (rc, offered) = bits_of(j.h, item, None);
             assert_eq!(rc, error::OK, "item {item} does not resolve");
             let mut channels = 0u32;

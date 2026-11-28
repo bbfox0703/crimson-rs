@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::os::raw::c_char;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use super::error;
+use super::{error, write_str_to_buf};
 use crate::part_prefab_dye_texture_pallete_info::{
     PartPrefabDyeTexturePalleteEntry, parse_part_prefab_dye_texture_pallete_info_lossy,
 };
@@ -172,6 +172,7 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_texture_pallete_entry_count(
     if handle.is_null() || out_count.is_null() {
         return error::NULL_ARG;
     }
+    unsafe { *out_count = 0 };
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &*handle };
         unsafe { *out_count = h.entries.len() as u32 };
@@ -218,7 +219,11 @@ enum SubStringField {
     VariantName,
 }
 
-fn lookup_sub_string(
+/// Shared body of the four sub-string getters.
+///
+/// # Safety
+/// `handle` and `required` must be non-null; `buf` may be null iff `buf_len == 0`.
+unsafe fn lookup_sub_string(
     handle: *const CrimsonPartPrefabDyeTexturePalleteHandle,
     palette_key: u32,
     sub_idx: u32,
@@ -267,15 +272,17 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_texture_pallete_lookup_sub_mate
     buf_len: usize,
     required: *mut usize,
 ) -> i32 {
-    lookup_sub_string(
-        handle,
-        palette_key,
-        sub_idx,
-        SubStringField::MaterialName,
-        buf,
-        buf_len,
-        required,
-    )
+    unsafe {
+        lookup_sub_string(
+            handle,
+            palette_key,
+            sub_idx,
+            SubStringField::MaterialName,
+            buf,
+            buf_len,
+            required,
+        )
+    }
 }
 
 /// UI icon DDS path (falls back to texture path for `palette_key=0`).
@@ -292,15 +299,17 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_texture_pallete_lookup_sub_icon
     buf_len: usize,
     required: *mut usize,
 ) -> i32 {
-    lookup_sub_string(
-        handle,
-        palette_key,
-        sub_idx,
-        SubStringField::IconPath,
-        buf,
-        buf_len,
-        required,
-    )
+    unsafe {
+        lookup_sub_string(
+            handle,
+            palette_key,
+            sub_idx,
+            SubStringField::IconPath,
+            buf,
+            buf_len,
+            required,
+        )
+    }
 }
 
 /// Material texture DDS path used at runtime.
@@ -317,15 +326,17 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_texture_pallete_lookup_sub_text
     buf_len: usize,
     required: *mut usize,
 ) -> i32 {
-    lookup_sub_string(
-        handle,
-        palette_key,
-        sub_idx,
-        SubStringField::TexturePath,
-        buf,
-        buf_len,
-        required,
-    )
+    unsafe {
+        lookup_sub_string(
+            handle,
+            palette_key,
+            sub_idx,
+            SubStringField::TexturePath,
+            buf,
+            buf_len,
+            required,
+        )
+    }
 }
 
 /// Variant label inside a material — empty when absent, or
@@ -343,15 +354,17 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_texture_pallete_lookup_sub_vari
     buf_len: usize,
     required: *mut usize,
 ) -> i32 {
-    lookup_sub_string(
-        handle,
-        palette_key,
-        sub_idx,
-        SubStringField::VariantName,
-        buf,
-        buf_len,
-        required,
-    )
+    unsafe {
+        lookup_sub_string(
+            handle,
+            palette_key,
+            sub_idx,
+            SubStringField::VariantName,
+            buf,
+            buf_len,
+            required,
+        )
+    }
 }
 
 /// Variant strength — `-1.0` is the "no variant" sentinel.
@@ -410,23 +423,6 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_texture_pallete_get_entry_key(
     .unwrap_or(error::PANIC)
 }
 
-fn write_str_to_buf(
-    src: &str,
-    buf: *mut u8,
-    buf_len: usize,
-    required: *mut usize,
-) -> i32 {
-    let needed = src.len() + 1;
-    unsafe { *required = needed };
-    if buf_len < needed {
-        return error::BUFFER_TOO_SMALL;
-    }
-    unsafe {
-        std::ptr::copy_nonoverlapping(src.as_ptr(), buf, src.len());
-        *buf.add(src.len()) = 0;
-    }
-    error::OK
-}
 
 #[cfg(test)]
 mod tests {

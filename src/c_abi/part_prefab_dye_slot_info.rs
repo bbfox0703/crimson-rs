@@ -36,7 +36,7 @@ use std::collections::HashMap;
 use std::os::raw::c_char;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use super::error;
+use super::{error, write_str_to_buf};
 use crate::part_prefab_dye_slot_info::{
     PartPrefabDyeSlotInfoEntry, parse_part_prefab_dye_slot_info_lossy,
 };
@@ -182,6 +182,7 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_entry_count(
     if handle.is_null() || out_count.is_null() {
         return error::NULL_ARG;
     }
+    unsafe { *out_count = 0 };
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &*handle };
         unsafe { *out_count = h.entries.len() as u32 };
@@ -341,6 +342,7 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_mat_indic
     if handle.is_null() || out_indices.is_null() {
         return error::NULL_ARG;
     }
+    unsafe { std::ptr::write_bytes(out_indices, 0, 3) };
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &*handle };
         let Some(row) = h.by_key.get(&prefab_key) else {
@@ -382,6 +384,7 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_mask(
     if handle.is_null() || out_mask.is_null() {
         return error::NULL_ARG;
     }
+    unsafe { std::ptr::write_bytes(out_mask, 0, 3) };
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &*handle };
         let Some(row) = h.by_key.get(&prefab_key) else {
@@ -429,6 +432,7 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_mask_full
     if handle.is_null() || required.is_null() || (buf.is_null() && buf_len != 0) {
         return error::NULL_ARG;
     }
+    unsafe { *required = 0 };
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &*handle };
         let Some(row) = h.by_key.get(&prefab_key) else {
@@ -471,6 +475,7 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_active_ch
     if handle.is_null() || out_flags.is_null() {
         return error::NULL_ARG;
     }
+    unsafe { std::ptr::write_bytes(out_flags, 0, 3) };
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &*handle };
         let Some(row) = h.by_key.get(&prefab_key) else {
@@ -730,6 +735,7 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_extra_lay
     if handle.is_null() || out_mask.is_null() {
         return error::NULL_ARG;
     }
+    unsafe { std::ptr::write_bytes(out_mask, 0, 3) };
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &*handle };
         let Some(row) = h.by_key.get(&prefab_key) else {
@@ -771,6 +777,7 @@ pub unsafe extern "C" fn crimson_part_prefab_dye_slot_info_lookup_slot_extra_lay
     if handle.is_null() || required.is_null() || (buf.is_null() && buf_len != 0) {
         return error::NULL_ARG;
     }
+    unsafe { *required = 0 };
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &*handle };
         let Some(row) = h.by_key.get(&prefab_key) else {
@@ -867,23 +874,6 @@ fn write_bytes_to_buf(src: &[u8], buf: *mut u8, buf_len: usize, required: *mut u
     error::OK
 }
 
-fn write_str_to_buf(
-    src: &str,
-    buf: *mut u8,
-    buf_len: usize,
-    required: *mut usize,
-) -> i32 {
-    let needed = src.len() + 1;
-    unsafe { *required = needed };
-    if buf_len < needed {
-        return error::BUFFER_TOO_SMALL;
-    }
-    unsafe {
-        std::ptr::copy_nonoverlapping(src.as_ptr(), buf, src.len());
-        *buf.add(src.len()) = 0;
-    }
-    error::OK
-}
 
 #[cfg(test)]
 mod tests {
@@ -1475,17 +1465,19 @@ mod tests {
             let mut name_of: HashMap<u8, &str> = HashMap::new();
             for s in &e.slots {
                 slots += 1;
-                let used = s
-                    .mat_indices
-                    .iter()
-                    .filter(|&&n| n != 0xFF)
-                    .fold(0u32, |a, &n| a | (1 << n));
+                // Range first: shifting by an out-of-range number would
+                // overflow before the message could say which row.
                 assert!(
                     s.mat_indices.iter().all(|&n| n < 12 || n == 0xFF),
                     "0x{:08x}: dye slot number out of range {:?}",
                     e.key,
                     s.mat_indices
                 );
+                let used = s
+                    .mat_indices
+                    .iter()
+                    .filter(|&&n| n != 0xFF)
+                    .fold(0u32, |a, &n| a | (1 << n));
                 assert_eq!(
                     s.dye_slot_bits() & !used,
                     0,
@@ -1507,7 +1499,7 @@ mod tests {
                 // Active channels and the mask agree in both directions.
                 let from_active = (0..3)
                     .filter(|&ch| active[ch] != 0)
-                    .fold(0u32, |a, ch| a | (1 << s.mat_indices[ch]));
+                    .fold(0u32, |a, ch| a | 1u32.checked_shl(u32::from(s.mat_indices[ch])).expect("dye slot number"));
                 assert_eq!(from_active, s.dye_slot_bits(), "0x{:08x}", e.key);
                 for (ch, &n) in s.mat_indices.iter().enumerate() {
                     let m = s.default_materials[ch].as_str();

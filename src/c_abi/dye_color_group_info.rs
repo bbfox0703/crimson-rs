@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::os::raw::c_char;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use super::error;
+use super::{error, write_str_to_buf};
 use super::paloc::CrimsonPalocHandle;
 use crate::dye_color_group_info::{PaletteCondition, parse_dye_color_group_info_lossy};
 
@@ -181,6 +181,7 @@ pub unsafe extern "C" fn crimson_dye_color_group_info_entry_count(
     if handle.is_null() || out_count.is_null() {
         return error::NULL_ARG;
     }
+    unsafe { *out_count = 0 };
     catch_unwind(AssertUnwindSafe(|| {
         let h = unsafe { &*handle };
         unsafe { *out_count = h.entries.len() as u32 };
@@ -478,23 +479,6 @@ pub unsafe extern "C" fn crimson_dye_color_group_info_lookup_display_name(
     .unwrap_or(error::PANIC)
 }
 
-fn write_str_to_buf(
-    src: &str,
-    buf: *mut u8,
-    buf_len: usize,
-    required: *mut usize,
-) -> i32 {
-    let needed = src.len() + 1;
-    unsafe { *required = needed };
-    if buf_len < needed {
-        return error::BUFFER_TOO_SMALL;
-    }
-    unsafe {
-        std::ptr::copy_nonoverlapping(src.as_ptr(), buf, src.len());
-        *buf.add(src.len()) = 0;
-    }
-    error::OK
-}
 
 #[cfg(test)]
 mod tests {

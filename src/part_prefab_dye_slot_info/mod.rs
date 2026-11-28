@@ -333,7 +333,11 @@ fn parse_slot(body: &[u8], cursor: &mut usize) -> Option<PartPrefabDyeSlot> {
     if *cursor + 5 > body.len() {
         return None;
     }
-    // body[*cursor] is the 0xFF marker; not stored.
+    // The 0xFF marker is not stored, but checked: a constant byte is the
+    // cheapest place to notice a layout that moved without changing length.
+    if body[*cursor] != 0xFF {
+        return None;
+    }
     let extra_count = u32::from_le_bytes([
         body[*cursor + 1],
         body[*cursor + 2],
@@ -382,7 +386,10 @@ fn try_parse_row(body: &[u8], expected_key: u32) -> Option<PartPrefabDyeSlotInfo
     if head.key != expected_key {
         return None;
     }
-    // Head, then 1 pad + u32 slot_count + CString prefab_name.
+    // Head, then 1 zero pad + u32 slot_count + CString prefab_name.
+    if body.get(head.body_at) != Some(&0) {
+        return None;
+    }
     let count_bytes = body.get(head.body_at + 1..head.body_at + 5)?;
     let slot_count =
         u32::from_le_bytes([count_bytes[0], count_bytes[1], count_bytes[2], count_bytes[3]]);
